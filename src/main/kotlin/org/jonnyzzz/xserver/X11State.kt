@@ -460,6 +460,7 @@ internal data class XDrawingCommand(
     val points: List<XPoint> = emptyList(),
     val rectangles: List<XRectangleCommand> = emptyList(),
     val text: String = "",
+    val imageDataUri: String? = null,
 )
 
 internal data class XRectangleCommand(

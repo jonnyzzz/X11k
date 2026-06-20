@@ -32,6 +32,7 @@ class HttpRenderingTest {
             assertContains(svg.body, "0x200002")
             assertContains(svg.body, """data-drawable-id="0x200001"""")
             assertContains(svg.body, "<polyline")
+            assertContains(svg.body, """href="data:image/png;base64,""")
             assertFalse(svg.body.contains("""width="65533""""))
             assertContains(svg.body, RenderCredit.Text)
 
@@ -44,7 +45,7 @@ class HttpRenderingTest {
             assertContains(text.body, RenderCredit.Text)
 
             val json = httpGet(server.localPort, "/state.json")
-            assertContains(json.body, """"drawings":1""")
+            assertContains(json.body, """"drawings":2""")
 
             val textHtml = httpGet(server.localPort, "/text")
             assertContains(textHtml.body, "<!--${RenderCredit.Text}-->")
@@ -78,6 +79,7 @@ class HttpRenderingTest {
             if (id == 0x0020_0001) {
                 out.write(createGcRequest(0x0020_1001, id))
                 out.write(polyLineRequest(id, 0x0020_1001))
+                out.write(putImageRequest(id, 0x0020_1001))
                 out.write(createWindowRequest(0x0020_0003, 3, 3, 65_533, 65_533, parent = id))
                 out.write(mapWindowRequest(0x0020_0003))
             }
@@ -136,6 +138,24 @@ class HttpRenderingTest {
         put16le(bytes, 18, 70)
         put16le(bytes, 20, 24)
         put16le(bytes, 22, 78)
+        return bytes
+    }
+
+    private fun putImageRequest(drawable: Int, gc: Int): ByteArray {
+        val bytes = ByteArray(40)
+        bytes[0] = 72
+        bytes[1] = 2
+        put16le(bytes, 2, bytes.size / 4)
+        put32le(bytes, 4, drawable)
+        put32le(bytes, 8, gc)
+        put16le(bytes, 12, 2)
+        put16le(bytes, 14, 2)
+        put16le(bytes, 16, 40)
+        put16le(bytes, 18, 30)
+        bytes[21] = 24
+        put32le(bytes, 24, 0x00ff_0000)
+        put32le(bytes, 28, 0x0000_ff00)
+        put32le(bytes, 32, 0x0000_00ff)
         return bytes
     }
 

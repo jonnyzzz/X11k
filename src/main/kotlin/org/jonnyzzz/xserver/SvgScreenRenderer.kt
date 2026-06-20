@@ -303,8 +303,12 @@ internal object SvgScreenRenderer {
                     XDrawingKind.Clear -> renderFilledRectangles(this, drawing, drawing.foreground)
                     XDrawingKind.FillRectangle -> renderFilledRectangles(this, drawing, drawing.foreground)
                     XDrawingKind.PutImage -> {
-                        renderFilledRectangles(this, drawing, drawing.foreground, opacity = "0.35")
-                        renderOutlinedRectangles(this, drawing, "#5b6472", dash = "8 6")
+                        if (drawing.imageDataUri == null) {
+                            renderFilledRectangles(this, drawing, drawing.foreground, opacity = "0.35")
+                            renderOutlinedRectangles(this, drawing, "#5b6472", dash = "8 6")
+                        } else {
+                            renderImages(this, drawing)
+                        }
                     }
                     XDrawingKind.Rectangle -> renderOutlinedRectangles(this, drawing, pixelColor(drawing.foreground))
                     XDrawingKind.Arc -> renderArcs(this, drawing, filled = false)
@@ -355,6 +359,22 @@ internal object SvgScreenRenderer {
                 "stroke" to color,
                 "stroke-width" to drawing.lineWidth.coerceAtLeast(1),
                 "stroke-dasharray" to dash,
+            )
+        }
+    }
+
+    private fun renderImages(builder: XmlDom, drawing: XDrawingCommand) {
+        val href = drawing.imageDataUri ?: return
+        for (rectangle in drawing.rectangles) {
+            if (rectangle.width <= 0 || rectangle.height <= 0) continue
+            builder.svgElement(
+                "image",
+                "x" to rectangle.x,
+                "y" to rectangle.y,
+                "width" to rectangle.width,
+                "height" to rectangle.height,
+                "href" to href,
+                "preserveAspectRatio" to "none",
             )
         }
     }

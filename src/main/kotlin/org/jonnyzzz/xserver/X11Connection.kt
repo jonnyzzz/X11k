@@ -3,6 +3,10 @@ package org.jonnyzzz.xserver
 import java.io.EOFException
 import java.io.InputStream
 import java.io.OutputStream
+import java.awt.image.BufferedImage
+import java.io.ByteArrayOutputStream
+import java.util.Base64
+import javax.imageio.ImageIO
 
 internal class X11Connection(
     private val input: InputStream,
@@ -107,7 +111,7 @@ internal class X11Connection(
             69 -> fillPoly(body)
             70 -> polyRectangle(body, XDrawingKind.FillRectangle)
             71 -> polyRectangle(body, XDrawingKind.FillArc)
-            72 -> putImage(body)
+            72 -> putImage(minorOpcode, body)
             73 -> getImage(body)
             74 -> polyText(body, is16Bit = false)
             75 -> polyText(body, is16Bit = true)
@@ -563,9 +567,11 @@ internal class X11Connection(
         )
     }
 
-    private fun putImage(body: ByteArray) {
+    private fun putImage(format: Int, body: ByteArray) {
         if (body.size < 20) return
         val gc = state.gc(byteOrder.u32(body, 4))
+        val width = byteOrder.u16(body, 8)
+        val height = byteOrder.u16(body, 10)
         state.draw(
             XDrawingCommand(
                 drawableId = byteOrder.u32(body, 0),
@@ -575,10 +581,11 @@ internal class X11Connection(
                     XRectangleCommand(
                         x = byteOrder.i16(body, 12),
                         y = byteOrder.i16(body, 14),
-                        width = byteOrder.u16(body, 8),
-                        height = byteOrder.u16(body, 10),
+                        width = width,
+                        height = height,
                     ),
                 ),
+                imageDataUri = decodePutImage(format = format, width = width, height = height, depth = body[17].toInt() and 0xff, data = body.copyOfRange(20, body.size)),
             ),
         )
     }
@@ -896,6 +903,30 @@ internal class X11Connection(
                 offset += 2
             }
         }
+
+    private fun decodePutImage(
+        format: Int,
+        width: Int,
+        height: Int,
+        depth: Int,
+        data: ByteArray,
+    ): String? {
+        if (format != 2 || width <= 0 || height <= 0 || depth !in setOf(24, 32)) return null
+        val bytesPerPixel = 4
+        val stride = paddedLength(width * bytesPerPixel)
+        if (data.size < stride * height) return null
+        val image = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
+        for (y in 0 until height) {
+            val rowOffset = y * stride
+            for (x in 0 until width) {
+                val pixel = byteOrder.u32(data, rowOffset + x * bytesPerPixel)
+                image.setRGB(x, y, 0xff00_0000.toInt() or (pixel and 0x00ff_ffff))
+            }
+        }
+        val output = ByteArrayOutputStream()
+        ImageIO.write(image, "png", output)
+        return "data:image/png;base64," + Base64.getEncoder().encodeToString(output.toByteArray())
+    }
 
     private fun paddedLength(length: Int): Int = (length + 3) and -4
 }
