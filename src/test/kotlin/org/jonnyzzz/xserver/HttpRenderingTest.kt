@@ -15,17 +15,29 @@ class HttpRenderingTest {
             createMappedWindow(server.localPort, 0x0020_0002, "two", x = 80, y = 70, width = 140, height = 100)
 
             val html = httpGet(server.localPort, "/")
-            assertContains(html, "<svg")
-            assertContains(html, "one")
-            assertContains(html, "two")
+            assertContains(html.headers, "${RenderCredit.HeaderName}: ${RenderCredit.Text}")
+            assertContains(html.body, "<!-- ${RenderCredit.Text} -->")
+            assertContains(html.body, "<svg")
+            assertContains(html.body, "one")
+            assertContains(html.body, "two")
+            assertContains(html.body, "<footer>${RenderCredit.Text}</footer>")
 
             val svg = httpGet(server.localPort, "/screen.svg")
-            assertContains(svg, "0x200001")
-            assertContains(svg, "0x200002")
+            assertContains(svg.headers, "${RenderCredit.HeaderName}: ${RenderCredit.Text}")
+            assertContains(svg.body, "<!-- ${RenderCredit.Text} -->")
+            assertContains(svg.body, "0x200001")
+            assertContains(svg.body, "0x200002")
+            assertContains(svg.body, RenderCredit.Text)
 
             val text = httpGet(server.localPort, "/text.txt")
-            assertContains(text, "Focus: 0x200002")
-            assertContains(text, "0x200002 overlaps 0x200001")
+            assertContains(text.headers, "${RenderCredit.HeaderName}: ${RenderCredit.Text}")
+            assertContains(text.body, "Focus: 0x200002")
+            assertContains(text.body, "0x200002 overlaps 0x200001")
+            assertContains(text.body, RenderCredit.Text)
+
+            val textHtml = httpGet(server.localPort, "/text")
+            assertContains(textHtml.body, "<!-- ${RenderCredit.Text} -->")
+            assertContains(textHtml.body, "<footer>${RenderCredit.Text}</footer>")
 
             server.close()
             serverThread.join(1_000)
@@ -100,11 +112,15 @@ class HttpRenderingTest {
         return bytes
     }
 
-    private fun httpGet(port: Int, path: String): String =
+    private fun httpGet(port: Int, path: String): HttpResponse =
         Socket("127.0.0.1", port).use { socket ->
             socket.getOutputStream().write("GET $path HTTP/1.1\r\nHost: localhost\r\n\r\n".encodeToByteArray())
             socket.getOutputStream().flush()
-            socket.getInputStream().readBytes().decodeToString().substringAfter("\r\n\r\n")
+            val response = socket.getInputStream().readBytes().decodeToString()
+            HttpResponse(
+                headers = response.substringBefore("\r\n\r\n"),
+                body = response.substringAfter("\r\n\r\n"),
+            )
         }
 
     private fun java.io.InputStream.readExactly(size: Int): ByteArray {
@@ -132,4 +148,9 @@ class HttpRenderingTest {
 
     private fun u16le(bytes: ByteArray, offset: Int): Int =
         (bytes[offset].toInt() and 0xff) or ((bytes[offset + 1].toInt() and 0xff) shl 8)
+
+    private data class HttpResponse(
+        val headers: String,
+        val body: String,
+    )
 }

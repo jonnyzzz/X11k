@@ -4,6 +4,7 @@ internal object TextScreenRenderer {
     fun html(snapshot: XScreenSnapshot): String =
         """
         <!doctype html>
+        <!-- ${RenderCredit.Text} -->
         <html lang="en">
         <head>
           <meta charset="utf-8">
@@ -15,12 +16,14 @@ internal object TextScreenRenderer {
             main { max-width: 980px; margin: 0 auto; }
             h1 { margin-top: 0; font-size: 22px; }
             pre { white-space: pre-wrap; background: #1b1f29; border: 1px solid #303642; padding: 16px; overflow: auto; }
+            footer { color: #aab2c0; font-size: 12px; margin-top: 18px; }
           </style>
         </head>
         <body>
           <main>
             <h1>X screen text report</h1>
             <pre>${escape(plain(snapshot))}</pre>
+            <footer>${RenderCredit.Text}</footer>
           </main>
         </body>
         </html>
@@ -65,6 +68,8 @@ internal object TextScreenRenderer {
                     appendLine()
                 }
             }
+            appendLine()
+            appendLine(RenderCredit.Text)
         }
 
     private fun escape(value: String): String =

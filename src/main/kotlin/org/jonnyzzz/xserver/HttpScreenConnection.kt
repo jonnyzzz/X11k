@@ -57,6 +57,7 @@ internal class HttpScreenConnection(
                 append("HTTP/1.1 ").append(status).append(' ').append(reason).append("\r\n")
                 append("Content-Type: ").append(contentType).append("\r\n")
                 append("Content-Length: ").append(bytes.size).append("\r\n")
+                append(RenderCredit.HeaderName).append(": ").append(RenderCredit.Text).append("\r\n")
                 append("Cache-Control: no-store\r\n")
                 append("Connection: close\r\n")
                 append("\r\n")

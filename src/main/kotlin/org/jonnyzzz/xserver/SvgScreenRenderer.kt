@@ -4,6 +4,7 @@ internal object SvgScreenRenderer {
     fun html(snapshot: XScreenSnapshot): String =
         """
         <!doctype html>
+        <!-- ${RenderCredit.Text} -->
         <html lang="en">
         <head>
           <meta charset="utf-8">
@@ -21,6 +22,7 @@ internal object SvgScreenRenderer {
             dt { color: #aab2c0; }
             dd { margin: 0; overflow-wrap: anywhere; }
             code { color: #d4dcff; }
+            footer { grid-column: 1 / -1; padding: 10px 18px; border-top: 1px solid #303642; color: #aab2c0; font-size: 12px; }
           </style>
         </head>
         <body>
@@ -37,6 +39,7 @@ internal object SvgScreenRenderer {
               </dl>
               ${windowList(snapshot)}
             </aside>
+            <footer>${RenderCredit.Text}</footer>
           </main>
         </body>
         </html>
@@ -45,6 +48,7 @@ internal object SvgScreenRenderer {
     fun svg(snapshot: XScreenSnapshot): String =
         buildString {
             append("""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${snapshot.width} ${snapshot.height}" role="img" aria-label="X screen">""")
+            append("""<!-- ${RenderCredit.Text} -->""")
             append("""<rect x="0" y="0" width="${snapshot.width}" height="${snapshot.height}" fill="#20242c"/>""")
             append("""<g font-family="monospace" font-size="12">""")
             snapshot.windows
@@ -58,6 +62,7 @@ internal object SvgScreenRenderer {
             snapshot.overlaps.forEach {
                 append("""<rect x="${it.x}" y="${it.y}" width="${it.width}" height="${it.height}" fill="#ff5c7a" fill-opacity="0.2" stroke="#ff5c7a" stroke-dasharray="4 3"/>""")
             }
+            append("""<text x="${snapshot.width - 8}" y="${snapshot.height - 8}" fill="#aab2c0" text-anchor="end">${escape(RenderCredit.Text)}</text>""")
             append("</g></svg>")
         }
 
