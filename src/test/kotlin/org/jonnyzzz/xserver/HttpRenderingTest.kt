@@ -5,6 +5,7 @@ import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 
 class HttpRenderingTest {
     @Test
@@ -16,7 +17,7 @@ class HttpRenderingTest {
 
             val html = httpGet(server.localPort, "/")
             assertContains(html.headers, "${RenderCredit.HeaderName}: ${RenderCredit.Text}")
-            assertContains(html.body, "<!-- ${RenderCredit.Text} -->")
+            assertContains(html.body, "<!--${RenderCredit.Text}-->")
             assertContains(html.body, "<svg")
             assertContains(html.body, "one")
             assertContains(html.body, "two")
@@ -26,9 +27,12 @@ class HttpRenderingTest {
 
             val svg = httpGet(server.localPort, "/screen.svg")
             assertContains(svg.headers, "${RenderCredit.HeaderName}: ${RenderCredit.Text}")
-            assertContains(svg.body, "<!-- ${RenderCredit.Text} -->")
+            assertContains(svg.body, "<!--${RenderCredit.Text}-->")
             assertContains(svg.body, "0x200001")
             assertContains(svg.body, "0x200002")
+            assertContains(svg.body, """data-drawable-id="0x200001"""")
+            assertContains(svg.body, "<polyline")
+            assertFalse(svg.body.contains("""width="65533""""))
             assertContains(svg.body, RenderCredit.Text)
 
             val text = httpGet(server.localPort, "/text.txt")
@@ -39,8 +43,11 @@ class HttpRenderingTest {
             assertContains(text.body, "0x200002 overlaps 0x200001")
             assertContains(text.body, RenderCredit.Text)
 
+            val json = httpGet(server.localPort, "/state.json")
+            assertContains(json.body, """"drawings":1""")
+
             val textHtml = httpGet(server.localPort, "/text")
-            assertContains(textHtml.body, "<!-- ${RenderCredit.Text} -->")
+            assertContains(textHtml.body, "<!--${RenderCredit.Text}-->")
             assertContains(textHtml.body, "<footer>${RenderCredit.Text}</footer>")
 
             server.close()
@@ -68,19 +75,32 @@ class HttpRenderingTest {
 
             out.write(createWindowRequest(id, x, y, width, height))
             out.write(changePropertyRequest(id, name))
+            if (id == 0x0020_0001) {
+                out.write(createGcRequest(0x0020_1001, id))
+                out.write(polyLineRequest(id, 0x0020_1001))
+                out.write(createWindowRequest(0x0020_0003, 3, 3, 65_533, 65_533, parent = id))
+                out.write(mapWindowRequest(0x0020_0003))
+            }
             out.write(mapWindowRequest(id))
             out.flush()
             Thread.sleep(100)
         }
     }
 
-    private fun createWindowRequest(id: Int, x: Int, y: Int, width: Int, height: Int): ByteArray {
+    private fun createWindowRequest(
+        id: Int,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        parent: Int = X11Ids.RootWindow,
+    ): ByteArray {
         val bytes = ByteArray(32)
         bytes[0] = 1
         bytes[1] = 24
         put16le(bytes, 2, 8)
         put32le(bytes, 4, id)
-        put32le(bytes, 8, X11Ids.RootWindow)
+        put32le(bytes, 8, parent)
         put16le(bytes, 12, x)
         put16le(bytes, 14, y)
         put16le(bytes, 16, width)
@@ -89,6 +109,33 @@ class HttpRenderingTest {
         put16le(bytes, 22, 1)
         put32le(bytes, 24, X11Ids.RootVisual)
         put32le(bytes, 28, 0)
+        return bytes
+    }
+
+    private fun createGcRequest(gc: Int, drawable: Int): ByteArray {
+        val bytes = ByteArray(24)
+        bytes[0] = 55
+        put16le(bytes, 2, bytes.size / 4)
+        put32le(bytes, 4, gc)
+        put32le(bytes, 8, drawable)
+        put32le(bytes, 12, 0x0000_0014)
+        put32le(bytes, 16, 0x0000_0000)
+        put32le(bytes, 20, 8)
+        return bytes
+    }
+
+    private fun polyLineRequest(drawable: Int, gc: Int): ByteArray {
+        val bytes = ByteArray(24)
+        bytes[0] = 65
+        put16le(bytes, 2, bytes.size / 4)
+        put32le(bytes, 4, drawable)
+        put32le(bytes, 8, gc)
+        put16le(bytes, 12, 12)
+        put16le(bytes, 14, 12)
+        put16le(bytes, 16, 96)
+        put16le(bytes, 18, 70)
+        put16le(bytes, 20, 24)
+        put16le(bytes, 22, 78)
         return bytes
     }
 

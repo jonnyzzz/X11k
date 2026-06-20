@@ -63,7 +63,7 @@ internal class X11Connection(
             3 -> getWindowAttributes(body)
             4 -> destroyWindow(body)
             6 -> unitReplyless()
-            7 -> unitReplyless()
+            7 -> reparentWindow(body)
             8 -> mapWindow(body)
             9 -> mapSubwindows(body)
             10 -> unmapWindow(body)
@@ -94,11 +94,25 @@ internal class X11Connection(
             53 -> createPixmap(minorOpcode, body)
             54 -> closeResource(body)
             55 -> createGc(body)
-            56 -> unitReplyless()
+            56 -> changeGc(body)
             60 -> closeResource(body)
-            in 61..72 -> unitReplyless()
+            61 -> clearArea(body)
+            62 -> copyArea(body)
+            63 -> copyArea(body)
+            64 -> polyPoint(minorOpcode, body)
+            65 -> polyLine(minorOpcode, body)
+            66 -> polySegment(body)
+            67 -> polyRectangle(body, XDrawingKind.Rectangle)
+            68 -> polyRectangle(body, XDrawingKind.Arc)
+            69 -> fillPoly(body)
+            70 -> polyRectangle(body, XDrawingKind.FillRectangle)
+            71 -> polyRectangle(body, XDrawingKind.FillArc)
+            72 -> putImage(body)
             73 -> getImage(body)
-            in 74..77 -> unitReplyless()
+            74 -> polyText(body, is16Bit = false)
+            75 -> polyText(body, is16Bit = true)
+            76 -> imageText(minorOpcode, body, is16Bit = false)
+            77 -> imageText(minorOpcode, body, is16Bit = true)
             78 -> createColormap(body)
             79 -> closeResource(body)
             81 -> unitReplyless()
@@ -141,12 +155,23 @@ internal class X11Connection(
             width = byteOrder.u16(body, 12),
             height = byteOrder.u16(body, 14),
             borderWidth = byteOrder.u16(body, 16),
+            backgroundPixel = createWindowBackground(body),
         )
         state.putWindow(window)
     }
 
     private fun destroyWindow(body: ByteArray) {
         if (body.size >= 4) state.removeWindow(byteOrder.u32(body, 0))
+    }
+
+    private fun reparentWindow(body: ByteArray) {
+        if (body.size < 12) return
+        state.reparentWindow(
+            id = byteOrder.u32(body, 0),
+            parentId = byteOrder.u32(body, 4),
+            x = byteOrder.i16(body, 8),
+            y = byteOrder.i16(body, 10),
+        )
     }
 
     private fun mapWindow(body: ByteArray) {
@@ -408,7 +433,188 @@ internal class X11Connection(
     }
 
     private fun createGc(body: ByteArray) {
-        if (body.size >= 8) state.putGc(byteOrder.u32(body, 0))
+        if (body.size < 12) return
+        val id = byteOrder.u32(body, 0)
+        state.putGc(XGraphicsContext(id))
+        applyGcValues(id, byteOrder.u32(body, 8), body, 12)
+    }
+
+    private fun changeGc(body: ByteArray) {
+        if (body.size < 8) return
+        applyGcValues(byteOrder.u32(body, 0), byteOrder.u32(body, 4), body, 8)
+    }
+
+    private fun clearArea(body: ByteArray) {
+        if (body.size < 12) return
+        val windowId = byteOrder.u32(body, 0)
+        val window = state.window(windowId) ?: return
+        state.draw(
+            XDrawingCommand(
+                drawableId = windowId,
+                kind = XDrawingKind.Clear,
+                foreground = window.backgroundPixel,
+                rectangles = listOf(
+                    XRectangleCommand(
+                        x = byteOrder.i16(body, 4),
+                        y = byteOrder.i16(body, 6),
+                        width = byteOrder.u16(body, 8).takeIf { it > 0 } ?: window.width,
+                        height = byteOrder.u16(body, 10).takeIf { it > 0 } ?: window.height,
+                    ),
+                ),
+            ),
+        )
+    }
+
+    private fun copyArea(body: ByteArray) {
+        if (body.size < 24) return
+        val gc = state.gc(byteOrder.u32(body, 8))
+        state.draw(
+            XDrawingCommand(
+                drawableId = byteOrder.u32(body, 4),
+                kind = XDrawingKind.Rectangle,
+                foreground = gc.foreground,
+                lineWidth = gc.lineWidth,
+                rectangles = listOf(
+                    XRectangleCommand(
+                        x = byteOrder.i16(body, 16),
+                        y = byteOrder.i16(body, 18),
+                        width = byteOrder.u16(body, 20),
+                        height = byteOrder.u16(body, 22),
+                    ),
+                ),
+            ),
+        )
+    }
+
+    private fun polyPoint(coordMode: Int, body: ByteArray) {
+        if (body.size < 12) return
+        val gc = state.gc(byteOrder.u32(body, 4))
+        state.draw(
+            XDrawingCommand(
+                drawableId = byteOrder.u32(body, 0),
+                kind = XDrawingKind.FillRectangle,
+                foreground = gc.foreground,
+                rectangles = points(body, 8, coordMode).map { XRectangleCommand(it.x, it.y, 2, 2) },
+            ),
+        )
+    }
+
+    private fun polyLine(coordMode: Int, body: ByteArray) {
+        if (body.size < 12) return
+        val gc = state.gc(byteOrder.u32(body, 4))
+        state.draw(
+            XDrawingCommand(
+                drawableId = byteOrder.u32(body, 0),
+                kind = XDrawingKind.Line,
+                foreground = gc.foreground,
+                lineWidth = gc.lineWidth,
+                points = points(body, 8, coordMode),
+            ),
+        )
+    }
+
+    private fun polySegment(body: ByteArray) {
+        if (body.size < 16) return
+        val gc = state.gc(byteOrder.u32(body, 4))
+        val points = mutableListOf<XPoint>()
+        var offset = 8
+        while (offset + 8 <= body.size) {
+            points += XPoint(byteOrder.i16(body, offset), byteOrder.i16(body, offset + 2))
+            points += XPoint(byteOrder.i16(body, offset + 4), byteOrder.i16(body, offset + 6))
+            offset += 8
+        }
+        state.draw(
+            XDrawingCommand(
+                drawableId = byteOrder.u32(body, 0),
+                kind = XDrawingKind.Segment,
+                foreground = gc.foreground,
+                lineWidth = gc.lineWidth,
+                points = points,
+            ),
+        )
+    }
+
+    private fun polyRectangle(body: ByteArray, kind: XDrawingKind) {
+        if (body.size < 16) return
+        val gc = state.gc(byteOrder.u32(body, 4))
+        state.draw(
+            XDrawingCommand(
+                drawableId = byteOrder.u32(body, 0),
+                kind = kind,
+                foreground = gc.foreground,
+                lineWidth = gc.lineWidth,
+                rectangles = rectangles(body, 8),
+            ),
+        )
+    }
+
+    private fun fillPoly(body: ByteArray) {
+        if (body.size < 16) return
+        val gc = state.gc(byteOrder.u32(body, 4))
+        val coordMode = body[8].toInt() and 0xff
+        state.draw(
+            XDrawingCommand(
+                drawableId = byteOrder.u32(body, 0),
+                kind = XDrawingKind.Line,
+                foreground = gc.foreground,
+                lineWidth = gc.lineWidth,
+                points = points(body, 12, coordMode),
+            ),
+        )
+    }
+
+    private fun putImage(body: ByteArray) {
+        if (body.size < 20) return
+        val gc = state.gc(byteOrder.u32(body, 4))
+        state.draw(
+            XDrawingCommand(
+                drawableId = byteOrder.u32(body, 0),
+                kind = XDrawingKind.PutImage,
+                foreground = gc.foreground,
+                rectangles = listOf(
+                    XRectangleCommand(
+                        x = byteOrder.i16(body, 12),
+                        y = byteOrder.i16(body, 14),
+                        width = byteOrder.u16(body, 8),
+                        height = byteOrder.u16(body, 10),
+                    ),
+                ),
+            ),
+        )
+    }
+
+    private fun polyText(body: ByteArray, is16Bit: Boolean) {
+        if (body.size < 12) return
+        val gc = state.gc(byteOrder.u32(body, 4))
+        val textBytes = body.copyOfRange(12, body.size).filter { (it.toInt() and 0xff) in 32..126 }.toByteArray()
+        if (textBytes.isEmpty()) return
+        state.draw(
+            XDrawingCommand(
+                drawableId = byteOrder.u32(body, 0),
+                kind = XDrawingKind.Text,
+                foreground = gc.foreground,
+                background = gc.background,
+                points = listOf(XPoint(byteOrder.i16(body, 8), byteOrder.i16(body, 10))),
+                text = if (is16Bit) textBytes.decodeToString().filterIndexed { index, _ -> index % 2 == 1 } else textBytes.decodeToString(),
+            ),
+        )
+    }
+
+    private fun imageText(length: Int, body: ByteArray, is16Bit: Boolean) {
+        if (body.size < 12) return
+        val byteLength = length * if (is16Bit) 2 else 1
+        val textBytes = body.copyOfRange(12, (12 + byteLength).coerceAtMost(body.size))
+        val gc = state.gc(byteOrder.u32(body, 4))
+        state.draw(
+            XDrawingCommand(
+                drawableId = byteOrder.u32(body, 0),
+                kind = XDrawingKind.Text,
+                foreground = gc.foreground,
+                background = gc.background,
+                points = listOf(XPoint(byteOrder.i16(body, 8), byteOrder.i16(body, 10))),
+                text = if (is16Bit) decodeText16(textBytes) else textBytes.decodeToString(),
+            ),
+        )
     }
 
     private fun getImage(body: ByteArray) {
@@ -605,6 +811,91 @@ internal class X11Connection(
         bytes[10] = opcode.toByte()
         write(bytes)
     }
+
+    private fun createWindowBackground(body: ByteArray): Int {
+        if (body.size < 28) return 0x00ff_ffff
+        val mask = byteOrder.u32(body, 24)
+        var offset = 28
+        var background = 0x00ff_ffff
+        for (bit in 0..14) {
+            if ((mask and (1 shl bit)) == 0) continue
+            if (offset + 4 > body.size) break
+            val value = byteOrder.u32(body, offset)
+            if (bit == 1) background = value
+            offset += 4
+        }
+        return background
+    }
+
+    private fun applyGcValues(id: Int, mask: Int, body: ByteArray, valuesOffset: Int) {
+        var offset = valuesOffset
+        fun next(): Int? {
+            if (offset + 4 > body.size) return null
+            val value = byteOrder.u32(body, offset)
+            offset += 4
+            return value
+        }
+        var foreground: Int? = null
+        var background: Int? = null
+        var lineWidth: Int? = null
+        var fontId: Int? = null
+        for (bit in 0..22) {
+            if ((mask and (1 shl bit)) == 0) continue
+            val value = next() ?: break
+            when (bit) {
+                2 -> foreground = value
+                3 -> background = value
+                4 -> lineWidth = value.coerceAtLeast(1)
+                14 -> fontId = value
+            }
+        }
+        state.updateGc(id, foreground = foreground, background = background, lineWidth = lineWidth, fontId = fontId)
+    }
+
+    private fun points(body: ByteArray, startOffset: Int, coordMode: Int): List<XPoint> {
+        val points = mutableListOf<XPoint>()
+        var offset = startOffset
+        var previousX = 0
+        var previousY = 0
+        while (offset + 4 <= body.size) {
+            var x = byteOrder.i16(body, offset)
+            var y = byteOrder.i16(body, offset + 2)
+            if (coordMode == 1 && points.isNotEmpty()) {
+                x += previousX
+                y += previousY
+            }
+            points += XPoint(x, y)
+            previousX = x
+            previousY = y
+            offset += 4
+        }
+        return points
+    }
+
+    private fun rectangles(body: ByteArray, startOffset: Int): List<XRectangleCommand> {
+        val rectangles = mutableListOf<XRectangleCommand>()
+        var offset = startOffset
+        while (offset + 8 <= body.size) {
+            rectangles += XRectangleCommand(
+                x = byteOrder.i16(body, offset),
+                y = byteOrder.i16(body, offset + 2),
+                width = byteOrder.u16(body, offset + 4),
+                height = byteOrder.u16(body, offset + 6),
+            )
+            offset += 8
+        }
+        return rectangles
+    }
+
+    private fun decodeText16(bytes: ByteArray): String =
+        buildString {
+            var offset = 0
+            while (offset + 1 < bytes.size) {
+                val value = byteOrder.u16(bytes, offset)
+                if (value in 32..126) append(value.toChar())
+                offset += 2
+            }
+        }
 
     private fun paddedLength(length: Int): Int = (length + 3) and -4
 }

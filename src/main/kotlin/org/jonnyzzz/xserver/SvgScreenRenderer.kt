@@ -2,70 +2,56 @@ package org.jonnyzzz.xserver
 
 internal object SvgScreenRenderer {
     fun html(snapshot: XScreenSnapshot): String =
-        """
-        <!doctype html>
-        <!-- ${RenderCredit.Text} -->
-        <html lang="en">
-        <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <meta http-equiv="refresh" content="1">
-          <title>X screen</title>
-          <style>
-            html, body { margin: 0; min-height: 100%; background: #15171c; color: #e7e9ee; font-family: system-ui, sans-serif; }
-            main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 100vh; }
-            .screen { display: grid; place-items: center; padding: 24px; }
-            svg { width: min(100%, ${snapshot.width}px); height: auto; background: #20242c; box-shadow: 0 0 0 1px #3b4252; }
-            aside { border-left: 1px solid #303642; padding: 18px; background: #111318; overflow: auto; }
-            h1 { font-size: 16px; margin: 0 0 12px; }
-            dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0 0 18px; font-size: 13px; }
-            dt { color: #aab2c0; }
-            dd { margin: 0; overflow-wrap: anywhere; }
-            code { color: #d4dcff; }
-            footer { grid-column: 1 / -1; padding: 10px 18px; border-top: 1px solid #303642; color: #aab2c0; font-size: 12px; }
-          </style>
-        </head>
-        <body>
-          <main>
-            <section class="screen">
-              ${svg(snapshot)}
-            </section>
-            <aside>
-              <h1>X server state</h1>
-              <dl>
-                <dt>Screen</dt><dd>${snapshot.width} x ${snapshot.height}</dd>
-                <dt>DPI</dt><dd>${snapshot.dpi}</dd>
-                <dt>Physical</dt><dd>${snapshot.widthMillimeters} x ${snapshot.heightMillimeters} mm</dd>
-                <dt>Windows</dt><dd>${snapshot.windows.size}</dd>
-                <dt>Mapped</dt><dd>${snapshot.windows.count { it.mapped }}</dd>
-              </dl>
-              ${windowList(snapshot)}
-            </aside>
-            <footer>${RenderCredit.Text}</footer>
-          </main>
-        </body>
-        </html>
-        """.trimIndent()
+        XmlDom.html {
+            attributes("lang" to "en")
+            comment(RenderCredit.Text)
+            element("head") {
+                element("meta", "charset" to "utf-8")
+                element("meta", "name" to "viewport", "content" to "width=device-width, initial-scale=1")
+                element("meta", "http-equiv" to "refresh", "content" to "1")
+                element("title") { text("X screen") }
+                element("style") { text(screenCss(snapshot)) }
+            }
+            element("body") {
+                element("main") {
+                    element("section", "class" to "screen") {
+                        svgElement(
+                            "svg",
+                            "viewBox" to "0 0 ${snapshot.width} ${snapshot.height}",
+                            "role" to "img",
+                            "aria-label" to "X screen",
+                        ) {
+                            renderSvgContent(this, snapshot)
+                        }
+                    }
+                    element("aside") {
+                        element("h1") { text("X server state") }
+                        element("dl") {
+                            definition("Screen", "${snapshot.width} x ${snapshot.height}")
+                            definition("DPI", snapshot.dpi.toString())
+                            definition("Physical", "${snapshot.widthMillimeters} x ${snapshot.heightMillimeters} mm")
+                            definition("Windows", snapshot.windows.size.toString())
+                            definition("Mapped", snapshot.windows.count { it.mapped }.toString())
+                        }
+                        renderWindowList(this, snapshot)
+                    }
+                    element("section", "class" to "previews") {
+                        element("h2") { text("Windows") }
+                        renderWindowPreviews(this, snapshot)
+                    }
+                    element("footer") { text(RenderCredit.Text) }
+                }
+            }
+        }
 
     fun svg(snapshot: XScreenSnapshot): String =
-        buildString {
-            append("""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${snapshot.width} ${snapshot.height}" role="img" aria-label="X screen">""")
-            append("""<!-- ${RenderCredit.Text} -->""")
-            append("""<rect x="0" y="0" width="${snapshot.width}" height="${snapshot.height}" fill="#20242c"/>""")
-            append("""<g font-family="monospace" font-size="12">""")
-            snapshot.windows
-                .filter { it.mapped && it.id != X11Ids.RootWindow }
-                .forEachIndexed { index, window ->
-                    val color = palette[index % palette.size]
-                    val strokeWidth = if (window.focused) 4 else 2
-                    append("""<rect data-window-id="${window.idHex}" x="${window.x}" y="${window.y}" width="${window.width}" height="${window.height}" fill="$color" fill-opacity="0.28" stroke="$color" stroke-width="$strokeWidth"/>""")
-                    append("""<text x="${window.x + 6}" y="${window.y + 18}" fill="#f8fafc">${escape(window.label)}</text>""")
-                }
-            snapshot.overlaps.forEach {
-                append("""<rect x="${it.x}" y="${it.y}" width="${it.width}" height="${it.height}" fill="#ff5c7a" fill-opacity="0.2" stroke="#ff5c7a" stroke-dasharray="4 3"/>""")
-            }
-            append("""<text x="${snapshot.width - 8}" y="${snapshot.height - 8}" fill="#aab2c0" text-anchor="end">${escape(RenderCredit.Text)}</text>""")
-            append("</g></svg>")
+        XmlDom.svg {
+            attributes(
+                "viewBox" to "0 0 ${snapshot.width} ${snapshot.height}",
+                "role" to "img",
+                "aria-label" to "X screen",
+            )
+            renderSvgContent(this, snapshot)
         }
 
     fun json(snapshot: XScreenSnapshot): String =
@@ -74,33 +60,369 @@ internal object SvgScreenRenderer {
             snapshot.windows.forEachIndexed { index, window ->
                 if (index > 0) append(',')
                 append('{')
-                append(""""id":"${window.idHex}","parent":"${window.parentIdHex}","x":${window.x},"y":${window.y},"width":${window.width},"height":${window.height},"mapped":${window.mapped}""")
+                append(""""id":"${window.idHex}","parent":"${window.parentIdHex}","x":${window.x},"y":${window.y},"localX":${window.localX},"localY":${window.localY},"width":${window.width},"height":${window.height},"visibleX":${window.visibleX},"visibleY":${window.visibleY},"visibleWidth":${window.visibleWidth},"visibleHeight":${window.visibleHeight},"mapped":${window.mapped}""")
                 append('}')
             }
-            append("]}")
+            append("""],"drawings":${snapshot.drawings.size}}""")
         }
 
-    private fun windowList(snapshot: XScreenSnapshot): String =
-        buildString {
-            append("<dl>")
-            for (window in snapshot.windows) {
-                append("<dt><code>").append(window.idHex).append("</code></dt>")
-                append("<dd>")
-                append(escape(window.label))
-                append(" ")
-                append(window.width).append("x").append(window.height)
-                append(if (window.mapped) " mapped" else " unmapped")
-                append("</dd>")
+    private fun screenCss(snapshot: XScreenSnapshot): String =
+        """
+        html, body { margin: 0; min-height: 100%; background: #15171c; color: #e7e9ee; font-family: system-ui, sans-serif; }
+        main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 100vh; }
+        .screen { display: grid; place-items: center; padding: 24px; }
+        svg { width: min(100%, ${snapshot.width}px); height: auto; background: #20242c; box-shadow: 0 0 0 1px #3b4252; }
+        aside { border-left: 1px solid #303642; padding: 18px; background: #111318; overflow: auto; }
+        h1, h2 { font-size: 16px; margin: 0 0 12px; }
+        dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0 0 18px; font-size: 13px; }
+        dt { color: #aab2c0; }
+        dd { margin: 0; overflow-wrap: anywhere; }
+        code { color: #d4dcff; }
+        .previews { grid-column: 1 / -1; padding: 0 24px 24px; }
+        .preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+        .preview { border: 1px solid #303642; background: #111318; padding: 10px; }
+        .preview header { color: #c8d0df; font: 13px/1.35 monospace; margin-bottom: 8px; overflow-wrap: anywhere; }
+        .preview svg { width: 100%; background: #f8fafc; }
+        footer { grid-column: 1 / -1; padding: 10px 18px; border-top: 1px solid #303642; color: #aab2c0; font-size: 12px; }
+        """.trimIndent()
+
+    private fun XmlDom.definition(term: String, description: String) {
+        element("dt") { text(term) }
+        element("dd") { text(description) }
+    }
+
+    private fun renderSvgContent(builder: XmlDom, snapshot: XScreenSnapshot) {
+        val visibleWindows = snapshot.windows.filter {
+            it.mapped && it.id != X11Ids.RootWindow && it.visibleWidth > 0 && it.visibleHeight > 0
+        }
+        with(builder) {
+            comment(RenderCredit.Text)
+            svgElement("rect", "x" to 0, "y" to 0, "width" to snapshot.width, "height" to snapshot.height, "fill" to "#20242c")
+            svgElement("defs") {
+                for (window in visibleWindows) {
+                    svgElement("clipPath", "id" to clipId("screen", window), "clipPathUnits" to "userSpaceOnUse") {
+                        svgElement("rect", "x" to window.visibleX, "y" to window.visibleY, "width" to window.visibleWidth, "height" to window.visibleHeight)
+                    }
+                }
             }
-            append("</dl>")
+            svgElement("g", "font-family" to "monospace", "font-size" to 32) {
+                visibleWindows.forEachIndexed { index, window ->
+                    val color = palette[index % palette.size]
+                    val strokeWidth = if (window.focused) 8 else 4
+                    svgElement(
+                        "rect",
+                        "data-window-id" to window.idHex,
+                        "x" to window.visibleX,
+                        "y" to window.visibleY,
+                        "width" to window.visibleWidth,
+                        "height" to window.visibleHeight,
+                        "fill" to pixelColor(window.backgroundPixel),
+                        "stroke" to color,
+                        "stroke-width" to strokeWidth,
+                    )
+                }
+                renderDrawings(this, snapshot, clipPrefix = "screen")
+                visibleWindows.forEachIndexed { index, window ->
+                    val color = palette[index % palette.size]
+                    svgElement(
+                        "rect",
+                        "x" to window.visibleX,
+                        "y" to window.visibleY,
+                        "width" to window.visibleWidth,
+                        "height" to minOf(46, window.visibleHeight),
+                        "fill" to color,
+                        "fill-opacity" to "0.85",
+                    )
+                    svgElement(
+                        "text",
+                        "x" to window.visibleX + 10,
+                        "y" to window.visibleY + minOf(34, window.visibleHeight),
+                        "fill" to "#111318",
+                    ) {
+                        text(window.label)
+                    }
+                }
+                for (overlap in snapshot.overlaps) {
+                    svgElement(
+                        "rect",
+                        "x" to overlap.x,
+                        "y" to overlap.y,
+                        "width" to overlap.width,
+                        "height" to overlap.height,
+                        "fill" to "#ff5c7a",
+                        "fill-opacity" to "0.2",
+                        "stroke" to "#ff5c7a",
+                        "stroke-dasharray" to "4 3",
+                    )
+                }
+                svgElement(
+                    "text",
+                    "x" to snapshot.width - 8,
+                    "y" to snapshot.height - 8,
+                    "fill" to "#aab2c0",
+                    "text-anchor" to "end",
+                ) {
+                    text(RenderCredit.Text)
+                }
+            }
         }
+    }
 
-    private fun escape(value: String): String =
-        value
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\"", "&quot;")
+    private fun renderWindowPreviews(builder: XmlDom, snapshot: XScreenSnapshot) {
+        val topWindows = snapshot.windows
+            .filter {
+                it.mapped &&
+                    it.parentId == X11Ids.RootWindow &&
+                    it.id != X11Ids.RootWindow &&
+                    it.visibleWidth >= 64 &&
+                    it.visibleHeight >= 64
+            }
+        builder.element("div", "class" to "preview-grid") {
+            for (window in topWindows) {
+                element("article", "class" to "preview") {
+                    element("header") {
+                        text("${window.label} ${window.visibleWidth}x${window.visibleHeight}")
+                    }
+                    renderWindowSvg(this, snapshot, window)
+                }
+            }
+        }
+    }
+
+    private fun renderWindowSvg(builder: XmlDom, snapshot: XScreenSnapshot, rootWindow: XWindowSnapshot) {
+        val subtree = subtreeWindows(snapshot, rootWindow)
+            .filter { it.mapped && it.visibleWidth > 0 && it.visibleHeight > 0 }
+        val clipPrefix = "preview-${rootWindow.idHex.drop(2)}"
+        builder.svgElement(
+            "svg",
+            "viewBox" to "0 0 ${rootWindow.visibleWidth} ${rootWindow.visibleHeight}",
+            "role" to "img",
+            "aria-label" to rootWindow.label,
+        ) {
+            comment(RenderCredit.Text)
+            svgElement("defs") {
+                for (window in subtree) {
+                    svgElement("clipPath", "id" to clipId(clipPrefix, window), "clipPathUnits" to "userSpaceOnUse") {
+                        svgElement(
+                            "rect",
+                            "x" to window.visibleX - rootWindow.visibleX,
+                            "y" to window.visibleY - rootWindow.visibleY,
+                            "width" to window.visibleWidth,
+                            "height" to window.visibleHeight,
+                        )
+                    }
+                }
+            }
+            svgElement("rect", "x" to 0, "y" to 0, "width" to rootWindow.visibleWidth, "height" to rootWindow.visibleHeight, "fill" to pixelColor(rootWindow.backgroundPixel))
+            subtree.forEachIndexed { index, window ->
+                val color = palette[index % palette.size]
+                svgElement(
+                    "rect",
+                    "x" to window.visibleX - rootWindow.visibleX,
+                    "y" to window.visibleY - rootWindow.visibleY,
+                    "width" to window.visibleWidth,
+                    "height" to window.visibleHeight,
+                    "fill" to pixelColor(window.backgroundPixel),
+                    "stroke" to color,
+                    "stroke-width" to 2,
+                )
+            }
+            renderDrawings(
+                this,
+                snapshot,
+                clipPrefix = clipPrefix,
+                originX = rootWindow.visibleX,
+                originY = rootWindow.visibleY,
+                drawableIds = subtree.map { it.id }.toSet(),
+            )
+            svgElement(
+                "text",
+                "x" to rootWindow.visibleWidth - 6,
+                "y" to rootWindow.visibleHeight - 6,
+                "fill" to "#5b6472",
+                "text-anchor" to "end",
+                "font-size" to 10,
+            ) {
+                text(RenderCredit.Text)
+            }
+        }
+    }
+
+    private fun subtreeWindows(snapshot: XScreenSnapshot, rootWindow: XWindowSnapshot): List<XWindowSnapshot> {
+        val byParent = snapshot.windows.groupBy { it.parentId }
+        val result = mutableListOf<XWindowSnapshot>()
+        val queue = ArrayDeque<XWindowSnapshot>()
+        queue += rootWindow
+        while (queue.isNotEmpty()) {
+            val window = queue.removeFirst()
+            result += window
+            byParent[window.id].orEmpty().forEach { queue += it }
+        }
+        return result.sortedBy { it.stackingIndex }
+    }
+
+    private fun renderWindowList(builder: XmlDom, snapshot: XScreenSnapshot) {
+        builder.element("dl") {
+            for (window in snapshot.windows) {
+                element("dt") {
+                    element("code") { text(window.idHex) }
+                }
+                element("dd") {
+                    text(window.label)
+                    text(" ")
+                    text("${window.width}x${window.height}")
+                    if (window.visibleWidth != window.width || window.visibleHeight != window.height) {
+                        text(" visible ${window.visibleWidth}x${window.visibleHeight}")
+                    }
+                    text(if (window.mapped) " mapped" else " unmapped")
+                }
+            }
+        }
+    }
+
+    private fun renderDrawings(
+        builder: XmlDom,
+        snapshot: XScreenSnapshot,
+        clipPrefix: String,
+        originX: Int = 0,
+        originY: Int = 0,
+        drawableIds: Set<Int>? = null,
+    ) {
+        val windows = snapshot.windows.associateBy { it.id }
+        for (drawing in snapshot.drawings) {
+            if (drawableIds != null && drawing.drawableId !in drawableIds) continue
+            val window = windows[drawing.drawableId] ?: continue
+            if (!window.mapped || window.visibleWidth <= 0 || window.visibleHeight <= 0) continue
+            builder.svgElement(
+                "g",
+                "data-drawable-id" to window.idHex,
+                "clip-path" to "url(#${clipId(clipPrefix, window)})",
+                "transform" to "translate(${window.x - originX} ${window.y - originY})",
+            ) {
+                when (drawing.kind) {
+                    XDrawingKind.Clear -> renderFilledRectangles(this, drawing, drawing.foreground)
+                    XDrawingKind.FillRectangle -> renderFilledRectangles(this, drawing, drawing.foreground)
+                    XDrawingKind.PutImage -> {
+                        renderFilledRectangles(this, drawing, drawing.foreground, opacity = "0.35")
+                        renderOutlinedRectangles(this, drawing, "#5b6472", dash = "8 6")
+                    }
+                    XDrawingKind.Rectangle -> renderOutlinedRectangles(this, drawing, pixelColor(drawing.foreground))
+                    XDrawingKind.Arc -> renderArcs(this, drawing, filled = false)
+                    XDrawingKind.FillArc -> renderArcs(this, drawing, filled = true)
+                    XDrawingKind.Line -> renderLine(this, drawing)
+                    XDrawingKind.Segment -> renderSegments(this, drawing)
+                    XDrawingKind.Text -> renderText(this, drawing)
+                }
+            }
+        }
+    }
+
+    private fun renderFilledRectangles(
+        builder: XmlDom,
+        drawing: XDrawingCommand,
+        pixel: Int,
+        opacity: String = "1",
+    ) {
+        for (rectangle in drawing.rectangles) {
+            if (rectangle.width <= 0 || rectangle.height <= 0) continue
+            builder.svgElement(
+                "rect",
+                "x" to rectangle.x,
+                "y" to rectangle.y,
+                "width" to rectangle.width,
+                "height" to rectangle.height,
+                "fill" to pixelColor(pixel),
+                "fill-opacity" to opacity,
+            )
+        }
+    }
+
+    private fun renderOutlinedRectangles(
+        builder: XmlDom,
+        drawing: XDrawingCommand,
+        color: String,
+        dash: String? = null,
+    ) {
+        for (rectangle in drawing.rectangles) {
+            if (rectangle.width <= 0 || rectangle.height <= 0) continue
+            builder.svgElement(
+                "rect",
+                "x" to rectangle.x,
+                "y" to rectangle.y,
+                "width" to rectangle.width,
+                "height" to rectangle.height,
+                "fill" to "none",
+                "stroke" to color,
+                "stroke-width" to drawing.lineWidth.coerceAtLeast(1),
+                "stroke-dasharray" to dash,
+            )
+        }
+    }
+
+    private fun renderArcs(builder: XmlDom, drawing: XDrawingCommand, filled: Boolean) {
+        for (rectangle in drawing.rectangles) {
+            if (rectangle.width <= 0 || rectangle.height <= 0) continue
+            builder.svgElement(
+                "ellipse",
+                "cx" to rectangle.x + rectangle.width / 2.0,
+                "cy" to rectangle.y + rectangle.height / 2.0,
+                "rx" to rectangle.width / 2.0,
+                "ry" to rectangle.height / 2.0,
+                "fill" to if (filled) pixelColor(drawing.foreground) else "none",
+                "stroke" to if (filled) null else pixelColor(drawing.foreground),
+                "stroke-width" to if (filled) null else drawing.lineWidth.coerceAtLeast(1),
+            )
+        }
+    }
+
+    private fun renderLine(builder: XmlDom, drawing: XDrawingCommand) {
+        if (drawing.points.size < 2) return
+        builder.svgElement(
+            "polyline",
+            "points" to drawing.points.joinToString(" ") { "${it.x},${it.y}" },
+            "fill" to "none",
+            "stroke" to pixelColor(drawing.foreground),
+            "stroke-width" to drawing.lineWidth.coerceAtLeast(1),
+            "stroke-linecap" to "round",
+            "stroke-linejoin" to "round",
+        )
+    }
+
+    private fun renderSegments(builder: XmlDom, drawing: XDrawingCommand) {
+        val color = pixelColor(drawing.foreground)
+        drawing.points.chunked(2).forEach { segment ->
+            if (segment.size != 2) return@forEach
+            builder.svgElement(
+                "line",
+                "x1" to segment[0].x,
+                "y1" to segment[0].y,
+                "x2" to segment[1].x,
+                "y2" to segment[1].y,
+                "stroke" to color,
+                "stroke-width" to drawing.lineWidth.coerceAtLeast(1),
+                "stroke-linecap" to "round",
+            )
+        }
+    }
+
+    private fun renderText(builder: XmlDom, drawing: XDrawingCommand) {
+        val point = drawing.points.firstOrNull() ?: return
+        builder.svgElement(
+            "text",
+            "x" to point.x,
+            "y" to point.y,
+            "fill" to pixelColor(drawing.foreground),
+            "font-size" to 24,
+        ) {
+            text(drawing.text)
+        }
+    }
+
+    private fun pixelColor(pixel: Int): String =
+        "#${(pixel and 0x00ff_ffff).toString(16).padStart(6, '0')}"
+
+    private fun clipId(prefix: String, window: XWindowSnapshot): String =
+        "clip-$prefix-${window.idHex.drop(2)}"
 
     private val palette = listOf(
         "#8bd5ca",

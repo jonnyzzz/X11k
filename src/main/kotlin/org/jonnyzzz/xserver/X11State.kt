@@ -11,7 +11,7 @@ internal class X11State(
     val heightMillimeters: Int = pixelsToMillimeters(height, dpi)
     private val windows = linkedMapOf<Int, XWindow>()
     private val pixmaps = linkedMapOf<Int, XPixmap>()
-    private val gcs = linkedSetOf<Int>()
+    private val gcs = linkedMapOf<Int, XGraphicsContext>()
     private val fonts = linkedSetOf<Int>()
     private val cursors = linkedSetOf<Int>()
     private val colormaps = linkedSetOf(X11Ids.DefaultColormap)
@@ -69,6 +69,16 @@ internal class X11State(
     fun childrenOf(id: Int): List<XWindow> = windows.values.filter { it.parentId == id }
 
     @Synchronized
+    fun reparentWindow(id: Int, parentId: Int, x: Int, y: Int): XWindow? {
+        val window = windows[id] ?: return null
+        if (!windows.containsKey(parentId)) return null
+        window.parentId = parentId
+        window.x = x
+        window.y = y
+        return window
+    }
+
+    @Synchronized
     fun mapWindow(id: Int): XWindow? {
         val window = windows[id] ?: return null
         window.mapped = true
@@ -103,11 +113,15 @@ internal class X11State(
     @Synchronized
     fun snapshot(): XScreenSnapshot {
         val windowSnapshots = windows.values.mapIndexed { index, window ->
+            val absolute = absolutePosition(window)
+            val visible = visibleBounds(window, absolute.first, absolute.second)
             XWindowSnapshot(
                 id = window.id,
                 parentId = window.parentId,
-                x = window.x,
-                y = window.y,
+                x = absolute.first,
+                y = absolute.second,
+                localX = window.x,
+                localY = window.y,
                 width = window.width,
                 height = window.height,
                 borderWidth = window.borderWidth,
@@ -115,6 +129,11 @@ internal class X11State(
                 focused = window.id == focusWindowId,
                 stackingIndex = index,
                 label = window.label(),
+                visibleX = visible?.x ?: 0,
+                visibleY = visible?.y ?: 0,
+                visibleWidth = visible?.width ?: 0,
+                visibleHeight = visible?.height ?: 0,
+                backgroundPixel = window.backgroundPixel,
             )
         }
         return XScreenSnapshot(
@@ -126,6 +145,7 @@ internal class X11State(
             focusWindowId = focusWindowId,
             windows = windowSnapshots,
             overlaps = overlaps(windowSnapshots),
+            drawings = drawings.toList(),
         )
     }
 
@@ -140,8 +160,34 @@ internal class X11State(
     }
 
     @Synchronized
-    fun putGc(id: Int) {
-        gcs += id
+    fun putGc(gc: XGraphicsContext) {
+        gcs[gc.id] = gc
+    }
+
+    @Synchronized
+    fun updateGc(
+        id: Int,
+        foreground: Int? = null,
+        background: Int? = null,
+        lineWidth: Int? = null,
+        fontId: Int? = null,
+    ) {
+        val gc = gcs.getOrPut(id) { XGraphicsContext(id) }
+        foreground?.let { gc.foreground = it }
+        background?.let { gc.background = it }
+        lineWidth?.let { gc.lineWidth = it }
+        fontId?.let { gc.fontId = it }
+    }
+
+    @Synchronized
+    fun gc(id: Int): XGraphicsContext = gcs[id] ?: XGraphicsContext(id)
+
+    @Synchronized
+    fun draw(command: XDrawingCommand) {
+        drawings += command
+        if (drawings.size > MaxDrawingCommands) {
+            drawings.removeAt(0)
+        }
     }
 
     @Synchronized
@@ -184,6 +230,8 @@ internal class X11State(
     fun extension(name: String): XExtension? = extensions.firstOrNull { it.name == name }
 
     companion object {
+        private const val MaxDrawingCommands = 10_000
+
         private fun pixelsToMillimeters(pixels: Int, dpi: Int): Int =
             ((pixels * 25.4) / dpi).roundToInt().coerceAtLeast(1)
 
@@ -269,17 +317,58 @@ internal class X11State(
         return if (id == X11Ids.RootWindow) "root" else id.toHex()
     }
 
+    private fun absolutePosition(window: XWindow): Pair<Int, Int> {
+        var x = window.x
+        var y = window.y
+        var parentId = window.parentId
+        val visited = mutableSetOf(window.id)
+        while (parentId != 0 && parentId != X11Ids.RootWindow && visited.add(parentId)) {
+            val parent = windows[parentId] ?: break
+            x += parent.x
+            y += parent.y
+            parentId = parent.parentId
+        }
+        return x to y
+    }
+
+    private fun visibleBounds(window: XWindow, absoluteX: Int, absoluteY: Int): XRectangle? {
+        var left = absoluteX
+        var top = absoluteY
+        var right = absoluteX + window.width
+        var bottom = absoluteY + window.height
+        var parentId = window.parentId
+        val visited = mutableSetOf(window.id)
+        while (parentId != 0 && visited.add(parentId)) {
+            val parent = windows[parentId] ?: break
+            val parentAbsolute = absolutePosition(parent)
+            left = maxOf(left, parentAbsolute.first)
+            top = maxOf(top, parentAbsolute.second)
+            right = minOf(right, parentAbsolute.first + parent.width)
+            bottom = minOf(bottom, parentAbsolute.second + parent.height)
+            parentId = parent.parentId
+        }
+        left = left.coerceIn(0, width)
+        top = top.coerceIn(0, height)
+        right = right.coerceIn(0, width)
+        bottom = bottom.coerceIn(0, height)
+        return if (right > left && bottom > top) {
+            XRectangle(left, top, right - left, bottom - top)
+        } else {
+            null
+        }
+    }
+
     private fun overlaps(windows: List<XWindowSnapshot>): List<XWindowOverlap> {
-        val mapped = windows.filter { it.mapped && it.id != X11Ids.RootWindow }
+        val mapped = windows.filter { it.mapped && it.id != X11Ids.RootWindow && it.visibleWidth > 0 && it.visibleHeight > 0 }
         val result = mutableListOf<XWindowOverlap>()
         for (lowerIndex in mapped.indices) {
             for (upperIndex in lowerIndex + 1 until mapped.size) {
                 val lower = mapped[lowerIndex]
                 val upper = mapped[upperIndex]
-                val left = maxOf(lower.x, upper.x)
-                val top = maxOf(lower.y, upper.y)
-                val right = minOf(lower.x + lower.width, upper.x + upper.width)
-                val bottom = minOf(lower.y + lower.height, upper.y + upper.height)
+                val left = maxOf(lower.visibleX, upper.visibleX)
+                val top = maxOf(lower.visibleY, upper.visibleY)
+                val right = minOf(lower.visibleX + lower.visibleWidth, upper.visibleX + upper.visibleWidth)
+                val bottom = minOf(lower.visibleY + lower.visibleHeight, upper.visibleY + upper.visibleHeight)
                 if (right > left && bottom > top) {
                     result += XWindowOverlap(
                         lowerWindowId = lower.id,
@@ -296,17 +385,28 @@ internal class X11State(
     }
 
     private fun Int.toHex(): String = "0x${toUInt().toString(16)}"
+
+    private val drawings = mutableListOf<XDrawingCommand>()
+
+    private data class XRectangle(
+        val x: Int,
+        val y: Int,
+        val width: Int,
+        val height: Int,
+    )
+
 }
 
 internal data class XWindow(
     val id: Int,
-    val parentId: Int,
+    var parentId: Int,
     var x: Int,
     var y: Int,
     var width: Int,
     var height: Int,
     var borderWidth: Int,
     var mapped: Boolean = false,
+    var backgroundPixel: Int = 0x00ff_ffff,
     val properties: MutableMap<Int, XProperty> = linkedMapOf(),
 )
 
@@ -324,6 +424,49 @@ internal data class XDrawable(
     val height: Int,
     val borderWidth: Int,
     val depth: Int,
+)
+
+internal data class XGraphicsContext(
+    val id: Int,
+    var foreground: Int = 0,
+    var background: Int = 0x00ff_ffff,
+    var lineWidth: Int = 1,
+    var fontId: Int = 0,
+)
+
+internal enum class XDrawingKind {
+    Clear,
+    Line,
+    Segment,
+    Rectangle,
+    FillRectangle,
+    Arc,
+    FillArc,
+    Text,
+    PutImage,
+}
+
+internal data class XPoint(
+    val x: Int,
+    val y: Int,
+)
+
+internal data class XDrawingCommand(
+    val drawableId: Int,
+    val kind: XDrawingKind,
+    val foreground: Int,
+    val background: Int = 0x00ff_ffff,
+    val lineWidth: Int = 1,
+    val points: List<XPoint> = emptyList(),
+    val rectangles: List<XRectangleCommand> = emptyList(),
+    val text: String = "",
+)
+
+internal data class XRectangleCommand(
+    val x: Int,
+    val y: Int,
+    val width: Int,
+    val height: Int,
 )
 
 internal data class XProperty(
@@ -348,6 +491,7 @@ internal data class XScreenSnapshot(
     val focusWindowId: Int,
     val windows: List<XWindowSnapshot>,
     val overlaps: List<XWindowOverlap>,
+    val drawings: List<XDrawingCommand>,
 )
 
 internal data class XWindowSnapshot(
@@ -355,6 +499,8 @@ internal data class XWindowSnapshot(
     val parentId: Int,
     val x: Int,
     val y: Int,
+    val localX: Int,
+    val localY: Int,
     val width: Int,
     val height: Int,
     val borderWidth: Int,
@@ -362,6 +508,11 @@ internal data class XWindowSnapshot(
     val focused: Boolean,
     val stackingIndex: Int,
     val label: String,
+    val visibleX: Int,
+    val visibleY: Int,
+    val visibleWidth: Int,
+    val visibleHeight: Int,
+    val backgroundPixel: Int,
 ) {
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val parentIdHex: String get() = "0x${parentId.toUInt().toString(16)}"

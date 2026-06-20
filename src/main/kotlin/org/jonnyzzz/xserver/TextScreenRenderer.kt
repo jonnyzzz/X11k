@@ -2,32 +2,24 @@ package org.jonnyzzz.xserver
 
 internal object TextScreenRenderer {
     fun html(snapshot: XScreenSnapshot): String =
-        """
-        <!doctype html>
-        <!-- ${RenderCredit.Text} -->
-        <html lang="en">
-        <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <meta http-equiv="refresh" content="1">
-          <title>X screen text report</title>
-          <style>
-            body { margin: 0; padding: 24px; background: #111318; color: #e7e9ee; font-family: system-ui, sans-serif; }
-            main { max-width: 980px; margin: 0 auto; }
-            h1 { margin-top: 0; font-size: 22px; }
-            pre { white-space: pre-wrap; background: #1b1f29; border: 1px solid #303642; padding: 16px; overflow: auto; }
-            footer { color: #aab2c0; font-size: 12px; margin-top: 18px; }
-          </style>
-        </head>
-        <body>
-          <main>
-            <h1>X screen text report</h1>
-            <pre>${escape(plain(snapshot))}</pre>
-            <footer>${RenderCredit.Text}</footer>
-          </main>
-        </body>
-        </html>
-        """.trimIndent()
+        XmlDom.html {
+            attributes("lang" to "en")
+            comment(RenderCredit.Text)
+            element("head") {
+                element("meta", "charset" to "utf-8")
+                element("meta", "name" to "viewport", "content" to "width=device-width, initial-scale=1")
+                element("meta", "http-equiv" to "refresh", "content" to "1")
+                element("title") { text("X screen text report") }
+                element("style") { text(textCss()) }
+            }
+            element("body") {
+                element("main") {
+                    element("h1") { text("X screen text report") }
+                    element("pre") { text(plain(snapshot)) }
+                    element("footer") { text(RenderCredit.Text) }
+                }
+            }
+        }
 
     fun plain(snapshot: XScreenSnapshot): String =
         buildString {
@@ -74,10 +66,12 @@ internal object TextScreenRenderer {
             appendLine(RenderCredit.Text)
         }
 
-    private fun escape(value: String): String =
-        value
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\"", "&quot;")
+    private fun textCss(): String =
+        """
+        body { margin: 0; padding: 24px; background: #111318; color: #e7e9ee; font-family: system-ui, sans-serif; }
+        main { max-width: 980px; margin: 0 auto; }
+        h1 { margin-top: 0; font-size: 22px; }
+        pre { white-space: pre-wrap; background: #1b1f29; border: 1px solid #303642; padding: 16px; overflow: auto; }
+        footer { color: #aab2c0; font-size: 12px; margin-top: 18px; }
+        """.trimIndent()
 }
