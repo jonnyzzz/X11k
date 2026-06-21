@@ -33,6 +33,8 @@ internal object TextScreenRenderer {
             appendLine("Physical size: ${snapshot.widthMillimeters} x ${snapshot.heightMillimeters} mm")
             appendLine("Windows: ${snapshot.windows.size}")
             appendLine("Mapped windows: ${snapshot.windows.count { it.mapped }}")
+            appendLine("Pixmaps: ${snapshot.pixmaps.size}")
+            appendLine("Painted pixmaps: ${snapshot.pixmaps.count { it.painted }}")
             appendLine("Focus: ${snapshot.windows.firstOrNull { it.focused }?.idHex ?: "none"}")
             appendLine()
             appendLine("Window hierarchy and geometry:")
@@ -64,6 +66,29 @@ internal object TextScreenRenderer {
                     append(" at ")
                     append(overlap.x).append(',').append(overlap.y)
                     append(' ').append(overlap.width).append('x').append(overlap.height)
+                    appendLine()
+                }
+            }
+            appendLine()
+            appendLine("Offscreen pixmaps:")
+            if (snapshot.pixmaps.isEmpty()) {
+                appendLine("- None.")
+            } else {
+                for (pixmap in snapshot.pixmaps.sortedByDescending { it.width * it.height }.take(30)) {
+                    append("- ")
+                    append(pixmap.idHex)
+                    append(" geometry=")
+                    append(pixmap.width).append('x').append(pixmap.height)
+                    append(" depth=").append(pixmap.depth)
+                    append(" painted=").append(pixmap.painted)
+                    if (pixmap.pictureIdHexes.isNotEmpty()) {
+                        append(" pictures=")
+                        append(pixmap.pictureIdHexes.joinToString(","))
+                    }
+                    if (pixmap.matchingWindowIdHexes.isNotEmpty()) {
+                        append(" candidate-for=")
+                        append(pixmap.matchingWindowIdHexes.joinToString(","))
+                    }
                     appendLine()
                 }
             }
@@ -151,6 +176,29 @@ internal object TextScreenRenderer {
                 }
             }
             appendLine()
+            appendLine("RENDER pictures:")
+            if (snapshot.renderPictures.isEmpty()) {
+                appendLine("- None.")
+            } else {
+                for (picture in snapshot.renderPictures.takeLast(30).asReversed()) {
+                    append("- ")
+                    append(picture.idHex)
+                    append(" drawable=")
+                    append(picture.drawableIdHex)
+                    append(" kind=")
+                    append(picture.drawableKind)
+                    append(" format=")
+                    append("0x${picture.format.toUInt().toString(16)}")
+                    append(" clips=")
+                    append(picture.clipRectangles)
+                    if (picture.solidPixel != null) {
+                        append(" solid=")
+                        append(pixelHex(picture.solidPixel))
+                    }
+                    appendLine()
+                }
+            }
+            appendLine()
             appendLine("Input operations:")
             if (snapshot.inputOperations.isEmpty()) {
                 appendLine("- None.")
@@ -183,4 +231,6 @@ internal object TextScreenRenderer {
         pre { white-space: pre-wrap; background: #1b1f29; border: 1px solid #303642; padding: 16px; overflow: auto; }
         footer { color: #aab2c0; font-size: 12px; margin-top: 18px; }
         """.trimIndent()
+
+    private fun pixelHex(pixel: Int): String = "0x${pixel.toUInt().toString(16).padStart(8, '0')}"
 }

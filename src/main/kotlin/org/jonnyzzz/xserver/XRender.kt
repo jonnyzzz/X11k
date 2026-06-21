@@ -12,6 +12,7 @@ internal object XRender {
     const val A8Format = 0x0000_002b
     const val A1Format = 0x0000_002c
 
+    const val OpClear = 0
     const val OpSrc = 1
     const val OpOver = 3
 

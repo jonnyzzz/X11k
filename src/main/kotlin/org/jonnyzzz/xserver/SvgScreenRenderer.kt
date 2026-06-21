@@ -34,6 +34,10 @@ internal object SvgScreenRenderer {
                         element("h1") { text("Window contents") }
                         renderWindowPreviews(this, snapshot)
                     }
+                    element("section", "class" to "offscreen-surfaces") {
+                        element("h1") { text("Offscreen surfaces") }
+                        renderPixmapPreviews(this, snapshot)
+                    }
                     renderStatePanel(this, snapshot)
                     renderFooter(this)
                 }
@@ -58,6 +62,22 @@ internal object SvgScreenRenderer {
                 append('{')
                 append(""""id":"${window.idHex}","parent":"${window.parentIdHex}","x":${window.x},"y":${window.y},"localX":${window.localX},"localY":${window.localY},"width":${window.width},"height":${window.height},"visibleX":${window.visibleX},"visibleY":${window.visibleY},"visibleWidth":${window.visibleWidth},"visibleHeight":${window.visibleHeight},"mapped":${window.mapped}""")
                 append('}')
+            }
+            append("""],"pixmaps":[""")
+            snapshot.pixmaps.forEachIndexed { index, pixmap ->
+                if (index > 0) append(',')
+                append('{')
+                append(""""id":"${pixmap.idHex}","width":${pixmap.width},"height":${pixmap.height},"depth":${pixmap.depth},"painted":${pixmap.painted},"pictures":[""")
+                pixmap.pictureIdHexes.forEachIndexed { pictureIndex, pictureId ->
+                    if (pictureIndex > 0) append(',')
+                    append('"').append(pictureId).append('"')
+                }
+                append("""],"matchingWindows":[""")
+                pixmap.matchingWindowIdHexes.forEachIndexed { windowIndex, windowId ->
+                    if (windowIndex > 0) append(',')
+                    append('"').append(windowId).append('"')
+                }
+                append("""]}""")
             }
             append("""],"drawings":${snapshot.drawings.size},"renderOperations":${snapshot.renderOperations.size},"inputOperations":[""")
             snapshot.inputOperations.forEachIndexed { index, operation ->
@@ -91,6 +111,12 @@ internal object SvgScreenRenderer {
         .preview header { color: #c8d0df; font: 13px/1.35 monospace; margin-bottom: 8px; overflow-wrap: anywhere; }
         .preview svg { width: min(100%, 1100px); height: auto; background: #f8fafc; shape-rendering: crispEdges; cursor: crosshair; }
         .preview image { image-rendering: auto; }
+        .offscreen-surfaces { grid-column: 1 / -1; border-top: 1px solid #303642; padding: 18px; background: #15171c; }
+        .surface-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 18px; }
+        .surface { border: 1px solid #303642; background: #111318; padding: 10px; }
+        .surface header { color: #c8d0df; font: 13px/1.35 monospace; margin-bottom: 8px; overflow-wrap: anywhere; }
+        .surface svg { width: 100%; max-height: 760px; background: #f8fafc; shape-rendering: crispEdges; }
+        .surface image { image-rendering: auto; }
         footer { grid-column: 1 / -1; padding: 10px 18px; border-top: 1px solid #303642; color: #aab2c0; font-size: 12px; }
         @media (max-width: 960px) {
           main { display: block; }
@@ -239,8 +265,58 @@ internal object SvgScreenRenderer {
                         if (overlapCount > 0) text(" overlaps=$overlapCount")
                     }
                     renderWindowSvg(this, snapshot, window)
+                    renderMatchingPixmapPreviews(this, snapshot, window)
                 }
             }
+        }
+    }
+
+    private fun renderPixmapPreviews(builder: XmlDom, snapshot: XScreenSnapshot) {
+        val paintedPixmaps = snapshot.pixmaps
+            .filter { it.painted && it.framebufferDataUri != null && it.width > 0 && it.height > 0 }
+            .sortedWith(compareByDescending<XPixmapSnapshot> { it.width * it.height }.thenBy { it.id })
+            .take(12)
+        builder.element("div", "class" to "surface-grid") {
+            if (paintedPixmaps.isEmpty()) {
+                element("p") { text("No painted offscreen pixmaps.") }
+            }
+            for (pixmap in paintedPixmaps) {
+                renderPixmapArticle(this, pixmap)
+            }
+        }
+    }
+
+    private fun renderMatchingPixmapPreviews(builder: XmlDom, snapshot: XScreenSnapshot, window: XWindowSnapshot) {
+        val subtreeIds = subtreeWindows(snapshot, window).map { it.id }.toSet()
+        val candidates = snapshot.pixmaps
+            .filter { pixmap ->
+                pixmap.painted &&
+                    pixmap.framebufferDataUri != null &&
+                    pixmap.matchingWindowIds.any { it in subtreeIds }
+            }
+            .sortedWith(compareByDescending<XPixmapSnapshot> { it.width * it.height }.thenBy { it.id })
+            .take(4)
+        if (candidates.isEmpty()) return
+        builder.element("div", "class" to "surface-grid") {
+            for (pixmap in candidates) {
+                renderPixmapArticle(this, pixmap)
+            }
+        }
+    }
+
+    private fun renderPixmapArticle(builder: XmlDom, pixmap: XPixmapSnapshot) {
+        builder.element("article", "class" to "surface") {
+            element("header") {
+                element("strong") { text("Pixmap ${pixmap.idHex}") }
+                text(" ${pixmap.width}x${pixmap.height} depth=${pixmap.depth}")
+                if (pixmap.pictureIdHexes.isNotEmpty()) {
+                    text(" pictures=${pixmap.pictureIdHexes.joinToString(",")}")
+                }
+                if (pixmap.matchingWindowIdHexes.isNotEmpty()) {
+                    text(" candidate-for=${pixmap.matchingWindowIdHexes.joinToString(",")}")
+                }
+            }
+            renderPixmapSvg(this, pixmap)
         }
     }
 
@@ -254,6 +330,8 @@ internal object SvgScreenRenderer {
                     definition("Physical", "${snapshot.widthMillimeters} x ${snapshot.heightMillimeters} mm")
                     definition("Windows", snapshot.windows.size.toString())
                     definition("Mapped", snapshot.windows.count { it.mapped }.toString())
+                    definition("Pixmaps", snapshot.pixmaps.size.toString())
+                    definition("Painted pixmaps", snapshot.pixmaps.count { it.painted }.toString())
                     definition("Drawings", snapshot.drawings.size.toString())
                 }
                 renderWindowList(this, snapshot)
@@ -344,6 +422,43 @@ internal object SvgScreenRenderer {
             byParent[window.id].orEmpty().forEach { queue += it }
         }
         return result.sortedBy { it.stackingIndex }
+    }
+
+    private fun renderPixmapSvg(builder: XmlDom, pixmap: XPixmapSnapshot) {
+        val href = pixmap.framebufferDataUri
+        builder.svgElement(
+            "svg",
+            "class" to "pixmap-preview-svg",
+            "viewBox" to "0 0 ${pixmap.width} ${pixmap.height}",
+            "role" to "img",
+            "aria-label" to "Pixmap ${pixmap.idHex}",
+        ) {
+            comment(RenderCredit.Text)
+            svgElement("rect", "x" to 0, "y" to 0, "width" to pixmap.width, "height" to pixmap.height, "fill" to "#f8fafc")
+            if (href != null) {
+                svgElement(
+                    "image",
+                    "class" to "pixmap-framebuffer-image",
+                    "data-pixmap-id" to pixmap.idHex,
+                    "x" to 0,
+                    "y" to 0,
+                    "width" to pixmap.width,
+                    "height" to pixmap.height,
+                    "href" to href,
+                    "preserveAspectRatio" to "none",
+                )
+            }
+            svgElement(
+                "text",
+                "x" to pixmap.width - 6,
+                "y" to pixmap.height - 6,
+                "fill" to "#5b6472",
+                "text-anchor" to "end",
+                "font-size" to 10,
+            ) {
+                text(RenderCredit.Text)
+            }
+        }
     }
 
     private fun renderWindowList(builder: XmlDom, snapshot: XScreenSnapshot) {

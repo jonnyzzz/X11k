@@ -117,6 +117,45 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `painted pixmap without window copy is exposed as offscreen surface`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                out.write(createWindowRequest(0x0020_0001, 10, 20, 64, 64))
+                out.write(changePropertyRequest(0x0020_0001, "offscreen target"))
+                out.write(createPixmapRequest(0x0020_0100, width = 64, height = 64))
+                out.write(createGcRequest(0x0020_1001, 0x0020_0100))
+                out.write(putImageRequest(0x0020_0100, 0x0020_1001))
+                out.write(mapWindowRequest(0x0020_0001))
+                out.flush()
+                Thread.sleep(100)
+
+                val html = httpGet(server.localPort, "/")
+                assertContains(html.body, """class="offscreen-surfaces"""")
+                assertContains(html.body, "Pixmap 0x200100")
+                assertContains(html.body, """class="pixmap-framebuffer-image"""")
+                assertContains(html.body, """data-pixmap-id="0x200100"""")
+                assertContains(html.body, "candidate-for=0x200001")
+
+                val text = httpGet(server.localPort, "/text.txt").body
+                assertContains(text, "Offscreen pixmaps:")
+                assertContains(text, "0x200100 geometry=64x64 depth=24 painted=true candidate-for=0x200001")
+
+                val json = httpGet(server.localPort, "/state.json").body
+                assertContains(json, """"pixmaps":[{"id":"0x200100","width":64,"height":64,"depth":24,"painted":true""")
+                assertContains(json, """"matchingWindows":["0x200001"]""")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `unsupported copy area does not draw diagnostic rectangle artifacts`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

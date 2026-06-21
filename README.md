@@ -25,7 +25,7 @@ It can run the first Docker smoke matrix against real X clients:
 - `twm` with overlapping app windows
 - IntelliJ IDEA Community from GitHub releases in an opt-in heavyweight smoke
 
-The graphical apps are still compatibility smoke tests rather than full visual conformance tests. Rendering now includes the maintained window model and `PutImage` pixel data in SVG previews, but more X drawing semantics are still pending, especially pixmap-backed composition and broader GC operations.
+The graphical apps are still compatibility smoke tests rather than full visual conformance tests. Rendering now includes the maintained window model, `PutImage` pixel data, XRender fills/composites/glyphs, and painted pixmap/offscreen surfaces in SVG previews, but more X drawing semantics are still pending, especially robust presentation of app-managed backing pixmaps into visible windows.
 
 The same TCP port also serves HTTP for agent observation:
 
@@ -36,7 +36,7 @@ The same TCP port also serves HTTP for agent observation:
 - `/state.json` returns a compact JSON snapshot.
 - `/input/click` accepts pointer click requests and injects X11 `ButtonPress`/`ButtonRelease` events.
 
-The SVG and text renderers both use the maintained X server state model: windows, labels, mapping state, focus, stacking order, and overlap rectangles.
+The SVG and text renderers both use the maintained X server state model: windows, labels, mapping state, focus, stacking order, overlap rectangles, Render pictures, and painted offscreen pixmaps.
 The HTML/SVG view is also an input surface: clicking the window map or a large window preview posts to the same `/input/click` API that agents can call directly.
 
 ![IntelliJ IDEA Community rendered through the X server HTTP/SVG view](docs/images/intellij-demo-renderer.png)
@@ -125,7 +125,7 @@ curl -fsS -X POST http://127.0.0.1:16000/input/click \
 
 `button` accepts `left`, `middle`, `right`, `wheel-up`, `wheel-down`, or the raw X11 button number `1..5`.
 
-Current IntelliJ demo limitation: the mounted project opens and the frame/window model is visible, but some IntelliJ surfaces can still render as white because modern JetBrains UI paths probe GLX/Skia/JCEF. The server now exposes a minimal GLX probe surface for discovery requests (`QueryVersion`, server strings, visual configs, FBConfigs, and context creation), and the HTTP text report logs recent GLX operations. Real GLX context rendering is not implemented yet, so GLX-backed IntelliJ content remains the next compatibility target. The HTTP state report also logs every input operation so click-through attempts can be replayed and refined.
+Current IntelliJ demo limitation: the mounted project opens and the frame/window model is visible. JetBrains Runtime paints substantial UI content into XRender-backed offscreen pixmaps, and the HTML renderer now exposes those surfaces separately, but the top-level window can still appear white until the server models the final presentation/composition path into the visible window. The server also exposes a minimal GLX probe surface for discovery requests (`QueryVersion`, server strings, visual configs, FBConfigs, and context creation), and the HTTP text report logs recent GLX operations. Real GLX context rendering is not implemented yet. The HTTP state report also logs every input operation so click-through attempts can be replayed and refined.
 
 Run simpler X11 demo clients against an already running server:
 

@@ -41,6 +41,7 @@ RUN apt-get update \
         libxss1 \
         libxt6t64 \
         libxtst6 \
+        openjdk-21-jdk \
         procps \
         tar \
         twm \

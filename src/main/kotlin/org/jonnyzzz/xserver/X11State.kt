@@ -274,6 +274,42 @@ internal class X11State(
     }
 
     @Synchronized
+    fun updateWindowAttributes(
+        id: Int,
+        backgroundPixel: Int? = null,
+        backgroundPixmapId: Int? = null,
+    ): XWindow? {
+        val window = windows[id] ?: return null
+        backgroundPixel?.let {
+            window.backgroundPixel = it
+            window.backgroundPixmapId = null
+        }
+        if (backgroundPixmapId != null) {
+            window.backgroundPixmapId = backgroundPixmapId.takeIf { it != 0 }
+        }
+        return window
+    }
+
+    @Synchronized
+    fun paintWindowBackground(windowId: Int, rectangle: XRectangleCommand? = null): Boolean {
+        val window = windows[windowId] ?: return false
+        val target = rectangle ?: XRectangleCommand(0, 0, window.width, window.height)
+        val backgroundPixmap = window.backgroundPixmapId?.let { pixmaps[it] }
+        if (backgroundPixmap != null) {
+            return backgroundPixmap.framebuffer.copyAreaTo(
+                destination = window.framebuffer,
+                sourceX = 0,
+                sourceY = 0,
+                destinationX = target.x,
+                destinationY = target.y,
+                width = target.width,
+                height = target.height,
+            ) != null
+        }
+        return window.framebuffer.fill(target.x, target.y, target.width, target.height, window.backgroundPixel)
+    }
+
+    @Synchronized
     fun snapshot(): XScreenSnapshot {
         val windowSnapshots = windows.values.mapIndexed { index, window ->
             val absolute = absolutePosition(window)
@@ -300,6 +336,22 @@ internal class X11State(
                 framebufferDataUri = window.framebuffer.toDataUri(),
             )
         }
+        val pixmapSnapshots = pixmaps.values.map { pixmap ->
+            XPixmapSnapshot(
+                id = pixmap.id,
+                width = pixmap.width,
+                height = pixmap.height,
+                depth = pixmap.depth,
+                painted = pixmap.framebuffer.hasPaintedContent(),
+                framebufferDataUri = pixmap.framebuffer.toDataUri(),
+                pictureIds = pictures.values
+                    .filter { it.drawableId == pixmap.id }
+                    .map { it.id },
+                matchingWindowIds = windowSnapshots
+                    .filter { it.mapped && it.width == pixmap.width && it.height == pixmap.height }
+                    .map { it.id },
+            )
+        }
         return XScreenSnapshot(
             width = width,
             height = height,
@@ -308,11 +360,28 @@ internal class X11State(
             heightMillimeters = heightMillimeters,
             focusWindowId = focusWindowId,
             windows = windowSnapshots,
+            pixmaps = pixmapSnapshots,
             overlaps = overlaps(windowSnapshots),
             drawings = drawings.toList(),
             inputOperations = inputOperations.toList(),
             glxOperations = glxOperations.toList(),
             renderOperations = renderOperations.toList(),
+            renderPictures = pictures.values.map { picture ->
+                XRenderPictureSnapshot(
+                    id = picture.id,
+                    drawableId = picture.drawableId,
+                    drawableKind = picture.drawableId?.let { drawableId ->
+                        when {
+                            windows.containsKey(drawableId) -> "window"
+                            pixmaps.containsKey(drawableId) -> "pixmap"
+                            else -> "missing"
+                        }
+                    } ?: "solid",
+                    format = picture.format,
+                    solidPixel = picture.solidPixel,
+                    clipRectangles = picture.clipRectangles.size,
+                )
+            },
             requestCounts = requestCounts.toList().map { XRequestCount(it.first, it.second) },
             extensionQueries = extensionQueries.toList(),
             unsupportedRequests = unsupportedRequests.toList(),
@@ -394,6 +463,11 @@ internal class X11State(
     }
 
     @Synchronized
+    fun updatePictureClip(id: Int, rectangles: List<XRectangleCommand>) {
+        pictures[id]?.clipRectangles = rectangles
+    }
+
+    @Synchronized
     fun removePicture(id: Int) {
         pictures.remove(id)
     }
@@ -416,6 +490,12 @@ internal class X11State(
     fun removeGlyphSet(id: Int) {
         glyphSets.remove(id)
     }
+
+    @Synchronized
+    fun glyphSetFormat(id: Int): Int? = glyphSets[id]?.format
+
+    @Synchronized
+    fun glyph(glyphSetId: Int, glyphId: Int): XGlyph? = glyphSets[glyphSetId]?.glyphs?.get(glyphId)
 
     @Synchronized
     fun addGlyphs(glyphSetId: Int, glyphs: List<XGlyph>) {
@@ -491,6 +571,86 @@ internal class X11State(
     }
 
     @Synchronized
+    fun composite(
+        operation: Int,
+        source: XPicture,
+        mask: XPicture?,
+        destination: XPicture,
+        sourceX: Int,
+        sourceY: Int,
+        maskX: Int,
+        maskY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+    ): XImagePixels? {
+        val destinationDrawableId = destination.drawableId ?: return null
+        val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
+        val maskFramebuffer = mask?.drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer }
+        val solid = source.solidPixel
+        if (solid != null) {
+            return when (operation) {
+                XRender.OpClear -> {
+                    destinationFramebuffer.fill(destinationX, destinationY, width, height, 0, preserveAlpha = true)
+                    XImagePixels(width, height, IntArray(width * height))
+                }
+                XRender.OpSrc -> {
+                    if (maskFramebuffer == null && destination.clipRectangles.isEmpty()) {
+                        destinationFramebuffer.fill(destinationX, destinationY, width, height, solid, preserveAlpha = true)
+                    } else {
+                        destinationFramebuffer.copyFrom(
+                            source = XFramebuffer(width, height, painted = true).also { it.fill(0, 0, width, height, solid, preserveAlpha = true) },
+                            sourceX = 0,
+                            sourceY = 0,
+                            destinationX = destinationX,
+                            destinationY = destinationY,
+                            width = width,
+                            height = height,
+                            operation = XRender.OpSrc,
+                            clipRectangles = destination.clipRectangles,
+                            mask = maskFramebuffer,
+                            maskX = maskX,
+                            maskY = maskY,
+                        )
+                    }
+                    XImagePixels(width, height, IntArray(width * height) { solid })
+                }
+                else -> {
+                    destinationFramebuffer.blendSolidOver(
+                        pixel = solid,
+                        destinationX = destinationX,
+                        destinationY = destinationY,
+                        width = width,
+                        height = height,
+                        clipRectangles = destination.clipRectangles,
+                        mask = maskFramebuffer,
+                        maskX = maskX,
+                        maskY = maskY,
+                    )
+                    XImagePixels(width, height, IntArray(width * height) { solid })
+                }
+            }
+        }
+        val sourceDrawableId = source.drawableId ?: return null
+        val sourceFramebuffer = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
+        return destinationFramebuffer.copyFrom(
+            source = sourceFramebuffer,
+            sourceX = sourceX,
+            sourceY = sourceY,
+            destinationX = destinationX,
+            destinationY = destinationY,
+            width = width,
+            height = height,
+            operation = operation,
+            clipRectangles = destination.clipRectangles,
+            mask = maskFramebuffer,
+            maskX = maskX,
+            maskY = maskY,
+        )
+    }
+
+    @Synchronized
     fun getImage(
         drawableId: Int,
         x: Int,
@@ -511,11 +671,78 @@ internal class X11State(
     }
 
     @Synchronized
-    fun fillRectangles(drawableId: Int, pixel: Int, rectangles: List<XRectangleCommand>): Boolean {
+    fun fillRectangles(drawableId: Int, pixel: Int, rectangles: List<XRectangleCommand>, preserveAlpha: Boolean = false): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         var painted = false
         for (rectangle in rectangles) {
-            painted = framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel) || painted
+            painted = framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, preserveAlpha) || painted
+        }
+        return painted
+    }
+
+    @Synchronized
+    fun renderFillRectangles(
+        operation: Int,
+        destination: XPicture,
+        pixel: Int,
+        rectangles: List<XRectangleCommand>,
+    ): Boolean {
+        val drawableId = destination.drawableId ?: return false
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        var painted = false
+        for (rectangle in rectangles) {
+            painted = when (operation) {
+                XRender.OpClear -> framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, 0, preserveAlpha = true)
+                XRender.OpSrc -> framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, preserveAlpha = true)
+                XRender.OpOver -> framebuffer.blendSolidOver(
+                    pixel = pixel,
+                    destinationX = rectangle.x,
+                    destinationY = rectangle.y,
+                    width = rectangle.width,
+                    height = rectangle.height,
+                    clipRectangles = destination.clipRectangles,
+                )
+                else -> framebuffer.blendSolidOver(
+                    pixel = pixel,
+                    destinationX = rectangle.x,
+                    destinationY = rectangle.y,
+                    width = rectangle.width,
+                    height = rectangle.height,
+                    clipRectangles = destination.clipRectangles,
+                )
+            } || painted
+        }
+        return painted
+    }
+
+    @Synchronized
+    fun compositeGlyphs(
+        operation: Int,
+        source: XPicture,
+        destination: XPicture,
+        glyphSetId: Int,
+        placements: List<XGlyphPlacement>,
+    ): Boolean {
+        val destinationDrawableId = destination.drawableId ?: return false
+        val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return false
+        val glyphSet = glyphSets[glyphSetId] ?: return false
+        val sourceFramebuffer = source.drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer }
+        val sourcePixel = source.solidPixel ?: sourceFramebuffer?.firstPaintedPixel() ?: return false
+        var painted = false
+        for (placement in placements) {
+            val glyph = glyphSet.glyphs[placement.glyphId] ?: continue
+            val mask = glyph.mask ?: continue
+            val destinationX = placement.x - glyph.x
+            val destinationY = placement.y - glyph.y
+            painted = destinationFramebuffer.blendSolidOver(
+                pixel = sourcePixel,
+                destinationX = destinationX,
+                destinationY = destinationY,
+                width = glyph.width,
+                height = glyph.height,
+                clipRectangles = destination.clipRectangles,
+                mask = mask,
+            ) || painted
         }
         return painted
     }
@@ -838,6 +1065,7 @@ internal data class XWindow(
     var borderWidth: Int,
     var mapped: Boolean = false,
     var backgroundPixel: Int = 0x00ff_ffff,
+    var backgroundPixmapId: Int? = null,
     val properties: MutableMap<Int, XProperty> = linkedMapOf(),
     val framebuffer: XFramebuffer = XFramebuffer(width, height, backgroundPixel),
 )
@@ -873,6 +1101,7 @@ internal data class XPicture(
     val format: Int,
     var valueMask: Int = 0,
     val solidPixel: Int? = null,
+    var clipRectangles: List<XRectangleCommand> = emptyList(),
 )
 
 internal data class XGlyphSet(
@@ -889,6 +1118,13 @@ internal data class XGlyph(
     val y: Int,
     val xOff: Int,
     val yOff: Int,
+    val mask: XFramebuffer? = null,
+)
+
+internal data class XGlyphPlacement(
+    val glyphId: Int,
+    val x: Int,
+    val y: Int,
 )
 
 internal enum class XDrawingKind {
@@ -951,11 +1187,13 @@ internal data class XScreenSnapshot(
     val heightMillimeters: Int,
     val focusWindowId: Int,
     val windows: List<XWindowSnapshot>,
+    val pixmaps: List<XPixmapSnapshot>,
     val overlaps: List<XWindowOverlap>,
     val drawings: List<XDrawingCommand>,
     val inputOperations: List<XInputOperation>,
     val glxOperations: List<XGlxOperation>,
     val renderOperations: List<XRenderOperation>,
+    val renderPictures: List<XRenderPictureSnapshot>,
     val requestCounts: List<XRequestCount>,
     val extensionQueries: List<XExtensionQuery>,
     val unsupportedRequests: List<XUnsupportedRequest>,
@@ -1012,6 +1250,33 @@ internal data class XRenderOperation(
     val operation: String,
     val detail: String,
 )
+
+internal data class XRenderPictureSnapshot(
+    val id: Int,
+    val drawableId: Int?,
+    val drawableKind: String,
+    val format: Int,
+    val solidPixel: Int?,
+    val clipRectangles: Int,
+) {
+    val idHex: String get() = "0x${id.toUInt().toString(16)}"
+    val drawableIdHex: String get() = drawableId?.let { "0x${it.toUInt().toString(16)}" } ?: "none"
+}
+
+internal data class XPixmapSnapshot(
+    val id: Int,
+    val width: Int,
+    val height: Int,
+    val depth: Int,
+    val painted: Boolean,
+    val framebufferDataUri: String?,
+    val pictureIds: List<Int>,
+    val matchingWindowIds: List<Int>,
+) {
+    val idHex: String get() = "0x${id.toUInt().toString(16)}"
+    val pictureIdHexes: List<String> get() = pictureIds.map { "0x${it.toUInt().toString(16)}" }
+    val matchingWindowIdHexes: List<String> get() = matchingWindowIds.map { "0x${it.toUInt().toString(16)}" }
+}
 
 internal data class XWindowSnapshot(
     val id: Int,

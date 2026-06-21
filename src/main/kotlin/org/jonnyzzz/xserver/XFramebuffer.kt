@@ -18,7 +18,7 @@ internal class XFramebuffer(
     var height: Int = initialSize.second
         private set
 
-    private var pixels: IntArray = IntArray(this.width * this.height) { argb(backgroundPixel) }
+    private var pixels: IntArray = IntArray(this.width * this.height) { opaque(backgroundPixel) }
     private var painted: Boolean = painted
     private var cachedDataUri: String? = null
 
@@ -29,7 +29,7 @@ internal class XFramebuffer(
         val oldPixels = pixels
         val oldWidth = this.width
         val oldHeight = this.height
-        val newPixels = IntArray(newWidth * newHeight) { argb(backgroundPixel) }
+        val newPixels = IntArray(newWidth * newHeight) { opaque(backgroundPixel) }
         val copyWidth = minOf(oldWidth, newWidth)
         val copyHeight = minOf(oldHeight, newHeight)
         for (y in 0 until copyHeight) {
@@ -47,9 +47,9 @@ internal class XFramebuffer(
         invalidate()
     }
 
-    fun fill(x: Int, y: Int, width: Int, height: Int, pixel: Int): Boolean {
+    fun fill(x: Int, y: Int, width: Int, height: Int, pixel: Int, preserveAlpha: Boolean = false): Boolean {
         val bounds = clippedBounds(x, y, width, height) ?: return false
-        val color = argb(pixel)
+        val color = if (preserveAlpha) pixel else opaque(pixel)
         for (row in bounds.destinationY until bounds.destinationY + bounds.height) {
             val offset = row * this.width
             for (column in bounds.destinationX until bounds.destinationX + bounds.width) {
@@ -58,6 +58,75 @@ internal class XFramebuffer(
         }
         markPainted()
         return true
+    }
+
+    fun blendSolidOver(
+        pixel: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        clipRectangles: List<XRectangleCommand> = emptyList(),
+        mask: XFramebuffer? = null,
+        maskX: Int = 0,
+        maskY: Int = 0,
+    ): Boolean {
+        val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
+        return compositeBounds(bounds, clipRectangles) { x, y ->
+            val maskAlpha = mask?.alphaAt(maskX + x - destinationX, maskY + y - destinationY) ?: 255
+            over(pixel, pixels[y * this.width + x], maskAlpha)
+        }
+    }
+
+    fun copyFrom(
+        source: XFramebuffer,
+        sourceX: Int,
+        sourceY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        operation: Int,
+        clipRectangles: List<XRectangleCommand> = emptyList(),
+        mask: XFramebuffer? = null,
+        maskX: Int = 0,
+        maskY: Int = 0,
+    ): XImagePixels? {
+        val bounds = clippedCopyBounds(
+            sourceWidth = source.width,
+            sourceHeight = source.height,
+            sourceX = sourceX,
+            sourceY = sourceY,
+            destinationX = destinationX,
+            destinationY = destinationY,
+            width = width,
+            height = height,
+        ) ?: return null
+
+        val copied = IntArray(bounds.width * bounds.height)
+        var painted = false
+        for (row in 0 until bounds.height) {
+            for (column in 0 until bounds.width) {
+                val sx = bounds.sourceX + column
+                val sy = bounds.sourceY + row
+                val dx = bounds.destinationX + column
+                val dy = bounds.destinationY + row
+                val sourcePixel = source.pixels[sy * source.width + sx]
+                copied[row * bounds.width + column] = sourcePixel
+                if (!insideClip(dx, dy, clipRectangles)) continue
+                val index = dy * this.width + dx
+                val maskAlpha = mask?.alphaAt(maskX + dx - destinationX, maskY + dy - destinationY) ?: 255
+                pixels[index] = when (operation) {
+                    XRender.OpClear -> 0
+                    XRender.OpSrc -> withMask(sourcePixel, maskAlpha)
+                    XRender.OpOver -> over(sourcePixel, pixels[index], maskAlpha)
+                    else -> over(sourcePixel, pixels[index], maskAlpha)
+                }
+                painted = true
+            }
+        }
+        if (painted) markPainted()
+        return XImagePixels(bounds.width, bounds.height, copied)
     }
 
     fun putImage(x: Int, y: Int, image: XImagePixels): Boolean {
@@ -131,6 +200,16 @@ internal class XFramebuffer(
         } else {
             null
         }
+
+    fun alphaAt(x: Int, y: Int): Int =
+        pixelAt(x, y)?.let { (it ushr 24) and 0xff } ?: 0
+
+    fun hasPaintedContent(): Boolean = painted
+
+    fun firstPaintedPixel(): Int? {
+        if (!painted) return null
+        return pixels.firstOrNull { ((it ushr 24) and 0xff) > 0 }
+    }
 
     fun toDataUri(): String? {
         if (!painted || width <= 0 || height <= 0) return null
@@ -207,6 +286,32 @@ internal class XFramebuffer(
         invalidate()
     }
 
+    private fun compositeBounds(
+        bounds: CopyBounds,
+        clipRectangles: List<XRectangleCommand>,
+        compose: (x: Int, y: Int) -> Int,
+    ): Boolean {
+        var painted = false
+        for (row in bounds.destinationY until bounds.destinationY + bounds.height) {
+            val offset = row * this.width
+            for (column in bounds.destinationX until bounds.destinationX + bounds.width) {
+                if (!insideClip(column, row, clipRectangles)) continue
+                pixels[offset + column] = compose(column, row)
+                painted = true
+            }
+        }
+        if (painted) markPainted()
+        return painted
+    }
+
+    private fun insideClip(x: Int, y: Int, clipRectangles: List<XRectangleCommand>): Boolean =
+        clipRectangles.isEmpty() || clipRectangles.any { rectangle ->
+            x >= rectangle.x &&
+                y >= rectangle.y &&
+                x < rectangle.x + rectangle.width &&
+                y < rectangle.y + rectangle.height
+        }
+
     private fun invalidate() {
         cachedDataUri = null
     }
@@ -232,7 +337,30 @@ internal class XFramebuffer(
             return safeWidth to safeHeight
         }
 
-        fun argb(pixel: Int): Int = 0xff00_0000.toInt() or (pixel and 0x00ff_ffff)
+        fun opaque(pixel: Int): Int = 0xff00_0000.toInt() or (pixel and 0x00ff_ffff)
+
+        fun argb(pixel: Int): Int = pixel
+
+        fun over(source: Int, destination: Int, maskAlpha: Int = 255): Int {
+            val sourceAlpha = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
+            if (sourceAlpha <= 0) return destination
+            if (sourceAlpha >= 255) return source or 0xff00_0000.toInt()
+            val inverse = 255 - sourceAlpha
+            val destinationAlpha = (destination ushr 24) and 0xff
+            val outAlpha = sourceAlpha + (destinationAlpha * inverse + 127) / 255
+            fun channel(shift: Int): Int {
+                val sourceChannel = (source ushr shift) and 0xff
+                val destinationChannel = (destination ushr shift) and 0xff
+                return (sourceChannel * sourceAlpha + destinationChannel * inverse + 127) / 255
+            }
+            return (outAlpha shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+        }
+
+        fun withMask(source: Int, maskAlpha: Int): Int {
+            if (maskAlpha >= 255) return source
+            val alpha = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
+            return (alpha shl 24) or (source and 0x00ff_ffff)
+        }
 
         fun imageDataUri(image: XImagePixels): String {
             val buffered = BufferedImage(image.width, image.height, BufferedImage.TYPE_INT_ARGB)

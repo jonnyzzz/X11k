@@ -81,6 +81,88 @@ class XRenderProtocolTest {
         }
     }
 
+    @Test
+    fun `RENDER composite applies A8 mask pixels`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 4, height = 4, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 2, height = 2))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
+                out.write(putImage8Request(MaskPixmapId, width = 2, height = 2, alphas = byteArrayOf(0xff.toByte(), 0x80.toByte(), 0x00, 0xff.toByte())))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderComposite(SolidPictureId, PictureId, mask = MaskPictureId, width = 2, height = 2))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 2))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), u32le(image, 32))
+                assertEquals(0xff80_007f.toInt(), u32le(image, 36))
+                assertEquals(0xff00_00ff.toInt(), u32le(image, 40))
+                assertEquals(0xffff_0000.toInt(), u32le(image, 44))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER fill rectangles over blends with existing pixels`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 2, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 1, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0x8000, operation = XRender.OpOver))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff80_007f.toInt(), u32le(image, 32))
+                assertEquals(0xff00_00ff.toInt(), u32le(image, 36))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER picture targeting pixmap is exposed as painted offscreen surface`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 100, height = 80))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 100, height = 80, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.flush()
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""id":"0x200100","width":100,"height":80,"depth":24,"painted":true""")
+                }
+
+                val html = httpGet(server.localPort, "/")
+                assertContains(html, "Pixmap 0x200100")
+                assertContains(html, """class="pixmap-framebuffer-image"""")
+                assertContains(html, "pictures=0x200101")
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "0x200100 geometry=100x80 depth=24 painted=true pictures=0x200101")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
     private fun setup(socket: Socket) {
         socket.getOutputStream().write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
         socket.getOutputStream().flush()
@@ -138,18 +220,29 @@ class XRenderProtocolTest {
         return request(XRender.MajorOpcode, 4, body)
     }
 
-    private fun renderFillRectangles(picture: Int, red: Int, green: Int, blue: Int, alpha: Int): ByteArray {
+    private fun renderFillRectangles(
+        picture: Int,
+        x: Int = 2,
+        y: Int = 3,
+        width: Int = 40,
+        height: Int = 30,
+        red: Int,
+        green: Int,
+        blue: Int,
+        alpha: Int,
+        operation: Int = XRender.OpSrc,
+    ): ByteArray {
         val body = ByteArray(24)
-        body[0] = XRender.OpSrc.toByte()
+        body[0] = operation.toByte()
         put32le(body, 4, picture)
         put16le(body, 8, red)
         put16le(body, 10, green)
         put16le(body, 12, blue)
         put16le(body, 14, alpha)
-        put16le(body, 16, 2)
-        put16le(body, 18, 3)
-        put16le(body, 20, 40)
-        put16le(body, 22, 30)
+        put16le(body, 16, x)
+        put16le(body, 18, y)
+        put16le(body, 20, width)
+        put16le(body, 22, height)
         return request(XRender.MajorOpcode, 26, body)
     }
 
@@ -163,16 +256,44 @@ class XRenderProtocolTest {
         return request(XRender.MajorOpcode, 33, body)
     }
 
-    private fun renderComposite(source: Int, destination: Int): ByteArray {
+    private fun renderComposite(source: Int, destination: Int, mask: Int = 0, width: Int = 20, height: Int = 10): ByteArray {
         val body = ByteArray(32)
         body[0] = XRender.OpOver.toByte()
         put32le(body, 4, source)
+        put32le(body, 8, mask)
         put32le(body, 12, destination)
-        put16le(body, 24, 12)
-        put16le(body, 26, 15)
-        put16le(body, 28, 20)
-        put16le(body, 30, 10)
+        put16le(body, 24, if (mask == 0) 12 else 0)
+        put16le(body, 26, if (mask == 0) 15 else 0)
+        put16le(body, 28, width)
+        put16le(body, 30, height)
         return request(XRender.MajorOpcode, 8, body)
+    }
+
+    private fun createPixmapRequest(id: Int, depth: Int, width: Int, height: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, id)
+        put32le(body, 4, WindowId)
+        put16le(body, 8, width)
+        put16le(body, 10, height)
+        return request(53, depth, body)
+    }
+
+    private fun putImage8Request(drawable: Int, width: Int, height: Int, alphas: ByteArray): ByteArray {
+        val stride = (width + 3) and -4
+        val data = ByteArray(stride * height)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                data[y * stride + x] = alphas[y * width + x]
+            }
+        }
+        val body = ByteArray(20 + data.size)
+        put32le(body, 0, drawable)
+        put32le(body, 4, 0)
+        put16le(body, 8, width)
+        put16le(body, 10, height)
+        body[17] = 8
+        data.copyInto(body, 20)
+        return request(72, 2, body)
     }
 
     private fun request(opcode: Int, minorOpcode: Int, body: ByteArray): ByteArray {
@@ -242,5 +363,9 @@ class XRenderProtocolTest {
         const val WindowId = 0x0020_0001
         const val PictureId = 0x0020_1001
         const val SolidPictureId = 0x0020_1002
+        const val MaskPixmapId = 0x0020_2001
+        const val MaskPictureId = 0x0020_2002
+        const val PixmapId = 0x0020_0100
+        const val PixmapPictureId = 0x0020_0101
     }
 }
