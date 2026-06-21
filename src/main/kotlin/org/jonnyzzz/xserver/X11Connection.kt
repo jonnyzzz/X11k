@@ -80,6 +80,10 @@ internal class X11Connection(
                 bigRequests(minorOpcode, opcode)
                 return
             }
+            if (extension.name == "RENDER") {
+                render(minorOpcode, body, opcode)
+                return
+            }
         }
         when (opcode) {
             1 -> createWindow(body)
@@ -222,6 +226,316 @@ internal class X11Connection(
         write(reply)
     }
 
+    private fun render(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        val operation = XRender.operationName(minorOpcode)
+        val detail = renderDetail(minorOpcode, body)
+        state.recordRenderOperation(minorOpcode, operation, detail)
+        System.err.println("render seq=$sequence minor=$minorOpcode operation=$operation body=${body.size} $detail")
+
+        when (minorOpcode) {
+            0 -> renderQueryVersion()
+            1 -> renderQueryPictFormats()
+            2 -> renderQueryPictIndexValues()
+            4 -> renderCreatePicture(body)
+            5 -> renderChangePicture(body)
+            6 -> Unit
+            7 -> renderFreePicture(body)
+            8 -> renderComposite(body)
+            10, 11, 12, 13 -> Unit
+            17 -> renderCreateGlyphSet(body)
+            18 -> renderReferenceGlyphSet(body)
+            19 -> renderFreeGlyphSet(body)
+            20 -> renderAddGlyphs(body)
+            22 -> renderFreeGlyphs(body)
+            23, 24, 25 -> renderCompositeGlyphs(minorOpcode, body)
+            26 -> renderFillRectangles(body)
+            27 -> renderCreateCursor(body)
+            28, 30, 32 -> Unit
+            29 -> renderQueryFilters()
+            31 -> renderCreateAnimCursor(body)
+            33 -> renderCreateSolidFill(body)
+            34, 35, 36 -> renderCreateGradientPicture(body)
+            else -> unsupportedRequest(majorOpcode, minorOpcode, "RENDER.$operation")
+        }
+    }
+
+    private fun renderQueryVersion() {
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, XRender.MajorVersion)
+        byteOrder.put32(reply, 12, XRender.MinorVersion)
+        write(reply)
+    }
+
+    private fun renderQueryPictFormats() {
+        val formats = ByteArray(28 * 4)
+        putPictFormat(formats, 0, XRender.Argb32Format, depth = 32, redShift = 16, greenShift = 8, blueShift = 0, alphaShift = 24, alphaMask = 0xff)
+        putPictFormat(formats, 28, XRender.Rgb24Format, depth = 24, redShift = 16, greenShift = 8, blueShift = 0, alphaShift = 0, alphaMask = 0)
+        putPictFormat(formats, 56, XRender.A8Format, depth = 8, redShift = 0, redMask = 0, greenShift = 0, greenMask = 0, blueShift = 0, blueMask = 0, alphaShift = 0, alphaMask = 0xff)
+        putPictFormat(formats, 84, XRender.A1Format, depth = 1, redShift = 0, redMask = 0, greenShift = 0, greenMask = 0, blueShift = 0, blueMask = 0, alphaShift = 0, alphaMask = 0x1)
+
+        val screen = ByteArray(24)
+        byteOrder.put32(screen, 0, 1)
+        byteOrder.put32(screen, 4, XRender.Rgb24Format)
+        screen[8] = 24
+        byteOrder.put16(screen, 10, 1)
+        byteOrder.put32(screen, 16, X11Ids.RootVisual)
+        byteOrder.put32(screen, 20, XRender.Rgb24Format)
+
+        val subpixels = ByteArray(4)
+        byteOrder.put32(subpixels, 0, 5)
+        val payload = formats + screen + subpixels
+        val reply = reply(extra = 0, payloadUnits = payload.size / 4)
+        byteOrder.put32(reply, 8, 4)
+        byteOrder.put32(reply, 12, 1)
+        byteOrder.put32(reply, 16, 1)
+        byteOrder.put32(reply, 20, 1)
+        byteOrder.put32(reply, 24, 1)
+        payload.copyInto(reply, 32)
+        write(reply)
+    }
+
+    private fun putPictFormat(
+        bytes: ByteArray,
+        offset: Int,
+        id: Int,
+        depth: Int,
+        redShift: Int,
+        greenShift: Int,
+        blueShift: Int,
+        alphaShift: Int,
+        alphaMask: Int,
+        redMask: Int = 0xff,
+        greenMask: Int = 0xff,
+        blueMask: Int = 0xff,
+    ) {
+        byteOrder.put32(bytes, offset, id)
+        bytes[offset + 4] = 1
+        bytes[offset + 5] = depth.toByte()
+        byteOrder.put16(bytes, offset + 8, redShift)
+        byteOrder.put16(bytes, offset + 10, redMask)
+        byteOrder.put16(bytes, offset + 12, greenShift)
+        byteOrder.put16(bytes, offset + 14, greenMask)
+        byteOrder.put16(bytes, offset + 16, blueShift)
+        byteOrder.put16(bytes, offset + 18, blueMask)
+        byteOrder.put16(bytes, offset + 20, alphaShift)
+        byteOrder.put16(bytes, offset + 22, alphaMask)
+    }
+
+    private fun renderQueryPictIndexValues() {
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, 0)
+        write(reply)
+    }
+
+    private fun renderCreatePicture(body: ByteArray) {
+        if (body.size < 16) return
+        val id = byteOrder.u32(body, 0)
+        state.putPicture(
+            XPicture(
+                id = id,
+                drawableId = byteOrder.u32(body, 4),
+                format = byteOrder.u32(body, 8),
+                valueMask = byteOrder.u32(body, 12),
+            ),
+        )
+        own(id)
+    }
+
+    private fun renderChangePicture(body: ByteArray) {
+        if (body.size < 8) return
+        state.updatePicture(byteOrder.u32(body, 0), byteOrder.u32(body, 4))
+    }
+
+    private fun renderFreePicture(body: ByteArray) {
+        if (body.size < 4) return
+        val id = byteOrder.u32(body, 0)
+        state.removePicture(id)
+        ownedResources.remove(id)
+    }
+
+    private fun renderComposite(body: ByteArray) {
+        if (body.size < 32) return
+        val operation = body[0].toInt() and 0xff
+        val source = state.picture(byteOrder.u32(body, 4)) ?: return
+        val destination = state.picture(byteOrder.u32(body, 12)) ?: return
+        val destinationDrawableId = destination.drawableId ?: return
+        val sourceX = byteOrder.i16(body, 16)
+        val sourceY = byteOrder.i16(body, 18)
+        val destinationX = byteOrder.i16(body, 24)
+        val destinationY = byteOrder.i16(body, 26)
+        val width = byteOrder.u16(body, 28)
+        val height = byteOrder.u16(body, 30)
+        val rectangle = XRectangleCommand(destinationX, destinationY, width, height)
+        val solid = source.solidPixel
+        if (solid != null && (operation == XRender.OpSrc || operation == XRender.OpOver)) {
+            state.fillRectangles(destinationDrawableId, solid, listOf(rectangle))
+            state.draw(XDrawingCommand(destinationDrawableId, XDrawingKind.FillRectangle, solid, rectangles = listOf(rectangle)))
+            return
+        }
+        val sourceDrawableId = source.drawableId ?: return
+        val image = state.copyArea(
+            sourceDrawableId = sourceDrawableId,
+            destinationDrawableId = destinationDrawableId,
+            sourceX = sourceX,
+            sourceY = sourceY,
+            destinationX = destinationX,
+            destinationY = destinationY,
+            width = width,
+            height = height,
+        ) ?: return
+        state.draw(
+            XDrawingCommand(
+                drawableId = destinationDrawableId,
+                kind = XDrawingKind.CopyArea,
+                foreground = 0,
+                rectangles = listOf(rectangle),
+                imageDataUri = XFramebuffer.imageDataUri(image),
+                sourceDrawableId = sourceDrawableId,
+            ),
+        )
+    }
+
+    private fun renderCreateGlyphSet(body: ByteArray) {
+        if (body.size < 8) return
+        val id = byteOrder.u32(body, 0)
+        state.putGlyphSet(XGlyphSet(id, byteOrder.u32(body, 4)))
+        own(id)
+    }
+
+    private fun renderReferenceGlyphSet(body: ByteArray) {
+        if (body.size < 8) return
+        val id = byteOrder.u32(body, 0)
+        state.referenceGlyphSet(id, byteOrder.u32(body, 4))
+        own(id)
+    }
+
+    private fun renderFreeGlyphSet(body: ByteArray) {
+        if (body.size < 4) return
+        val id = byteOrder.u32(body, 0)
+        state.removeGlyphSet(id)
+        ownedResources.remove(id)
+    }
+
+    private fun renderAddGlyphs(body: ByteArray) {
+        if (body.size < 8) return
+        val glyphSet = byteOrder.u32(body, 0)
+        val glyphsLength = byteOrder.u32(body, 4).coerceAtMost((body.size - 8) / 16)
+        var idOffset = 8
+        var infoOffset = idOffset + glyphsLength * 4
+        val glyphs = mutableListOf<XGlyph>()
+        repeat(glyphsLength) { index ->
+            if (infoOffset + 12 <= body.size) {
+                glyphs += XGlyph(
+                    id = byteOrder.u32(body, idOffset + index * 4),
+                    width = byteOrder.u16(body, infoOffset),
+                    height = byteOrder.u16(body, infoOffset + 2),
+                    x = byteOrder.i16(body, infoOffset + 4),
+                    y = byteOrder.i16(body, infoOffset + 6),
+                    xOff = byteOrder.i16(body, infoOffset + 8),
+                    yOff = byteOrder.i16(body, infoOffset + 10),
+                )
+            }
+            infoOffset += 12
+        }
+        state.addGlyphs(glyphSet, glyphs)
+    }
+
+    private fun renderFreeGlyphs(body: ByteArray) {
+        if (body.size < 4) return
+        val glyphSet = byteOrder.u32(body, 0)
+        val glyphIds = mutableListOf<Int>()
+        var offset = 4
+        while (offset + 4 <= body.size) {
+            glyphIds += byteOrder.u32(body, offset)
+            offset += 4
+        }
+        state.removeGlyphs(glyphSet, glyphIds)
+    }
+
+    private fun renderCompositeGlyphs(minorOpcode: Int, body: ByteArray) {
+        if (body.size < 24) return
+        val destination = state.picture(byteOrder.u32(body, 8)) ?: return
+        val destinationDrawableId = destination.drawableId ?: return
+        state.draw(
+            XDrawingCommand(
+                drawableId = destinationDrawableId,
+                kind = XDrawingKind.Text,
+                foreground = 0,
+                points = listOf(XPoint(byteOrder.i16(body, 20), byteOrder.i16(body, 22))),
+                text = "RENDER.${XRender.operationName(minorOpcode)} glyphs=${body.size - 24}",
+            ),
+        )
+    }
+
+    private fun renderFillRectangles(body: ByteArray) {
+        if (body.size < 16) return
+        val destination = state.picture(byteOrder.u32(body, 4)) ?: return
+        val destinationDrawableId = destination.drawableId ?: return
+        val pixel = XRender.argb32Pixel(
+            red = byteOrder.u16(body, 8),
+            green = byteOrder.u16(body, 10),
+            blue = byteOrder.u16(body, 12),
+            alpha = byteOrder.u16(body, 14),
+        )
+        val rectangles = rectangles(body, 16)
+        state.fillRectangles(destinationDrawableId, pixel, rectangles)
+        state.draw(
+            XDrawingCommand(
+                drawableId = destinationDrawableId,
+                kind = XDrawingKind.FillRectangle,
+                foreground = pixel,
+                rectangles = rectangles,
+            ),
+        )
+    }
+
+    private fun renderCreateCursor(body: ByteArray) {
+        if (body.size < 4) return
+        val id = byteOrder.u32(body, 0)
+        state.putCursor(id)
+        own(id)
+    }
+
+    private fun renderQueryFilters() {
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, 0)
+        byteOrder.put32(reply, 12, 0)
+        write(reply)
+    }
+
+    private fun renderCreateAnimCursor(body: ByteArray) {
+        if (body.size < 4) return
+        val id = byteOrder.u32(body, 0)
+        state.putCursor(id)
+        own(id)
+    }
+
+    private fun renderCreateSolidFill(body: ByteArray) {
+        if (body.size < 12) return
+        val id = byteOrder.u32(body, 0)
+        state.putPicture(
+            XPicture(
+                id = id,
+                drawableId = null,
+                format = XRender.Argb32Format,
+                solidPixel = XRender.argb32Pixel(
+                    red = byteOrder.u16(body, 4),
+                    green = byteOrder.u16(body, 6),
+                    blue = byteOrder.u16(body, 8),
+                    alpha = byteOrder.u16(body, 10),
+                ),
+            ),
+        )
+        own(id)
+    }
+
+    private fun renderCreateGradientPicture(body: ByteArray) {
+        if (body.size < 4) return
+        val id = byteOrder.u32(body, 0)
+        state.putPicture(XPicture(id = id, drawableId = null, format = XRender.Argb32Format, solidPixel = 0))
+        own(id)
+    }
+
     private fun glxGetVisualConfigs(body: ByteArray) {
         if (!glxScreenIsValid(body, offset = 0)) return
         val config = XGlx.visualConfig()
@@ -360,6 +674,37 @@ internal class X11Connection(
             XGlx.CreateContextAttribsARB -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} share=${hex(12)} direct=${body.getOrNull(16)?.toInt() == 1} attribs=${u32(20)}"
             1, 2 -> "contextTag=${hex(0)}"
             8, 9, 11 -> "drawable/context=${hex(0)}"
+            else -> ""
+        }
+    }
+
+    private fun renderDetail(minorOpcode: Int, body: ByteArray): String {
+        fun hex(offset: Int): String = if (body.size >= offset + 4) byteOrder.u32(body, offset).toHex() else "n/a"
+        fun u32(offset: Int): String = if (body.size >= offset + 4) byteOrder.u32(body, offset).toString() else "n/a"
+        fun i16(offset: Int): String = if (body.size >= offset + 2) byteOrder.i16(body, offset).toString() else "n/a"
+        fun u16(offset: Int): String = if (body.size >= offset + 2) byteOrder.u16(body, offset).toString() else "n/a"
+        return when (minorOpcode) {
+            0 -> "client=${u32(0)}.${u32(4)}"
+            2 -> "format=${hex(0)}"
+            4 -> "picture=${hex(0)} drawable=${hex(4)} format=${hex(8)} mask=${hex(12)}"
+            5 -> "picture=${hex(0)} mask=${hex(4)}"
+            6 -> "picture=${hex(0)} origin=${i16(4)},${i16(6)} rects=${(body.size - 8).coerceAtLeast(0) / 8}"
+            7 -> "picture=${hex(0)}"
+            8 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} mask=${hex(8)} dst=${hex(12)} dst=${i16(24)},${i16(26)} ${u16(28)}x${u16(30)}"
+            10, 11, 12, 13 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)}"
+            17 -> "glyphSet=${hex(0)} format=${hex(4)}"
+            18 -> "glyphSet=${hex(0)} existing=${hex(4)}"
+            19 -> "glyphSet=${hex(0)}"
+            20 -> "glyphSet=${hex(0)} glyphs=${u32(4)}"
+            22 -> "glyphSet=${hex(0)} glyphs=${(body.size - 4).coerceAtLeast(0) / 4}"
+            23, 24, 25 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} glyphSet=${hex(16)} bytes=${(body.size - 24).coerceAtLeast(0)}"
+            26 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} dst=${hex(4)} color=${u16(8)},${u16(10)},${u16(12)},${u16(14)} rects=${(body.size - 16).coerceAtLeast(0) / 8}"
+            27 -> "cursor=${hex(0)} source=${hex(4)} hotspot=${u16(8)},${u16(10)}"
+            29 -> "drawable=${hex(0)}"
+            30 -> "picture=${hex(0)} filterLength=${u16(4)}"
+            31 -> "cursor=${hex(0)} elements=${(body.size - 4).coerceAtLeast(0) / 8}"
+            33 -> "picture=${hex(0)} color=${u16(4)},${u16(6)},${u16(8)},${u16(10)}"
+            34, 35, 36 -> "picture=${hex(0)}"
             else -> ""
         }
     }
@@ -901,11 +1246,25 @@ internal class X11Connection(
     }
 
     private fun getImage(body: ByteArray) {
-        val width = byteOrder.u16(body, 12)
-        val height = byteOrder.u16(body, 14)
-        val bytes = ByteArray(width * height * 4)
-        val reply = reply(extra = 24, payloadUnits = bytes.size / 4)
+        if (body.size < 16) return writeError(error = 2, opcode = 73, badValue = 0)
+        val drawableId = byteOrder.u32(body, 0)
+        val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = 73, badValue = drawableId)
+        val width = byteOrder.u16(body, 8)
+        val height = byteOrder.u16(body, 10)
+        val image = state.getImage(
+            drawableId = drawableId,
+            x = byteOrder.i16(body, 4),
+            y = byteOrder.i16(body, 6),
+            width = width,
+            height = height,
+        ) ?: return writeError(error = 11, opcode = 73, badValue = width * height)
+        val bytes = ByteArray(image.width * image.height * 4)
+        image.pixels.forEachIndexed { index, pixel ->
+            byteOrder.put32(bytes, index * 4, pixel)
+        }
+        val reply = reply(extra = drawable.depth, payloadUnits = bytes.size / 4)
         byteOrder.put32(reply, 8, X11Ids.RootVisual)
+        byteOrder.put32(reply, 12, bytes.size)
         bytes.copyInto(reply, 32)
         write(reply)
     }
@@ -1001,13 +1360,19 @@ internal class X11Connection(
 
     private fun unsupportedRequest(opcode: Int, minorOpcode: Int, name: String) {
         state.recordUnsupportedRequest(opcode, minorOpcode, name)
-        writeError(error = 1, opcode = opcode, minorOpcode = minorOpcode, badValue = if (opcode == XGlx.MajorOpcode) minorOpcode else opcode)
+        writeError(
+            error = 1,
+            opcode = opcode,
+            minorOpcode = minorOpcode,
+            badValue = if (opcode == XGlx.MajorOpcode || opcode == XRender.MajorOpcode) minorOpcode else opcode,
+        )
     }
 
     private fun requestName(opcode: Int, minorOpcode: Int): String =
         when (opcode) {
             XGlx.MajorOpcode -> "GLX.${XGlx.operationName(minorOpcode)}"
             XBigRequests.MajorOpcode -> "BIG-REQUESTS.$minorOpcode"
+            XRender.MajorOpcode -> "RENDER.${XRender.operationName(minorOpcode)}"
             1 -> "CreateWindow"
             2 -> "ChangeWindowAttributes"
             3 -> "GetWindowAttributes"

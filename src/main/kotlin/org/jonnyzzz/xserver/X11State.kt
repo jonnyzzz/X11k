@@ -15,6 +15,8 @@ internal class X11State(
     private val fonts = linkedSetOf<Int>()
     private val cursors = linkedSetOf<Int>()
     private val colormaps = linkedSetOf(X11Ids.DefaultColormap)
+    private val pictures = linkedMapOf<Int, XPicture>()
+    private val glyphSets = linkedMapOf<Int, XGlyphSet>()
     private val atomIds = linkedMapOf<String, Int>()
     private val atomNames = linkedMapOf<Int, String>()
     private val eventSinks = linkedMapOf<XEventSink, MutableMap<Int, Int>>()
@@ -29,6 +31,8 @@ internal class X11State(
     private val glxContexts = linkedMapOf<Int, XGlxContext>()
     private var nextGlxOperationId: Int = 1
     private val glxOperations = mutableListOf<XGlxOperation>()
+    private var nextRenderOperationId: Int = 1
+    private val renderOperations = mutableListOf<XRenderOperation>()
     private val requestCounts = linkedMapOf<String, Int>()
     private val extensionQueries = mutableListOf<XExtensionQuery>()
     private var nextExtensionQueryId: Int = 1
@@ -48,6 +52,12 @@ internal class X11State(
             majorOpcode = XBigRequests.MajorOpcode,
             firstEvent = XBigRequests.FirstEvent,
             firstError = XBigRequests.FirstError,
+        ),
+        XExtension(
+            name = "RENDER",
+            majorOpcode = XRender.MajorOpcode,
+            firstEvent = XRender.FirstEvent,
+            firstError = XRender.FirstError,
         ),
     )
 
@@ -113,6 +123,8 @@ internal class X11State(
             cursors.remove(id)
             if (id != X11Ids.DefaultColormap) colormaps.remove(id)
             glxContexts.remove(id)
+            pictures.remove(id)
+            glyphSets.remove(id)
         }
     }
 
@@ -300,6 +312,7 @@ internal class X11State(
             drawings = drawings.toList(),
             inputOperations = inputOperations.toList(),
             glxOperations = glxOperations.toList(),
+            renderOperations = renderOperations.toList(),
             requestCounts = requestCounts.toList().map { XRequestCount(it.first, it.second) },
             extensionQueries = extensionQueries.toList(),
             unsupportedRequests = unsupportedRequests.toList(),
@@ -371,6 +384,73 @@ internal class X11State(
     }
 
     @Synchronized
+    fun putPicture(picture: XPicture) {
+        pictures[picture.id] = picture
+    }
+
+    @Synchronized
+    fun updatePicture(id: Int, valueMask: Int) {
+        pictures[id]?.valueMask = valueMask
+    }
+
+    @Synchronized
+    fun removePicture(id: Int) {
+        pictures.remove(id)
+    }
+
+    @Synchronized
+    fun picture(id: Int): XPicture? = pictures[id]
+
+    @Synchronized
+    fun putGlyphSet(glyphSet: XGlyphSet) {
+        glyphSets[glyphSet.id] = glyphSet
+    }
+
+    @Synchronized
+    fun referenceGlyphSet(id: Int, existingId: Int) {
+        val existing = glyphSets[existingId] ?: return
+        glyphSets[id] = existing.copy(id = id)
+    }
+
+    @Synchronized
+    fun removeGlyphSet(id: Int) {
+        glyphSets.remove(id)
+    }
+
+    @Synchronized
+    fun addGlyphs(glyphSetId: Int, glyphs: List<XGlyph>) {
+        val glyphSet = glyphSets[glyphSetId] ?: return
+        for (glyph in glyphs) {
+            glyphSet.glyphs[glyph.id] = glyph
+        }
+    }
+
+    @Synchronized
+    fun removeGlyphs(glyphSetId: Int, glyphIds: List<Int>) {
+        val glyphSet = glyphSets[glyphSetId] ?: return
+        for (id in glyphIds) {
+            glyphSet.glyphs.remove(id)
+        }
+    }
+
+    @Synchronized
+    fun recordRenderOperation(
+        minorOpcode: Int,
+        operation: String,
+        detail: String = "",
+    ) {
+        renderOperations += XRenderOperation(
+            id = nextRenderOperationId++,
+            minorOpcode = minorOpcode,
+            operation = operation,
+            detail = detail,
+        )
+        if (renderOperations.size > MaxRenderOperations) {
+            renderOperations.removeAt(0)
+        }
+    }
+
+    @Synchronized
     fun drawable(id: Int): XDrawable? =
         windows[id]?.let { XDrawable(it.x, it.y, it.width, it.height, it.borderWidth, 24) }
             ?: pixmaps[id]?.let { XDrawable(0, 0, it.width, it.height, 0, it.depth) }
@@ -408,6 +488,26 @@ internal class X11State(
             width = width,
             height = height,
         )
+    }
+
+    @Synchronized
+    fun getImage(
+        drawableId: Int,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+    ): XImagePixels? {
+        if (width <= 0 || height <= 0) return XImagePixels(0, 0, IntArray(0))
+        if (width.toLong() * height.toLong() > MaxGetImagePixels) return null
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return null
+        val pixels = IntArray(width * height)
+        for (row in 0 until height) {
+            for (column in 0 until width) {
+                pixels[row * width + column] = framebuffer.pixelAt(x + column, y + row) ?: 0
+            }
+        }
+        return XImagePixels(width, height, pixels)
     }
 
     @Synchronized
@@ -474,6 +574,8 @@ internal class X11State(
         cursors.remove(id)
         colormaps.remove(id)
         glxContexts.remove(id)
+        pictures.remove(id)
+        glyphSets.remove(id)
     }
 
     @Synchronized
@@ -497,6 +599,8 @@ internal class X11State(
         private const val MaxDrawingCommands = 10_000
         private const val MaxInputOperations = 200
         private const val MaxGlxOperations = 200
+        private const val MaxRenderOperations = 400
+        private const val MaxGetImagePixels = 16_777_216
         private const val MaxRequestCounts = 256
         private const val MaxExtensionQueries = 200
         private const val MaxUnsupportedRequests = 200
@@ -763,6 +867,30 @@ internal data class XGraphicsContext(
     var fontId: Int = 0,
 )
 
+internal data class XPicture(
+    val id: Int,
+    val drawableId: Int?,
+    val format: Int,
+    var valueMask: Int = 0,
+    val solidPixel: Int? = null,
+)
+
+internal data class XGlyphSet(
+    val id: Int,
+    val format: Int,
+    val glyphs: MutableMap<Int, XGlyph> = linkedMapOf(),
+)
+
+internal data class XGlyph(
+    val id: Int,
+    val width: Int,
+    val height: Int,
+    val x: Int,
+    val y: Int,
+    val xOff: Int,
+    val yOff: Int,
+)
+
 internal enum class XDrawingKind {
     Clear,
     Line,
@@ -827,6 +955,7 @@ internal data class XScreenSnapshot(
     val drawings: List<XDrawingCommand>,
     val inputOperations: List<XInputOperation>,
     val glxOperations: List<XGlxOperation>,
+    val renderOperations: List<XRenderOperation>,
     val requestCounts: List<XRequestCount>,
     val extensionQueries: List<XExtensionQuery>,
     val unsupportedRequests: List<XUnsupportedRequest>,
@@ -871,6 +1000,13 @@ internal data class XGlxContext(
 )
 
 internal data class XGlxOperation(
+    val id: Int,
+    val minorOpcode: Int,
+    val operation: String,
+    val detail: String,
+)
+
+internal data class XRenderOperation(
     val id: Int,
     val minorOpcode: Int,
     val operation: String,

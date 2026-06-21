@@ -59,7 +59,7 @@ internal object SvgScreenRenderer {
                 append(""""id":"${window.idHex}","parent":"${window.parentIdHex}","x":${window.x},"y":${window.y},"localX":${window.localX},"localY":${window.localY},"width":${window.width},"height":${window.height},"visibleX":${window.visibleX},"visibleY":${window.visibleY},"visibleWidth":${window.visibleWidth},"visibleHeight":${window.visibleHeight},"mapped":${window.mapped}""")
                 append('}')
             }
-            append("""],"drawings":${snapshot.drawings.size},"inputOperations":[""")
+            append("""],"drawings":${snapshot.drawings.size},"renderOperations":${snapshot.renderOperations.size},"inputOperations":[""")
             snapshot.inputOperations.forEachIndexed { index, operation ->
                 if (index > 0) append(',')
                 append('{')
