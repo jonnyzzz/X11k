@@ -136,6 +136,13 @@ class HttpRenderingTest {
 
                 val html = httpGet(server.localPort, "/")
                 assertContains(html.body, """class="offscreen-surfaces"""")
+                assertContains(html.body, """class="primary-surface"""")
+                assertContains(html.body, "Best painted surface")
+                assertEquals(
+                    true,
+                    html.body.indexOf("Best painted surface") < html.body.indexOf("""class="window-preview-svg""""),
+                    "Matching painted backing pixmap should be the primary window preview before the raw window framebuffer",
+                )
                 assertContains(html.body, "Pixmap 0x200100")
                 assertContains(html.body, """class="pixmap-framebuffer-image"""")
                 assertContains(html.body, """data-pixmap-id="0x200100"""")

@@ -111,6 +111,9 @@ internal object SvgScreenRenderer {
         .preview header { color: #c8d0df; font: 13px/1.35 monospace; margin-bottom: 8px; overflow-wrap: anywhere; }
         .preview svg { width: min(100%, 1100px); height: auto; background: #f8fafc; shape-rendering: crispEdges; cursor: crosshair; }
         .preview image { image-rendering: auto; }
+        .primary-surface { margin-bottom: 10px; }
+        .primary-surface > header { color: #e7e9ee; }
+        .primary-surface svg { width: min(100%, 1100px); max-height: none; }
         .offscreen-surfaces { grid-column: 1 / -1; border-top: 1px solid #303642; padding: 18px; background: #15171c; }
         .surface-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 18px; }
         .surface { border: 1px solid #303642; background: #111318; padding: 10px; }
@@ -264,6 +267,7 @@ internal object SvgScreenRenderer {
                         val overlapCount = snapshot.overlaps.count { it.lowerWindowId == window.id || it.upperWindowId == window.id }
                         if (overlapCount > 0) text(" overlaps=$overlapCount")
                     }
+                    renderPrimaryPixmapPreview(this, snapshot, window)
                     renderWindowSvg(this, snapshot, window)
                     renderMatchingPixmapPreviews(this, snapshot, window)
                 }
@@ -286,15 +290,25 @@ internal object SvgScreenRenderer {
         }
     }
 
-    private fun renderMatchingPixmapPreviews(builder: XmlDom, snapshot: XScreenSnapshot, window: XWindowSnapshot) {
-        val subtreeIds = subtreeWindows(snapshot, window).map { it.id }.toSet()
-        val candidates = snapshot.pixmaps
-            .filter { pixmap ->
-                pixmap.painted &&
-                    pixmap.framebufferDataUri != null &&
-                    pixmap.matchingWindowIds.any { it in subtreeIds }
+    private fun renderPrimaryPixmapPreview(builder: XmlDom, snapshot: XScreenSnapshot, window: XWindowSnapshot) {
+        val pixmap = matchingPixmapCandidates(snapshot, window)
+            .firstOrNull { it.width == window.width && it.height == window.height }
+            ?: return
+        builder.element("section", "class" to "primary-surface") {
+            element("header") {
+                element("strong") { text("Best painted surface") }
+                text(" ")
+                text("pixmap=${pixmap.idHex} ${pixmap.width}x${pixmap.height}")
+                if (pixmap.pictureIdHexes.isNotEmpty()) {
+                    text(" pictures=${pixmap.pictureIdHexes.joinToString(",")}")
+                }
             }
-            .sortedWith(compareByDescending<XPixmapSnapshot> { it.width * it.height }.thenBy { it.id })
+            renderPixmapSvg(this, pixmap)
+        }
+    }
+
+    private fun renderMatchingPixmapPreviews(builder: XmlDom, snapshot: XScreenSnapshot, window: XWindowSnapshot) {
+        val candidates = matchingPixmapCandidates(snapshot, window)
             .take(4)
         if (candidates.isEmpty()) return
         builder.element("div", "class" to "surface-grid") {
@@ -302,6 +316,17 @@ internal object SvgScreenRenderer {
                 renderPixmapArticle(this, pixmap)
             }
         }
+    }
+
+    private fun matchingPixmapCandidates(snapshot: XScreenSnapshot, window: XWindowSnapshot): List<XPixmapSnapshot> {
+        val subtreeIds = subtreeWindows(snapshot, window).map { it.id }.toSet()
+        return snapshot.pixmaps
+            .filter { pixmap ->
+                pixmap.painted &&
+                    pixmap.framebufferDataUri != null &&
+                    pixmap.matchingWindowIds.any { it in subtreeIds }
+            }
+            .sortedWith(compareByDescending<XPixmapSnapshot> { it.width * it.height }.thenBy { it.id })
     }
 
     private fun renderPixmapArticle(builder: XmlDom, pixmap: XPixmapSnapshot) {
