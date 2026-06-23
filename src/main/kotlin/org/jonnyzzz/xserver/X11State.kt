@@ -47,6 +47,7 @@ internal class X11State(
     private val unsupportedRequests = mutableListOf<XUnsupportedRequest>()
     private var nextUnsupportedRequestId: Int = 1
     private var screenSaver = XScreenSaverSettings()
+    private var pointerControl = XPointerControlSettings()
 
     val extensions = listOf(
         XExtension(
@@ -211,6 +212,18 @@ internal class X11State(
             interval = if (interval == -1) XScreenSaverSettings.DefaultInterval else interval,
             preferBlanking = if (preferBlanking == 2) XScreenSaverSettings.DefaultPreferBlanking else preferBlanking,
             allowExposures = if (allowExposures == 2) XScreenSaverSettings.DefaultAllowExposures else allowExposures,
+        )
+    }
+
+    @Synchronized
+    fun pointerControl(): XPointerControlSettings = pointerControl
+
+    @Synchronized
+    fun setPointerControl(accelerationNumerator: Int?, accelerationDenominator: Int?, threshold: Int?) {
+        pointerControl = XPointerControlSettings(
+            accelerationNumerator = accelerationNumerator ?: pointerControl.accelerationNumerator,
+            accelerationDenominator = accelerationDenominator ?: pointerControl.accelerationDenominator,
+            threshold = threshold ?: pointerControl.threshold,
         )
     }
 
@@ -2201,6 +2214,18 @@ internal data class XScreenSaverSettings(
         const val DefaultInterval = 0
         const val DefaultPreferBlanking = 0
         const val DefaultAllowExposures = 0
+    }
+}
+
+internal data class XPointerControlSettings(
+    val accelerationNumerator: Int = DefaultAccelerationNumerator,
+    val accelerationDenominator: Int = DefaultAccelerationDenominator,
+    val threshold: Int = DefaultThreshold,
+) {
+    companion object {
+        const val DefaultAccelerationNumerator = 2
+        const val DefaultAccelerationDenominator = 1
+        const val DefaultThreshold = 4
     }
 }
 

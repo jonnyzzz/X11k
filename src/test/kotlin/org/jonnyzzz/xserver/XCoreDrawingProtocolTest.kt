@@ -2599,6 +2599,93 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `Bell validates signed percent and preserves connection after errors`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(bellRequest(50))
+                out.write(bellRequest(-100))
+                out.write(bellRequest(101))
+                out.write(bellRequest(-101))
+                out.write(request(104, 0, ByteArray(4)))
+                out.write(getPointerControlRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = 104, badValue = 101, sequence = 3)
+                assertError(socket.getInputStream(), error = 2, opcode = 104, badValue = -101, sequence = 4)
+                assertError(socket.getInputStream(), error = 16, opcode = 104, badValue = 0, sequence = 5)
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(6, u16le(pointer, 2))
+                assertEquals(2, u16le(pointer, 8))
+                assertEquals(1, u16le(pointer, 10))
+                assertEquals(4, u16le(pointer, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangePointerControl updates selected fields and validates booleans and values`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(getPointerControlRequest())
+                out.write(changePointerControlRequest(numerator = 3, denominator = 2, threshold = 9, doAcceleration = 1, doThreshold = 1))
+                out.write(getPointerControlRequest())
+                out.write(changePointerControlRequest(numerator = 7, denominator = 5, threshold = 4, doAcceleration = 0, doThreshold = 1))
+                out.write(getPointerControlRequest())
+                out.write(changePointerControlRequest(numerator = 8, denominator = 6, threshold = 99, doAcceleration = 1, doThreshold = 0))
+                out.write(getPointerControlRequest())
+                out.write(changePointerControlRequest(numerator = -2, denominator = 0, threshold = 11, doAcceleration = 0, doThreshold = 1))
+                out.write(getPointerControlRequest())
+                out.write(changePointerControlRequest(numerator = 9, denominator = 7, threshold = -2, doAcceleration = 1, doThreshold = 0))
+                out.write(getPointerControlRequest())
+                out.write(changePointerControlRequest(numerator = 1, denominator = 1, threshold = 0, doAcceleration = 2, doThreshold = 0))
+                out.write(changePointerControlRequest(numerator = 1, denominator = 1, threshold = 0, doAcceleration = 0, doThreshold = 3))
+                out.write(changePointerControlRequest(numerator = -2, denominator = 1, threshold = 0, doAcceleration = 1, doThreshold = 0))
+                out.write(changePointerControlRequest(numerator = 1, denominator = 0, threshold = 0, doAcceleration = 1, doThreshold = 0))
+                out.write(changePointerControlRequest(numerator = 1, denominator = -2, threshold = 0, doAcceleration = 1, doThreshold = 0))
+                out.write(changePointerControlRequest(numerator = 1, denominator = 1, threshold = -2, doAcceleration = 0, doThreshold = 1))
+                out.write(request(105, 0, ByteArray(4)))
+                out.write(request(106, 0, ByteArray(4)))
+                out.write(getPointerControlRequest())
+                out.write(changePointerControlRequest(numerator = -1, denominator = -1, threshold = -1, doAcceleration = 1, doThreshold = 1))
+                out.write(getPointerControlRequest())
+                out.flush()
+
+                assertPointerControl(readReply(socket.getInputStream()), sequence = 1, numerator = 2, denominator = 1, threshold = 4)
+                assertPointerControl(readReply(socket.getInputStream()), sequence = 3, numerator = 3, denominator = 2, threshold = 9)
+                assertPointerControl(readReply(socket.getInputStream()), sequence = 5, numerator = 3, denominator = 2, threshold = 4)
+                assertPointerControl(readReply(socket.getInputStream()), sequence = 7, numerator = 8, denominator = 6, threshold = 4)
+                assertPointerControl(readReply(socket.getInputStream()), sequence = 9, numerator = 8, denominator = 6, threshold = 11)
+                assertPointerControl(readReply(socket.getInputStream()), sequence = 11, numerator = 9, denominator = 7, threshold = 11)
+
+                assertError(socket.getInputStream(), error = 2, opcode = 105, badValue = 2, sequence = 12)
+                assertError(socket.getInputStream(), error = 2, opcode = 105, badValue = 3, sequence = 13)
+                assertError(socket.getInputStream(), error = 2, opcode = 105, badValue = -2, sequence = 14)
+                assertError(socket.getInputStream(), error = 2, opcode = 105, badValue = 0, sequence = 15)
+                assertError(socket.getInputStream(), error = 2, opcode = 105, badValue = -2, sequence = 16)
+                assertError(socket.getInputStream(), error = 2, opcode = 105, badValue = -2, sequence = 17)
+                assertError(socket.getInputStream(), error = 16, opcode = 105, badValue = 0, sequence = 18)
+                assertError(socket.getInputStream(), error = 16, opcode = 106, badValue = 0, sequence = 19)
+
+                assertPointerControl(readReply(socket.getInputStream()), sequence = 20, numerator = 9, denominator = 7, threshold = 11)
+                assertPointerControl(readReply(socket.getInputStream()), sequence = 22, numerator = 2, denominator = 1, threshold = 4)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SetScreenSaver updates GetScreenSaver reply and restores defaults`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3691,6 +3778,28 @@ class XCoreDrawingProtocolTest {
     private fun getScreenSaverRequest(): ByteArray =
         request(108, 0, ByteArray(0))
 
+    private fun bellRequest(percent: Int): ByteArray =
+        request(104, percent and 0xff, ByteArray(0))
+
+    private fun changePointerControlRequest(
+        numerator: Int,
+        denominator: Int,
+        threshold: Int,
+        doAcceleration: Int,
+        doThreshold: Int,
+    ): ByteArray {
+        val body = ByteArray(8)
+        put16le(body, 0, numerator)
+        put16le(body, 2, denominator)
+        put16le(body, 4, threshold)
+        body[6] = doAcceleration.toByte()
+        body[7] = doThreshold.toByte()
+        return request(105, 0, body)
+    }
+
+    private fun getPointerControlRequest(): ByteArray =
+        request(106, 0, ByteArray(0))
+
     private fun setSelectionOwnerRequest(owner: Int, selection: Int): ByteArray {
         val body = ByteArray(12)
         put32le(body, 0, owner)
@@ -4295,6 +4404,15 @@ class XCoreDrawingProtocolTest {
         assertEquals(green, u16le(reply, offset + 2))
         assertEquals(blue, u16le(reply, offset + 4))
         assertEquals(0, u16le(reply, offset + 6))
+    }
+
+    private fun assertPointerControl(reply: ByteArray, sequence: Int, numerator: Int, denominator: Int, threshold: Int) {
+        assertEquals(1, reply[0].toInt())
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(0, u32le(reply, 4))
+        assertEquals(numerator, u16le(reply, 8))
+        assertEquals(denominator, u16le(reply, 10))
+        assertEquals(threshold, u16le(reply, 12))
     }
 
     private fun assertError(input: InputStream, error: Int, opcode: Int, badValue: Int, sequence: Int) {

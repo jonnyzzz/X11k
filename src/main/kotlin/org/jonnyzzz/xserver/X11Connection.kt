@@ -187,8 +187,9 @@ internal class X11Connection(
             99 -> listExtensions()
             101 -> getKeyboardMapping(body)
             103 -> getKeyboardControl()
-            105 -> unitReplyless()
-            106 -> getPointerControl()
+            104 -> bell(minorOpcode, body)
+            105 -> changePointerControl(body)
+            106 -> getPointerControl(body)
             107 -> setScreenSaver(body)
             108 -> getScreenSaver()
             112 -> unitReplyless()
@@ -2658,7 +2659,8 @@ internal class X11Connection(
             99 -> "ListExtensions"
             101 -> "GetKeyboardMapping"
             103 -> "GetKeyboardControl"
-            105 -> "Bell"
+            104 -> "Bell"
+            105 -> "ChangePointerControl"
             106 -> "GetPointerControl"
             107 -> "SetScreenSaver"
             108 -> "GetScreenSaver"
@@ -2698,12 +2700,53 @@ internal class X11Connection(
         write(reply)
     }
 
-    private fun getPointerControl() {
+    private fun getPointerControl(body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = 106, badValue = 0)
+        val pointerControl = state.pointerControl()
         val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put16(reply, 8, 1)
-        byteOrder.put16(reply, 10, 1)
-        byteOrder.put16(reply, 12, 0)
+        byteOrder.put16(reply, 8, pointerControl.accelerationNumerator)
+        byteOrder.put16(reply, 10, pointerControl.accelerationDenominator)
+        byteOrder.put16(reply, 12, pointerControl.threshold)
         write(reply)
+    }
+
+    private fun bell(percentByte: Int, body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = 104, badValue = 0)
+        val percent = if (percentByte >= 128) percentByte - 256 else percentByte
+        if (percent !in -100..100) return writeError(error = 2, opcode = 104, badValue = percent)
+    }
+
+    private fun changePointerControl(body: ByteArray) {
+        if (body.size != 8) return writeError(error = 16, opcode = 105, badValue = 0)
+        val numerator = byteOrder.i16(body, 0)
+        val denominator = byteOrder.i16(body, 2)
+        val threshold = byteOrder.i16(body, 4)
+        val doAcceleration = body[6].toInt() and 0xff
+        val doThreshold = body[7].toInt() and 0xff
+        if (doAcceleration !in 0..1) return writeError(error = 2, opcode = 105, badValue = doAcceleration)
+        if (doThreshold !in 0..1) return writeError(error = 2, opcode = 105, badValue = doThreshold)
+        if (doAcceleration == 1) {
+            if (numerator < -1) return writeError(error = 2, opcode = 105, badValue = numerator)
+            if (denominator < -1 || denominator == 0) return writeError(error = 2, opcode = 105, badValue = denominator)
+        }
+        if (doThreshold == 1 && threshold < -1) return writeError(error = 2, opcode = 105, badValue = threshold)
+        state.setPointerControl(
+            accelerationNumerator = if (doAcceleration == 1) {
+                if (numerator == -1) XPointerControlSettings.DefaultAccelerationNumerator else numerator
+            } else {
+                null
+            },
+            accelerationDenominator = if (doAcceleration == 1) {
+                if (denominator == -1) XPointerControlSettings.DefaultAccelerationDenominator else denominator
+            } else {
+                null
+            },
+            threshold = if (doThreshold == 1) {
+                if (threshold == -1) XPointerControlSettings.DefaultThreshold else threshold
+            } else {
+                null
+            },
+        )
     }
 
     private fun getScreenSaver() {
