@@ -97,6 +97,19 @@ internal object SvgScreenRenderer {
                     }
                     append(']')
                 }
+                picture.linearGradient?.let { gradient ->
+                    append(""","linearGradient":{"p1":"${gradient.p1Hex}","p2":"${gradient.p2Hex}","stops":[""")
+                    gradient.stopHex.forEachIndexed { stopIndex, value ->
+                        if (stopIndex > 0) append(',')
+                        append('"').append(value).append('"')
+                    }
+                    append("""],"colors":[""")
+                    gradient.colorHex.forEachIndexed { colorIndex, value ->
+                        if (colorIndex > 0) append(',')
+                        append('"').append(value).append('"')
+                    }
+                    append("""]}""")
+                }
                 append('}')
             }
             append("""],"inputOperations":[""")

@@ -374,9 +374,17 @@ internal class X11State(
                             pixmaps.containsKey(drawableId) -> "pixmap"
                             else -> "missing"
                         }
-                    } ?: "solid",
+                    } ?: if (picture.linearGradient != null) "linear-gradient" else "solid",
                     format = picture.format,
                     solidPixel = picture.solidPixel,
+                    linearGradient = picture.linearGradient?.let { gradient ->
+                        XLinearGradientSnapshot(
+                            p1 = gradient.p1,
+                            p2 = gradient.p2,
+                            stops = gradient.stops,
+                            colors = gradient.colors,
+                        )
+                    },
                     clipRectangles = picture.clipRectangles.size,
                     transform = picture.transform,
                     filterName = picture.filterName,
@@ -650,6 +658,25 @@ internal class X11State(
         val destinationDrawableId = destination.drawableId ?: return null
         val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
         val maskFramebuffer = mask?.drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer }
+        val linearGradient = source.linearGradient
+        if (linearGradient != null) {
+            val sampleGradient = linearGradient.pixelSampler()
+            return destinationFramebuffer.compositeGenerated(
+                sourceX = sourceX,
+                sourceY = sourceY,
+                destinationX = destinationX,
+                destinationY = destinationY,
+                width = width,
+                height = height,
+                operation = operation,
+                clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                mask = maskFramebuffer,
+                maskX = maskX,
+                maskY = maskY,
+            ) { x, y ->
+                sampleGradient(x, y)
+            }
+        }
         val solid = source.solidPixel
         if (solid != null) {
             return when (operation) {
@@ -711,6 +738,56 @@ internal class X11State(
             maskY = maskY,
         )
     }
+
+    private fun XLinearGradient.pixelSampler(): (x: Int, y: Int) -> Int {
+        val pairs = stops.zip(colors).sortedBy { it.first }
+        if (pairs.isEmpty()) return { _, _ -> 0xff00_0000.toInt() }
+        val x1 = p1.x.fixedToDouble()
+        val y1 = p1.y.fixedToDouble()
+        val x2 = p2.x.fixedToDouble()
+        val y2 = p2.y.fixedToDouble()
+        val dx = x2 - x1
+        val dy = y2 - y1
+        val denominator = dx * dx + dy * dy
+        val fixedStops = pairs.map { it.first.fixedToDouble() }
+        return { x, y ->
+            val position = if (denominator == 0.0) {
+                fixedStops.last()
+            } else {
+                ((x - x1) * dx + (y - y1) * dy) / denominator
+            }
+            if (position <= fixedStops.first()) {
+                pairs.first().second
+            } else {
+                var pixel = pairs.last().second
+                for (index in 0 until pairs.lastIndex) {
+                    val startStop = fixedStops[index]
+                    val endStop = fixedStops[index + 1]
+                    if (position <= endStop) {
+                        pixel = if (endStop <= startStop) {
+                            pairs[index + 1].second
+                        } else {
+                            val ratio = (position - startStop) / (endStop - startStop)
+                            interpolatePixel(pairs[index].second, pairs[index + 1].second, ratio)
+                        }
+                        break
+                    }
+                }
+                pixel
+            }
+        }
+    }
+
+    private fun interpolatePixel(start: Int, end: Int, ratio: Double): Int {
+        fun channel(shift: Int): Int {
+            val a = (start ushr shift) and 0xff
+            val b = (end ushr shift) and 0xff
+            return (a + (b - a) * ratio).roundToInt().coerceIn(0, 255)
+        }
+        return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
+    private fun Int.fixedToDouble(): Double = this / 65_536.0
 
     @Synchronized
     fun getImage(
@@ -1513,10 +1590,18 @@ internal data class XPicture(
     val format: Int,
     var valueMask: Int = 0,
     val solidPixel: Int? = null,
+    val linearGradient: XLinearGradient? = null,
     var clipRectangles: List<XRectangleCommand> = emptyList(),
     var transform: List<Int> = IdentityTransform,
     var filterName: String? = null,
     var filterValues: List<Int> = emptyList(),
+)
+
+internal data class XLinearGradient(
+    val p1: XFixedPoint,
+    val p2: XFixedPoint,
+    val stops: List<Int>,
+    val colors: List<Int>,
 )
 
 internal val IdentityTransform: List<Int> = listOf(
@@ -1723,6 +1808,7 @@ internal data class XRenderPictureSnapshot(
     val drawableKind: String,
     val format: Int,
     val solidPixel: Int?,
+    val linearGradient: XLinearGradientSnapshot?,
     val clipRectangles: Int,
     val transform: List<Int>,
     val filterName: String?,
@@ -1732,6 +1818,21 @@ internal data class XRenderPictureSnapshot(
     val drawableIdHex: String get() = drawableId?.let { "0x${it.toUInt().toString(16)}" } ?: "none"
     val transformHex: List<String> get() = transform.map { "0x${it.toUInt().toString(16)}" }
     val filterValueHex: List<String> get() = filterValues.map { "0x${it.toUInt().toString(16)}" }
+}
+
+internal data class XLinearGradientSnapshot(
+    val p1: XFixedPoint,
+    val p2: XFixedPoint,
+    val stops: List<Int>,
+    val colors: List<Int>,
+) {
+    val p1Hex: String get() = pointHex(p1)
+    val p2Hex: String get() = pointHex(p2)
+    val stopHex: List<String> get() = stops.map { "0x${it.toUInt().toString(16)}" }
+    val colorHex: List<String> get() = colors.map { "0x${it.toUInt().toString(16).padStart(8, '0')}" }
+
+    private fun pointHex(point: XFixedPoint): String =
+        "0x${point.x.toUInt().toString(16)},0x${point.y.toUInt().toString(16)}"
 }
 
 internal data class XPixmapSnapshot(

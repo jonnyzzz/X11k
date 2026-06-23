@@ -263,7 +263,8 @@ internal class X11Connection(
             31 -> renderCreateAnimCursor(body)
             32 -> renderAddTraps(body)
             33 -> renderCreateSolidFill(body)
-            34, 35, 36 -> renderCreateGradientPicture(body)
+            34 -> renderCreateLinearGradient(body)
+            35, 36 -> renderCreateGradientPicture(body)
             else -> unsupportedRequest(majorOpcode, minorOpcode, "RENDER.$operation")
         }
     }
@@ -413,7 +414,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = destinationDrawableId,
-                kind = if (source.solidPixel != null) XDrawingKind.FillRectangle else XDrawingKind.CopyArea,
+                kind = if (source.solidPixel != null || source.linearGradient != null) XDrawingKind.FillRectangle else XDrawingKind.CopyArea,
                 foreground = source.solidPixel ?: 0,
                 rectangles = listOf(rectangle),
                 imageDataUri = XFramebuffer.imageDataUri(image),
@@ -794,6 +795,45 @@ internal class X11Connection(
         own(id)
     }
 
+    private fun renderCreateLinearGradient(body: ByteArray) {
+        if (body.size < 24) return
+        val id = byteOrder.u32(body, 0)
+        val stopsCount = byteOrder.u32(body, 20)
+        if (stopsCount < 0) return
+        val colorOffset = 24L + stopsCount.toLong() * 4L
+        val requiredSize = colorOffset + stopsCount.toLong() * 8L
+        if (requiredSize > body.size) return
+        val stops = ArrayList<Int>(stopsCount)
+        repeat(stopsCount) { index ->
+            stops += byteOrder.u32(body, 24 + index * 4)
+        }
+        val colors = ArrayList<Int>(stopsCount)
+        repeat(stopsCount) { index ->
+            val offset = colorOffset.toInt() + index * 8
+            colors += XRender.argb32Pixel(
+                red = byteOrder.u16(body, offset),
+                green = byteOrder.u16(body, offset + 2),
+                blue = byteOrder.u16(body, offset + 4),
+                alpha = byteOrder.u16(body, offset + 6),
+            )
+        }
+        val gradient = XLinearGradient(
+            p1 = XFixedPoint(byteOrder.u32(body, 4), byteOrder.u32(body, 8)),
+            p2 = XFixedPoint(byteOrder.u32(body, 12), byteOrder.u32(body, 16)),
+            stops = stops,
+            colors = colors,
+        )
+        state.putPicture(
+            XPicture(
+                id = id,
+                drawableId = null,
+                format = XRender.Argb32Format,
+                linearGradient = gradient,
+            ),
+        )
+        own(id)
+    }
+
     private fun renderCreateGradientPicture(body: ByteArray) {
         if (body.size < 4) return
         val id = byteOrder.u32(body, 0)
@@ -997,7 +1037,8 @@ internal class X11Connection(
             31 -> "cursor=${hex(0)} elements=${(body.size - 4).coerceAtLeast(0) / 8}"
             32 -> "picture=${hex(0)} offset=${i16(4)},${i16(6)} traps=${(body.size - 8).coerceAtLeast(0) / 24}"
             33 -> "picture=${hex(0)} color=${u16(4)},${u16(6)},${u16(8)},${u16(10)}"
-            34, 35, 36 -> "picture=${hex(0)}"
+            34 -> "picture=${hex(0)} p1=${hex(4)},${hex(8)} p2=${hex(12)},${hex(16)} stops=${u32(20)}"
+            35, 36 -> "picture=${hex(0)}"
             else -> ""
         }
     }

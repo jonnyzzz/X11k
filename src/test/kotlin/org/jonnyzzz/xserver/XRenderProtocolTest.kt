@@ -256,6 +256,80 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER linear gradient composites sampled source pixels`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = 10 to 0,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(
+                    renderComposite(
+                        GradientPictureId,
+                        PictureId,
+                        operation = XRender.OpSrc,
+                        destinationX = 0,
+                        destinationY = 0,
+                        width = 11,
+                        height = 1,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 11, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 11, x = 0, y = 0))
+                assertEquals(0xffcc_0033.toInt(), pixelAt(image, imageWidth = 11, x = 2, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 11, x = 10, y = 0))
+
+                out.write(
+                    renderComposite(
+                        GradientPictureId,
+                        PictureId,
+                        operation = XRender.OpSrc,
+                        sourceX = 2,
+                        destinationX = 0,
+                        destinationY = 1,
+                        width = 1,
+                        height = 1,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 1, width = 1, height = 1))
+                out.flush()
+
+                val shiftedImage = readReply(socket.getInputStream())
+                assertEquals(0xffcc_0033.toInt(), pixelAt(shiftedImage, imageWidth = 1, x = 0, y = 0))
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""linearGradient"""")
+                }
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"kind":"linear-gradient"""")
+                assertContains(json, """"stops":["0x0","0x10000"]""")
+                assertContains(json, """"colors":["0xffff0000","0xff0000ff"]""")
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "CreateLinearGradient")
+                assertContains(text, "linearGradient=0x0,0x0->0xa0000,0x0")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER trapezoids composite solid source into destination framebuffer`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -541,17 +615,61 @@ class XRenderProtocolTest {
         return request(XRender.MajorOpcode, 33, body)
     }
 
-    private fun renderComposite(source: Int, destination: Int, mask: Int = 0, width: Int = 20, height: Int = 10): ByteArray {
+    private fun renderComposite(
+        source: Int,
+        destination: Int,
+        mask: Int = 0,
+        width: Int = 20,
+        height: Int = 10,
+        operation: Int = XRender.OpOver,
+        sourceX: Int = 0,
+        sourceY: Int = 0,
+        maskX: Int = 0,
+        maskY: Int = 0,
+        destinationX: Int = if (mask == 0) 12 else 0,
+        destinationY: Int = if (mask == 0) 15 else 0,
+    ): ByteArray {
         val body = ByteArray(32)
-        body[0] = XRender.OpOver.toByte()
+        body[0] = operation.toByte()
         put32le(body, 4, source)
         put32le(body, 8, mask)
         put32le(body, 12, destination)
-        put16le(body, 24, if (mask == 0) 12 else 0)
-        put16le(body, 26, if (mask == 0) 15 else 0)
+        put16le(body, 16, sourceX)
+        put16le(body, 18, sourceY)
+        put16le(body, 20, maskX)
+        put16le(body, 22, maskY)
+        put16le(body, 24, destinationX)
+        put16le(body, 26, destinationY)
         put16le(body, 28, width)
         put16le(body, 30, height)
         return request(XRender.MajorOpcode, 8, body)
+    }
+
+    private fun renderCreateLinearGradient(
+        picture: Int,
+        p1: Pair<Int, Int>,
+        p2: Pair<Int, Int>,
+        stops: List<Int>,
+        colors: List<RenderColor>,
+    ): ByteArray {
+        require(stops.size == colors.size)
+        val body = ByteArray(24 + stops.size * 4 + colors.size * 8)
+        put32le(body, 0, picture)
+        putFixedPoint(body, 4, p1.first, p1.second)
+        putFixedPoint(body, 12, p2.first, p2.second)
+        put32le(body, 20, stops.size)
+        stops.forEachIndexed { index, stop ->
+            put32le(body, 24 + index * 4, stop)
+        }
+        val colorOffset = 24 + stops.size * 4
+        colors.forEachIndexed { index, color ->
+            val offset = colorOffset + index * 8
+            put16le(body, offset, color.red)
+            put16le(body, offset + 2, color.green)
+            put16le(body, offset + 4, color.blue)
+            put16le(body, offset + 6, color.alpha)
+        }
+        return request(XRender.MajorOpcode, 34, body)
     }
 
     private fun renderSetPictureTransform(picture: Int, transform: List<Int>): ByteArray {
@@ -765,9 +883,17 @@ class XRenderProtocolTest {
         const val WindowId = 0x0020_0001
         const val PictureId = 0x0020_1001
         const val SolidPictureId = 0x0020_1002
+        const val GradientPictureId = 0x0020_1003
         const val MaskPixmapId = 0x0020_2001
         const val MaskPictureId = 0x0020_2002
         const val PixmapId = 0x0020_0100
         const val PixmapPictureId = 0x0020_0101
     }
+
+    private data class RenderColor(
+        val red: Int,
+        val green: Int,
+        val blue: Int,
+        val alpha: Int,
+    )
 }

@@ -203,6 +203,16 @@ internal object TextScreenRenderer {
                         append(" solid=")
                         append(pixelHex(picture.solidPixel))
                     }
+                    picture.linearGradient?.let { gradient ->
+                        append(" linearGradient=")
+                        append(gradient.p1Hex)
+                        append("->")
+                        append(gradient.p2Hex)
+                        append(" stops=")
+                        append(gradient.stopHex.joinToString(",", prefix = "[", postfix = "]"))
+                        append(" colors=")
+                        append(gradient.colorHex.joinToString(",", prefix = "[", postfix = "]"))
+                    }
                     appendLine()
                 }
             }

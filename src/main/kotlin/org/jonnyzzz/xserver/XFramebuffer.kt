@@ -373,6 +373,48 @@ internal class XFramebuffer(
         return XImagePixels(bounds.width, bounds.height, copied)
     }
 
+    fun compositeGenerated(
+        sourceX: Int,
+        sourceY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        operation: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        mask: XFramebuffer? = null,
+        maskX: Int = 0,
+        maskY: Int = 0,
+        sourcePixelAt: (x: Int, y: Int) -> Int,
+    ): XImagePixels? {
+        val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return null
+
+        val generated = IntArray(bounds.width * bounds.height)
+        var painted = false
+        for (row in 0 until bounds.height) {
+            for (column in 0 until bounds.width) {
+                val dx = bounds.destinationX + column
+                val dy = bounds.destinationY + row
+                val sx = sourceX + dx - destinationX
+                val sy = sourceY + dy - destinationY
+                val sourcePixel = sourcePixelAt(sx, sy)
+                generated[row * bounds.width + column] = sourcePixel
+                if (!insideClip(dx, dy, clipRectangles)) continue
+                val index = dy * this.width + dx
+                val maskAlpha = mask?.alphaAt(maskX + dx - destinationX, maskY + dy - destinationY) ?: 255
+                pixels[index] = when (operation) {
+                    XRender.OpClear -> 0
+                    XRender.OpSrc -> withMask(sourcePixel, maskAlpha)
+                    XRender.OpOver -> over(sourcePixel, pixels[index], maskAlpha)
+                    else -> over(sourcePixel, pixels[index], maskAlpha)
+                }
+                painted = true
+            }
+        }
+        if (painted) markPainted()
+        return XImagePixels(bounds.width, bounds.height, generated)
+    }
+
     fun putImage(
         x: Int,
         y: Int,
