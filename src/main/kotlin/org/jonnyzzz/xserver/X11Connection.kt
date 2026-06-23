@@ -177,7 +177,7 @@ internal class X11Connection(
             103 -> getKeyboardControl()
             105 -> unitReplyless()
             106 -> getPointerControl()
-            107 -> unitReplyless()
+            107 -> setScreenSaver(body)
             108 -> getScreenSaver()
             112 -> unitReplyless()
             116 -> getPointerMapping()
@@ -2403,12 +2403,26 @@ internal class X11Connection(
     }
 
     private fun getScreenSaver() {
+        val screenSaver = state.screenSaver()
         val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put16(reply, 8, 0)
-        byteOrder.put16(reply, 10, 0)
-        reply[12] = 0
-        reply[13] = 0
+        byteOrder.put16(reply, 8, screenSaver.timeout)
+        byteOrder.put16(reply, 10, screenSaver.interval)
+        reply[12] = screenSaver.preferBlanking.toByte()
+        reply[13] = screenSaver.allowExposures.toByte()
         write(reply)
+    }
+
+    private fun setScreenSaver(body: ByteArray) {
+        if (body.size != 8) return writeError(error = 16, opcode = 107, badValue = 0)
+        val timeout = byteOrder.i16(body, 0)
+        val interval = byteOrder.i16(body, 2)
+        val preferBlanking = body[4].toInt() and 0xff
+        val allowExposures = body[5].toInt() and 0xff
+        if (timeout < -1) return writeError(error = 2, opcode = 107, badValue = timeout)
+        if (interval < -1) return writeError(error = 2, opcode = 107, badValue = interval)
+        if (preferBlanking !in 0..2) return writeError(error = 2, opcode = 107, badValue = preferBlanking)
+        if (allowExposures !in 0..2) return writeError(error = 2, opcode = 107, badValue = allowExposures)
+        state.setScreenSaver(timeout, interval, preferBlanking, allowExposures)
     }
 
     private fun getPointerMapping() {

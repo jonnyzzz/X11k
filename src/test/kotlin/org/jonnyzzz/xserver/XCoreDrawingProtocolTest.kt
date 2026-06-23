@@ -2065,6 +2065,103 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `SetScreenSaver updates GetScreenSaver reply and restores defaults`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(getScreenSaverRequest())
+                out.write(setScreenSaverRequest(timeout = 12, interval = 34, preferBlanking = 1, allowExposures = 0))
+                out.write(getScreenSaverRequest())
+                out.write(setScreenSaverRequest(timeout = -1, interval = -1, preferBlanking = 2, allowExposures = 2))
+                out.write(getScreenSaverRequest())
+                out.flush()
+
+                val initial = readReply(socket.getInputStream())
+                assertEquals(1, u16le(initial, 2))
+                assertEquals(0, u16le(initial, 8))
+                assertEquals(0, u16le(initial, 10))
+                assertEquals(0, initial[12].toInt() and 0xff)
+                assertEquals(0, initial[13].toInt() and 0xff)
+
+                val updated = readReply(socket.getInputStream())
+                assertEquals(3, u16le(updated, 2))
+                assertEquals(12, u16le(updated, 8))
+                assertEquals(34, u16le(updated, 10))
+                assertEquals(1, updated[12].toInt() and 0xff)
+                assertEquals(0, updated[13].toInt() and 0xff)
+
+                val defaults = readReply(socket.getInputStream())
+                assertEquals(5, u16le(defaults, 2))
+                assertEquals(0, u16le(defaults, 8))
+                assertEquals(0, u16le(defaults, 10))
+                assertEquals(0, defaults[12].toInt() and 0xff)
+                assertEquals(0, defaults[13].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SetScreenSaver rejects invalid values without changing state`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(setScreenSaverRequest(timeout = 12, interval = 34, preferBlanking = 1, allowExposures = 0))
+                out.write(setScreenSaverRequest(timeout = -2, interval = 34, preferBlanking = 1, allowExposures = 0))
+                out.write(setScreenSaverRequest(timeout = 12, interval = -2, preferBlanking = 1, allowExposures = 0))
+                out.write(setScreenSaverRequest(timeout = 12, interval = 34, preferBlanking = 3, allowExposures = 0))
+                out.write(setScreenSaverRequest(timeout = 12, interval = 34, preferBlanking = 1, allowExposures = 3))
+                out.write(getScreenSaverRequest())
+                out.flush()
+
+                val timeoutError = socket.getInputStream().readExactly(32)
+                assertEquals(0, timeoutError[0].toInt())
+                assertEquals(2, timeoutError[1].toInt() and 0xff)
+                assertEquals(2, u16le(timeoutError, 2))
+                assertEquals(-2, u32le(timeoutError, 4))
+                assertEquals(107, timeoutError[10].toInt() and 0xff)
+
+                val intervalError = socket.getInputStream().readExactly(32)
+                assertEquals(0, intervalError[0].toInt())
+                assertEquals(2, intervalError[1].toInt() and 0xff)
+                assertEquals(3, u16le(intervalError, 2))
+                assertEquals(-2, u32le(intervalError, 4))
+                assertEquals(107, intervalError[10].toInt() and 0xff)
+
+                val preferError = socket.getInputStream().readExactly(32)
+                assertEquals(0, preferError[0].toInt())
+                assertEquals(2, preferError[1].toInt() and 0xff)
+                assertEquals(4, u16le(preferError, 2))
+                assertEquals(3, u32le(preferError, 4))
+                assertEquals(107, preferError[10].toInt() and 0xff)
+
+                val exposuresError = socket.getInputStream().readExactly(32)
+                assertEquals(0, exposuresError[0].toInt())
+                assertEquals(2, exposuresError[1].toInt() and 0xff)
+                assertEquals(5, u16le(exposuresError, 2))
+                assertEquals(3, u32le(exposuresError, 4))
+                assertEquals(107, exposuresError[10].toInt() and 0xff)
+
+                val reply = readReply(socket.getInputStream())
+                assertEquals(6, u16le(reply, 2))
+                assertEquals(12, u16le(reply, 8))
+                assertEquals(34, u16le(reply, 10))
+                assertEquals(1, reply[12].toInt() and 0xff)
+                assertEquals(0, reply[13].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SetSelectionOwner updates and clears GetSelectionOwner reply`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2906,6 +3003,18 @@ class XCoreDrawingProtocolTest {
 
     private fun getInputFocusRequest(): ByteArray =
         request(43, 0, ByteArray(0))
+
+    private fun setScreenSaverRequest(timeout: Int, interval: Int, preferBlanking: Int, allowExposures: Int): ByteArray {
+        val body = ByteArray(8)
+        put16le(body, 0, timeout)
+        put16le(body, 2, interval)
+        body[4] = preferBlanking.toByte()
+        body[5] = allowExposures.toByte()
+        return request(107, 0, body)
+    }
+
+    private fun getScreenSaverRequest(): ByteArray =
+        request(108, 0, ByteArray(0))
 
     private fun setSelectionOwnerRequest(owner: Int, selection: Int): ByteArray {
         val body = ByteArray(12)

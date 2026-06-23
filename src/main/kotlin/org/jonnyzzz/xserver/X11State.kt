@@ -45,6 +45,7 @@ internal class X11State(
     private var nextExtensionQueryId: Int = 1
     private val unsupportedRequests = mutableListOf<XUnsupportedRequest>()
     private var nextUnsupportedRequestId: Int = 1
+    private var screenSaver = XScreenSaverSettings()
 
     val extensions = listOf(
         XExtension(
@@ -194,6 +195,19 @@ internal class X11State(
 
     @Synchronized
     fun inputFocus(): Pair<Int, Int> = focusWindowId to focusRevertTo
+
+    @Synchronized
+    fun screenSaver(): XScreenSaverSettings = screenSaver
+
+    @Synchronized
+    fun setScreenSaver(timeout: Int, interval: Int, preferBlanking: Int, allowExposures: Int) {
+        screenSaver = XScreenSaverSettings(
+            timeout = if (timeout == -1) XScreenSaverSettings.DefaultTimeout else timeout,
+            interval = if (interval == -1) XScreenSaverSettings.DefaultInterval else interval,
+            preferBlanking = if (preferBlanking == 2) XScreenSaverSettings.DefaultPreferBlanking else preferBlanking,
+            allowExposures = if (allowExposures == 2) XScreenSaverSettings.DefaultAllowExposures else allowExposures,
+        )
+    }
 
     @Synchronized
     fun registerEventSink(sink: XEventSink) {
@@ -2140,6 +2154,20 @@ private data class XSelectionOwner(
     val windowId: Int,
     val sink: XEventSink,
 )
+
+internal data class XScreenSaverSettings(
+    val timeout: Int = DefaultTimeout,
+    val interval: Int = DefaultInterval,
+    val preferBlanking: Int = DefaultPreferBlanking,
+    val allowExposures: Int = DefaultAllowExposures,
+) {
+    companion object {
+        const val DefaultTimeout = 0
+        const val DefaultInterval = 0
+        const val DefaultPreferBlanking = 0
+        const val DefaultAllowExposures = 0
+    }
+}
 
 internal data class XWindow(
     val id: Int,
