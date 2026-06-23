@@ -1427,6 +1427,7 @@ internal class X11Connection(
     private fun openFont(body: ByteArray) {
         if (body.size >= 4) {
             val id = byteOrder.u32(body, 0)
+            if (state.hasResource(id)) return writeError(error = 14, opcode = 45, badValue = id)
             state.putFont(id)
             own(id)
         }

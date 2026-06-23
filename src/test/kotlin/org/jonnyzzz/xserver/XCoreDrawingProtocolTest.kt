@@ -573,6 +573,35 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `OpenFont rejects duplicate resource id without replacing existing resource`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Blue))
+                out.write(openFontRequest(WindowId))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val duplicateError = socket.getInputStream().readExactly(32)
+                assertEquals(0, duplicateError[0].toInt())
+                assertEquals(14, duplicateError[1].toInt() and 0xff)
+                assertEquals(WindowId, u32le(duplicateError, 4))
+                assertEquals(45, duplicateError[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `invalid CreateGC function reports Value error before usable GC creation`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1910,6 +1939,15 @@ class XCoreDrawingProtocolTest {
         put16le(body, 16, 0xffff)
         put16le(body, 22, 0xffff)
         return request(94, 0, body)
+    }
+
+    private fun openFontRequest(font: Int, name: String = "fixed"): ByteArray {
+        val nameBytes = name.encodeToByteArray()
+        val body = ByteArray(8 + paddedLength(nameBytes.size))
+        put32le(body, 0, font)
+        put16le(body, 4, nameBytes.size)
+        nameBytes.copyInto(body, 8)
+        return request(45, 0, body)
     }
 
     private fun mapWindowRequest(id: Int): ByteArray {
