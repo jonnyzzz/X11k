@@ -588,6 +588,10 @@ internal class X11State(
     }
 
     @Synchronized
+    fun pixmapImage(id: Int): XImagePixels? =
+        pixmaps[id]?.framebuffer?.snapshot()
+
+    @Synchronized
     fun putImage(
         drawableId: Int,
         x: Int,
@@ -1142,14 +1146,58 @@ internal class X11State(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+        fillStyle: Int = XGraphicsContext.FillSolid,
+        background: Int = 0x00ff_ffff,
+        tilePixmap: XImagePixels? = null,
+        stipplePixmap: XImagePixels? = null,
+        tileStippleXOrigin: Int = 0,
+        tileStippleYOrigin: Int = 0,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val pattern = fillPattern(fillStyle, pixel, background, tilePixmap, stipplePixmap)
         var painted = false
         for (rectangle in rectangles) {
-            painted = framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, preserveAlpha, clipRectangles, function, planeMask) || painted
+            painted = if (pattern != null) {
+                framebuffer.fillPattern(
+                    x = rectangle.x,
+                    y = rectangle.y,
+                    width = rectangle.width,
+                    height = rectangle.height,
+                    patternWidth = pattern.width,
+                    patternHeight = pattern.height,
+                    patternXOrigin = tileStippleXOrigin,
+                    patternYOrigin = tileStippleYOrigin,
+                    clipRectangles = clipRectangles,
+                    function = function,
+                    planeMask = planeMask,
+                ) { sourceX, sourceY ->
+                    pattern.pixelAt(sourceX, sourceY)
+                }
+            } else {
+                framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, preserveAlpha, clipRectangles, function, planeMask)
+            } || painted
         }
         return painted
     }
+
+    private fun fillPattern(
+        fillStyle: Int,
+        foreground: Int,
+        background: Int,
+        tilePixmap: XImagePixels?,
+        stipplePixmap: XImagePixels?,
+    ): XFillPattern? =
+        when (fillStyle) {
+            XGraphicsContext.FillTiled -> tilePixmap?.let {
+                XFillPattern(it, foreground = foreground, background = background, style = fillStyle)
+            }
+            XGraphicsContext.FillStippled,
+            XGraphicsContext.FillOpaqueStippled,
+            -> stipplePixmap?.let {
+                XFillPattern(it, foreground = foreground, background = background, style = fillStyle)
+            }
+            else -> null
+        }
 
     @Synchronized
     fun drawPoints(
@@ -1278,11 +1326,34 @@ internal class X11State(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+        fillStyle: Int = XGraphicsContext.FillSolid,
+        background: Int = 0x00ff_ffff,
+        tilePixmap: XImagePixels? = null,
+        stipplePixmap: XImagePixels? = null,
+        tileStippleXOrigin: Int = 0,
+        tileStippleYOrigin: Int = 0,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val pattern = fillPattern(fillStyle, pixel, background, tilePixmap, stipplePixmap)
         var painted = false
         for (arc in arcs) {
-            painted = framebuffer.fillArc(arc, pixel, arcMode, clipRectangles, function, planeMask) || painted
+            painted = if (pattern != null) {
+                framebuffer.fillArcPattern(
+                    arc = arc,
+                    arcMode = arcMode,
+                    patternXOrigin = tileStippleXOrigin,
+                    patternYOrigin = tileStippleYOrigin,
+                    patternWidth = pattern.width,
+                    patternHeight = pattern.height,
+                    clipRectangles = clipRectangles,
+                    function = function,
+                    planeMask = planeMask,
+                ) { sourceX, sourceY ->
+                    pattern.pixelAt(sourceX, sourceY)
+                }
+            } else {
+                framebuffer.fillArc(arc, pixel, arcMode, clipRectangles, function, planeMask)
+            } || painted
         }
         return painted
     }
@@ -1296,9 +1367,32 @@ internal class X11State(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+        fillStyle: Int = XGraphicsContext.FillSolid,
+        background: Int = 0x00ff_ffff,
+        tilePixmap: XImagePixels? = null,
+        stipplePixmap: XImagePixels? = null,
+        tileStippleXOrigin: Int = 0,
+        tileStippleYOrigin: Int = 0,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        return framebuffer.fillPolygon(points, pixel, fillRule, clipRectangles, function, planeMask)
+        val pattern = fillPattern(fillStyle, pixel, background, tilePixmap, stipplePixmap)
+        return if (pattern != null) {
+            framebuffer.fillPolygonPattern(
+                points = points,
+                fillRule = fillRule,
+                patternXOrigin = tileStippleXOrigin,
+                patternYOrigin = tileStippleYOrigin,
+                patternWidth = pattern.width,
+                patternHeight = pattern.height,
+                clipRectangles = clipRectangles,
+                function = function,
+                planeMask = planeMask,
+            ) { sourceX, sourceY ->
+                pattern.pixelAt(sourceX, sourceY)
+            }
+        } else {
+            framebuffer.fillPolygon(points, pixel, fillRule, clipRectangles, function, planeMask)
+        }
     }
 
     @Synchronized
@@ -1487,7 +1581,18 @@ internal class X11State(
                 3 -> destination.background = source.background
                 4 -> destination.lineWidth = source.lineWidth
                 5 -> destination.lineStyle = source.lineStyle
+                8 -> destination.fillStyle = source.fillStyle
                 9 -> destination.fillRule = source.fillRule
+                10 -> {
+                    destination.tilePixmapId = source.tilePixmapId
+                    destination.tilePixmap = source.tilePixmap
+                }
+                11 -> {
+                    destination.stipplePixmapId = source.stipplePixmapId
+                    destination.stipplePixmap = source.stipplePixmap
+                }
+                12 -> destination.tileStippleXOrigin = source.tileStippleXOrigin
+                13 -> destination.tileStippleYOrigin = source.tileStippleYOrigin
                 14 -> destination.fontId = source.fontId
                 17 -> destination.clipXOrigin = source.clipXOrigin
                 18 -> destination.clipYOrigin = source.clipYOrigin
@@ -1523,7 +1628,14 @@ internal class X11State(
         fontId: Int? = null,
         clipXOrigin: Int? = null,
         clipYOrigin: Int? = null,
+        fillStyle: Int? = null,
         fillRule: Int? = null,
+        tilePixmapId: Int? = null,
+        stipplePixmapId: Int? = null,
+        tilePixmap: XImagePixels? = null,
+        stipplePixmap: XImagePixels? = null,
+        tileStippleXOrigin: Int? = null,
+        tileStippleYOrigin: Int? = null,
         dashOffset: Int? = null,
         dashes: List<Int>? = null,
         arcMode: Int? = null,
@@ -1538,7 +1650,18 @@ internal class X11State(
         fontId?.let { gc.fontId = it }
         clipXOrigin?.let { gc.clipXOrigin = it }
         clipYOrigin?.let { gc.clipYOrigin = it }
+        fillStyle?.let { gc.fillStyle = it }
         fillRule?.let { gc.fillRule = it }
+        tilePixmapId?.let {
+            gc.tilePixmapId = it
+            gc.tilePixmap = tilePixmap
+        }
+        stipplePixmapId?.let {
+            gc.stipplePixmapId = it
+            gc.stipplePixmap = stipplePixmap
+        }
+        tileStippleXOrigin?.let { gc.tileStippleXOrigin = it }
+        tileStippleYOrigin?.let { gc.tileStippleYOrigin = it }
         dashOffset?.let { gc.dashOffset = it }
         dashes?.let { gc.dashes = it }
         arcMode?.let { gc.arcMode = it }
@@ -1877,6 +2000,29 @@ internal data class XDrawable(
     val depth: Int,
 )
 
+private data class XFillPattern(
+    val image: XImagePixels,
+    val foreground: Int,
+    val background: Int,
+    val style: Int,
+) {
+    val width: Int get() = image.width
+    val height: Int get() = image.height
+
+    fun pixelAt(x: Int, y: Int): Int? {
+        val pixel = image.pixels[y * width + x]
+        return when (style) {
+            XGraphicsContext.FillTiled -> pixel
+            XGraphicsContext.FillStippled -> foreground.takeIf { patternBit(pixel) }
+            XGraphicsContext.FillOpaqueStippled -> if (patternBit(pixel)) foreground else background
+            else -> null
+        }
+    }
+
+    private fun patternBit(pixel: Int): Boolean =
+        ((pixel ushr 24) and 0xff) != 0 || (pixel and 0x00ff_ffff) != 0
+}
+
 internal data class XGraphicsContext(
     val id: Int,
     var foreground: Int = 0,
@@ -1890,7 +2036,14 @@ internal data class XGraphicsContext(
     var clipXOrigin: Int = 0
     var clipYOrigin: Int = 0
     var clipRectangles: List<XRectangleCommand>? = null
+    var fillStyle: Int = FillSolid
     var fillRule: Int = EvenOddRule
+    var tilePixmapId: Int? = null
+    var stipplePixmapId: Int? = null
+    var tilePixmap: XImagePixels? = null
+    var stipplePixmap: XImagePixels? = null
+    var tileStippleXOrigin: Int = 0
+    var tileStippleYOrigin: Int = 0
     var dashOffset: Int = 0
     var dashes: List<Int> = listOf(4)
     var arcMode: Int = ArcPieSlice
@@ -1925,6 +2078,10 @@ internal data class XGraphicsContext(
         const val LineSolid = 0
         const val LineOnOffDash = 1
         const val LineDoubleDash = 2
+        const val FillSolid = 0
+        const val FillTiled = 1
+        const val FillStippled = 2
+        const val FillOpaqueStippled = 3
         const val EvenOddRule = 0
         const val WindingRule = 1
         const val ArcChord = 0

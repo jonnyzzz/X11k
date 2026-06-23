@@ -1773,7 +1773,20 @@ internal class X11Connection(
         val drawableId = byteOrder.u32(body, 0)
         val rectangles = rectangles(body, 8)
         when (kind) {
-            XDrawingKind.FillRectangle -> state.fillRectangles(drawableId, gc.foreground, rectangles, clipRectangles = gc.effectiveClipRectangles(), function = gc.function, planeMask = gc.planeMask)
+            XDrawingKind.FillRectangle -> state.fillRectangles(
+                drawableId = drawableId,
+                pixel = gc.foreground,
+                rectangles = rectangles,
+                clipRectangles = gc.effectiveClipRectangles(),
+                function = gc.function,
+                planeMask = gc.planeMask,
+                fillStyle = gc.fillStyle,
+                background = gc.background,
+                tilePixmap = gc.tilePixmap,
+                stipplePixmap = gc.stipplePixmap,
+                tileStippleXOrigin = gc.tileStippleXOrigin,
+                tileStippleYOrigin = gc.tileStippleYOrigin,
+            )
             XDrawingKind.Rectangle -> state.drawRectangleOutlines(drawableId, gc.foreground, rectangles, gc.lineWidth, gc.effectiveClipRectangles(), gc.function, gc.planeMask)
             else -> Unit
         }
@@ -1795,7 +1808,21 @@ internal class X11Connection(
         val drawableId = byteOrder.u32(body, 0)
         val arcs = arcs(body, 8)
         if (filled) {
-            state.fillArcs(drawableId, gc.foreground, arcs, gc.arcMode, gc.effectiveClipRectangles(), gc.function, gc.planeMask)
+            state.fillArcs(
+                drawableId = drawableId,
+                pixel = gc.foreground,
+                arcs = arcs,
+                arcMode = gc.arcMode,
+                clipRectangles = gc.effectiveClipRectangles(),
+                function = gc.function,
+                planeMask = gc.planeMask,
+                fillStyle = gc.fillStyle,
+                background = gc.background,
+                tilePixmap = gc.tilePixmap,
+                stipplePixmap = gc.stipplePixmap,
+                tileStippleXOrigin = gc.tileStippleXOrigin,
+                tileStippleYOrigin = gc.tileStippleYOrigin,
+            )
         } else {
             state.drawArcs(drawableId, gc.foreground, arcs, gc.lineWidth, gc.effectiveClipRectangles(), gc.function, gc.planeMask)
         }
@@ -1820,7 +1847,21 @@ internal class X11Connection(
         val coordMode = body[9].toInt() and 0xff
         if (coordMode !in 0..1) return writeError(error = 2, opcode = 69, badValue = coordMode)
         val points = points(body, 12, coordMode)
-        state.fillPolygon(drawableId, gc.foreground, points, gc.fillRule, gc.effectiveClipRectangles(), gc.function, gc.planeMask)
+        state.fillPolygon(
+            drawableId = drawableId,
+            pixel = gc.foreground,
+            points = points,
+            fillRule = gc.fillRule,
+            clipRectangles = gc.effectiveClipRectangles(),
+            function = gc.function,
+            planeMask = gc.planeMask,
+            fillStyle = gc.fillStyle,
+            background = gc.background,
+            tilePixmap = gc.tilePixmap,
+            stipplePixmap = gc.stipplePixmap,
+            tileStippleXOrigin = gc.tileStippleXOrigin,
+            tileStippleYOrigin = gc.tileStippleYOrigin,
+        )
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
@@ -2405,8 +2446,16 @@ internal class X11Connection(
                     writeError(error = 2, opcode = opcode, badValue = value)
                     return false
                 }
+                8 -> if (value !in XGraphicsContext.FillSolid..XGraphicsContext.FillOpaqueStippled) {
+                    writeError(error = 2, opcode = opcode, badValue = value)
+                    return false
+                }
                 9 -> if (value !in XGraphicsContext.EvenOddRule..XGraphicsContext.WindingRule) {
                     writeError(error = 2, opcode = opcode, badValue = value)
+                    return false
+                }
+                10, 11 -> if (state.pixmapImage(value) == null) {
+                    writeError(error = 4, opcode = opcode, badValue = value)
                     return false
                 }
                 20 -> if (value !in 0..0xffff) {
@@ -2445,7 +2494,14 @@ internal class X11Connection(
         var clipXOrigin: Int? = null
         var clipYOrigin: Int? = null
         var clearClipRectangles = false
+        var fillStyle: Int? = null
         var fillRule: Int? = null
+        var tilePixmapId: Int? = null
+        var stipplePixmapId: Int? = null
+        var tilePixmap: XImagePixels? = null
+        var stipplePixmap: XImagePixels? = null
+        var tileStippleXOrigin: Int? = null
+        var tileStippleYOrigin: Int? = null
         var dashOffset: Int? = null
         var dashes: List<Int>? = null
         var arcMode: Int? = null
@@ -2467,11 +2523,26 @@ internal class X11Connection(
                 } else {
                     return writeError(error = 2, opcode = opcode, badValue = value)
                 }
+                8 -> if (value in XGraphicsContext.FillSolid..XGraphicsContext.FillOpaqueStippled) {
+                    fillStyle = value
+                } else {
+                    return writeError(error = 2, opcode = opcode, badValue = value)
+                }
                 9 -> if (value in XGraphicsContext.EvenOddRule..XGraphicsContext.WindingRule) {
                     fillRule = value
                 } else {
                     return writeError(error = 2, opcode = opcode, badValue = value)
                 }
+                10 -> {
+                    tilePixmapId = value
+                    tilePixmap = state.pixmapImage(value) ?: return writeError(error = 4, opcode = opcode, badValue = value)
+                }
+                11 -> {
+                    stipplePixmapId = value
+                    stipplePixmap = state.pixmapImage(value) ?: return writeError(error = 4, opcode = opcode, badValue = value)
+                }
+                12 -> tileStippleXOrigin = value.toShort().toInt()
+                13 -> tileStippleYOrigin = value.toShort().toInt()
                 14 -> fontId = value
                 17 -> clipXOrigin = value.toShort().toInt()
                 18 -> clipYOrigin = value.toShort().toInt()
@@ -2504,7 +2575,14 @@ internal class X11Connection(
             fontId = fontId,
             clipXOrigin = clipXOrigin,
             clipYOrigin = clipYOrigin,
+            fillStyle = fillStyle,
             fillRule = fillRule,
+            tilePixmapId = tilePixmapId,
+            stipplePixmapId = stipplePixmapId,
+            tilePixmap = tilePixmap,
+            stipplePixmap = stipplePixmap,
+            tileStippleXOrigin = tileStippleXOrigin,
+            tileStippleYOrigin = tileStippleYOrigin,
             dashOffset = dashOffset,
             dashes = dashes,
             arcMode = arcMode,

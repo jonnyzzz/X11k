@@ -29,6 +29,8 @@ internal class XFramebuffer(
     private var painted: Boolean = painted
     private var cachedDataUri: String? = null
 
+    fun snapshot(): XImagePixels = XImagePixels(width, height, pixels.copyOf())
+
     fun resize(width: Int, height: Int, backgroundPixel: Int) {
         val (newWidth, newHeight) = framebufferSize(width, height)
         if (newWidth == this.width && newHeight == this.height) return
@@ -77,6 +79,43 @@ internal class XFramebuffer(
                 } else {
                     corePixel(source = color, destination = pixels[offset + column], function = function, planeMask = planeMask)
                 }
+                painted = true
+            }
+        }
+        if (painted) markPainted()
+        return painted
+    }
+
+    fun fillPattern(
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        patternWidth: Int,
+        patternHeight: Int,
+        patternXOrigin: Int,
+        patternYOrigin: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
+        pixelAt: (x: Int, y: Int) -> Int?,
+    ): Boolean {
+        if (patternWidth <= 0 || patternHeight <= 0) return false
+        val bounds = clippedBounds(x, y, width, height) ?: return false
+        var painted = false
+        for (row in bounds.destinationY until bounds.destinationY + bounds.height) {
+            val offset = row * this.width
+            for (column in bounds.destinationX until bounds.destinationX + bounds.width) {
+                if (!insideClip(column, row, clipRectangles)) continue
+                val sourceX = (column - patternXOrigin).floorMod(patternWidth)
+                val sourceY = (row - patternYOrigin).floorMod(patternHeight)
+                val source = pixelAt(sourceX, sourceY)?.let { opaque(it) } ?: continue
+                pixels[offset + column] = corePixel(
+                    source = source,
+                    destination = pixels[offset + column],
+                    function = function,
+                    planeMask = planeMask,
+                )
                 painted = true
             }
         }
@@ -180,11 +219,40 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+    ): Boolean =
+        fillPolygonWithSource(points, fillRule, clipRectangles, function, planeMask) { _, _ -> opaque(pixel) }
+
+    fun fillPolygonPattern(
+        points: List<XPoint>,
+        fillRule: Int = XGraphicsContext.EvenOddRule,
+        patternXOrigin: Int,
+        patternYOrigin: Int,
+        patternWidth: Int,
+        patternHeight: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
+        pixelAt: (x: Int, y: Int) -> Int?,
+    ): Boolean {
+        if (patternWidth <= 0 || patternHeight <= 0) return false
+        return fillPolygonWithSource(points, fillRule, clipRectangles, function, planeMask) { x, y ->
+            val sourceX = (x - patternXOrigin).floorMod(patternWidth)
+            val sourceY = (y - patternYOrigin).floorMod(patternHeight)
+            pixelAt(sourceX, sourceY)?.let { opaque(it) }
+        }
+    }
+
+    private fun fillPolygonWithSource(
+        points: List<XPoint>,
+        fillRule: Int,
+        clipRectangles: List<XRectangleCommand>?,
+        function: Int,
+        planeMask: Int,
+        sourceAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         if (points.size < 3) return false
         val minY = points.minOf { it.y }
         val maxY = points.maxOf { it.y }
-        val color = opaque(pixel)
         var painted = false
         for (y in minY until maxY) {
             val scanY = y + 0.5
@@ -201,11 +269,11 @@ internal class XFramebuffer(
             }
             intersections.sort()
             if (fillRule == XGraphicsContext.WindingRule) {
-                painted = fillWindingScanline(y, points, scanY, color, clipRectangles, function, planeMask) || painted
+                painted = fillWindingScanline(y, points, scanY, clipRectangles, function, planeMask, sourceAt) || painted
             } else {
                 var index = 0
                 while (index + 1 < intersections.size) {
-                    painted = fillScanlineSpan(y, intersections[index], intersections[index + 1], color, clipRectangles, function, planeMask) || painted
+                    painted = fillScanlineSpan(y, intersections[index], intersections[index + 1], clipRectangles, function, planeMask, sourceAt) || painted
                     index += 2
                 }
             }
@@ -244,9 +312,40 @@ internal class XFramebuffer(
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): Boolean {
+        return fillArcWithSource(arc, arcMode, clipRectangles, function, planeMask) { _, _ -> opaque(pixel) }
+    }
+
+    fun fillArcPattern(
+        arc: XArcCommand,
+        arcMode: Int,
+        patternXOrigin: Int,
+        patternYOrigin: Int,
+        patternWidth: Int,
+        patternHeight: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
+        pixelAt: (x: Int, y: Int) -> Int?,
+    ): Boolean {
+        if (patternWidth <= 0 || patternHeight <= 0) return false
+        return fillArcWithSource(arc, arcMode, clipRectangles, function, planeMask) { x, y ->
+            val sourceX = (x - patternXOrigin).floorMod(patternWidth)
+            val sourceY = (y - patternYOrigin).floorMod(patternHeight)
+            pixelAt(sourceX, sourceY)?.let { opaque(it) }
+        }
+    }
+
+    private fun fillArcWithSource(
+        arc: XArcCommand,
+        arcMode: Int,
+        clipRectangles: List<XRectangleCommand>?,
+        function: Int,
+        planeMask: Int,
+        sourceAt: (x: Int, y: Int) -> Int?,
+    ): Boolean {
         if (arc.width <= 0 || arc.height <= 0 || arc.angle2 == 0) return false
         if (abs(arc.angle2) >= FullCircleAngle) {
-            return fillEllipse(arc, pixel, clipRectangles, function, planeMask)
+            return fillEllipse(arc, clipRectangles, function, planeMask, sourceAt)
         }
 
         val arcPoints = sampledArcPoints(arc)
@@ -256,7 +355,7 @@ internal class XFramebuffer(
         } else {
             listOf(XPoint(arc.centerX().roundToInt(), arc.centerY().roundToInt())) + arcPoints
         }
-        return fillPolygon(polygon, pixel, clipRectangles = clipRectangles, function = function, planeMask = planeMask)
+        return fillPolygonWithSource(polygon, XGraphicsContext.EvenOddRule, clipRectangles, function, planeMask, sourceAt)
     }
 
     fun drawText(
@@ -766,10 +865,10 @@ internal class XFramebuffer(
 
     private fun fillEllipse(
         arc: XArcCommand,
-        pixel: Int,
         clipRectangles: List<XRectangleCommand>?,
         function: Int,
         planeMask: Int,
+        sourceAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         val bounds = clippedBounds(arc.x, arc.y, arc.width, arc.height) ?: return false
         val radiusX = arc.width / 2.0
@@ -777,7 +876,6 @@ internal class XFramebuffer(
         if (radiusX <= 0.0 || radiusY <= 0.0) return false
         val centerX = arc.centerX()
         val centerY = arc.centerY()
-        val color = opaque(pixel)
         var painted = false
         for (row in bounds.destinationY until bounds.destinationY + bounds.height) {
             val normalizedY = ((row + 0.5) - centerY) / radiusY
@@ -786,7 +884,8 @@ internal class XFramebuffer(
                 val normalizedX = ((column + 0.5) - centerX) / radiusX
                 if (normalizedX * normalizedX + normalizedY * normalizedY > 1.0) continue
                 val index = row * width + column
-                pixels[index] = corePixel(source = color, destination = pixels[index], function = function, planeMask = planeMask)
+                val source = sourceAt(column, row) ?: continue
+                pixels[index] = corePixel(source = source, destination = pixels[index], function = function, planeMask = planeMask)
                 painted = true
             }
         }
@@ -978,10 +1077,10 @@ internal class XFramebuffer(
         y: Int,
         points: List<XPoint>,
         scanY: Double,
-        color: Int,
         clipRectangles: List<XRectangleCommand>?,
         function: Int,
         planeMask: Int,
+        sourceAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         val events = mutableListOf<Pair<Double, Int>>()
         for (index in points.indices) {
@@ -1005,7 +1104,7 @@ internal class XFramebuffer(
             val x = events[index].first
             previousX?.let { previous ->
                 if (winding != 0) {
-                    painted = fillScanlineSpan(y, previous, x, color, clipRectangles, function, planeMask) || painted
+                    painted = fillScanlineSpan(y, previous, x, clipRectangles, function, planeMask, sourceAt) || painted
                 }
             }
             while (index < events.size && events[index].first == x) {
@@ -1021,10 +1120,10 @@ internal class XFramebuffer(
         y: Int,
         leftIntersection: Double,
         rightIntersection: Double,
-        color: Int,
         clipRectangles: List<XRectangleCommand>?,
         function: Int,
         planeMask: Int,
+        sourceAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         val left = ceil(leftIntersection).toInt()
         val right = ceil(rightIntersection).toInt()
@@ -1033,7 +1132,8 @@ internal class XFramebuffer(
             if (x !in 0 until width || y !in 0 until height) continue
             if (!insideClip(x, y, clipRectangles)) continue
             val index = y * width + x
-            pixels[index] = corePixel(source = color, destination = pixels[index], function = function, planeMask = planeMask)
+            val source = sourceAt(x, y) ?: continue
+            pixels[index] = corePixel(source = source, destination = pixels[index], function = function, planeMask = planeMask)
             painted = true
         }
         return painted

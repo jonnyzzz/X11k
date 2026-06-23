@@ -505,6 +505,202 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `PolyFillRectangle honors GC tiled fill style and tile origin`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(
+                    putImage24PixelsRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 2,
+                        pixels = listOf(
+                            Red, Green,
+                            Blue, 0x0012_3456,
+                        ),
+                    ),
+                )
+                out.write(changeGcTiledFillRequest(GcId, tilePixmap = PixmapId, xOrigin = 1, yOrigin = 1))
+                out.write(freePixmapRequest(PixmapId))
+                out.write(setClipRectanglesRequest(GcId, clipXOrigin = 0, clipYOrigin = 0, rectangles = listOf(XRectangleCommand(2, 1, 3, 3))))
+                out.write(polyFillRectangleRequest(WindowId, GcId, rectangles = listOf(XRectangleCommand(2, 1, 4, 3))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 7, height = 5))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 7, 1, 1))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 7, 2, 1))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 7, 3, 1))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 7, 4, 1))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 7, 5, 1))
+                assertEquals(0xff12_3456.toInt(), pixelAt(image, 7, 2, 2))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 7, 3, 2))
+                assertEquals(0xff12_3456.toInt(), pixelAt(image, 7, 4, 2))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 7, 2, 3))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 7, 3, 3))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeGC rejects missing tiled fill pixmap without changing fill style`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val missingPixmap = 0x0020_9999
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(changeGcTiledFillRequest(GcId, tilePixmap = missingPixmap, xOrigin = 0, yOrigin = 0))
+                out.write(polyFillRectangleRequest(WindowId, GcId, rectangles = listOf(XRectangleCommand(1, 1, 2, 2))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 4))
+                out.flush()
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(4, error[1].toInt() and 0xff)
+                assertEquals(missingPixmap, u32le(error, 4))
+                assertEquals(56, error[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 1, 1))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 2, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `FillPoly and PolyFillArc honor GC tiled fill style`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(
+                    putImage24PixelsRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 2,
+                        pixels = listOf(
+                            Red, Green,
+                            Blue, 0x0012_3456,
+                        ),
+                    ),
+                )
+                out.write(changeGcTiledFillRequest(GcId, tilePixmap = PixmapId, xOrigin = 0, yOrigin = 0))
+                out.write(fillPolyRequest(WindowId, GcId, coordMode = 0, points = listOf(1 to 1, 5 to 1, 5 to 4, 1 to 4)))
+                out.write(polyArcRequest(WindowId, GcId, filled = true, arcs = listOf(XArcCommand(8, 1, 5, 5, 0, 360 * 64))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 14, height = 8))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff12_3456.toInt(), pixelAt(image, 14, 1, 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 14, 2, 1))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 14, 1, 2))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 14, 2, 2))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 14, 10, 3))
+                assertEquals(0xff12_3456.toInt(), pixelAt(image, 14, 11, 3))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 14, 13, 3))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PolyFillRectangle honors stippled and opaque stippled fill styles`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2, depth = 8))
+                out.write(createGcRequest(GcId, foreground = Red, background = Blue))
+                out.write(
+                    putImage8PixelsRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 2,
+                        alphas = byteArrayOf(0xff.toByte(), 0x00, 0x00, 0xff.toByte()),
+                    ),
+                )
+                out.write(changeGcStippledFillRequest(GcId, fillStyle = FillStippled, stipplePixmap = PixmapId, xOrigin = 0, yOrigin = 0))
+                out.write(polyFillRectangleRequest(WindowId, GcId, rectangles = listOf(XRectangleCommand(1, 1, 2, 2))))
+                out.write(changeGcStippledFillRequest(GcId, fillStyle = FillOpaqueStippled, stipplePixmap = PixmapId, xOrigin = 0, yOrigin = 0))
+                out.write(polyFillRectangleRequest(WindowId, GcId, rectangles = listOf(XRectangleCommand(4, 1, 2, 2))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 7, height = 4))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 7, 1, 1))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 7, 2, 1))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 7, 1, 2))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 7, 2, 2))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 7, 4, 1))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 7, 5, 1))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 7, 4, 2))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 7, 5, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CopyGC preserves tiled fill snapshot`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(createGcRequest(GcId + 1, foreground = Blue))
+                out.write(
+                    putImage24PixelsRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 2,
+                        pixels = listOf(
+                            Red, Green,
+                            Blue, 0x0012_3456,
+                        ),
+                    ),
+                )
+                out.write(changeGcTiledFillRequest(GcId, tilePixmap = PixmapId, xOrigin = 0, yOrigin = 0))
+                out.write(freePixmapRequest(PixmapId))
+                out.write(copyGcRequest(GcId, GcId + 1, mask = 0x0000_3500))
+                out.write(polyFillRectangleRequest(WindowId, GcId + 1, rectangles = listOf(XRectangleCommand(1, 1, 2, 2))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 4))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff12_3456.toInt(), pixelAt(image, 4, 1, 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 4, 2, 1))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 4, 1, 2))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 2, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SetDashes and LineOnOffDash paint dashed PolyLine into framebuffer`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1477,13 +1673,19 @@ class XCoreDrawingProtocolTest {
         return request(1, 24, body)
     }
 
-    private fun createPixmapRequest(id: Int, width: Int, height: Int): ByteArray {
+    private fun createPixmapRequest(id: Int, width: Int, height: Int, depth: Int = 24): ByteArray {
         val body = ByteArray(12)
         put32le(body, 0, id)
         put32le(body, 4, WindowId)
         put16le(body, 8, width)
         put16le(body, 10, height)
-        return request(53, 24, body)
+        return request(53, depth, body)
+    }
+
+    private fun freePixmapRequest(id: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, id)
+        return request(54, 0, body)
     }
 
     private fun mapWindowRequest(id: Int): ByteArray {
@@ -1572,6 +1774,28 @@ class XCoreDrawingProtocolTest {
         put32le(body, 0, id)
         put32le(body, 4, 0x0000_0200)
         put32le(body, 8, fillRule)
+        return request(56, 0, body)
+    }
+
+    private fun changeGcTiledFillRequest(id: Int, tilePixmap: Int, xOrigin: Int, yOrigin: Int): ByteArray {
+        val body = ByteArray(24)
+        put32le(body, 0, id)
+        put32le(body, 4, 0x0000_3500)
+        put32le(body, 8, 1)
+        put32le(body, 12, tilePixmap)
+        put32le(body, 16, xOrigin)
+        put32le(body, 20, yOrigin)
+        return request(56, 0, body)
+    }
+
+    private fun changeGcStippledFillRequest(id: Int, fillStyle: Int, stipplePixmap: Int, xOrigin: Int, yOrigin: Int): ByteArray {
+        val body = ByteArray(24)
+        put32le(body, 0, id)
+        put32le(body, 4, 0x0000_3900)
+        put32le(body, 8, fillStyle)
+        put32le(body, 12, stipplePixmap)
+        put32le(body, 16, xOrigin)
+        put32le(body, 20, yOrigin)
         return request(56, 0, body)
     }
 
@@ -1687,6 +1911,21 @@ class XCoreDrawingProtocolTest {
             offset += 8
         }
         return request(67, 0, body)
+    }
+
+    private fun polyFillRectangleRequest(drawable: Int, gc: Int, rectangles: List<XRectangleCommand>): ByteArray {
+        val body = ByteArray(8 + rectangles.size * 8)
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        var offset = 8
+        for (rectangle in rectangles) {
+            put16le(body, offset, rectangle.x)
+            put16le(body, offset + 2, rectangle.y)
+            put16le(body, offset + 4, rectangle.width)
+            put16le(body, offset + 6, rectangle.height)
+            offset += 8
+        }
+        return request(70, 0, body)
     }
 
     private fun polyArcRequest(drawable: Int, gc: Int, filled: Boolean, arcs: List<XArcCommand>): ByteArray {
@@ -1814,6 +2053,28 @@ class XCoreDrawingProtocolTest {
         put16le(body, 8, width)
         put16le(body, 10, height)
         body[17] = 24
+        data.copyInto(body, 20)
+        return request(72, 2, body)
+    }
+
+    private fun putImage8PixelsRequest(drawable: Int, width: Int, height: Int, alphas: ByteArray): ByteArray {
+        require(alphas.size == width * height)
+        val stride = paddedLength(width)
+        val data = ByteArray(stride * height)
+        for (row in 0 until height) {
+            alphas.copyInto(
+                destination = data,
+                destinationOffset = row * stride,
+                startIndex = row * width,
+                endIndex = (row + 1) * width,
+            )
+        }
+        val body = ByteArray(20 + data.size)
+        put32le(body, 0, drawable)
+        put32le(body, 4, GcId)
+        put16le(body, 8, width)
+        put16le(body, 10, height)
+        body[17] = 8
         data.copyInto(body, 20)
         return request(72, 2, body)
     }
@@ -1983,6 +2244,8 @@ class XCoreDrawingProtocolTest {
         const val Blue = 0x0000_00ff
         const val GXnoop = 0x5
         const val GXxor = 0x6
+        const val FillStippled = 2
+        const val FillOpaqueStippled = 3
         const val FullCircleAngle = 360 * 64
         const val ArcChord = 0
         const val WindingRule = 1
