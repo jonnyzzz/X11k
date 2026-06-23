@@ -119,7 +119,7 @@ internal class X11Connection(
             10 -> unmapWindow(body)
             11 -> unmapSubwindows(body)
             12 -> configureWindow(body)
-            13 -> unitReplyless()
+            13 -> circulateWindow(minorOpcode, body)
             14 -> getGeometry(body)
             15 -> queryTree(body)
             16 -> internAtom(minorOpcode, body)
@@ -1298,6 +1298,17 @@ internal class X11Connection(
             sendConfigureNotify(configured)
             if (width != null || height != null) sendExpose(configured)
         }
+    }
+
+    private fun circulateWindow(direction: Int, body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = 13, badValue = 0)
+        if (direction !in XCirculateResult.RaiseLowest..XCirculateResult.LowerHighest) {
+            return writeError(error = 2, opcode = 13, badValue = direction)
+        }
+        val windowId = byteOrder.u32(body, 0)
+        state.window(windowId) ?: return writeError(error = 3, opcode = 13, badValue = windowId)
+        val result = state.circulateWindow(windowId, direction) ?: return
+        sendCirculateNotify(result)
     }
 
     private fun getWindowAttributes(body: ByteArray) {
@@ -2945,6 +2956,16 @@ internal class X11Connection(
         byteOrder.put16(event, 20, window.width)
         byteOrder.put16(event, 22, window.height)
         byteOrder.put16(event, 24, window.borderWidth)
+        write(event)
+    }
+
+    private fun sendCirculateNotify(result: XCirculateResult) {
+        val event = ByteArray(32)
+        event[0] = 26
+        byteOrder.put16(event, 2, sequence)
+        byteOrder.put32(event, 4, result.parentId)
+        byteOrder.put32(event, 8, result.window.id)
+        event[16] = result.place.toByte()
         write(event)
     }
 

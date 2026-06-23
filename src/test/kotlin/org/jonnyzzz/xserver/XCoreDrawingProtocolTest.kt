@@ -3008,6 +3008,68 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CirculateWindow restacks occluding mapped children and validates failures`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val first = WindowId + 100
+                val second = WindowId + 101
+                val third = WindowId + 102
+                val nested = WindowId + 103
+                val missing = WindowId + 199
+
+                out.write(createWindowRequest(first, x = 0, y = 0, width = 30, height = 30))
+                out.write(createWindowRequest(nested, parent = first, x = 1, y = 1, width = 10, height = 10))
+                out.write(createWindowRequest(second, x = 10, y = 10, width = 30, height = 30))
+                out.write(createWindowRequest(third, x = 80, y = 80, width = 20, height = 20))
+                out.write(mapWindowRequest(first))
+                out.write(mapWindowRequest(nested))
+                out.write(mapWindowRequest(second))
+                out.write(mapWindowRequest(third))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.write(circulateWindowRequest(0, X11Ids.RootWindow))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.write(circulateWindowRequest(1, X11Ids.RootWindow))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.write(circulateWindowRequest(0, third))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.write(circulateWindowRequest(2, X11Ids.RootWindow))
+                out.write(request(13, 0, ByteArray(8)))
+                out.write(circulateWindowRequest(0, missing))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.flush()
+
+                repeat(4) {
+                    assertEquals(19, input.readExactly(32)[0].toInt() and 0xff)
+                    assertEquals(12, input.readExactly(32)[0].toInt() and 0xff)
+                }
+                assertEquals(listOf(first, second, third), treeChildren(readReply(input)))
+                assertCirculateNotify(input.readExactly(32), sequence = 10, eventWindow = X11Ids.RootWindow, window = first, place = 0)
+                assertEquals(listOf(second, third, first), treeChildren(readReply(input)))
+                assertCirculateNotify(input.readExactly(32), sequence = 12, eventWindow = X11Ids.RootWindow, window = first, place = 1)
+                assertEquals(listOf(first, second, third), treeChildren(readReply(input)))
+                assertEquals(listOf(first, second, third), treeChildren(readReply(input)))
+                val json = httpGet(server.localPort, "/state.json")
+                assertEquals(
+                    true,
+                    json.indexOf(windowJsonId(first)) < json.indexOf(windowJsonId(nested)),
+                    "CirculateWindow should keep a restacked window's descendants after the parent in snapshot/render order",
+                )
+                assertError(input, error = 2, opcode = 13, badValue = 2, sequence = 16)
+                assertError(input, error = 16, opcode = 13, badValue = 0, sequence = 17)
+                assertError(input, error = 3, opcode = 13, badValue = missing, sequence = 18)
+                assertEquals(listOf(first, second, third), treeChildren(readReply(input)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SetCloseDownMode validates mode and length and preserves connection`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3819,6 +3881,8 @@ class XCoreDrawingProtocolTest {
 
     private fun createWindowRequest(
         id: Int,
+        x: Int = 0,
+        y: Int = 0,
         width: Int = 40,
         height: Int = 30,
         parent: Int = X11Ids.RootWindow,
@@ -3829,6 +3893,8 @@ class XCoreDrawingProtocolTest {
         val body = ByteArray(28 + extraValues.size * 4)
         put32le(body, 0, id)
         put32le(body, 4, parent)
+        put16le(body, 8, x)
+        put16le(body, 10, y)
         put16le(body, 12, width)
         put16le(body, 14, height)
         put16le(body, 18, 1)
@@ -4104,6 +4170,12 @@ class XCoreDrawingProtocolTest {
         val body = ByteArray(4)
         put32le(body, 0, window)
         return request(15, 0, body)
+    }
+
+    private fun circulateWindowRequest(direction: Int, window: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, window)
+        return request(13, direction, body)
     }
 
     private fun setScreenSaverRequest(timeout: Int, interval: Int, preferBlanking: Int, allowExposures: Int): ByteArray {
@@ -4757,6 +4829,9 @@ class XCoreDrawingProtocolTest {
             socket.getInputStream().readBytes().decodeToString().substringAfter("\r\n\r\n")
         }
 
+    private fun windowJsonId(id: Int): String =
+        """"id":"0x${id.toString(16)}""""
+
     private fun pixelAt(reply: ByteArray, imageWidth: Int, x: Int, y: Int): Int =
         u32le(reply, 32 + (y * imageWidth + x) * 4)
 
@@ -4895,6 +4970,17 @@ class XCoreDrawingProtocolTest {
         assertEquals(0, event[5].toInt() and 0xff)
         assertEquals(0, event[6].toInt() and 0xff)
         assertZeroBytes(event, 7, 32)
+    }
+
+    private fun assertCirculateNotify(event: ByteArray, sequence: Int, eventWindow: Int, window: Int, place: Int) {
+        assertEquals(26, event[0].toInt() and 0xff)
+        assertEquals(0, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(eventWindow, u32le(event, 4))
+        assertEquals(window, u32le(event, 8))
+        assertZeroBytes(event, 12, 16)
+        assertEquals(place, event[16].toInt() and 0xff)
+        assertZeroBytes(event, 17, 32)
     }
 
     private fun assertButtonEvent(event: ByteArray, type: Int, detail: Int) {

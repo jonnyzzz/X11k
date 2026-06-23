@@ -174,6 +174,25 @@ internal class X11State(
     fun childrenOf(id: Int): List<XWindow> = windows.values.filter { it.parentId == id }
 
     @Synchronized
+    fun circulateWindow(id: Int, direction: Int): XCirculateResult? {
+        if (!windows.containsKey(id)) return null
+        val children = childrenOf(id)
+        val target = when (direction) {
+            XCirculateResult.RaiseLowest -> children.firstOrNull { child ->
+                child.mapped && childrenAfter(children, child).any { it.mapped && windowsOverlap(child, it) }
+            }
+            XCirculateResult.LowerHighest -> children.asReversed().firstOrNull { child ->
+                child.mapped && childrenBefore(children, child).any { it.mapped && windowsOverlap(child, it) }
+            }
+            else -> null
+        } ?: return null
+
+        val place = if (direction == XCirculateResult.RaiseLowest) XCirculateResult.Top else XCirculateResult.Bottom
+        restackChild(target, place)
+        return XCirculateResult(parentId = id, window = target, place = place)
+    }
+
+    @Synchronized
     fun reparentWindow(id: Int, parentId: Int, x: Int, y: Int): XWindow? {
         val window = windows[id] ?: return null
         if (!windows.containsKey(parentId)) return null
@@ -2144,6 +2163,54 @@ internal class X11State(
         }
     }
 
+    private fun childrenBefore(children: List<XWindow>, child: XWindow): List<XWindow> =
+        children.takeWhile { it.id != child.id }
+
+    private fun childrenAfter(children: List<XWindow>, child: XWindow): List<XWindow> =
+        children.dropWhile { it.id != child.id }.drop(1)
+
+    private fun windowsOverlap(first: XWindow, second: XWindow): Boolean {
+        val firstRight = first.x + first.width + first.borderWidth * 2
+        val firstBottom = first.y + first.height + first.borderWidth * 2
+        val secondRight = second.x + second.width + second.borderWidth * 2
+        val secondBottom = second.y + second.height + second.borderWidth * 2
+        return first.x < secondRight && second.x < firstRight && first.y < secondBottom && second.y < firstBottom
+    }
+
+    private fun restackChild(child: XWindow, place: Int) {
+        val siblings = childrenOf(child.parentId)
+        val anchorId = when (place) {
+            XCirculateResult.Top -> siblings.lastOrNull()?.id
+            else -> siblings.firstOrNull()?.id
+        }
+        val movingIds = subtreeIds(child.id)
+        if (anchorId == null || anchorId in movingIds) return
+
+        val entries = windows.entries.map { it.key to it.value }
+        val moving = entries.filter { (id, _) -> id in movingIds }
+        windows.clear()
+        for ((id, window) in entries) {
+            if (id in movingIds) continue
+            if (place == XCirculateResult.Bottom && id == anchorId) {
+                moving.forEach { (movingId, movingWindow) -> windows[movingId] = movingWindow }
+            }
+            windows[id] = window
+            if (place == XCirculateResult.Top && id == anchorId) {
+                moving.forEach { (movingId, movingWindow) -> windows[movingId] = movingWindow }
+            }
+        }
+    }
+
+    private fun subtreeIds(rootId: Int): Set<Int> {
+        val result = linkedSetOf<Int>()
+        fun visit(id: Int) {
+            result += id
+            windows.values.filter { it.parentId == id }.forEach { visit(it.id) }
+        }
+        visit(rootId)
+        return result
+    }
+
     private fun eventSelectionsForWindow(windowId: Int, eventMask: Int): List<XEventSink> =
         eventSinks.mapNotNull { (sink, selections) ->
             val selectedMask = selections[windowId] ?: return@mapNotNull null
@@ -2329,6 +2396,19 @@ internal data class XAccessHost(
         const val FamilyChaos = 2
         const val FamilyServerInterpreted = 5
         const val FamilyInternetV6 = 6
+    }
+}
+
+internal data class XCirculateResult(
+    val parentId: Int,
+    val window: XWindow,
+    val place: Int,
+) {
+    companion object {
+        const val RaiseLowest = 0
+        const val LowerHighest = 1
+        const val Top = 0
+        const val Bottom = 1
     }
 }
 
