@@ -161,6 +161,38 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER AddTraps builds A8 mask used by composite`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 20, height = 14, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 20, height = 14))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
+                out.write(renderFillRectangles(MaskPictureId, x = 0, y = 0, width = 20, height = 14, red = 0x0000, green = 0x0000, blue = 0x0000, alpha = 0x0000))
+                out.write(renderAddTraps(MaskPictureId, xOffset = 3, yOffset = 2, x = 2, y = 2, width = 7, height = 5))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderComposite(SolidPictureId, PictureId, mask = MaskPictureId, width = 20, height = 14))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 20, height = 14))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 20, x = 6, y = 5))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 20, x = 10, y = 5))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 20, x = 6, y = 8))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 20, x = 3, y = 3))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 20, x = 12, y = 8))
+                assertContains(httpGet(server.localPort, "/text.txt"), "AddTraps")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER triangles composite solid source into destination framebuffer`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -413,6 +445,20 @@ class XRenderProtocolTest {
         putFixedPoint(body, 44, x + width, y)
         putFixedPoint(body, 52, x + width, y + height)
         return request(XRender.MajorOpcode, 10, body)
+    }
+
+    private fun renderAddTraps(picture: Int, xOffset: Int, yOffset: Int, x: Int, y: Int, width: Int, height: Int): ByteArray {
+        val body = ByteArray(32)
+        put32le(body, 0, picture)
+        put16le(body, 4, xOffset)
+        put16le(body, 6, yOffset)
+        putFixed(body, 8, x)
+        putFixed(body, 12, x + width)
+        putFixed(body, 16, y)
+        putFixed(body, 20, x)
+        putFixed(body, 24, x + width)
+        putFixed(body, 28, y + height)
+        return request(XRender.MajorOpcode, 32, body)
     }
 
     private fun renderTriangles(source: Int, destination: Int, points: List<Pair<Int, Int>>, operation: Int = XRender.OpSrc): ByteArray {

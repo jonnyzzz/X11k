@@ -256,9 +256,10 @@ internal class X11Connection(
             23, 24, 25 -> renderCompositeGlyphs(minorOpcode, body)
             26 -> renderFillRectangles(body)
             27 -> renderCreateCursor(body)
-            28, 30, 32 -> Unit
+            28, 30 -> Unit
             29 -> renderQueryFilters()
             31 -> renderCreateAnimCursor(body)
+            32 -> renderAddTraps(body)
             33 -> renderCreateSolidFill(body)
             34, 35, 36 -> renderCreateGradientPicture(body)
             else -> unsupportedRequest(majorOpcode, minorOpcode, "RENDER.$operation")
@@ -720,6 +721,17 @@ internal class X11Connection(
         own(id)
     }
 
+    private fun renderAddTraps(body: ByteArray) {
+        if (body.size < 8) return
+        val picture = state.picture(byteOrder.u32(body, 0)) ?: return
+        if (picture.format != XRender.A8Format) return
+        val xOffset = byteOrder.i16(body, 4)
+        val yOffset = byteOrder.i16(body, 6)
+        val traps = offsetTrapezoids(traps(body, 8), xOffset, yOffset)
+        if (traps.isEmpty()) return
+        state.addTraps(picture, traps)
+    }
+
     private fun renderCreateSolidFill(body: ByteArray) {
         if (body.size < 12) return
         val id = byteOrder.u32(body, 0)
@@ -939,6 +951,7 @@ internal class X11Connection(
             29 -> "drawable=${hex(0)}"
             30 -> "picture=${hex(0)} filterLength=${u16(4)}"
             31 -> "cursor=${hex(0)} elements=${(body.size - 4).coerceAtLeast(0) / 8}"
+            32 -> "picture=${hex(0)} offset=${i16(4)},${i16(6)} traps=${(body.size - 8).coerceAtLeast(0) / 24}"
             33 -> "picture=${hex(0)} color=${u16(4)},${u16(6)},${u16(8)},${u16(10)}"
             34, 35, 36 -> "picture=${hex(0)}"
             else -> ""
@@ -2309,6 +2322,45 @@ internal class X11Connection(
             offset += 40
         }
         return trapezoids
+    }
+
+    private fun offsetTrapezoids(trapezoids: List<XTrapezoidCommand>, xOffset: Int, yOffset: Int): List<XTrapezoidCommand> {
+        if (xOffset == 0 && yOffset == 0) return trapezoids
+        val fixedX = xOffset * 65_536
+        val fixedY = yOffset * 65_536
+        fun point(point: XFixedPoint): XFixedPoint =
+            XFixedPoint(point.x + fixedX, point.y + fixedY)
+        fun line(line: XFixedLine): XFixedLine =
+            XFixedLine(point(line.p1), point(line.p2))
+        return trapezoids.map { trap ->
+            XTrapezoidCommand(
+                top = trap.top + fixedY,
+                bottom = trap.bottom + fixedY,
+                left = line(trap.left),
+                right = line(trap.right),
+            )
+        }
+    }
+
+    private fun traps(body: ByteArray, startOffset: Int): List<XTrapezoidCommand> {
+        val traps = mutableListOf<XTrapezoidCommand>()
+        var offset = startOffset
+        while (offset + 24 <= body.size) {
+            val topLeft = byteOrder.u32(body, offset)
+            val topRight = byteOrder.u32(body, offset + 4)
+            val topY = byteOrder.u32(body, offset + 8)
+            val bottomLeft = byteOrder.u32(body, offset + 12)
+            val bottomRight = byteOrder.u32(body, offset + 16)
+            val bottomY = byteOrder.u32(body, offset + 20)
+            traps += XTrapezoidCommand(
+                top = topY,
+                bottom = bottomY,
+                left = XFixedLine(XFixedPoint(topLeft, topY), XFixedPoint(bottomLeft, bottomY)),
+                right = XFixedLine(XFixedPoint(topRight, topY), XFixedPoint(bottomRight, bottomY)),
+            )
+            offset += 24
+        }
+        return traps
     }
 
     private fun triangles(body: ByteArray, startOffset: Int): List<XTriangleCommand> {

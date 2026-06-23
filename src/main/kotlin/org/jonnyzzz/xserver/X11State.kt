@@ -943,6 +943,19 @@ internal class X11State(
     }
 
     @Synchronized
+    fun addTraps(destination: XPicture, trapezoids: List<XTrapezoidCommand>): Boolean {
+        if (destination.format != XRender.A8Format) return false
+        val drawableId = destination.drawableId ?: return false
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        return framebuffer.compositeTrapezoids(
+            pixel = -1,
+            operation = XRender.OpOver,
+            trapezoids = trapezoids,
+            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+        )
+    }
+
+    @Synchronized
     fun renderTriangles(
         operation: Int,
         source: XPicture,
