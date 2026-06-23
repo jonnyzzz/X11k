@@ -1135,6 +1135,58 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER composite glyphs sample generated source using src origin`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 24, height = 12, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateGlyphSet(GlyphSetId, XRender.A8Format))
+                out.write(renderAddA8Glyph(GlyphSetId, GlyphId, width = 4, height = 2, xOff = 4, alphas = ByteArray(8) { 0xff.toByte() }))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = 10 to 10,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
+                out.write(
+                    renderCompositeGlyphs32(
+                        source = GradientPictureId,
+                        destination = PictureId,
+                        glyphSet = GlyphSetId,
+                        sourceX = 2,
+                        sourceY = 1,
+                        deltaX = 4,
+                        deltaY = 3,
+                        glyphIds = listOf(GlyphId, GlyphId),
+                        operation = XRender.OpSrc,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 24, height = 12))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffcc_0033.toInt(), pixelAt(image, imageWidth = 24, x = 4, y = 3))
+                assertEquals(0xff80_0080.toInt(), pixelAt(image, imageWidth = 24, x = 10, y = 3))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 24, x = 3, y = 3))
+                assertContains(httpGet(server.localPort, "/text.txt"), "CompositeGlyphs32")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER picture targeting pixmap is exposed as painted offscreen surface`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1449,6 +1501,76 @@ class XRenderProtocolTest {
         return request(XRender.MajorOpcode, 32, body)
     }
 
+    private fun renderCreateGlyphSet(glyphSet: Int, format: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, glyphSet)
+        put32le(body, 4, format)
+        return request(XRender.MajorOpcode, 17, body)
+    }
+
+    private fun renderAddA8Glyph(
+        glyphSet: Int,
+        glyphId: Int,
+        width: Int,
+        height: Int,
+        x: Int = 0,
+        y: Int = 0,
+        xOff: Int = 0,
+        yOff: Int = 0,
+        alphas: ByteArray,
+    ): ByteArray {
+        val stride = (width + 3) and -4
+        val body = ByteArray(8 + 4 + 12 + stride * height)
+        put32le(body, 0, glyphSet)
+        put32le(body, 4, 1)
+        put32le(body, 8, glyphId)
+        put16le(body, 12, width)
+        put16le(body, 14, height)
+        put16le(body, 16, x)
+        put16le(body, 18, y)
+        put16le(body, 20, xOff)
+        put16le(body, 22, yOff)
+        for (row in 0 until height) {
+            alphas.copyInto(
+                destination = body,
+                destinationOffset = 24 + row * stride,
+                startIndex = row * width,
+                endIndex = row * width + width,
+            )
+        }
+        return request(XRender.MajorOpcode, 20, body)
+    }
+
+    private fun renderCompositeGlyphs32(
+        source: Int,
+        destination: Int,
+        glyphSet: Int,
+        sourceX: Int,
+        sourceY: Int,
+        deltaX: Int,
+        deltaY: Int,
+        glyphIds: List<Int>,
+        operation: Int = XRender.OpOver,
+    ): ByteArray {
+        val idsOffset = 32
+        val paddedSize = (idsOffset + glyphIds.size * 4 + 3) and -4
+        val body = ByteArray(paddedSize)
+        body[0] = operation.toByte()
+        put32le(body, 4, source)
+        put32le(body, 8, destination)
+        put32le(body, 12, XRender.A8Format)
+        put32le(body, 16, glyphSet)
+        put16le(body, 20, sourceX)
+        put16le(body, 22, sourceY)
+        body[24] = glyphIds.size.toByte()
+        put16le(body, 26, deltaX)
+        put16le(body, 28, deltaY)
+        glyphIds.forEachIndexed { index, glyphId ->
+            put32le(body, idsOffset + index * 4, glyphId)
+        }
+        return request(XRender.MajorOpcode, 25, body)
+    }
+
     private fun renderTriangles(
         source: Int,
         destination: Int,
@@ -1659,6 +1781,8 @@ class XRenderProtocolTest {
         const val MaskPictureId = 0x0020_2002
         const val PixmapId = 0x0020_0100
         const val PixmapPictureId = 0x0020_0101
+        const val GlyphSetId = 0x0020_3001
+        const val GlyphId = 0x0000_0041
     }
 
     private data class RenderColor(

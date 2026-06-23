@@ -1410,27 +1410,35 @@ internal class X11State(
         source: XPicture,
         destination: XPicture,
         glyphSetId: Int,
+        sourceX: Int,
+        sourceY: Int,
+        originX: Int,
+        originY: Int,
         placements: List<XGlyphPlacement>,
     ): Boolean {
         val destinationDrawableId = destination.drawableId ?: return false
         val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return false
         val glyphSet = glyphSets[glyphSetId] ?: return false
-        val sourceFramebuffer = source.drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer }
-        val sourcePixel = source.solidPixel ?: sourceFramebuffer?.firstPaintedPixel() ?: return false
+        val sourcePixelAt = source.sourcePixelSampler() ?: return false
         var painted = false
         for (placement in placements) {
             val glyph = glyphSet.glyphs[placement.glyphId] ?: continue
             val mask = glyph.mask ?: continue
             val destinationX = placement.x - glyph.x
             val destinationY = placement.y - glyph.y
-            painted = destinationFramebuffer.blendSolidOver(
-                pixel = sourcePixel,
+            painted = destinationFramebuffer.compositeSourceOverMask(
+                sourceX = sourceX,
+                sourceY = sourceY,
+                originX = originX,
+                originY = originY,
                 destinationX = destinationX,
                 destinationY = destinationY,
                 width = glyph.width,
                 height = glyph.height,
+                operation = operation,
                 clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
                 mask = mask,
+                sourcePixelAt = sourcePixelAt,
             ) || painted
         }
         return painted

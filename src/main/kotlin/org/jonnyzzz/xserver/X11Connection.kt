@@ -651,9 +651,12 @@ internal class X11Connection(
         val source = state.picture(byteOrder.u32(body, 4)) ?: return
         val destination = state.picture(byteOrder.u32(body, 8)) ?: return
         val destinationDrawableId = destination.drawableId ?: return
+        val sourceX = byteOrder.i16(body, 20)
+        val sourceY = byteOrder.i16(body, 22)
         val placementsByGlyphSet = compositeGlyphPlacements(minorOpcode, body)
+        val origin = placementsByGlyphSet.values.firstOrNull()?.firstOrNull() ?: return
         for ((glyphSetId, placements) in placementsByGlyphSet) {
-            state.compositeGlyphs(operation, source, destination, glyphSetId, placements)
+            state.compositeGlyphs(operation, source, destination, glyphSetId, sourceX, sourceY, origin.x, origin.y, placements)
         }
         state.draw(
             XDrawingCommand(

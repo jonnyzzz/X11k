@@ -323,6 +323,33 @@ internal class XFramebuffer(
         }
     }
 
+    fun compositeSourceOverMask(
+        sourceX: Int,
+        sourceY: Int,
+        originX: Int,
+        originY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        operation: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        mask: XFramebuffer,
+        sourcePixelAt: (x: Int, y: Int) -> Int,
+    ): Boolean {
+        val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
+        return compositeBounds(bounds, clipRectangles) { x, y ->
+            val maskAlpha = mask.alphaAt(x - destinationX, y - destinationY)
+            val sourcePixel = sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
+            when (operation) {
+                XRender.OpClear -> 0
+                XRender.OpSrc -> withMask(sourcePixel, maskAlpha)
+                XRender.OpOver -> over(sourcePixel, pixels[y * this.width + x], maskAlpha)
+                else -> over(sourcePixel, pixels[y * this.width + x], maskAlpha)
+            }
+        }
+    }
+
     fun copyFrom(
         source: XFramebuffer,
         sourceX: Int,
@@ -652,11 +679,6 @@ internal class XFramebuffer(
         pixelAt(x, y)?.let { (it ushr 24) and 0xff } ?: 0
 
     fun hasPaintedContent(): Boolean = painted
-
-    fun firstPaintedPixel(): Int? {
-        if (!painted) return null
-        return pixels.firstOrNull { ((it ushr 24) and 0xff) > 0 }
-    }
 
     fun toDataUri(): String? {
         if (!painted || width <= 0 || height <= 0) return null
