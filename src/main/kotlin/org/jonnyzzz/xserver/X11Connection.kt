@@ -245,7 +245,8 @@ internal class X11Connection(
             8 -> renderComposite(body)
             10 -> renderTrapezoids(body)
             11 -> renderTriangles(body)
-            12, 13 -> Unit
+            12 -> renderTriStrip(body)
+            13 -> renderTriFan(body)
             17 -> renderCreateGlyphSet(body)
             18 -> renderReferenceGlyphSet(body)
             19 -> renderFreeGlyphSet(body)
@@ -462,6 +463,53 @@ internal class X11Connection(
         if (maskFormat != XRender.A8Format) return
         val destinationDrawableId = destination.drawableId ?: return
         val triangles = triangles(body, 20)
+        if (triangles.isEmpty()) return
+        val painted = state.renderTriangles(
+            operation = operation,
+            source = source,
+            destination = destination,
+            triangles = triangles,
+        )
+        if (!painted) return
+        state.draw(
+            XDrawingCommand(
+                drawableId = destinationDrawableId,
+                kind = XDrawingKind.FillPoly,
+                foreground = source.solidPixel ?: 0,
+                points = triangles.flatMap { triangle ->
+                    listOf(
+                        XPoint(triangle.p1.x.fixedToInt(), triangle.p1.y.fixedToInt()),
+                        XPoint(triangle.p2.x.fixedToInt(), triangle.p2.y.fixedToInt()),
+                        XPoint(triangle.p3.x.fixedToInt(), triangle.p3.y.fixedToInt()),
+                    )
+                },
+                framebufferBacked = true,
+            ),
+        )
+    }
+
+    private fun renderTriStrip(body: ByteArray) {
+        renderTriangleMesh(body) { points ->
+            points.windowed(size = 3, step = 1).map { XTriangleCommand(it[0], it[1], it[2]) }
+        }
+    }
+
+    private fun renderTriFan(body: ByteArray) {
+        renderTriangleMesh(body) { points ->
+            val anchor = points.firstOrNull() ?: return@renderTriangleMesh emptyList()
+            points.drop(1).windowed(size = 2, step = 1).map { XTriangleCommand(anchor, it[0], it[1]) }
+        }
+    }
+
+    private fun renderTriangleMesh(body: ByteArray, trianglesFrom: (List<XFixedPoint>) -> List<XTriangleCommand>) {
+        if (body.size < 20) return
+        val operation = body[0].toInt() and 0xff
+        val source = state.picture(byteOrder.u32(body, 4)) ?: return
+        val destination = state.picture(byteOrder.u32(body, 8)) ?: return
+        val maskFormat = byteOrder.u32(body, 12)
+        if (maskFormat != XRender.A8Format) return
+        val destinationDrawableId = destination.drawableId ?: return
+        val triangles = trianglesFrom(fixedPoints(body, 20))
         if (triangles.isEmpty()) return
         val painted = state.renderTriangles(
             operation = operation,
@@ -876,9 +924,9 @@ internal class X11Connection(
             6 -> "picture=${hex(0)} origin=${i16(4)},${i16(6)} rects=${(body.size - 8).coerceAtLeast(0) / 8}"
             7 -> "picture=${hex(0)}"
             8 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} mask=${hex(8)} dst=${hex(12)} dst=${i16(24)},${i16(26)} ${u16(28)}x${u16(30)}"
-            10 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} traps=${(body.size - 20).coerceAtLeast(0) / 40}"
-            11 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} triangles=${(body.size - 20).coerceAtLeast(0) / 24}"
-            12, 13 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)}"
+            10 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} traps=${(body.size - 20).coerceAtLeast(0) / 40}"
+            11 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} triangles=${(body.size - 20).coerceAtLeast(0) / 24}"
+            12, 13 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} points=${(body.size - 20).coerceAtLeast(0) / 8}"
             17 -> "glyphSet=${hex(0)} format=${hex(4)}"
             18 -> "glyphSet=${hex(0)} existing=${hex(4)}"
             19 -> "glyphSet=${hex(0)}"
@@ -2262,6 +2310,16 @@ internal class X11Connection(
             offset += 24
         }
         return triangles
+    }
+
+    private fun fixedPoints(body: ByteArray, startOffset: Int): List<XFixedPoint> {
+        val points = mutableListOf<XFixedPoint>()
+        var offset = startOffset
+        while (offset + 8 <= body.size) {
+            points += XFixedPoint(byteOrder.u32(body, offset), byteOrder.u32(body, offset + 4))
+            offset += 8
+        }
+        return points
     }
 
     private fun Int.fixedToInt(): Int = this / 65_536
