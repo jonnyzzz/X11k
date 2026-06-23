@@ -1033,6 +1033,7 @@ internal class X11Connection(
         val fbConfig = byteOrder.u32(body, 4)
         val screen = byteOrder.u32(body, 8)
         val renderType = byteOrder.u32(body, 12)
+        if (state.hasResource(context)) return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateNewContext, badValue = context)
         state.putGlxContext(
             XGlxContext(
                 id = context,
@@ -1083,8 +1084,9 @@ internal class X11Connection(
 
     private fun glxIsDirect(body: ByteArray) {
         if (body.size < 4) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.IsDirect, badValue = 0)
+        val context = byteOrder.u32(body, 0)
         val reply = reply(extra = 0, payloadUnits = 0)
-        reply[8] = 0
+        reply[8] = if (state.glxContext(context)?.direct == true) 1 else 0
         write(reply)
     }
 
