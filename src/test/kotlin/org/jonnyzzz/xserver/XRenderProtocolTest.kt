@@ -1544,6 +1544,52 @@ class XRenderProtocolTest {
         }
     }
 
+    @Test
+    fun `RENDER CreateGlyphSet rejects duplicate resource id without replacing existing glyph set`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 4, height = 2, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateGlyphSet(GlyphSetId, XRender.A8Format))
+                out.write(renderAddA8Glyph(GlyphSetId, GlyphId, width = 4, height = 2, xOff = 4, alphas = ByteArray(8) { 0xff.toByte() }))
+                out.write(renderCreateGlyphSet(GlyphSetId, XRender.A1Format))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(
+                    renderCompositeGlyphs32(
+                        source = SolidPictureId,
+                        destination = PictureId,
+                        glyphSet = GlyphSetId,
+                        sourceX = 0,
+                        sourceY = 0,
+                        deltaX = 0,
+                        deltaY = 0,
+                        glyphIds = listOf(GlyphId),
+                        operation = XRender.OpSrc,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val duplicateError = socket.getInputStream().readExactly(32)
+                assertEquals(0, duplicateError[0].toInt())
+                assertEquals(14, duplicateError[1].toInt() and 0xff)
+                assertEquals(GlyphSetId, u32le(duplicateError, 4))
+                assertEquals(17, u16le(duplicateError, 8))
+                assertEquals(XRender.MajorOpcode, duplicateError[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), u32le(image, 32))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
     private fun setup(socket: Socket) {
         socket.getOutputStream().write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
         socket.getOutputStream().flush()

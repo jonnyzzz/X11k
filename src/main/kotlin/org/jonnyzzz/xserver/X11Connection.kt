@@ -580,6 +580,7 @@ internal class X11Connection(
     private fun renderCreateGlyphSet(body: ByteArray) {
         if (body.size < 8) return
         val id = byteOrder.u32(body, 0)
+        if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 17, badValue = id)
         state.putGlyphSet(XGlyphSet(id, byteOrder.u32(body, 4)))
         own(id)
     }
