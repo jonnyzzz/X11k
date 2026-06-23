@@ -129,6 +129,81 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER QueryFilters advertises required filters and aliases`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderQueryFilters(WindowId))
+                out.flush()
+
+                val reply = readReply(socket.getInputStream())
+                assertEquals(11, u32le(reply, 4))
+                assertEquals(76, reply.size)
+                assertEquals(5, u32le(reply, 8))
+                assertEquals(5, u32le(reply, 12))
+                val aliases = (0 until 5).map { index -> u16le(reply, 32 + index * 2) }
+                assertEquals(listOf(0xffff, 0xffff, 0, 1, 1), aliases)
+                assertEquals(0, u16le(reply, 42))
+                assertEquals(listOf("nearest", "bilinear", "fast", "good", "best"), filterNames(reply))
+
+                waitUntil {
+                    httpGet(server.localPort, "/text.txt").contains("QueryFilters")
+                }
+                assertContains(httpGet(server.localPort, "/text.txt"), "drawable=0x200001")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER QueryFilters reports Length error for malformed request size`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                socket.getOutputStream().write(request(XRender.MajorOpcode, 29, ByteArray(8)))
+                socket.getOutputStream().flush()
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(16, error[1].toInt() and 0xff)
+                assertEquals(8, u32le(error, 4))
+                assertEquals(29, u16le(error, 8))
+                assertEquals(XRender.MajorOpcode, error[10].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER QueryFilters reports Drawable error for unknown drawable`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missingDrawable = 0x0020_9999
+                out.write(renderQueryFilters(missingDrawable))
+                out.flush()
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(9, error[1].toInt() and 0xff)
+                assertEquals(missingDrawable, u32le(error, 4))
+                assertEquals(29, u16le(error, 8))
+                assertEquals(XRender.MajorOpcode, error[10].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER composite applies A8 mask pixels`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -502,6 +577,12 @@ class XRenderProtocolTest {
         return request(XRender.MajorOpcode, 30, body)
     }
 
+    private fun renderQueryFilters(drawable: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, drawable)
+        return request(XRender.MajorOpcode, 29, body)
+    }
+
     private fun renderTrapezoids(source: Int, destination: Int, x: Int, y: Int, width: Int, height: Int): ByteArray {
         val body = ByteArray(60)
         body[0] = XRender.OpSrc.toByte()
@@ -606,6 +687,18 @@ class XRenderProtocolTest {
         val header = input.readExactly(32)
         val payloadUnits = u32le(header, 4)
         return header + input.readExactly(payloadUnits * 4)
+    }
+
+    private fun filterNames(reply: ByteArray): List<String> {
+        val aliases = u32le(reply, 8)
+        val filters = u32le(reply, 12)
+        var offset = 32 + ((aliases * 2 + 3) and -4)
+        return (0 until filters).map {
+            val length = reply[offset].toInt() and 0xff
+            val name = reply.copyOfRange(offset + 1, offset + 1 + length).decodeToString()
+            offset += 1 + length
+            name
+        }
     }
 
     private fun httpGet(port: Int, path: String): String =

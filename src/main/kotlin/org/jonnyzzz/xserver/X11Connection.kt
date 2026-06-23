@@ -258,7 +258,7 @@ internal class X11Connection(
             26 -> renderFillRectangles(body)
             27 -> renderCreateCursor(body)
             28 -> renderSetPictureTransform(body)
-            29 -> renderQueryFilters()
+            29 -> renderQueryFilters(body)
             30 -> renderSetPictureFilter(body)
             31 -> renderCreateAnimCursor(body)
             32 -> renderAddTraps(body)
@@ -715,10 +715,29 @@ internal class X11Connection(
         state.updatePictureTransform(picture, (0 until 9).map { index -> byteOrder.u32(body, 4 + index * 4) })
     }
 
-    private fun renderQueryFilters() {
-        val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put32(reply, 8, 0)
-        byteOrder.put32(reply, 12, 0)
+    private fun renderQueryFilters(body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 29, badValue = body.size)
+        val drawableId = byteOrder.u32(body, 0)
+        state.drawable(drawableId) ?: return writeError(error = 9, opcode = XRender.MajorOpcode, minorOpcode = 29, badValue = drawableId)
+        val aliasBytes = RenderFilterAliases.size * 2
+        val paddedAliasBytes = paddedLength(aliasBytes)
+        val nameBytes = RenderFilterNames.sumOf { 1 + it.encodeToByteArray().size }
+        val payloadBytes = paddedLength(paddedAliasBytes + nameBytes)
+        val reply = reply(extra = 0, payloadUnits = payloadBytes / 4)
+        byteOrder.put32(reply, 8, RenderFilterAliases.size)
+        byteOrder.put32(reply, 12, RenderFilterNames.size)
+        var offset = 32
+        for (alias in RenderFilterAliases) {
+            byteOrder.put16(reply, offset, alias)
+            offset += 2
+        }
+        offset = 32 + paddedAliasBytes
+        for (filter in RenderFilterNames) {
+            val bytes = filter.encodeToByteArray()
+            reply[offset] = bytes.size.toByte()
+            bytes.copyInto(reply, offset + 1)
+            offset += 1 + bytes.size
+        }
         write(reply)
     }
 
@@ -2648,6 +2667,8 @@ internal class X11Connection(
         const val QueryBestSizeCursor = 0
         const val QueryBestSizeTile = 1
         const val QueryBestSizeStipple = 2
+        val RenderFilterNames = listOf("nearest", "bilinear", "fast", "good", "best")
+        val RenderFilterAliases = listOf(0xffff, 0xffff, 0, 1, 1)
     }
 }
 
