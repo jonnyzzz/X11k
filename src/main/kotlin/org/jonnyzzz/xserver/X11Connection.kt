@@ -107,8 +107,8 @@ internal class X11Connection(
             19 -> deleteProperty(body)
             20 -> getProperty(minorOpcode, body)
             21 -> listProperties(body)
-            22 -> unitReplyless()
-            23 -> getSelectionOwner()
+            22 -> setSelectionOwner(body)
+            23 -> getSelectionOwner(body)
             24 -> unitReplyless()
             25 -> unitReplyless()
             26 -> grabPointer(minorOpcode, body)
@@ -1392,9 +1392,21 @@ internal class X11Connection(
         write(reply)
     }
 
-    private fun getSelectionOwner() {
+    private fun setSelectionOwner(body: ByteArray) {
+        if (body.size < 12) return writeError(error = 16, opcode = 22, badValue = 0)
+        val owner = byteOrder.u32(body, 0)
+        val selection = byteOrder.u32(body, 4)
+        if (state.atomName(selection) == null) return writeError(error = 5, opcode = 22, badValue = selection)
+        if (owner != 0 && state.window(owner) == null) return writeError(error = 3, opcode = 22, badValue = owner)
+        state.setSelectionOwner(selection, owner)
+    }
+
+    private fun getSelectionOwner(body: ByteArray) {
+        if (body.size < 4) return writeError(error = 16, opcode = 23, badValue = 0)
+        val selection = byteOrder.u32(body, 0)
+        if (state.atomName(selection) == null) return writeError(error = 5, opcode = 23, badValue = selection)
         val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put32(reply, 8, 0)
+        byteOrder.put32(reply, 8, state.selectionOwner(selection))
         write(reply)
     }
 

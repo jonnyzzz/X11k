@@ -2062,6 +2062,36 @@ class XCoreDrawingProtocolTest {
         }
     }
 
+    @Test
+    fun `SetSelectionOwner updates and clears GetSelectionOwner reply`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(setSelectionOwnerRequest(WindowId, PrimaryAtom))
+                out.write(getSelectionOwnerRequest(PrimaryAtom))
+                out.write(setSelectionOwnerRequest(0, PrimaryAtom))
+                out.write(getSelectionOwnerRequest(PrimaryAtom))
+                out.flush()
+
+                val owner = readReply(socket.getInputStream())
+                assertEquals(1, owner[0].toInt())
+                assertEquals(0, u32le(owner, 4))
+                assertEquals(WindowId, u32le(owner, 8))
+
+                val cleared = readReply(socket.getInputStream())
+                assertEquals(1, cleared[0].toInt())
+                assertEquals(0, u32le(cleared, 4))
+                assertEquals(0, u32le(cleared, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
     private fun setup(socket: Socket) {
         socket.getOutputStream().write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
         socket.getOutputStream().flush()
@@ -2169,6 +2199,17 @@ class XCoreDrawingProtocolTest {
 
     private fun getInputFocusRequest(): ByteArray =
         request(43, 0, ByteArray(0))
+
+    private fun setSelectionOwnerRequest(owner: Int, selection: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, owner)
+        put32le(body, 4, selection)
+        put32le(body, 8, 0)
+        return request(22, 0, body)
+    }
+
+    private fun getSelectionOwnerRequest(selection: Int): ByteArray =
+        request(23, 0, ByteArray(4).also { put32le(it, 0, selection) })
 
     private fun queryPointerRequest(): ByteArray =
         request(38, 0, ByteArray(4).also { put32le(it, 0, X11Ids.RootWindow) })
@@ -2724,6 +2765,7 @@ class XCoreDrawingProtocolTest {
         const val WindowId = 0x0020_0001
         const val PixmapId = 0x0020_0100
         const val GcId = 0x0020_1001
+        const val PrimaryAtom = 1
         const val Red = 0x00ff_0000
         const val Green = 0x0000_ff00
         const val Blue = 0x0000_00ff

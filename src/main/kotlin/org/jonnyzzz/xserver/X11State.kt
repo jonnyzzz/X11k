@@ -23,6 +23,7 @@ internal class X11State(
     private val glyphSets = linkedMapOf<Int, XGlyphSet>()
     private val atomIds = linkedMapOf<String, Int>()
     private val atomNames = linkedMapOf<Int, String>()
+    private val selectionOwners = linkedMapOf<Int, Int>()
     private val eventSinks = linkedMapOf<XEventSink, MutableMap<Int, Int>>()
     private var nextAtomId = 69
     private var focusWindowId: Int = X11Ids.RootWindow
@@ -106,6 +107,7 @@ internal class X11State(
         for (windowId in removed) {
             windows.remove(windowId)
         }
+        selectionOwners.entries.removeIf { it.value in removed }
         removeEventSelections(removed)
         if (focusWindowId in removed) focusWindowId = X11Ids.RootWindow
         return removed
@@ -1785,6 +1787,18 @@ internal class X11State(
 
     @Synchronized
     fun atomName(id: Int): String? = atomNames[id]
+
+    @Synchronized
+    fun setSelectionOwner(selection: Int, owner: Int) {
+        if (owner == 0) {
+            selectionOwners.remove(selection)
+        } else {
+            selectionOwners[selection] = owner
+        }
+    }
+
+    @Synchronized
+    fun selectionOwner(selection: Int): Int = selectionOwners[selection] ?: 0
 
     fun extension(name: String): XExtension? = extensions.firstOrNull { it.name == name || name in it.aliases }
 
