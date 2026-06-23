@@ -109,7 +109,7 @@ internal class X11Connection(
             21 -> listProperties(body)
             22 -> setSelectionOwner(body)
             23 -> getSelectionOwner(body)
-            24 -> unitReplyless()
+            24 -> convertSelection(body)
             25 -> unitReplyless()
             26 -> grabPointer(minorOpcode, body)
             27 -> unitReplyless()
@@ -1410,6 +1410,23 @@ internal class X11Connection(
         write(reply)
     }
 
+    private fun convertSelection(body: ByteArray) {
+        if (body.size != 20) return writeError(error = 16, opcode = 24, badValue = 0)
+        val requestor = byteOrder.u32(body, 0)
+        val selection = byteOrder.u32(body, 4)
+        val target = byteOrder.u32(body, 8)
+        val property = byteOrder.u32(body, 12)
+        val time = byteOrder.u32(body, 16)
+        if (state.window(requestor) == null) return writeError(error = 3, opcode = 24, badValue = requestor)
+        if (state.atomName(selection) == null) return writeError(error = 5, opcode = 24, badValue = selection)
+        if (state.atomName(target) == null) return writeError(error = 5, opcode = 24, badValue = target)
+        if (property != 0 && state.atomName(property) == null) return writeError(error = 5, opcode = 24, badValue = property)
+
+        if (state.selectionOwner(selection) == 0) {
+            sendSelectionNotify(requestor, selection, target, property = 0, time)
+        }
+    }
+
     private fun queryPointer() {
         val reply = reply(extra = 1, payloadUnits = 0)
         byteOrder.put32(reply, 8, X11Ids.RootWindow)
@@ -2412,6 +2429,18 @@ internal class X11Connection(
         byteOrder.put16(event, 20, window.width)
         byteOrder.put16(event, 22, window.height)
         byteOrder.put16(event, 24, window.borderWidth)
+        write(event)
+    }
+
+    private fun sendSelectionNotify(requestor: Int, selection: Int, target: Int, property: Int, time: Int) {
+        val event = ByteArray(32)
+        event[0] = 31
+        byteOrder.put16(event, 2, sequence)
+        byteOrder.put32(event, 4, time)
+        byteOrder.put32(event, 8, requestor)
+        byteOrder.put32(event, 12, selection)
+        byteOrder.put32(event, 16, target)
+        byteOrder.put32(event, 20, property)
         write(event)
     }
 

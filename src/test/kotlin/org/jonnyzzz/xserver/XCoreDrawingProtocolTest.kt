@@ -2,10 +2,12 @@ package org.jonnyzzz.xserver
 
 import java.io.InputStream
 import java.net.Socket
+import java.net.SocketTimeoutException
 import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class XCoreDrawingProtocolTest {
@@ -2092,6 +2094,135 @@ class XCoreDrawingProtocolTest {
         }
     }
 
+    @Test
+    fun `ConvertSelection without owner sends SelectionNotify with property none`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(convertSelectionRequest(WindowId, PrimaryAtom, AtomAtom, StringAtom, time = 77))
+                out.flush()
+
+                val event = socket.getInputStream().readExactly(32)
+                assertEquals(31, event[0].toInt() and 0xff)
+                assertEquals(2, u16le(event, 2))
+                assertEquals(77, u32le(event, 4))
+                assertEquals(WindowId, u32le(event, 8))
+                assertEquals(PrimaryAtom, u32le(event, 12))
+                assertEquals(AtomAtom, u32le(event, 16))
+                assertEquals(0, u32le(event, 20))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ConvertSelection rejects unknown requestor window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val unknownWindow = WindowId + 1
+                socket.getOutputStream().write(
+                    convertSelectionRequest(unknownWindow, PrimaryAtom, AtomAtom, property = 0),
+                )
+                socket.getOutputStream().flush()
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(3, error[1].toInt() and 0xff)
+                assertEquals(unknownWindow, u32le(error, 4))
+                assertEquals(24, error[10].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ConvertSelection rejects undefined atom fields with matching bad values`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val unknownSelection = 0x0020_2001
+                val unknownTarget = 0x0020_2002
+                val unknownProperty = 0x0020_2003
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(convertSelectionRequest(WindowId, unknownSelection, AtomAtom, property = 0))
+                out.write(convertSelectionRequest(WindowId, PrimaryAtom, unknownTarget, property = 0))
+                out.write(convertSelectionRequest(WindowId, PrimaryAtom, AtomAtom, property = unknownProperty))
+                out.flush()
+
+                for (badValue in listOf(unknownSelection, unknownTarget, unknownProperty)) {
+                    val error = socket.getInputStream().readExactly(32)
+                    assertEquals(0, error[0].toInt())
+                    assertEquals(5, error[1].toInt() and 0xff)
+                    assertEquals(badValue, u32le(error, 4))
+                    assertEquals(24, error[10].toInt() and 0xff)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ConvertSelection rejects oversized request before semantic validation`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val unknownWindow = WindowId + 1
+                socket.getOutputStream().write(
+                    convertSelectionRequest(unknownWindow, PrimaryAtom, AtomAtom, property = 0, extraBytes = 4),
+                )
+                socket.getOutputStream().flush()
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(16, error[1].toInt() and 0xff)
+                assertEquals(0, u32le(error, 4))
+                assertEquals(24, error[10].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ConvertSelection with owner does not send no-owner SelectionNotify`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val requestor = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createWindowRequest(requestor))
+                out.write(setSelectionOwnerRequest(WindowId, PrimaryAtom))
+                out.write(convertSelectionRequest(requestor, PrimaryAtom, AtomAtom, StringAtom, time = 77))
+                out.flush()
+
+                socket.soTimeout = 250
+                assertFailsWith<SocketTimeoutException> {
+                    socket.getInputStream().readExactly(32)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
     private fun setup(socket: Socket) {
         socket.getOutputStream().write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
         socket.getOutputStream().flush()
@@ -2210,6 +2341,23 @@ class XCoreDrawingProtocolTest {
 
     private fun getSelectionOwnerRequest(selection: Int): ByteArray =
         request(23, 0, ByteArray(4).also { put32le(it, 0, selection) })
+
+    private fun convertSelectionRequest(
+        requestor: Int,
+        selection: Int,
+        target: Int,
+        property: Int,
+        time: Int = 0,
+        extraBytes: Int = 0,
+    ): ByteArray {
+        val body = ByteArray(20 + extraBytes)
+        put32le(body, 0, requestor)
+        put32le(body, 4, selection)
+        put32le(body, 8, target)
+        put32le(body, 12, property)
+        put32le(body, 16, time)
+        return request(24, 0, body)
+    }
 
     private fun queryPointerRequest(): ByteArray =
         request(38, 0, ByteArray(4).also { put32le(it, 0, X11Ids.RootWindow) })
@@ -2766,6 +2914,8 @@ class XCoreDrawingProtocolTest {
         const val PixmapId = 0x0020_0100
         const val GcId = 0x0020_1001
         const val PrimaryAtom = 1
+        const val AtomAtom = 4
+        const val StringAtom = 31
         const val Red = 0x00ff_0000
         const val Green = 0x0000_ff00
         const val Blue = 0x0000_00ff
