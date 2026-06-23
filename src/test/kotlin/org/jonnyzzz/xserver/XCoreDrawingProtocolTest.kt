@@ -2783,6 +2783,35 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ForceScreenSaver validates mode and length and preserves connection`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(forceScreenSaverRequest(0))
+                out.write(forceScreenSaverRequest(1))
+                out.write(forceScreenSaverRequest(2))
+                out.write(request(115, 0, ByteArray(4)))
+                out.write(getScreenSaverRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = 115, badValue = 2, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = 115, badValue = 0, sequence = 4)
+
+                val screenSaver = readReply(socket.getInputStream())
+                assertEquals(5, u16le(screenSaver, 2))
+                assertEquals(0, u32le(screenSaver, 4))
+                assertEquals(0, u16le(screenSaver, 8))
+                assertEquals(0, u16le(screenSaver, 10))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SetSelectionOwner updates and clears GetSelectionOwner reply`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3777,6 +3806,9 @@ class XCoreDrawingProtocolTest {
 
     private fun getScreenSaverRequest(): ByteArray =
         request(108, 0, ByteArray(0))
+
+    private fun forceScreenSaverRequest(mode: Int): ByteArray =
+        request(115, mode, ByteArray(0))
 
     private fun bellRequest(percent: Int): ByteArray =
         request(104, percent and 0xff, ByteArray(0))

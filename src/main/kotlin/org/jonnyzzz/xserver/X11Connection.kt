@@ -192,6 +192,7 @@ internal class X11Connection(
             106 -> getPointerControl(body)
             107 -> setScreenSaver(body)
             108 -> getScreenSaver()
+            115 -> forceScreenSaver(minorOpcode, body)
             112 -> unitReplyless()
             116 -> getPointerMapping()
             117 -> getPointerMapping()
@@ -2664,9 +2665,15 @@ internal class X11Connection(
             106 -> "GetPointerControl"
             107 -> "SetScreenSaver"
             108 -> "GetScreenSaver"
-            112 -> "SetPointerMapping"
-            116 -> "SetModifierMapping"
-            117 -> "GetModifierMapping"
+            109 -> "ChangeHosts"
+            110 -> "ListHosts"
+            111 -> "SetAccessControl"
+            112 -> "SetCloseDownMode"
+            113 -> "KillClient"
+            114 -> "RotateProperties"
+            115 -> "ForceScreenSaver"
+            116 -> "SetPointerMapping"
+            117 -> "GetPointerMapping"
             118 -> "SetModifierMapping"
             119 -> "GetModifierMapping"
             127 -> "NoOperation"
@@ -2770,6 +2777,11 @@ internal class X11Connection(
         if (preferBlanking !in 0..2) return writeError(error = 2, opcode = 107, badValue = preferBlanking)
         if (allowExposures !in 0..2) return writeError(error = 2, opcode = 107, badValue = allowExposures)
         state.setScreenSaver(timeout, interval, preferBlanking, allowExposures)
+    }
+
+    private fun forceScreenSaver(mode: Int, body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = 115, badValue = 0)
+        if (mode !in 0..1) return writeError(error = 2, opcode = 115, badValue = mode)
     }
 
     private fun getPointerMapping() {
