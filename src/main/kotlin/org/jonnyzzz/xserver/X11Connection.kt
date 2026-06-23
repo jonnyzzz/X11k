@@ -85,10 +85,10 @@ internal class X11Connection(
                 dispatch(opcode, minorOpcode, body)
             }
         } finally {
-            state.unregisterEventSink(this)
             if (closeDownMode == XCloseDownMode.Destroy) {
-                state.removeClientResources(ownedResources)
+                state.removeClientResources(this, ownedResources)
             }
+            state.unregisterEventSink(this)
         }
     }
 
@@ -112,7 +112,7 @@ internal class X11Connection(
             2 -> changeWindowAttributes(body)
             3 -> getWindowAttributes(body)
             4 -> destroyWindow(body)
-            6 -> unitReplyless()
+            6 -> changeSaveSet(minorOpcode, body)
             7 -> reparentWindow(body)
             8 -> mapWindow(body)
             9 -> mapSubwindows(body)
@@ -1238,6 +1238,18 @@ internal class X11Connection(
         if (body.size >= 4) {
             ownedResources.removeAll(state.removeWindow(byteOrder.u32(body, 0)))
         }
+    }
+
+    private fun changeSaveSet(mode: Int, body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = 6, badValue = 0)
+        if (mode !in XSaveSetMode.Insert..XSaveSetMode.Delete) {
+            return writeError(error = 2, opcode = 6, badValue = mode)
+        }
+        val windowId = byteOrder.u32(body, 0)
+        state.window(windowId) ?: return writeError(error = 3, opcode = 6, badValue = windowId)
+        val owner = state.windowOwner(windowId)
+        if (owner == null || owner == this) return writeError(error = 8, opcode = 6, badValue = 0)
+        state.changeSaveSet(this, windowId, insert = mode == XSaveSetMode.Insert)
     }
 
     private fun reparentWindow(body: ByteArray) {
@@ -4407,6 +4419,11 @@ private object XCloseDownMode {
     const val Destroy = 0
     const val RetainPermanent = 1
     const val RetainTemporary = 2
+}
+
+private object XSaveSetMode {
+    const val Insert = 0
+    const val Delete = 1
 }
 
 private data class XRenderPictureAttributes(

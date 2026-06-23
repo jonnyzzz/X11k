@@ -27,6 +27,7 @@ internal class X11State(
     private val selectionOwners = linkedMapOf<Int, XSelectionOwner>()
     private val windowOwners = linkedMapOf<Int, XEventSink>()
     private val eventSinks = linkedMapOf<XEventSink, MutableMap<Int, Int>>()
+    private val saveSets = linkedMapOf<XEventSink, LinkedHashSet<Int>>()
     private var nextAtomId = 69
     private var focusWindowId: Int = X11Ids.RootWindow
     private var focusRevertTo: Int = 0
@@ -120,9 +121,18 @@ internal class X11State(
             windowOwners.remove(windowId)
         }
         selectionOwners.entries.removeIf { it.value.windowId in removed }
+        saveSets.values.forEach { it.removeAll(removed) }
+        saveSets.entries.removeIf { it.value.isEmpty() }
         removeEventSelections(removed)
         if (focusWindowId in removed) focusWindowId = X11Ids.RootWindow
         return removed
+    }
+
+    @Synchronized
+    fun removeClientResources(owner: XEventSink, resourceIds: Set<Int>) {
+        processSaveSet(owner, resourceIds)
+        removeClientResources(resourceIds)
+        saveSets.remove(owner)
     }
 
     @Synchronized
@@ -153,6 +163,19 @@ internal class X11State(
 
     @Synchronized
     fun window(id: Int): XWindow? = windows[id]
+
+    @Synchronized
+    fun windowOwner(id: Int): XEventSink? = windowOwners[id]
+
+    @Synchronized
+    fun changeSaveSet(owner: XEventSink, windowId: Int, insert: Boolean) {
+        if (insert) {
+            saveSets.getOrPut(owner) { linkedSetOf() } += windowId
+        } else {
+            saveSets[owner]?.remove(windowId)
+            if (saveSets[owner]?.isEmpty() == true) saveSets.remove(owner)
+        }
+    }
 
     @Synchronized
     fun windowIsViewable(id: Int): Boolean {
@@ -324,6 +347,7 @@ internal class X11State(
         eventSinks.remove(sink)
         selectionOwners.entries.removeIf { it.value.sink == sink }
         windowOwners.entries.removeIf { it.value == sink }
+        saveSets.remove(sink)
     }
 
     @Synchronized
@@ -2153,6 +2177,50 @@ internal class X11State(
             }
         } while (changed)
         return removed
+    }
+
+    private fun processSaveSet(owner: XEventSink, resourceIds: Set<Int>) {
+        val saveSet = saveSets[owner]?.toList().orEmpty()
+        if (saveSet.isEmpty()) return
+        val ownedWindows = resourceIds.filterTo(linkedSetOf()) { it != X11Ids.RootWindow && windows.containsKey(it) }
+        for (windowId in saveSet) {
+            val window = windows[windowId] ?: continue
+            val absolute = absolutePosition(window)
+            if (isInferiorOfAny(windowId, ownedWindows)) {
+                val parentId = closestNonOwnedAncestor(window.parentId, ownedWindows)
+                val parentAbsolute = windows[parentId]?.let { absolutePosition(it) } ?: (0 to 0)
+                window.parentId = parentId
+                window.x = absolute.first - parentAbsolute.first
+                window.y = absolute.second - parentAbsolute.second
+            }
+            if (!window.mapped) {
+                mapWindow(windowId)
+            }
+        }
+    }
+
+    private fun isInferiorOfAny(windowId: Int, ancestorIds: Set<Int>): Boolean {
+        var parentId = windows[windowId]?.parentId ?: return false
+        val visited = mutableSetOf(windowId)
+        while (parentId != 0 && visited.add(parentId)) {
+            if (parentId in ancestorIds) return true
+            parentId = windows[parentId]?.parentId ?: return false
+        }
+        return false
+    }
+
+    private fun closestNonOwnedAncestor(parentId: Int, ownedWindows: Set<Int>): Int {
+        var current = parentId
+        var reparentTo = parentId
+        val visited = mutableSetOf<Int>()
+        while (current != 0 && visited.add(current)) {
+            val parent = windows[current] ?: break
+            if (current in ownedWindows) {
+                reparentTo = parent.parentId
+            }
+            current = parent.parentId
+        }
+        return reparentTo.takeIf { it in windows } ?: X11Ids.RootWindow
     }
 
     private fun removeEventSelections(windowIds: Set<Int>) {

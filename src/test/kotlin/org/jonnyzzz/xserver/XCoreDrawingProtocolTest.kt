@@ -5,6 +5,7 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import kotlin.concurrent.thread
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
@@ -3070,6 +3071,142 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ChangeSaveSet reparents and maps saved windows when frame owner closes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { appSocket ->
+                appSocket.soTimeout = 2_000
+                setup(appSocket)
+                val appWindow = WindowId + 200
+                appSocket.getOutputStream().write(createWindowRequest(appWindow, width = 20, height = 15))
+                appSocket.getOutputStream().flush()
+
+                val frameWindow = WindowId + 201
+                Socket("127.0.0.1", server.localPort).use { frameSocket ->
+                    frameSocket.soTimeout = 2_000
+                    setup(frameSocket)
+                    val out = frameSocket.getOutputStream()
+                    out.write(createWindowRequest(frameWindow, x = 10, y = 10, width = 50, height = 40))
+                    out.write(reparentWindowRequest(appWindow, frameWindow, x = 7, y = 8))
+                    out.write(changeSaveSetRequest(0, appWindow))
+                    out.flush()
+                    closeClientAndWait(frameSocket)
+                }
+
+                assertEquals(listOf(appWindow), waitForRootChildren(server.localPort) { it == listOf(appWindow) })
+                val json = httpGet(server.localPort, "/state.json")
+                val windowJson = json.substringAfter(windowJsonId(appWindow)).substringBefore("}")
+                assertContains(
+                    json,
+                    windowJsonId(appWindow) + ""","parent":"${X11Ids.RootWindow.toJsonHex()}","x":17,"y":18,"localX":17,"localY":18,"width":20,"height":15""",
+                )
+                assertContains(windowJson, """"mapped":true""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeSaveSet delete removes saved window from close processing`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { appSocket ->
+                appSocket.soTimeout = 2_000
+                setup(appSocket)
+                val appWindow = WindowId + 210
+                appSocket.getOutputStream().write(createWindowRequest(appWindow, width = 20, height = 15))
+                appSocket.getOutputStream().flush()
+
+                val frameWindow = WindowId + 211
+                Socket("127.0.0.1", server.localPort).use { frameSocket ->
+                    frameSocket.soTimeout = 2_000
+                    setup(frameSocket)
+                    val out = frameSocket.getOutputStream()
+                    out.write(createWindowRequest(frameWindow, x = 10, y = 10, width = 50, height = 40))
+                    out.write(reparentWindowRequest(appWindow, frameWindow, x = 7, y = 8))
+                    out.write(changeSaveSetRequest(0, appWindow))
+                    out.write(changeSaveSetRequest(1, appWindow))
+                    out.flush()
+                    closeClientAndWait(frameSocket)
+                }
+
+                assertEquals(emptyList(), waitForRootChildren(server.localPort) { it.isEmpty() })
+                assertFalse(httpGet(server.localPort, "/state.json").contains(windowJsonId(appWindow)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeSaveSet reparents past non-owned ancestors under closing client windows`() {
+        XServer(ServerOptions(port = 0, width = 160, height = 120)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { appSocket ->
+                appSocket.soTimeout = 2_000
+                setup(appSocket)
+                val middle = WindowId + 220
+                val appWindow = WindowId + 221
+                val out = appSocket.getOutputStream()
+                out.write(createWindowRequest(middle, x = 5, y = 6, width = 60, height = 45))
+                out.write(createWindowRequest(appWindow, parent = middle, x = 7, y = 8, width = 20, height = 15))
+                out.flush()
+
+                val frameWindow = WindowId + 222
+                Socket("127.0.0.1", server.localPort).use { frameSocket ->
+                    frameSocket.soTimeout = 2_000
+                    setup(frameSocket)
+                    val frameOut = frameSocket.getOutputStream()
+                    frameOut.write(createWindowRequest(frameWindow, x = 10, y = 10, width = 90, height = 70))
+                    frameOut.write(reparentWindowRequest(middle, frameWindow, x = 5, y = 6))
+                    frameOut.write(changeSaveSetRequest(0, appWindow))
+                    frameOut.flush()
+                    closeClientAndWait(frameSocket)
+                }
+
+                assertEquals(listOf(appWindow), waitForRootChildren(server.localPort) { it == listOf(appWindow) })
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(
+                    json,
+                    windowJsonId(appWindow) + ""","parent":"${X11Ids.RootWindow.toJsonHex()}","x":22,"y":24,"localX":22,"localY":24,"width":20,"height":15""",
+                )
+                assertFalse(json.contains(windowJsonId(middle)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeSaveSet validates mode length window and ownership without side effects`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missing = WindowId + 299
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(changeSaveSetRequest(2, WindowId))
+                out.write(request(6, 0, ByteArray(8)))
+                out.write(changeSaveSetRequest(0, missing))
+                out.write(changeSaveSetRequest(0, WindowId))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = 6, badValue = 2, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 6, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 3, opcode = 6, badValue = missing, sequence = 4)
+                assertError(socket.getInputStream(), error = 8, opcode = 6, badValue = 0, sequence = 5)
+                assertEquals(listOf(WindowId), treeChildren(readReply(socket.getInputStream())))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SetCloseDownMode validates mode and length and preserves connection`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -4172,6 +4309,21 @@ class XCoreDrawingProtocolTest {
         return request(15, 0, body)
     }
 
+    private fun changeSaveSetRequest(mode: Int, window: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, window)
+        return request(6, mode, body)
+    }
+
+    private fun reparentWindowRequest(window: Int, parent: Int, x: Int, y: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, window)
+        put32le(body, 4, parent)
+        put16le(body, 8, x)
+        put16le(body, 10, y)
+        return request(7, 0, body)
+    }
+
     private fun circulateWindowRequest(direction: Int, window: Int): ByteArray {
         val body = ByteArray(4)
         put32le(body, 0, window)
@@ -4831,6 +4983,9 @@ class XCoreDrawingProtocolTest {
 
     private fun windowJsonId(id: Int): String =
         """"id":"0x${id.toString(16)}""""
+
+    private fun Int.toJsonHex(): String =
+        "0x${toUInt().toString(16)}"
 
     private fun pixelAt(reply: ByteArray, imageWidth: Int, x: Int, y: Int): Int =
         u32le(reply, 32 + (y * imageWidth + x) * 4)
