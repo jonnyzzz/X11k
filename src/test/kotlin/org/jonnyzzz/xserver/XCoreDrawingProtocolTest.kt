@@ -505,6 +505,236 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `SetDashes and LineOnOffDash paint dashed PolyLine into framebuffer`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(changeGcLineStyleRequest(GcId, lineStyle = 1))
+                out.write(setDashesRequest(GcId, dashOffset = 0, dashes = listOf(2, 2)))
+                out.write(polyLineRequest(WindowId, GcId, points = listOf(0 to 0, 7 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 8, 0, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 8, 1, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 8, 2, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 8, 3, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 8, 4, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 8, 5, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 8, 6, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 8, 7, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `LineDoubleDash paints GC background into off dashes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red, background = Blue))
+                out.write(changeGcLineStyleRequest(GcId, lineStyle = 2))
+                out.write(setDashesRequest(GcId, dashOffset = 0, dashes = listOf(2, 2)))
+                out.write(polyLineRequest(WindowId, GcId, points = listOf(0 to 0, 7 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 8, 0, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 8, 1, 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 8, 2, 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 8, 3, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 8, 4, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 8, 5, 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 8, 6, 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 8, 7, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeGC dash offset and single dash value affect PolyLine phase`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(changeGcLineStyleRequest(GcId, lineStyle = 1))
+                out.write(changeGcDashAttributesRequest(GcId, dashOffset = 1, dash = 2))
+                out.write(polyLineRequest(WindowId, GcId, points = listOf(0 to 0, 3 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 0, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 1, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 2, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 3, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `odd SetDashes list repeats to an even pattern`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(changeGcLineStyleRequest(GcId, lineStyle = 1))
+                out.write(setDashesRequest(GcId, dashOffset = 0, dashes = listOf(1, 2, 3)))
+                out.write(polyLineRequest(WindowId, GcId, points = listOf(0 to 0, 6 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 7, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 7, 0, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 7, 1, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 7, 2, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 7, 3, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 7, 4, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 7, 5, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 7, 6, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PolySegment resets dash phase for each segment`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(changeGcLineStyleRequest(GcId, lineStyle = 1))
+                out.write(setDashesRequest(GcId, dashOffset = 0, dashes = listOf(1, 1)))
+                out.write(polySegmentRequest(WindowId, GcId, segments = listOf((0 to 0) to (3 to 0), (0 to 1) to (3 to 1))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 2))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 0, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 1, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 2, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 3, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 0, 1))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 1, 1))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 2, 1))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 3, 1))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PolyLine carries dash phase through joined segments`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(changeGcLineStyleRequest(GcId, lineStyle = 1))
+                out.write(setDashesRequest(GcId, dashOffset = 0, dashes = listOf(2, 2)))
+                out.write(polyLineRequest(WindowId, GcId, points = listOf(0 to 0, 2 to 0, 4 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 0, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 1, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 2, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 3, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 4, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CopyGC copies dashed line attributes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(createGcRequest(GcId + 1, foreground = Blue))
+                out.write(changeGcLineStyleRequest(GcId, lineStyle = 1))
+                out.write(setDashesRequest(GcId, dashOffset = 0, dashes = listOf(2, 2)))
+                out.write(copyGcRequest(GcId, GcId + 1, mask = 0x0030_0020))
+                out.write(polyLineRequest(WindowId, GcId + 1, points = listOf(0 to 0, 3 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 4, 0, 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 4, 1, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 2, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 3, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SetDashes reports errors for unknown GC and zero dash length`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(setDashesRequest(GcId, dashOffset = 0, dashes = listOf(2)))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(setDashesRequest(GcId, dashOffset = 0, dashes = listOf(0)))
+                out.flush()
+
+                val missingGc = socket.getInputStream().readExactly(32)
+                assertEquals(0, missingGc[0].toInt())
+                assertEquals(13, missingGc[1].toInt() and 0xff)
+                assertEquals(GcId, u32le(missingGc, 4))
+                assertEquals(58, missingGc[10].toInt() and 0xff)
+
+                val zeroDash = socket.getInputStream().readExactly(32)
+                assertEquals(0, zeroDash[0].toInt())
+                assertEquals(2, zeroDash[1].toInt() and 0xff)
+                assertEquals(0, u32le(zeroDash, 4))
+                assertEquals(58, zeroDash[10].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `core drawing honors GC clip rectangles`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1320,6 +1550,23 @@ class XCoreDrawingProtocolTest {
         return request(56, 0, body)
     }
 
+    private fun changeGcLineStyleRequest(id: Int, lineStyle: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, id)
+        put32le(body, 4, 0x0000_0020)
+        put32le(body, 8, lineStyle)
+        return request(56, 0, body)
+    }
+
+    private fun changeGcDashAttributesRequest(id: Int, dashOffset: Int, dash: Int): ByteArray {
+        val body = ByteArray(16)
+        put32le(body, 0, id)
+        put32le(body, 4, 0x0030_0000)
+        put32le(body, 8, dashOffset)
+        put32le(body, 12, dash)
+        return request(56, 0, body)
+    }
+
     private fun changeGcFillRuleRequest(id: Int, fillRule: Int): ByteArray {
         val body = ByteArray(12)
         put32le(body, 0, id)
@@ -1372,6 +1619,18 @@ class XCoreDrawingProtocolTest {
         put32le(body, 4, destination)
         put32le(body, 8, mask)
         return request(57, 0, body)
+    }
+
+    private fun setDashesRequest(gc: Int, dashOffset: Int, dashes: List<Int>): ByteArray {
+        val paddedDashBytes = (dashes.size + 3) and -4
+        val body = ByteArray(8 + paddedDashBytes)
+        put32le(body, 0, gc)
+        put16le(body, 4, dashOffset)
+        put16le(body, 6, dashes.size)
+        dashes.forEachIndexed { index, dash ->
+            body[8 + index] = dash.toByte()
+        }
+        return request(58, 0, body)
     }
 
     private fun polyPointRequest(drawable: Int, gc: Int, coordMode: Int, points: List<Pair<Int, Int>>): ByteArray {

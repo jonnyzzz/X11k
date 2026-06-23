@@ -772,18 +772,35 @@ internal class X11State(
     fun drawPolyline(
         drawableId: Int,
         pixel: Int,
+        background: Int,
         points: List<XPoint>,
         lineWidth: Int,
+        lineStyle: Int,
+        dashOffset: Int,
+        dashes: List<Int>,
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         var painted = false
+        val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = pixel, background = background)
         for (index in 0 until points.lastIndex) {
             val start = points[index]
             val end = points[index + 1]
-            painted = framebuffer.drawLine(start.x, start.y, end.x, end.y, pixel, lineWidth, clipRectangles, function, planeMask) || painted
+            painted = framebuffer.drawLine(
+                start.x,
+                start.y,
+                end.x,
+                end.y,
+                pixel,
+                lineWidth,
+                clipRectangles,
+                function,
+                planeMask,
+                dashPattern,
+                includeFirstPoint = index == 0,
+            ) || painted
         }
         return painted
     }
@@ -792,8 +809,12 @@ internal class X11State(
     fun drawSegments(
         drawableId: Int,
         pixel: Int,
+        background: Int,
         points: List<XPoint>,
         lineWidth: Int,
+        lineStyle: Int,
+        dashOffset: Int,
+        dashes: List<Int>,
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
@@ -804,7 +825,8 @@ internal class X11State(
         while (index + 1 < points.size) {
             val start = points[index]
             val end = points[index + 1]
-            painted = framebuffer.drawLine(start.x, start.y, end.x, end.y, pixel, lineWidth, clipRectangles, function, planeMask) || painted
+            val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = pixel, background = background)
+            painted = framebuffer.drawLine(start.x, start.y, end.x, end.y, pixel, lineWidth, clipRectangles, function, planeMask, dashPattern) || painted
             index += 2
         }
         return painted
@@ -1039,11 +1061,14 @@ internal class X11State(
                 2 -> destination.foreground = source.foreground
                 3 -> destination.background = source.background
                 4 -> destination.lineWidth = source.lineWidth
+                5 -> destination.lineStyle = source.lineStyle
                 9 -> destination.fillRule = source.fillRule
                 14 -> destination.fontId = source.fontId
                 17 -> destination.clipXOrigin = source.clipXOrigin
                 18 -> destination.clipYOrigin = source.clipYOrigin
                 19 -> destination.clipRectangles = source.clipRectangles?.toList()
+                20 -> destination.dashOffset = source.dashOffset
+                21 -> destination.dashes = source.dashes.toList()
                 22 -> destination.arcMode = source.arcMode
             }
         }
@@ -1067,24 +1092,30 @@ internal class X11State(
         foreground: Int? = null,
         background: Int? = null,
         lineWidth: Int? = null,
+        lineStyle: Int? = null,
         function: Int? = null,
         planeMask: Int? = null,
         fontId: Int? = null,
         clipXOrigin: Int? = null,
         clipYOrigin: Int? = null,
         fillRule: Int? = null,
+        dashOffset: Int? = null,
+        dashes: List<Int>? = null,
         arcMode: Int? = null,
     ) {
         val gc = gcs.getOrPut(id) { XGraphicsContext(id) }
         foreground?.let { gc.foreground = it }
         background?.let { gc.background = it }
         lineWidth?.let { gc.lineWidth = it }
+        lineStyle?.let { gc.lineStyle = it }
         function?.let { gc.function = it }
         planeMask?.let { gc.planeMask = it }
         fontId?.let { gc.fontId = it }
         clipXOrigin?.let { gc.clipXOrigin = it }
         clipYOrigin?.let { gc.clipYOrigin = it }
         fillRule?.let { gc.fillRule = it }
+        dashOffset?.let { gc.dashOffset = it }
+        dashes?.let { gc.dashes = it }
         arcMode?.let { gc.arcMode = it }
     }
 
@@ -1426,6 +1457,7 @@ internal data class XGraphicsContext(
     var foreground: Int = 0,
     var background: Int = 0x00ff_ffff,
     var lineWidth: Int = 1,
+    var lineStyle: Int = LineSolid,
     var function: Int = GXcopy,
     var planeMask: Int = -1,
     var fontId: Int = 0,
@@ -1434,6 +1466,8 @@ internal data class XGraphicsContext(
     var clipYOrigin: Int = 0
     var clipRectangles: List<XRectangleCommand>? = null
     var fillRule: Int = EvenOddRule
+    var dashOffset: Int = 0
+    var dashes: List<Int> = listOf(4)
     var arcMode: Int = ArcPieSlice
 
     fun effectiveClipRectangles(): List<XRectangleCommand>? =
@@ -1463,6 +1497,9 @@ internal data class XGraphicsContext(
         const val GXorInverted = 0xd
         const val GXnand = 0xe
         const val GXset = 0xf
+        const val LineSolid = 0
+        const val LineOnOffDash = 1
+        const val LineDoubleDash = 2
         const val EvenOddRule = 0
         const val WindingRule = 1
         const val ArcChord = 0
@@ -1543,6 +1580,9 @@ internal data class XDrawingCommand(
     val foreground: Int,
     val background: Int = 0x00ff_ffff,
     val lineWidth: Int = 1,
+    val lineStyle: Int = XGraphicsContext.LineSolid,
+    val dashOffset: Int = 0,
+    val dashes: List<Int> = emptyList(),
     val points: List<XPoint> = emptyList(),
     val rectangles: List<XRectangleCommand> = emptyList(),
     val arcs: List<XArcCommand> = emptyList(),

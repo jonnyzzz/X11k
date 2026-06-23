@@ -687,6 +687,8 @@ internal object SvgScreenRenderer {
             "stroke-width" to drawing.lineWidth.coerceAtLeast(1),
             "stroke-linecap" to "round",
             "stroke-linejoin" to "round",
+            "stroke-dasharray" to dashArray(drawing),
+            "stroke-dashoffset" to dashOffset(drawing),
         )
     }
 
@@ -703,9 +705,22 @@ internal object SvgScreenRenderer {
                 "stroke" to color,
                 "stroke-width" to drawing.lineWidth.coerceAtLeast(1),
                 "stroke-linecap" to "round",
+                "stroke-dasharray" to dashArray(drawing),
+                "stroke-dashoffset" to dashOffset(drawing),
             )
         }
     }
+
+    private fun dashArray(drawing: XDrawingCommand): String? {
+        if (drawing.lineStyle == XGraphicsContext.LineSolid) return null
+        val dashes = drawing.dashes.filter { it > 0 }
+        if (dashes.isEmpty()) return null
+        val normalized = if (dashes.size % 2 == 0) dashes else dashes + dashes
+        return normalized.joinToString(" ")
+    }
+
+    private fun dashOffset(drawing: XDrawingCommand): Int? =
+        drawing.dashOffset.takeIf { drawing.lineStyle != XGraphicsContext.LineSolid && it != 0 }
 
     private fun renderPolygon(builder: XmlDom, drawing: XDrawingCommand) {
         if (drawing.points.size < 3) return

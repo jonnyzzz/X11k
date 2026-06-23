@@ -138,6 +138,7 @@ internal class X11Connection(
             55 -> createGc(body)
             56 -> changeGc(body)
             57 -> copyGc(body)
+            58 -> setDashes(body)
             59 -> setClipRectangles(minorOpcode, body)
             60 -> closeResource(body)
             61 -> clearArea(body)
@@ -1363,6 +1364,20 @@ internal class X11Connection(
         state.copyGc(sourceId, destinationId, mask)
     }
 
+    private fun setDashes(body: ByteArray) {
+        if (body.size < 8) return
+        val gcId = byteOrder.u32(body, 0)
+        if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 58, badValue = gcId)
+        val dashOffset = byteOrder.u16(body, 4)
+        val dashCount = byteOrder.u16(body, 6)
+        if (dashCount <= 0) return writeError(error = 2, opcode = 58, badValue = dashCount)
+        if (body.size < 8 + dashCount) return
+        val dashes = (0 until dashCount).map { body[8 + it].toInt() and 0xff }
+        val invalidDash = dashes.firstOrNull { it == 0 }
+        if (invalidDash != null) return writeError(error = 2, opcode = 58, badValue = invalidDash)
+        state.updateGc(id = gcId, dashOffset = dashOffset, dashes = dashes)
+    }
+
     private fun setClipRectangles(ordering: Int, body: ByteArray) {
         if (body.size < 8) return
         if (ordering !in 0..3) return writeError(error = 2, opcode = 59, badValue = ordering)
@@ -1524,13 +1539,29 @@ internal class X11Connection(
         val gc = state.gc(byteOrder.u32(body, 4))
         val drawableId = byteOrder.u32(body, 0)
         val points = points(body, 8, coordMode)
-        state.drawPolyline(drawableId, gc.foreground, points, gc.lineWidth, gc.effectiveClipRectangles(), gc.function, gc.planeMask)
+        state.drawPolyline(
+            drawableId,
+            gc.foreground,
+            gc.background,
+            points,
+            gc.lineWidth,
+            gc.lineStyle,
+            gc.dashOffset,
+            gc.dashes,
+            gc.effectiveClipRectangles(),
+            gc.function,
+            gc.planeMask,
+        )
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
                 kind = XDrawingKind.Line,
                 foreground = gc.foreground,
+                background = gc.background,
                 lineWidth = gc.lineWidth,
+                lineStyle = gc.lineStyle,
+                dashOffset = gc.dashOffset,
+                dashes = gc.dashes,
                 points = points,
                 framebufferBacked = true,
             ),
@@ -1548,13 +1579,29 @@ internal class X11Connection(
             points += XPoint(byteOrder.i16(body, offset + 4), byteOrder.i16(body, offset + 6))
             offset += 8
         }
-        state.drawSegments(drawableId, gc.foreground, points, gc.lineWidth, gc.effectiveClipRectangles(), gc.function, gc.planeMask)
+        state.drawSegments(
+            drawableId,
+            gc.foreground,
+            gc.background,
+            points,
+            gc.lineWidth,
+            gc.lineStyle,
+            gc.dashOffset,
+            gc.dashes,
+            gc.effectiveClipRectangles(),
+            gc.function,
+            gc.planeMask,
+        )
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
                 kind = XDrawingKind.Segment,
                 foreground = gc.foreground,
+                background = gc.background,
                 lineWidth = gc.lineWidth,
+                lineStyle = gc.lineStyle,
+                dashOffset = gc.dashOffset,
+                dashes = gc.dashes,
                 points = points,
                 framebufferBacked = true,
             ),
@@ -1946,6 +1993,7 @@ internal class X11Connection(
             55 -> "CreateGC"
             56 -> "ChangeGC"
             57 -> "CopyGC"
+            58 -> "SetDashes"
             59 -> "SetClipRectangles"
             60 -> "FreeGC"
             61 -> "ClearArea"
@@ -2194,7 +2242,19 @@ internal class X11Connection(
                     writeError(error = 2, opcode = opcode, badValue = value)
                     return false
                 }
+                5 -> if (value !in XGraphicsContext.LineSolid..XGraphicsContext.LineDoubleDash) {
+                    writeError(error = 2, opcode = opcode, badValue = value)
+                    return false
+                }
                 9 -> if (value !in XGraphicsContext.EvenOddRule..XGraphicsContext.WindingRule) {
+                    writeError(error = 2, opcode = opcode, badValue = value)
+                    return false
+                }
+                20 -> if (value !in 0..0xffff) {
+                    writeError(error = 2, opcode = opcode, badValue = value)
+                    return false
+                }
+                21 -> if (value !in 1..0xff) {
                     writeError(error = 2, opcode = opcode, badValue = value)
                     return false
                 }
@@ -2219,6 +2279,7 @@ internal class X11Connection(
         var foreground: Int? = null
         var background: Int? = null
         var lineWidth: Int? = null
+        var lineStyle: Int? = null
         var function: Int? = null
         var planeMask: Int? = null
         var fontId: Int? = null
@@ -2226,6 +2287,8 @@ internal class X11Connection(
         var clipYOrigin: Int? = null
         var clearClipRectangles = false
         var fillRule: Int? = null
+        var dashOffset: Int? = null
+        var dashes: List<Int>? = null
         var arcMode: Int? = null
         for (bit in 0..22) {
             if ((mask and (1 shl bit)) == 0) continue
@@ -2240,6 +2303,11 @@ internal class X11Connection(
                 2 -> foreground = value
                 3 -> background = value
                 4 -> lineWidth = value.coerceAtLeast(1)
+                5 -> if (value in XGraphicsContext.LineSolid..XGraphicsContext.LineDoubleDash) {
+                    lineStyle = value
+                } else {
+                    return writeError(error = 2, opcode = opcode, badValue = value)
+                }
                 9 -> if (value in XGraphicsContext.EvenOddRule..XGraphicsContext.WindingRule) {
                     fillRule = value
                 } else {
@@ -2249,6 +2317,16 @@ internal class X11Connection(
                 17 -> clipXOrigin = value.toShort().toInt()
                 18 -> clipYOrigin = value.toShort().toInt()
                 19 -> if (value == 0) clearClipRectangles = true
+                20 -> if (value in 0..0xffff) {
+                    dashOffset = value
+                } else {
+                    return writeError(error = 2, opcode = opcode, badValue = value)
+                }
+                21 -> if (value in 1..0xff) {
+                    dashes = listOf(value)
+                } else {
+                    return writeError(error = 2, opcode = opcode, badValue = value)
+                }
                 22 -> if (value in XGraphicsContext.ArcChord..XGraphicsContext.ArcPieSlice) {
                     arcMode = value
                 } else {
@@ -2261,12 +2339,15 @@ internal class X11Connection(
             foreground = foreground,
             background = background,
             lineWidth = lineWidth,
+            lineStyle = lineStyle,
             function = function,
             planeMask = planeMask,
             fontId = fontId,
             clipXOrigin = clipXOrigin,
             clipYOrigin = clipYOrigin,
             fillRule = fillRule,
+            dashOffset = dashOffset,
+            dashes = dashes,
             arcMode = arcMode,
         )
         if (clearClipRectangles) state.updateGcClip(id, clipRectangles = null)

@@ -117,6 +117,8 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+        dashPattern: XDashPattern? = null,
+        includeFirstPoint: Boolean = true,
     ): Boolean {
         var x = x1
         var y = y1
@@ -128,7 +130,10 @@ internal class XFramebuffer(
         var painted = false
 
         while (true) {
-            painted = drawPoint(x, y, pixel, lineWidth, clipRectangles, function, planeMask) || painted
+            val dashPixel = if (dashPattern == null) pixel else dashPattern.pixel()
+            if ((includeFirstPoint || x != x1 || y != y1) && dashPixel != null) {
+                painted = drawPoint(x, y, dashPixel, lineWidth, clipRectangles, function, planeMask) || painted
+            }
             if (x == x2 && y == y2) break
             val twiceError = error * 2
             if (twiceError > -dy) {
@@ -139,6 +144,7 @@ internal class XFramebuffer(
                 error += dx
                 y += stepY
             }
+            dashPattern?.advance()
         }
         return painted
     }
@@ -1064,6 +1070,50 @@ internal class XFramebuffer(
 private fun XArcCommand.centerX(): Double = x + width / 2.0
 
 private fun XArcCommand.centerY(): Double = y + height / 2.0
+
+internal class XDashPattern private constructor(
+    private val lineStyle: Int,
+    private val dashes: List<Int>,
+    private var phase: Int,
+    private val foreground: Int,
+    private val background: Int,
+) {
+    fun pixel(): Int? {
+        if (lineStyle == XGraphicsContext.LineSolid || dashes.isEmpty()) return foreground
+        var remaining = phase % dashes.sum()
+        for ((index, dash) in dashes.withIndex()) {
+            if (remaining < dash) {
+                return when {
+                    index % 2 == 0 -> foreground
+                    lineStyle == XGraphicsContext.LineDoubleDash -> background
+                    else -> null
+                }
+            }
+            remaining -= dash
+        }
+        return foreground
+    }
+
+    fun advance() {
+        phase = (phase + 1) % dashes.sum()
+    }
+
+    companion object {
+        fun create(lineStyle: Int, dashOffset: Int, dashes: List<Int>, foreground: Int, background: Int): XDashPattern? {
+            if (lineStyle == XGraphicsContext.LineSolid) return null
+            val positiveDashes = dashes.filter { it > 0 }
+            if (positiveDashes.isEmpty()) return null
+            val normalized = if (positiveDashes.size % 2 == 0) positiveDashes else positiveDashes + positiveDashes
+            return XDashPattern(
+                lineStyle = lineStyle,
+                dashes = normalized,
+                phase = dashOffset.coerceAtLeast(0) % normalized.sum(),
+                foreground = foreground,
+                background = background,
+            )
+        }
+    }
+}
 
 internal data class XImagePixels(
     val width: Int,
