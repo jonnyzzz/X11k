@@ -844,6 +844,7 @@ internal class X11Connection(
     private fun renderCreateSolidFill(body: ByteArray) {
         if (body.size < 12) return
         val id = byteOrder.u32(body, 0)
+        if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 33, badValue = id)
         state.putPicture(
             XPicture(
                 id = id,
