@@ -109,6 +109,27 @@ class XGlxProtocolTest {
         }
     }
 
+    @Test
+    fun `GLX CreateContext rejects duplicate resource id without replacing existing context`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_0100
+            writeRequest(socket, XGlx.MajorOpcode, 3, createContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, 3, createContextBody(contextId, direct = true))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.IsDirect, u32(contextId))
+
+            val duplicateError = socket.getInputStream().readExactly(32)
+            assertEquals(0, duplicateError[0].toInt())
+            assertEquals(11, duplicateError[1].toInt() and 0xff)
+            assertEquals(contextId, u32le(duplicateError, 4))
+            assertEquals(3, u16le(duplicateError, 8))
+            assertEquals(XGlx.MajorOpcode, duplicateError[10].toInt() and 0xff)
+
+            val direct = readReply(socket.getInputStream())
+            assertEquals(0, direct[8].toInt())
+        }
+    }
+
     private fun queryExtension(socket: Socket, name: String): ByteArray {
         val bytes = name.encodeToByteArray()
         writeRequest(socket, 98, 0, u16(bytes.size) + byteArrayOf(0, 0) + padded(bytes))
@@ -165,6 +186,13 @@ class XGlxProtocolTest {
             u32(XGlx.RootFbConfigId) +
             u32(0) +
             u32(XGlx.RgbaType) +
+            u32(0) +
+            byteArrayOf(if (direct) 1 else 0, 0, 0, 0)
+
+    private fun createContextBody(context: Int, direct: Boolean): ByteArray =
+        u32(context) +
+            u32(X11Ids.RootVisual) +
+            u32(0) +
             u32(0) +
             byteArrayOf(if (direct) 1 else 0, 0, 0, 0)
 
