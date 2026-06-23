@@ -5,6 +5,8 @@ import java.net.Socket
 import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class XCoreDrawingProtocolTest {
     @Test
@@ -856,6 +858,133 @@ class XCoreDrawingProtocolTest {
         }
     }
 
+    @Test
+    fun `ImageText8 paints background and foreground into window framebuffer`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red, background = Blue))
+                out.write(imageText8Request(WindowId, GcId, x = 4, y = 18, text = "Hi"))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 30, height = 24))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertTrue(countPixels(image, 30, 24, 0xffff_0000.toInt()) > 0)
+                assertTrue(countPixels(image, 30, 24, 0xff00_00ff.toInt()) > 100)
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 30, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ImageText8 ignores GC function and clipped text does not render svg overlay`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red, background = Blue))
+                out.write(changeGcRasterRequest(GcId, function = GXnoop))
+                out.write(imageText8Request(WindowId, GcId, x = 4, y = 18, text = "A"))
+                out.write(setClipRectanglesRequest(GcId, clipXOrigin = 0, clipYOrigin = 0, rectangles = emptyList()))
+                out.write(imageText8Request(WindowId, GcId, x = 4, y = 34, text = "Hidden"))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 64, height = 40))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertTrue(countPixels(image, 64, 40, 0xffff_0000.toInt()) > 0)
+                assertTrue(countPixels(image, 64, 40, 0xff00_00ff.toInt()) > 0)
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 64, 4, 34))
+                assertFalse(httpGet(server.localPort, "/screen.svg").contains(">Hidden<"))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ImageText16 decodes CHAR2B cells and paints background`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red, background = Blue))
+                out.write(imageText16Request(WindowId, GcId, x = 4, y = 18, char2b = listOf(0x00 to 'A'.code, 0x01 to 0x80)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 30, height = 24))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertTrue(countPixels(image, 30, 24, 0xffff_0000.toInt()) > 0)
+                assertTrue(countPixels(image, 30, 24, 0xff00_00ff.toInt()) > 100)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `QueryFont reports synthetic text metrics in CHARINFO and font fields`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(queryFontRequest(GcId))
+                out.flush()
+
+                val reply = readReply(socket.getInputStream())
+                assertEquals(8, u16le(reply, 10))
+                assertEquals(8, u16le(reply, 12))
+                assertEquals(12, u16le(reply, 14))
+                assertEquals(4, u16le(reply, 16))
+                assertEquals(8, u16le(reply, 26))
+                assertEquals(8, u16le(reply, 28))
+                assertEquals(12, u16le(reply, 30))
+                assertEquals(4, u16le(reply, 32))
+                assertEquals(12, u16le(reply, 52))
+                assertEquals(4, u16le(reply, 54))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PolyText8 paints pixmap framebuffer content and honors item delta`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 40, height = 36))
+                out.write(createGcRequest(GcId, foreground = Green))
+                out.write(polyText8Request(PixmapId, GcId, x = 2, y = 14, delta = 0, text = "I"))
+                out.write(polyText8Request(PixmapId, GcId, x = 2, y = 30, delta = 10, text = "I"))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 40, height = 36))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertTrue(countPixels(image, 40, 36, 0xff00_ff00.toInt()) > 0)
+                val baselineLeft = firstPixelX(image, 40, yRange = 2 until 16, pixel = 0xff00_ff00.toInt()) ?: error("missing baseline text pixels")
+                val shiftedLeft = firstPixelX(image, 40, yRange = 18 until 32, pixel = 0xff00_ff00.toInt()) ?: error("missing shifted text pixels")
+                assertEquals(10, shiftedLeft - baselineLeft)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
     private fun setup(socket: Socket) {
         socket.getOutputStream().write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
         socket.getOutputStream().flush()
@@ -1161,6 +1290,52 @@ class XCoreDrawingProtocolTest {
         return request(72, 2, body)
     }
 
+    private fun imageText8Request(drawable: Int, gc: Int, x: Int, y: Int, text: String): ByteArray {
+        val bytes = text.encodeToByteArray()
+        val body = ByteArray(paddedLength(12 + bytes.size))
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        put16le(body, 8, x)
+        put16le(body, 10, y)
+        bytes.copyInto(body, 12)
+        return request(76, bytes.size, body)
+    }
+
+    private fun imageText16Request(drawable: Int, gc: Int, x: Int, y: Int, char2b: List<Pair<Int, Int>>): ByteArray {
+        val body = ByteArray(paddedLength(12 + char2b.size * 2))
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        put16le(body, 8, x)
+        put16le(body, 10, y)
+        var offset = 12
+        for ((byte1, byte2) in char2b) {
+            body[offset] = byte1.toByte()
+            body[offset + 1] = byte2.toByte()
+            offset += 2
+        }
+        return request(77, char2b.size, body)
+    }
+
+    private fun polyText8Request(drawable: Int, gc: Int, x: Int, y: Int, delta: Int, text: String): ByteArray {
+        val bytes = text.encodeToByteArray()
+        require(bytes.size in 0..254)
+        val body = ByteArray(paddedLength(14 + bytes.size))
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        put16le(body, 8, x)
+        put16le(body, 10, y)
+        body[12] = bytes.size.toByte()
+        body[13] = delta.toByte()
+        bytes.copyInto(body, 14)
+        return request(74, 0, body)
+    }
+
+    private fun queryFontRequest(fontable: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, fontable)
+        return request(47, 0, body)
+    }
+
     private fun getImageRequest(
         drawable: Int,
         x: Int,
@@ -1205,6 +1380,25 @@ class XCoreDrawingProtocolTest {
     private fun pixelAt(reply: ByteArray, imageWidth: Int, x: Int, y: Int): Int =
         u32le(reply, 32 + (y * imageWidth + x) * 4)
 
+    private fun countPixels(reply: ByteArray, imageWidth: Int, imageHeight: Int, pixel: Int): Int {
+        var count = 0
+        for (y in 0 until imageHeight) {
+            for (x in 0 until imageWidth) {
+                if (pixelAt(reply, imageWidth, x, y) == pixel) count += 1
+            }
+        }
+        return count
+    }
+
+    private fun firstPixelX(reply: ByteArray, imageWidth: Int, yRange: IntRange, pixel: Int): Int? {
+        for (x in 0 until imageWidth) {
+            for (y in yRange) {
+                if (pixelAt(reply, imageWidth, x, y) == pixel) return x
+            }
+        }
+        return null
+    }
+
     private fun InputStream.readExactly(size: Int): ByteArray {
         val bytes = ByteArray(size)
         var offset = 0
@@ -1237,6 +1431,8 @@ class XCoreDrawingProtocolTest {
             ((bytes[offset + 2].toInt() and 0xff) shl 16) or
             ((bytes[offset + 3].toInt() and 0xff) shl 24)
 
+    private fun paddedLength(length: Int): Int = (length + 3) and -4
+
     private companion object {
         const val WindowId = 0x0020_0001
         const val PixmapId = 0x0020_0100
@@ -1244,6 +1440,7 @@ class XCoreDrawingProtocolTest {
         const val Red = 0x00ff_0000
         const val Green = 0x0000_ff00
         const val Blue = 0x0000_00ff
+        const val GXnoop = 0x5
         const val GXxor = 0x6
         const val FullCircleAngle = 360 * 64
         const val ArcChord = 0

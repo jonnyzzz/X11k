@@ -252,6 +252,51 @@ internal class XFramebuffer(
         return fillPolygon(polygon, pixel, clipRectangles = clipRectangles, function = function, planeMask = planeMask)
     }
 
+    fun drawText(
+        x: Int,
+        baselineY: Int,
+        text: String,
+        foreground: Int,
+        background: Int? = null,
+        clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
+    ): Boolean {
+        if (text.isEmpty()) return false
+        val textWidth = (text.length * TextCellWidth).coerceAtLeast(1)
+        val top = baselineY - TextAscent
+        var painted = false
+        if (background != null) {
+            painted = fill(
+                x = x,
+                y = top,
+                width = textWidth,
+                height = TextCellHeight,
+                pixel = background,
+                clipRectangles = clipRectangles,
+                function = function,
+                planeMask = planeMask,
+            ) || painted
+        }
+
+        val color = opaque(foreground)
+        for (row in 0 until TextCellHeight) {
+            val dy = top + row
+            if (dy !in 0 until height) continue
+            for (column in 0 until textWidth) {
+                val dx = x + column
+                if (dx !in 0 until width) continue
+                if (!insideClip(dx, dy, clipRectangles)) continue
+                if (!textPixel(text, column, row)) continue
+                val index = dy * width + dx
+                pixels[index] = corePixel(source = color, destination = pixels[index], function = function, planeMask = planeMask)
+                painted = true
+            }
+        }
+        if (painted) markPainted()
+        return painted
+    }
+
     fun blendSolidOver(
         pixel: Int,
         destinationX: Int,
@@ -753,6 +798,10 @@ internal class XFramebuffer(
         private const val FullCircleAngle = 360 * 64
         private const val ArcChord = 0
         private const val CorePixelMask = 0x00ff_ffff
+        const val TextCellWidth = 8
+        const val TextAscent = 12
+        const val TextDescent = 4
+        const val TextCellHeight = TextAscent + TextDescent
 
         private fun framebufferSize(width: Int, height: Int): Pair<Int, Int> {
             val safeWidth = width.coerceAtLeast(0)
@@ -794,6 +843,15 @@ internal class XFramebuffer(
             val output = ByteArrayOutputStream()
             ImageIO.write(buffered, "png", output)
             return "data:image/png;base64," + Base64.getEncoder().encodeToString(output.toByteArray())
+        }
+
+        private fun textPixel(text: String, column: Int, row: Int): Boolean {
+            val charIndex = column / TextCellWidth
+            if (charIndex !in text.indices || text[charIndex] == ' ') return false
+            val cellX = column % TextCellWidth
+            if (cellX !in 1..6 || row !in 2..11) return false
+            if (cellX == 1 || cellX == 6 || row == 2 || row == 11) return true
+            return (((text[charIndex].code + row * 17) ushr (cellX - 2)) and 1) != 0
         }
     }
 }

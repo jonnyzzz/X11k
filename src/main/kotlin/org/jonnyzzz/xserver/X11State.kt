@@ -867,6 +867,31 @@ internal class X11State(
     }
 
     @Synchronized
+    fun drawText(
+        drawableId: Int,
+        x: Int,
+        baselineY: Int,
+        text: String,
+        foreground: Int,
+        background: Int? = null,
+        clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
+    ): Boolean {
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        return framebuffer.drawText(
+            x = x,
+            baselineY = baselineY,
+            text = text,
+            foreground = foreground,
+            background = background,
+            clipRectangles = clipRectangles,
+            function = function,
+            planeMask = planeMask,
+        )
+    }
+
+    @Synchronized
     fun renderFillRectangles(
         operation: Int,
         destination: XPicture,

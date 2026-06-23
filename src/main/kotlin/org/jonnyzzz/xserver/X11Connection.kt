@@ -1110,17 +1110,18 @@ internal class X11Connection(
 
     private fun queryFont(body: ByteArray) {
         val reply = reply(extra = 0, payloadUnits = 7)
-        byteOrder.put32(reply, 8, 0)
-        byteOrder.put16(reply, 12, 0)
-        byteOrder.put16(reply, 14, 0)
-        byteOrder.put16(reply, 16, 8)
-        byteOrder.put16(reply, 18, 16)
-        byteOrder.put16(reply, 20, 8)
-        byteOrder.put16(reply, 22, 16)
-        byteOrder.put16(reply, 24, 0)
-        byteOrder.put16(reply, 26, 0)
-        byteOrder.put16(reply, 28, 0)
-        byteOrder.put16(reply, 30, 0)
+        putCharInfo(reply, 8)
+        putCharInfo(reply, 24)
+        byteOrder.put16(reply, 40, 0)
+        byteOrder.put16(reply, 42, 255)
+        byteOrder.put16(reply, 44, '?'.code)
+        byteOrder.put16(reply, 46, 0)
+        reply[48] = 0
+        reply[49] = 0
+        reply[50] = 0
+        reply[51] = 1
+        byteOrder.put16(reply, 52, XFramebuffer.TextAscent)
+        byteOrder.put16(reply, 54, XFramebuffer.TextDescent)
         byteOrder.put32(reply, 56, 0)
         write(reply)
     }
@@ -1473,16 +1474,30 @@ internal class X11Connection(
     private fun polyText(body: ByteArray, is16Bit: Boolean) {
         if (body.size < 12) return
         val gc = state.gc(byteOrder.u32(body, 4))
-        val textBytes = body.copyOfRange(12, body.size).filter { (it.toInt() and 0xff) in 32..126 }.toByteArray()
-        if (textBytes.isEmpty()) return
+        val drawableId = byteOrder.u32(body, 0)
+        val runs = decodePolyText(body, is16Bit)
+        if (runs.isEmpty()) return
+        for (run in runs) {
+            state.drawText(
+                drawableId = drawableId,
+                x = run.x,
+                baselineY = run.y,
+                text = run.text,
+                foreground = gc.foreground,
+                clipRectangles = gc.effectiveClipRectangles(),
+                function = gc.function,
+                planeMask = gc.planeMask,
+            )
+        }
         state.draw(
             XDrawingCommand(
-                drawableId = byteOrder.u32(body, 0),
+                drawableId = drawableId,
                 kind = XDrawingKind.Text,
                 foreground = gc.foreground,
                 background = gc.background,
-                points = listOf(XPoint(byteOrder.i16(body, 8), byteOrder.i16(body, 10))),
-                text = if (is16Bit) textBytes.decodeToString().filterIndexed { index, _ -> index % 2 == 1 } else textBytes.decodeToString(),
+                points = runs.map { XPoint(it.x, it.y) },
+                text = runs.joinToString("") { it.text },
+                framebufferBacked = true,
             ),
         )
     }
@@ -1492,14 +1507,30 @@ internal class X11Connection(
         val byteLength = length * if (is16Bit) 2 else 1
         val textBytes = body.copyOfRange(12, (12 + byteLength).coerceAtMost(body.size))
         val gc = state.gc(byteOrder.u32(body, 4))
+        val drawableId = byteOrder.u32(body, 0)
+        val x = byteOrder.i16(body, 8)
+        val y = byteOrder.i16(body, 10)
+        val text = if (is16Bit) decodeText16(textBytes) else decodeText8(textBytes)
+        state.drawText(
+            drawableId = drawableId,
+            x = x,
+            baselineY = y,
+            text = text,
+            foreground = gc.foreground,
+            background = gc.background,
+            clipRectangles = gc.effectiveClipRectangles(),
+            function = XGraphicsContext.GXcopy,
+            planeMask = gc.planeMask,
+        )
         state.draw(
             XDrawingCommand(
-                drawableId = byteOrder.u32(body, 0),
+                drawableId = drawableId,
                 kind = XDrawingKind.Text,
                 foreground = gc.foreground,
                 background = gc.background,
-                points = listOf(XPoint(byteOrder.i16(body, 8), byteOrder.i16(body, 10))),
-                text = if (is16Bit) decodeText16(textBytes) else textBytes.decodeToString(),
+                points = listOf(XPoint(x, y)),
+                text = text,
+                framebufferBacked = true,
             ),
         )
     }
@@ -1895,6 +1926,15 @@ internal class X11Connection(
         return bytes
     }
 
+    private fun putCharInfo(bytes: ByteArray, offset: Int) {
+        byteOrder.put16(bytes, offset, 0)
+        byteOrder.put16(bytes, offset + 2, XFramebuffer.TextCellWidth)
+        byteOrder.put16(bytes, offset + 4, XFramebuffer.TextCellWidth)
+        byteOrder.put16(bytes, offset + 6, XFramebuffer.TextAscent)
+        byteOrder.put16(bytes, offset + 8, XFramebuffer.TextDescent)
+        byteOrder.put16(bytes, offset + 10, 0)
+    }
+
     private fun write(bytes: ByteArray) {
         synchronized(writeLock) {
             output.write(bytes)
@@ -2101,11 +2141,45 @@ internal class X11Connection(
         buildString {
             var offset = 0
             while (offset + 1 < bytes.size) {
-                val value = byteOrder.u16(bytes, offset)
-                if (value in 32..126) append(value.toChar())
+                val value = ((bytes[offset].toInt() and 0xff) shl 8) or (bytes[offset + 1].toInt() and 0xff)
+                append(if (value in 32..126) value.toChar() else ' ')
                 offset += 2
             }
         }
+
+    private fun decodeText8(bytes: ByteArray): String =
+        buildString(bytes.size) {
+            for (byte in bytes) {
+                val value = byte.toInt() and 0xff
+                append(if (value in 32..126) value.toChar() else ' ')
+            }
+        }
+
+    private fun decodePolyText(body: ByteArray, is16Bit: Boolean): List<XTextRun> {
+        val runs = mutableListOf<XTextRun>()
+        var offset = 12
+        var x = byteOrder.i16(body, 8)
+        val y = byteOrder.i16(body, 10)
+        while (offset < body.size) {
+            val length = body[offset].toInt() and 0xff
+            if (length == 255) {
+                offset += 5
+                continue
+            }
+            if (offset + 2 > body.size) break
+            x += body[offset + 1].toInt().toByte().toInt()
+            val byteLength = length * if (is16Bit) 2 else 1
+            if (offset + 2 + byteLength > body.size) break
+            val bytes = body.copyOfRange(offset + 2, offset + 2 + byteLength)
+            val text = if (is16Bit) decodeText16(bytes) else decodeText8(bytes)
+            if (text.isNotEmpty()) {
+                runs += XTextRun(x, y, text)
+                x += text.length * XFramebuffer.TextCellWidth
+            }
+            offset += 2 + byteLength
+        }
+        return runs
+    }
 
     private fun decodePutImage(
         format: Int,
@@ -2224,6 +2298,12 @@ private data class WindowAttributeValues(
     val backgroundPixmapId: Int? = null,
     val backgroundPixel: Int? = null,
     val eventMask: Int? = null,
+)
+
+private data class XTextRun(
+    val x: Int,
+    val y: Int,
+    val text: String,
 )
 
 private fun java.io.InputStream.readExactly(size: Int): ByteArray {
