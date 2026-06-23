@@ -1149,6 +1149,7 @@ internal class X11Connection(
         if (body.size < 28) return writeError(16, 1, badValue = 0)
         val id = byteOrder.u32(body, 0)
         val parent = byteOrder.u32(body, 4)
+        if (state.hasResource(id)) return writeError(error = 14, opcode = 1, badValue = id)
         val attributes = windowAttributeValues(body, maskOffset = 24, valuesOffset = 28)
         val window = XWindow(
             id = id,
