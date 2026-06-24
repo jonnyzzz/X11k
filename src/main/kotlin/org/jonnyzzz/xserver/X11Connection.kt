@@ -1595,13 +1595,10 @@ internal class X11Connection(
         val minorOpcode = if (isContextCurrent) XGlx.MakeContextCurrent else 5
         val oldTagOffset = if (isContextCurrent) 0 else 8
         val contextOffset = if (isContextCurrent) 12 else 4
-        if (body.size < contextOffset + 4) {
-            return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
-        }
-        if (body.size >= oldTagOffset + 4) {
-            val oldTag = byteOrder.u32(body, oldTagOffset)
-            if (oldTag != 0 && state.glxContext(oldTag) != null && glxRejectPendingLargeRender(oldTag, minorOpcode)) return
-        }
+        val expectedSize = if (isContextCurrent) 16 else 12
+        if (body.size != expectedSize) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
+        val oldTag = byteOrder.u32(body, oldTagOffset)
+        if (oldTag != 0 && state.glxContext(oldTag) != null && glxRejectPendingLargeRender(oldTag, minorOpcode)) return
         val context = byteOrder.u32(body, contextOffset)
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put32(reply, 8, if (context == 0 || state.glxContext(context) != null) context else 0)

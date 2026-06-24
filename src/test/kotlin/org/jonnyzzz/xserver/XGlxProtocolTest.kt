@@ -179,6 +179,33 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX MakeCurrent requests validate fixed request length`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_0104
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeContextCurrent, u32(0) + u32(X11Ids.RootWindow) + u32(X11Ids.RootWindow))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeContextCurrent, u32(0) + u32(X11Ids.RootWindow) + u32(X11Ids.RootWindow) + u32(contextId) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeContextCurrent, u32(0) + u32(X11Ids.RootWindow) + u32(X11Ids.RootWindow) + u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, 5, u32(X11Ids.RootWindow) + u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, 5, u32(X11Ids.RootWindow) + u32(contextId) + u32(0) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, 5, u32(X11Ids.RootWindow) + u32(contextId) + u32(0))
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.MakeContextCurrent, sequence = 2)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.MakeContextCurrent, sequence = 3)
+            val contextCurrent = readReply(socket.getInputStream())
+            assertEquals(4, u16le(contextCurrent, 2))
+            assertEquals(contextId, u32le(contextCurrent, 8))
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = 5, sequence = 5)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = 5, sequence = 6)
+            val legacyCurrent = readReply(socket.getInputStream())
+            assertEquals(7, u16le(legacyCurrent, 2))
+            assertEquals(contextId, u32le(legacyCurrent, 8))
+        }
+    }
+
+    @Test
     fun `GLX fixed size string and direct queries validate request length`() {
         withServer { socket ->
             socket.soTimeout = 2_000
