@@ -302,6 +302,7 @@ internal class X11Connection(
             18 -> renderReferenceGlyphSet(body)
             19 -> renderFreeGlyphSet(body)
             20 -> renderAddGlyphs(body)
+            21 -> renderAddGlyphsFromPicture()
             22 -> renderFreeGlyphs(body)
             23, 24, 25 -> renderCompositeGlyphs(minorOpcode, body)
             26 -> renderFillRectangles(body)
@@ -807,6 +808,10 @@ internal class X11Connection(
         }
         if (imageOffset != body.size) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 20, badValue = 0)
         state.addGlyphs(glyphSet, glyphs)
+    }
+
+    private fun renderAddGlyphsFromPicture() {
+        writeError(error = 17, opcode = XRender.MajorOpcode, minorOpcode = 21, badValue = 0)
     }
 
     private fun renderFreeGlyphs(body: ByteArray) {

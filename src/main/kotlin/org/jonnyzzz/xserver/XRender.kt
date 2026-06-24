@@ -56,6 +56,7 @@ internal object XRender {
             18 -> "ReferenceGlyphSet"
             19 -> "FreeGlyphSet"
             20 -> "AddGlyphs"
+            21 -> "AddGlyphsFromPicture"
             22 -> "FreeGlyphs"
             23 -> "CompositeGlyphs8"
             24 -> "CompositeGlyphs16"
