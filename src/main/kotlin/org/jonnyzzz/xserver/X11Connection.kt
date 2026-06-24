@@ -497,11 +497,21 @@ internal class X11Connection(
     }
 
     private fun renderComposite(body: ByteArray) {
-        if (body.size < 32) return
+        if (body.size != 32) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = 0)
         val operation = body[0].toInt() and 0xff
-        val source = state.picture(byteOrder.u32(body, 4)) ?: return
-        val mask = byteOrder.u32(body, 8).takeIf { it != 0 }?.let { state.picture(it) }
-        val destination = state.picture(byteOrder.u32(body, 12)) ?: return
+        val sourceId = byteOrder.u32(body, 4)
+        val source = state.picture(sourceId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = sourceId)
+        val maskId = byteOrder.u32(body, 8)
+        val mask = if (maskId == 0) {
+            null
+        } else {
+            state.picture(maskId)
+                ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = maskId)
+        }
+        val destinationId = byteOrder.u32(body, 12)
+        val destination = state.picture(destinationId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = destinationId)
         val destinationDrawableId = destination.drawableId ?: return
         val sourceX = byteOrder.i16(body, 16)
         val sourceY = byteOrder.i16(body, 18)

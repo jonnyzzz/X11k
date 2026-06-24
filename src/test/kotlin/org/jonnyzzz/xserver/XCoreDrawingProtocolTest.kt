@@ -1131,6 +1131,50 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `Render Composite validates framing and picture resources`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val source = PixmapId + 0x3f0
+                val destination = source + 1
+                val missingSource = source + 2
+                val missingMask = source + 3
+                val missingDestination = source + 4
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePictureRequest(source))
+                out.write(renderCreatePictureRequest(destination))
+                out.write(renderRequest(8, ByteArray(28)))
+                out.write(renderCompositeRaw(ByteArray(36).also {
+                    it[0] = XRender.OpSrc.toByte()
+                    put32le(it, 4, source)
+                    put32le(it, 12, destination)
+                }))
+                out.write(renderCompositeRequest(missingSource, destination = destination))
+                out.write(renderCompositeRequest(source, mask = missingMask, destination = destination))
+                out.write(renderCompositeRequest(source, destination = missingDestination))
+                out.write(renderCompositeRequest(source, destination = destination))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = 0, sequence = 4)
+                assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = 0, sequence = 5)
+                assertError(socket.getInputStream(), error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = missingSource, sequence = 6)
+                assertError(socket.getInputStream(), error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = missingMask, sequence = 7)
+                assertError(socket.getInputStream(), error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = missingDestination, sequence = 8)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(10, u16le(pointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"drawings":1""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `OpenFont rejects duplicate resource id without replacing existing resource`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -11210,6 +11254,25 @@ class XCoreDrawingProtocolTest {
 
     private fun renderSetPictureFilterRaw(body: ByteArray): ByteArray =
         renderRequest(30, body)
+
+    private fun renderCompositeRequest(
+        source: Int,
+        mask: Int = 0,
+        destination: Int,
+        operation: Int = XRender.OpSrc,
+    ): ByteArray {
+        val body = ByteArray(32)
+        body[0] = operation.toByte()
+        put32le(body, 4, source)
+        put32le(body, 8, mask)
+        put32le(body, 12, destination)
+        put16le(body, 28, 1)
+        put16le(body, 30, 1)
+        return renderCompositeRaw(body)
+    }
+
+    private fun renderCompositeRaw(body: ByteArray): ByteArray =
+        renderRequest(8, body)
 
     private fun readReply(input: InputStream, byteOrderByte: Int = 0x6c): ByteArray {
         val header = input.readExactly(32)
