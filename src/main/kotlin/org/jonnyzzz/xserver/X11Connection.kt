@@ -1446,19 +1446,42 @@ internal class X11Connection(
     }
 
     private fun changeProperty(mode: Int, body: ByteArray) {
-        if (body.size < 20) return
-        val window = state.window(byteOrder.u32(body, 0)) ?: return
-        val property = byteOrder.u32(body, 4)
-        val type = byteOrder.u32(body, 8)
+        if (body.size < 20) return writeError(error = 16, opcode = 18, badValue = 0)
+        if (mode !in XPropertyMode.Replace..XPropertyMode.Append) {
+            return writeError(error = 2, opcode = 18, badValue = mode)
+        }
         val format = body[12].toInt() and 0xff
-        val units = byteOrder.u32(body, 16)
-        val byteLength = units * (format / 8)
-        val data = body.copyOfRange(20, 20 + byteLength.coerceAtMost(body.size - 20))
+        if (format !in XPropertyFormat.ValidFormats) return writeError(error = 2, opcode = 18, badValue = format)
+        val unitCount = Integer.toUnsignedLong(byteOrder.u32(body, 16))
+        val byteLength = unitCount * (format / 8)
+        val expectedSize = 20L + paddedLength(byteLength)
+        if (expectedSize > Int.MAX_VALUE || body.size != expectedSize.toInt()) {
+            return writeError(error = 16, opcode = 18, badValue = 0)
+        }
+        val windowId = byteOrder.u32(body, 0)
+        val window = state.window(windowId) ?: return writeError(error = 3, opcode = 18, badValue = windowId)
+        val property = byteOrder.u32(body, 4)
+        if (state.atomName(property) == null) return writeError(error = 5, opcode = 18, badValue = property)
+        val type = byteOrder.u32(body, 8)
+        if (state.atomName(type) == null) return writeError(error = 5, opcode = 18, badValue = type)
+        val data = propertyDataToServerOrder(format, body, 20, byteLength.toInt())
         val existing = window.properties[property]
-        window.properties[property] = if (mode == 1 && existing != null) {
-            existing.copy(data = existing.data + data)
-        } else {
-            XProperty(type = type, format = format, data = data)
+        if (mode != XPropertyMode.Replace && existing != null && (existing.type != type || existing.format != format)) {
+            return writeError(error = 8, opcode = 18, badValue = 0)
+        }
+        if (mode != XPropertyMode.Replace && existing != null && byteLength == 0L) {
+            for (sink in state.propertyNotifySinks(windowId)) {
+                runCatching { sink.sendPropertyNotifyEvent(XPropertyNotifyEvent(windowId = windowId, atom = property, state = 0)) }
+            }
+            return
+        }
+        window.properties[property] = when {
+            existing == null || mode == XPropertyMode.Replace -> XProperty(type = type, format = format, data = data)
+            mode == XPropertyMode.Prepend -> existing.copy(data = data + existing.data)
+            else -> existing.copy(data = existing.data + data)
+        }
+        for (sink in state.propertyNotifySinks(windowId)) {
+            runCatching { sink.sendPropertyNotifyEvent(XPropertyNotifyEvent(windowId = windowId, atom = property, state = 0)) }
         }
     }
 
@@ -1488,7 +1511,7 @@ internal class X11Connection(
         byteOrder.put32(reply, 8, property.type)
         byteOrder.put32(reply, 12, bytesAfter)
         byteOrder.put32(reply, 16, value.size / (property.format / 8))
-        value.copyInto(reply, 32)
+        propertyDataForClientOrder(property.format, value).copyInto(reply, 32)
         write(reply)
         if (delete && bytesAfter == 0) window.properties.remove(propertyId)
     }
@@ -4187,6 +4210,40 @@ internal class X11Connection(
 
     private fun paddedLength(length: Int): Int = (length + 3) and -4
 
+    private fun paddedLength(length: Long): Long = (length + 3L) and -4L
+
+    private fun propertyDataToServerOrder(format: Int, source: ByteArray, offset: Int, length: Int): ByteArray {
+        val data = source.copyOfRange(offset, offset + length)
+        return if (format == 8 || byteOrder == ByteOrder.LsbFirst) data else data.withSwappedPropertyElements(format)
+    }
+
+    private fun propertyDataForClientOrder(format: Int, data: ByteArray): ByteArray =
+        if (format == 8 || byteOrder == ByteOrder.LsbFirst) data else data.withSwappedPropertyElements(format)
+
+    private fun ByteArray.withSwappedPropertyElements(format: Int): ByteArray {
+        val swapped = copyOf()
+        when (format) {
+            16 -> {
+                for (offset in swapped.indices step 2) {
+                    val first = swapped[offset]
+                    swapped[offset] = swapped[offset + 1]
+                    swapped[offset + 1] = first
+                }
+            }
+            32 -> {
+                for (offset in swapped.indices step 4) {
+                    val first = swapped[offset]
+                    val second = swapped[offset + 1]
+                    swapped[offset] = swapped[offset + 3]
+                    swapped[offset + 1] = swapped[offset + 2]
+                    swapped[offset + 2] = second
+                    swapped[offset + 3] = first
+                }
+            }
+        }
+        return swapped
+    }
+
     private fun invalidHostValue(family: Int, address: List<Int>): Int? =
         when (family) {
             XAccessHost.FamilyInternet -> if (address.size == 4) null else address.size
@@ -4947,6 +5004,16 @@ internal object XCloseDownMode {
 private object XSaveSetMode {
     const val Insert = 0
     const val Delete = 1
+}
+
+private object XPropertyMode {
+    const val Replace = 0
+    const val Prepend = 1
+    const val Append = 2
+}
+
+private object XPropertyFormat {
+    val ValidFormats = setOf(8, 16, 32)
 }
 
 private data class XRenderPictureAttributes(

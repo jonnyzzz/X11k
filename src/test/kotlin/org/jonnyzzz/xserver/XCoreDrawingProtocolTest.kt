@@ -6063,6 +6063,168 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ChangeProperty validates request fields and preserves property on append mismatch`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingWindow = WindowId + 408
+                val missingProperty = 0x00ff_fffe
+                val missingType = 0x00ff_fffd
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(request(18, 0, ByteArray(0)))
+                out.write(changePropertyRawRequest(WindowId, PrimaryAtom, StringAtom, format = 8, mode = 3, data = "x".encodeToByteArray()))
+                out.write(changePropertyRawRequest(missingWindow, PrimaryAtom, StringAtom, format = 8, data = "x".encodeToByteArray()))
+                out.write(changePropertyRawRequest(WindowId, missingProperty, StringAtom, format = 8, data = "x".encodeToByteArray()))
+                out.write(changePropertyRawRequest(WindowId, PrimaryAtom, missingType, format = 8, data = "x".encodeToByteArray()))
+                out.write(changePropertyRawRequest(WindowId, PrimaryAtom, StringAtom, format = 7, data = ByteArray(0)))
+                out.write(changePropertyRawRequest(WindowId, PrimaryAtom, StringAtom, format = 8, units = 5, data = "xx".encodeToByteArray()))
+                out.write(changePropertyRawRequest(WindowId, PrimaryAtom, StringAtom, format = 32, units = -1, data = ByteArray(0)))
+                out.write(changePropertyRequest(WindowId, PrimaryAtom, StringAtom, "one"))
+                out.write(changePropertyRawRequest(WindowId, PrimaryAtom, AtomAtom, format = 8, mode = 2, data = "two".encodeToByteArray()))
+                out.write(changePropertyRawRequest(WindowId, PrimaryAtom, StringAtom, format = 16, mode = 2, data = byteArrayOf(0x34, 0x12)))
+                out.write(getPropertyRequest(WindowId, PrimaryAtom, StringAtom))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 18, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 2, opcode = 18, badValue = 3, sequence = 3)
+                assertError(socket.getInputStream(), error = 3, opcode = 18, badValue = missingWindow, sequence = 4)
+                assertError(socket.getInputStream(), error = 5, opcode = 18, badValue = missingProperty, sequence = 5)
+                assertError(socket.getInputStream(), error = 5, opcode = 18, badValue = missingType, sequence = 6)
+                assertError(socket.getInputStream(), error = 2, opcode = 18, badValue = 7, sequence = 7)
+                assertError(socket.getInputStream(), error = 16, opcode = 18, badValue = 0, sequence = 8)
+                assertError(socket.getInputStream(), error = 16, opcode = 18, badValue = 0, sequence = 9)
+                assertError(socket.getInputStream(), error = 8, opcode = 18, badValue = 0, sequence = 11)
+                assertError(socket.getInputStream(), error = 8, opcode = 18, badValue = 0, sequence = 12)
+                assertPropertyReply(readReply(socket.getInputStream()), sequence = 13, type = StringAtom, value = "one")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeProperty implements replace prepend append and sends PropertyNotify`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(changeWindowEventMaskRequest(WindowId, XEventMasks.PropertyChange))
+                out.write(changePropertyRequest(WindowId, PrimaryAtom, StringAtom, "middle"))
+                out.write(changePropertyRawRequest(WindowId, PrimaryAtom, StringAtom, format = 8, mode = 1, data = "pre-".encodeToByteArray()))
+                out.write(changePropertyRawRequest(WindowId, PrimaryAtom, StringAtom, format = 8, mode = 2, data = "-post".encodeToByteArray()))
+                out.write(changePropertyRawRequest(WindowId, PrimaryAtom, StringAtom, format = 8, mode = 2, units = 0, data = ByteArray(0)))
+                out.write(changePropertyRawRequest(WindowId, PrimaryAtom, AtomAtom, format = 8, mode = 2, units = 0, data = ByteArray(0)))
+                out.write(getPropertyRequest(WindowId, PrimaryAtom, StringAtom))
+                out.flush()
+
+                assertPropertyNotifyEvent(socket.getInputStream().readExactly(32), sequence = 3, window = WindowId, atom = PrimaryAtom)
+                assertPropertyNotifyEvent(socket.getInputStream().readExactly(32), sequence = 4, window = WindowId, atom = PrimaryAtom)
+                assertPropertyNotifyEvent(socket.getInputStream().readExactly(32), sequence = 5, window = WindowId, atom = PrimaryAtom)
+                assertPropertyNotifyEvent(socket.getInputStream().readExactly(32), sequence = 6, window = WindowId, atom = PrimaryAtom)
+                assertError(socket.getInputStream(), error = 8, opcode = 18, badValue = 0, sequence = 7)
+                assertPropertyReply(readReply(socket.getInputStream()), sequence = 8, type = StringAtom, value = "pre-middle-post")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeProperty stores 16 and 32 bit values independent of client byte order`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { littleSocket ->
+                Socket("127.0.0.1", server.localPort).use { bigSocket ->
+                    littleSocket.soTimeout = 2_000
+                    bigSocket.soTimeout = 2_000
+                    setup(littleSocket)
+                    setup(bigSocket, byteOrderByte = 0x42)
+
+                    val big32 = ByteArray(4)
+                    put32be(big32, 0, 0x0102_0304)
+                    bigSocket.getOutputStream().write(
+                        changePropertyRawRequestBigEndian(X11Ids.RootWindow, PrimaryAtom, AtomAtom, format = 32, data = big32),
+                    )
+                    bigSocket.getOutputStream().write(getPropertyRequestBigEndian(X11Ids.RootWindow, PrimaryAtom, AtomAtom))
+                    bigSocket.getOutputStream().flush()
+
+                    assertPropertyReplyBytes(
+                        readReply(bigSocket.getInputStream(), byteOrderByte = 0x42),
+                        sequence = 2,
+                        type = AtomAtom,
+                        format = 32,
+                        data = big32,
+                        byteOrderByte = 0x42,
+                    )
+
+                    val little32 = ByteArray(4)
+                    put32le(little32, 0, 0x0102_0304)
+                    littleSocket.getOutputStream().write(getPropertyRequest(X11Ids.RootWindow, PrimaryAtom, AtomAtom))
+                    littleSocket.getOutputStream().flush()
+                    assertPropertyReplyBytes(
+                        readReply(littleSocket.getInputStream()),
+                        sequence = 1,
+                        type = AtomAtom,
+                        format = 32,
+                        data = little32,
+                    )
+
+                    val little16 = byteArrayOf(0x34, 0x12, 0x78, 0x56)
+                    littleSocket.getOutputStream().write(
+                        changePropertyRawRequest(
+                            X11Ids.RootWindow,
+                            StringAtom,
+                            StringAtom,
+                            format = 16,
+                            mode = 1,
+                            data = little16.copyOfRange(0, 2),
+                        ),
+                    )
+                    littleSocket.getOutputStream().write(
+                        changePropertyRawRequest(
+                            X11Ids.RootWindow,
+                            StringAtom,
+                            StringAtom,
+                            format = 16,
+                            mode = 2,
+                            data = little16.copyOfRange(2, 4),
+                        ),
+                    )
+                    littleSocket.getOutputStream().write(getPropertyRequest(X11Ids.RootWindow, StringAtom, StringAtom))
+                    littleSocket.getOutputStream().flush()
+                    assertPropertyReplyBytes(
+                        readReply(littleSocket.getInputStream()),
+                        sequence = 4,
+                        type = StringAtom,
+                        format = 16,
+                        data = little16,
+                    )
+
+                    val big16 = byteArrayOf(0x12, 0x34, 0x56, 0x78)
+                    bigSocket.getOutputStream().write(getPropertyRequestBigEndian(X11Ids.RootWindow, StringAtom, StringAtom))
+                    bigSocket.getOutputStream().flush()
+                    assertPropertyReplyBytes(
+                        readReply(bigSocket.getInputStream(), byteOrderByte = 0x42),
+                        sequence = 3,
+                        type = StringAtom,
+                        format = 16,
+                        data = big16,
+                        byteOrderByte = 0x42,
+                    )
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RotateProperties rotates property values by positive and negative delta`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -7482,6 +7644,54 @@ class XCoreDrawingProtocolTest {
         return request(18, 0, body)
     }
 
+    private fun changePropertyRawRequest(
+        window: Int,
+        property: Int,
+        type: Int,
+        format: Int,
+        mode: Int = 0,
+        units: Int? = null,
+        data: ByteArray,
+    ): ByteArray {
+        val body = ByteArray(20 + paddedLength(data.size))
+        put32le(body, 0, window)
+        put32le(body, 4, property)
+        put32le(body, 8, type)
+        body[12] = format.toByte()
+        put32le(body, 16, units ?: when (format) {
+            8 -> data.size
+            16 -> data.size / 2
+            32 -> data.size / 4
+            else -> 0
+        })
+        data.copyInto(body, 20)
+        return request(18, mode, body)
+    }
+
+    private fun changePropertyRawRequestBigEndian(
+        window: Int,
+        property: Int,
+        type: Int,
+        format: Int,
+        mode: Int = 0,
+        units: Int? = null,
+        data: ByteArray,
+    ): ByteArray {
+        val body = ByteArray(20 + paddedLength(data.size))
+        put32be(body, 0, window)
+        put32be(body, 4, property)
+        put32be(body, 8, type)
+        body[12] = format.toByte()
+        put32be(body, 16, units ?: when (format) {
+            8 -> data.size
+            16 -> data.size / 2
+            32 -> data.size / 4
+            else -> 0
+        })
+        data.copyInto(body, 20)
+        return requestBigEndian(18, mode, body)
+    }
+
     private fun changeWindowEventMaskRequest(window: Int, eventMask: Int): ByteArray {
         val body = ByteArray(12)
         put32le(body, 0, window)
@@ -7497,6 +7707,15 @@ class XCoreDrawingProtocolTest {
         put32le(body, 8, type)
         put32le(body, 16, 1024)
         return request(20, 0, body)
+    }
+
+    private fun getPropertyRequestBigEndian(window: Int, property: Int, type: Int): ByteArray {
+        val body = ByteArray(20)
+        put32be(body, 0, window)
+        put32be(body, 4, property)
+        put32be(body, 8, type)
+        put32be(body, 16, 1024)
+        return requestBigEndian(20, 0, body)
     }
 
     private fun rotatePropertiesRequest(window: Int, delta: Int, vararg properties: Int): ByteArray {
@@ -8361,16 +8580,30 @@ class XCoreDrawingProtocolTest {
 
     private fun assertPropertyReply(reply: ByteArray, sequence: Int, type: Int, value: String) {
         val bytes = value.encodeToByteArray()
-        assertEquals(1, reply[0].toInt())
-        assertEquals(8, reply[1].toInt() and 0xff)
-        assertEquals(sequence, u16le(reply, 2))
-        assertEquals(paddedLength(bytes.size) / 4, u32le(reply, 4))
-        assertEquals(type, u32le(reply, 8))
-        assertEquals(0, u32le(reply, 12))
-        assertEquals(bytes.size, u32le(reply, 16))
-        assertZeroBytes(reply, 20, 32)
+        assertPropertyReplyBytes(reply, sequence, type, format = 8, data = bytes)
         assertEquals(value, reply.copyOfRange(32, 32 + bytes.size).decodeToString())
-        assertZeroBytes(reply, 32 + bytes.size, reply.size)
+    }
+
+    private fun assertPropertyReplyBytes(
+        reply: ByteArray,
+        sequence: Int,
+        type: Int,
+        format: Int,
+        data: ByteArray,
+        byteOrderByte: Int = 0x6c,
+    ) {
+        val u16 = if (byteOrderByte == 0x42) ::u16be else ::u16le
+        val u32 = if (byteOrderByte == 0x42) ::u32be else ::u32le
+        assertEquals(1, reply[0].toInt())
+        assertEquals(format, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16(reply, 2))
+        assertEquals(paddedLength(data.size) / 4, u32(reply, 4))
+        assertEquals(type, u32(reply, 8))
+        assertEquals(0, u32(reply, 12))
+        assertEquals(data.size / (format / 8), u32(reply, 16))
+        assertZeroBytes(reply, 20, 32)
+        assertEquals(data.toList(), reply.copyOfRange(32, 32 + data.size).toList())
+        assertZeroBytes(reply, 32 + data.size, reply.size)
     }
 
     private fun assertPropertyNotifyEvent(event: ByteArray, sequence: Int, window: Int, atom: Int) {
