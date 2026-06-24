@@ -2522,11 +2522,12 @@ internal class X11State(
 
     @Synchronized
     fun addTraps(destination: XPicture, trapezoids: List<XTrapezoidCommand>): Boolean {
-        if (destination.format != XRender.A8Format) return false
+        if (!XRender.isAlphaMaskFormat(destination.format)) return false
         val drawableId = destination.drawableId ?: return false
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         return framebuffer.addTrapezoids(
             trapezoids = trapezoids,
+            maskFormat = destination.format,
             clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
         )
     }

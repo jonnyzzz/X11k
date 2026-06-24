@@ -1595,6 +1595,49 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER AddTraps validates request framing and alpha mask targets`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missingPicture = MaskPictureId + 1
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 16, height = 12, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 1, width = 16, height = 12))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A1Format))
+                out.write(renderFillRectangles(MaskPictureId, x = 0, y = 0, width = 16, height = 12, red = 0x0000, green = 0x0000, blue = 0x0000, alpha = 0x0000))
+                out.write(renderAddTrapsRaw(ByteArray(4).also { put32le(it, 0, MaskPictureId) }))
+                out.write(renderAddTrapsRaw(ByteArray(8).also { put32le(it, 0, missingPicture) }))
+                out.write(ByteArray(12).also {
+                    put32le(it, 0, MaskPictureId)
+                    put16le(it, 4, 0)
+                    put16le(it, 6, 0)
+                    put32le(it, 8, 0)
+                }.let(::renderAddTrapsRaw))
+                out.write(renderAddTrapsRaw(ByteArray(8).also { put32le(it, 0, PictureId) }))
+                out.write(renderAddTraps(MaskPictureId, xOffset = 0, yOffset = 0, x = 4, y = 3, width = 5, height = 4))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderComposite(SolidPictureId, PictureId, mask = MaskPictureId, width = 16, height = 12))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 16, height = 12))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 7, minorOpcode = 32)
+                assertError(socket.getInputStream(), error = XRender.PictureError, badValue = missingPicture, sequence = 8, minorOpcode = 32)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 9, minorOpcode = 32)
+                assertError(socket.getInputStream(), error = 8, badValue = PictureId, sequence = 10, minorOpcode = 32)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 16, x = 6, y = 5))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 16, x = 3, y = 3))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER AddTraps accumulates overlapping A8 coverage`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2486,6 +2529,9 @@ class XRenderProtocolTest {
         putFixed(body, 28, y + height)
         return request(XRender.MajorOpcode, 32, body)
     }
+
+    private fun renderAddTrapsRaw(body: ByteArray): ByteArray =
+        request(XRender.MajorOpcode, 32, body)
 
     private fun renderAddTrapsRaw(
         picture: Int,

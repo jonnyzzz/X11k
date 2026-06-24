@@ -728,11 +728,12 @@ internal class XFramebuffer(
 
     fun addTrapezoids(
         trapezoids: List<XTrapezoidCommand>,
+        maskFormat: Int = XRender.A8Format,
         clipRectangles: List<XRectangleCommand>? = null,
     ): Boolean {
         var painted = false
         for (trapezoid in trapezoids) {
-            painted = addTrapezoidAlpha(trapezoid, clipRectangles) || painted
+            painted = addTrapezoidAlpha(trapezoid, maskFormat, clipRectangles) || painted
         }
         if (painted) markPainted()
         return painted
@@ -963,6 +964,7 @@ internal class XFramebuffer(
 
     private fun addTrapezoidAlpha(
         trapezoid: XTrapezoidCommand,
+        maskFormat: Int,
         clipRectangles: List<XRectangleCommand>?,
     ): Boolean {
         val top = trapezoid.top.fixedToDouble()
@@ -984,7 +986,7 @@ internal class XFramebuffer(
                 if (!insideClip(x, y, clipRectangles)) continue
                 val coverage = trapezoidCoverage(x, y, trapezoid, top, bottom)
                 if (coverage == 0) continue
-                val addedAlpha = maskAlpha(XRender.A8Format, coverage)
+                val addedAlpha = maskAlpha(maskFormat, coverage)
                 if (addedAlpha == 0) continue
                 val index = y * width + x
                 val alpha = ((pixels[index] ushr 24) and 0xff)

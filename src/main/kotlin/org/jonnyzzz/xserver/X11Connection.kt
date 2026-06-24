@@ -972,9 +972,15 @@ internal class X11Connection(
     }
 
     private fun renderAddTraps(body: ByteArray) {
-        if (body.size < 8) return
-        val picture = state.picture(byteOrder.u32(body, 0)) ?: return
-        if (picture.format != XRender.A8Format) return
+        if (body.size < 8 || (body.size - 8) % 24 != 0) {
+            return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 32, badValue = 0)
+        }
+        val pictureId = byteOrder.u32(body, 0)
+        val picture = state.picture(pictureId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 32, badValue = pictureId)
+        if (!XRender.isAlphaMaskFormat(picture.format)) {
+            return writeError(error = 8, opcode = XRender.MajorOpcode, minorOpcode = 32, badValue = pictureId)
+        }
         val xOffset = byteOrder.i16(body, 4)
         val yOffset = byteOrder.i16(body, 6)
         val traps = offsetTrapezoids(traps(body, 8), xOffset, yOffset)
