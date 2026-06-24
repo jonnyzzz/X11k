@@ -1303,8 +1303,10 @@ internal class X11Connection(
     }
 
     private fun mapSubwindows(body: ByteArray) {
-        if (body.size < 4) return
-        for (child in state.childrenOf(byteOrder.u32(body, 0))) {
+        if (body.size != 4) return writeError(error = 16, opcode = 9, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        state.window(windowId) ?: return writeError(error = 3, opcode = 9, badValue = windowId)
+        for (child in state.childrenOf(windowId)) {
             state.mapWindow(child.id)
             sendMapNotify(child)
             sendExpose(child)

@@ -3882,6 +3882,32 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `MapSubwindows validates request length and parent window without closing caller`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missing = WindowId + 403
+                val out = socket.getOutputStream()
+                out.write(request(9, 0, ByteArray(0)))
+                out.write(request(9, 0, ByteArray(8)))
+                out.write(mapSubwindowsRequest(missing))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 9, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, opcode = 9, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 3, opcode = 9, badValue = missing, sequence = 3)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(4, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `UnmapWindow validates request length and window id without closing caller`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -7281,6 +7307,12 @@ class XCoreDrawingProtocolTest {
         val body = ByteArray(4)
         put32le(body, 0, id)
         return request(8, 0, body)
+    }
+
+    private fun mapSubwindowsRequest(id: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, id)
+        return request(9, 0, body)
     }
 
     private fun unmapWindowRequest(id: Int): ByteArray {
