@@ -827,8 +827,16 @@ internal class X11Connection(
     }
 
     private fun renderFillRectangles(body: ByteArray) {
-        if (body.size < 16) return
-        val destination = state.picture(byteOrder.u32(body, 4)) ?: return
+        if (body.size < 16 || (body.size - 16) % 8 != 0) {
+            return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 26, badValue = 0)
+        }
+        val operation = body[0].toInt() and 0xff
+        if (!XRender.isValidOperator(operation)) {
+            return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = 26, badValue = operation)
+        }
+        val destinationId = byteOrder.u32(body, 4)
+        val destination = state.picture(destinationId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 26, badValue = destinationId)
         val destinationDrawableId = destination.drawableId ?: return
         val pixel = XRender.argb32Pixel(
             red = byteOrder.u16(body, 8),
@@ -837,7 +845,6 @@ internal class X11Connection(
             alpha = byteOrder.u16(body, 14),
         )
         val rectangles = rectangles(body, 16)
-        val operation = body[0].toInt() and 0xff
         val targetPixel = if (operation == XRender.OpClear) 0 else pixel
         state.renderFillRectangles(operation, destination, targetPixel, rectangles)
         state.draw(
