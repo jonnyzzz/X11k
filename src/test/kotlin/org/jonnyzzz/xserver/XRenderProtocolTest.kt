@@ -359,6 +359,83 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER CreateRadialGradient validates stop framing and duplicate ids`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderCreateRadialGradientRaw(ByteArray(28).also {
+                    put32le(it, 0, GradientRadialPictureId)
+                    putFixedPointRaw(it, 4, 0, 0)
+                    putFixedPointRaw(it, 12, 0, 0)
+                    put32le(it, 20, 0)
+                    put32le(it, 24, 0x0001_0000)
+                }))
+                out.write(renderCreateRadialGradientRaw(ByteArray(36).also {
+                    put32le(it, 0, GradientRadialPictureId)
+                    putFixedPointRaw(it, 4, 0, 0)
+                    putFixedPointRaw(it, 12, 0, 0)
+                    put32le(it, 20, 0)
+                    put32le(it, 24, 0x0001_0000)
+                    put32le(it, 28, 1)
+                    put32le(it, 32, 0)
+                }))
+                out.write(renderCreateRadialGradientRaw(ByteArray(48).also {
+                    put32le(it, 0, GradientRadialPictureId)
+                    putFixedPointRaw(it, 4, 0, 0)
+                    putFixedPointRaw(it, 12, 0, 0)
+                    put32le(it, 20, 0)
+                    put32le(it, 24, 0x0001_0000)
+                    put32le(it, 28, 1)
+                    put32le(it, 32, 0)
+                    put16le(it, 36, 0x0000)
+                    put16le(it, 38, 0xffff)
+                    put16le(it, 40, 0x0000)
+                    put16le(it, 42, 0xffff)
+                }))
+                out.write(
+                    renderCreateRadialGradient(
+                        GradientRadialPictureId,
+                        innerCenter = 0 to 0,
+                        innerRadius = 0,
+                        outerCenter = 0 to 0,
+                        outerRadius = 0x0001_0000,
+                        stops = listOf(0),
+                        colors = listOf(RenderColor(red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff)),
+                    ),
+                )
+                out.write(
+                    renderCreateRadialGradient(
+                        GradientRadialPictureId,
+                        innerCenter = 0 to 0,
+                        innerRadius = 0,
+                        outerCenter = 0 to 0,
+                        outerRadius = 0x0001_0000,
+                        stops = listOf(0),
+                        colors = listOf(RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff)),
+                    ),
+                )
+                out.write(renderComposite(GradientRadialPictureId, PictureId, width = 1, height = 1, operation = XRender.OpSrc, destinationX = 0, destinationY = 0))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 3, minorOpcode = 35)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 4, minorOpcode = 35)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 5, minorOpcode = 35)
+                assertError(socket.getInputStream(), error = 14, badValue = GradientRadialPictureId, sequence = 7, minorOpcode = 35)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), u32le(image, 32))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER CreateConicalGradient rejects duplicate resource id without replacing existing gradient picture`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2229,8 +2306,11 @@ class XRenderProtocolTest {
             put16le(body, offset + 4, color.blue)
             put16le(body, offset + 6, color.alpha)
         }
-        return request(XRender.MajorOpcode, 35, body)
+        return renderCreateRadialGradientRaw(body)
     }
+
+    private fun renderCreateRadialGradientRaw(body: ByteArray): ByteArray =
+        request(XRender.MajorOpcode, 35, body)
 
     private fun renderCreateConicalGradient(
         picture: Int,

@@ -1045,10 +1045,10 @@ internal class X11Connection(
     }
 
     private fun renderCreateRadialGradient(body: ByteArray) {
-        if (body.size < 32) return
+        if (body.size < 32) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 35, badValue = 0)
         val id = byteOrder.u32(body, 0)
         if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 35, badValue = id)
-        val stops = renderGradientStops(body, countOffset = 28, stopsOffset = 32) ?: return
+        val stops = renderGradientStopsExact(body, countOffset = 28, stopsOffset = 32, minorOpcode = 35) ?: return
         val gradient = XRadialGradient(
             inner = XFixedCircle(
                 center = XFixedPoint(byteOrder.u32(body, 4), byteOrder.u32(body, 8)),
@@ -1092,6 +1092,26 @@ internal class X11Connection(
             ),
         )
         own(id)
+    }
+
+    private fun renderGradientStopsExact(
+        body: ByteArray,
+        countOffset: Int,
+        stopsOffset: Int,
+        minorOpcode: Int,
+    ): Pair<List<Int>, List<Int>>? {
+        val stopsCount = byteOrder.u32(body, countOffset)
+        if (stopsCount < 0) {
+            writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
+            return null
+        }
+        val colorOffset = stopsOffset.toLong() + stopsCount.toLong() * 4L
+        val requiredSize = colorOffset + stopsCount.toLong() * 8L
+        if (requiredSize != body.size.toLong()) {
+            writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
+            return null
+        }
+        return renderGradientStops(body, countOffset, stopsOffset)
     }
 
     private fun renderGradientStops(body: ByteArray, countOffset: Int, stopsOffset: Int): Pair<List<Int>, List<Int>>? {
