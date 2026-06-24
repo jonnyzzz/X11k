@@ -902,15 +902,20 @@ internal class X11Connection(
     }
 
     private fun renderSetPictureFilter(body: ByteArray) {
-        if (body.size < 8) return
+        if (body.size < 8) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 30, badValue = 0)
         val picture = byteOrder.u32(body, 0)
+        if (state.picture(picture) == null) {
+            return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 30, badValue = picture)
+        }
         val filterLength = byteOrder.u16(body, 4)
-        if (body.size < 8 + filterLength) return
+        val valuesOffset = paddedLength(8 + filterLength)
+        if (body.size < valuesOffset) {
+            return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 30, badValue = 0)
+        }
         val name = body.copyOfRange(8, 8 + filterLength).decodeToString()
         if (name !in RenderFilterNames) {
             return writeError(error = 8, opcode = XRender.MajorOpcode, minorOpcode = 30, badValue = 0)
         }
-        val valuesOffset = paddedLength(8 + filterLength)
         val values = mutableListOf<Int>()
         var offset = valuesOffset
         while (offset + 4 <= body.size) {
