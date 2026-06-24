@@ -2763,6 +2763,8 @@ internal class X11Connection(
         if (contiguous !in 0..1) return writeError(error = 2, opcode = 86, badValue = contiguous)
         val colormap = byteOrder.u32(body, 0)
         if (!state.hasColormap(colormap)) return writeError(error = 12, opcode = 86, badValue = colormap)
+        val colors = byteOrder.u16(body, 4)
+        if (colors == 0) return writeError(error = 2, opcode = 86, badValue = colors)
         writeError(error = 11, opcode = 86, badValue = 0)
     }
 
@@ -2771,6 +2773,8 @@ internal class X11Connection(
         if (contiguous !in 0..1) return writeError(error = 2, opcode = 87, badValue = contiguous)
         val colormap = byteOrder.u32(body, 0)
         if (!state.hasColormap(colormap)) return writeError(error = 12, opcode = 87, badValue = colormap)
+        val colors = byteOrder.u16(body, 4)
+        if (colors == 0) return writeError(error = 2, opcode = 87, badValue = colors)
         writeError(error = 11, opcode = 87, badValue = 0)
     }
 
