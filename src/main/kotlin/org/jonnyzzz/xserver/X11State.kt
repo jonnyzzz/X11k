@@ -297,9 +297,11 @@ internal class X11State(
     fun reparentWindow(id: Int, parentId: Int, x: Int, y: Int): XWindow? {
         val window = windows[id] ?: return null
         if (!canReparentWindow(id, parentId)) return null
+        if (window.mapped) releaseActiveGrabsForAutomaticUnmap(id)
         window.parentId = parentId
         window.x = x
         window.y = y
+        releaseActiveGrabsForVisibilityChanges()
         return window
     }
 
@@ -315,6 +317,7 @@ internal class X11State(
     fun unmapWindow(id: Int) {
         windows[id]?.mapped = false
         if (focusWindowId == id) focusWindowId = X11Ids.RootWindow
+        releaseActiveGrabsForVisibilityChanges()
     }
 
     @Synchronized
@@ -473,7 +476,7 @@ internal class X11State(
     @Synchronized
     fun grabPointer(grab: XInputGrab): Int {
         if (!windowIsViewable(grab.windowId)) return XGrabStatus.NotViewable
-        if (grab.confineTo?.let { !windowIsViewable(it) || !windowHasVisibleBounds(it) } == true) {
+        if (grab.confineTo?.let { !windowIsViewable(it) || !windowIntersectsRootBounds(it) } == true) {
             return XGrabStatus.NotViewable
         }
         val serverTime = currentServerTime(lastPointerGrabTime)
@@ -613,6 +616,41 @@ internal class X11State(
         passiveKeyGrabs.removeIf { it.windowId in resourceIds }
     }
 
+    private fun releaseActiveGrabsForAutomaticUnmap(windowId: Int) {
+        val unmappedIds = subtreeIds(windowId)
+        val pointerGrab = activePointerGrab
+        if (
+            pointerGrab != null &&
+            (
+                pointerGrab.windowId in unmappedIds ||
+                    pointerGrab.confineTo?.let { it in unmappedIds } == true
+                )
+        ) {
+            activePointerGrab = null
+        }
+        val keyboardGrab = activeKeyboardGrab
+        if (keyboardGrab != null && keyboardGrab.windowId in unmappedIds) {
+            activeKeyboardGrab = null
+        }
+    }
+
+    private fun releaseActiveGrabsForVisibilityChanges() {
+        val pointerGrab = activePointerGrab
+        if (
+            pointerGrab != null &&
+            (
+                !windowIsViewable(pointerGrab.windowId) ||
+                    pointerGrab.confineTo?.let { !windowIsViewable(it) || !windowIntersectsRootBounds(it) } == true
+                )
+        ) {
+            activePointerGrab = null
+        }
+        val keyboardGrab = activeKeyboardGrab
+        if (keyboardGrab != null && !windowIsViewable(keyboardGrab.windowId)) {
+            activeKeyboardGrab = null
+        }
+    }
+
     private fun validUngrabTime(requestTime: Int, grabTime: Int): Boolean =
         requestTime == 0 ||
             (
@@ -631,10 +669,13 @@ internal class X11State(
         if (Integer.compareUnsigned(inputTime, floor) < 0) floor else inputTime
 
     @Synchronized
-    fun windowHasVisibleBounds(id: Int): Boolean {
+    fun windowIntersectsRootBounds(id: Int): Boolean {
         val window = windows[id] ?: return false
         val absolute = absolutePosition(window)
-        return visibleBounds(window, absolute.first, absolute.second) != null
+        return absolute.first < width &&
+            absolute.second < height &&
+            absolute.first + window.width > 0 &&
+            absolute.second + window.height > 0
     }
 
     private fun passiveButtonGrabConflicts(left: XPassiveButtonGrab, right: XPassiveButtonGrab): Boolean =
@@ -1127,6 +1168,7 @@ internal class X11State(
         if (width != null || height != null) {
             window.framebuffer.resize(window.width, window.height, window.backgroundPixel)
         }
+        releaseActiveGrabsForVisibilityChanges()
         return window
     }
 

@@ -3849,6 +3849,133 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `UnmapWindow clears active pointer grab for grab or confine window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val confine = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(mapWindowRequest(WindowId))
+                out.write(grabPointerRequest(WindowId))
+                out.flush()
+                assertMapAndExpose(socket.getInputStream(), WindowId)
+                assertEquals(0, readReply(socket.getInputStream())[1].toInt() and 0xff)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+
+                out.write(unmapWindowRequest(WindowId))
+                out.write(queryPointerRequest())
+                out.flush()
+                val grabWindowPointer = readReply(socket.getInputStream())
+                assertEquals(1, grabWindowPointer[0].toInt())
+                assertEquals(5, u16le(grabWindowPointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+
+                out.write(createWindowRequest(confine, x = 10, y = 10, width = 20, height = 20))
+                out.write(mapWindowRequest(confine))
+                out.write(grabPointerRequest(X11Ids.RootWindow, confineTo = confine))
+                out.flush()
+                assertMapAndExpose(socket.getInputStream(), confine)
+                assertEquals(0, readReply(socket.getInputStream())[1].toInt() and 0xff)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+
+                out.write(unmapWindowRequest(confine))
+                out.write(queryPointerRequest())
+                out.flush()
+                val confinePointer = readReply(socket.getInputStream())
+                assertEquals(1, confinePointer[0].toInt())
+                assertEquals(10, u16le(confinePointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ConfigureWindow clears active pointer grab when confine window leaves root`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val confine = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(confine, x = 10, y = 10, width = 20, height = 20))
+                out.write(mapWindowRequest(confine))
+                out.write(grabPointerRequest(X11Ids.RootWindow, confineTo = confine))
+                out.flush()
+                assertMapAndExpose(socket.getInputStream(), confine)
+                assertEquals(0, readReply(socket.getInputStream())[1].toInt() and 0xff)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+
+                out.write(configureWindowRequest(confine, 0x0003, 200, 200))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val configure = socket.getInputStream().readExactly(32)
+                assertEquals(22, configure[0].toInt() and 0xff)
+                assertEquals(4, u16le(configure, 2))
+                assertEquals(confine, u32le(configure, 4))
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(5, u16le(pointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ConfigureWindow keeps active pointer grab when confine window is parent clipped but inside root`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val confine = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent, x = 0, y = 0, width = 10, height = 10))
+                out.write(createWindowRequest(confine, parent = parent, x = 30, y = 0, width = 10, height = 10))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(confine))
+                out.write(grabPointerRequest(X11Ids.RootWindow, confineTo = confine))
+                out.flush()
+                assertMapAndExpose(socket.getInputStream(), parent)
+                assertMapAndExpose(socket.getInputStream(), confine)
+                val grab = readReply(socket.getInputStream())
+                assertEquals(1, grab[0].toInt())
+                assertEquals(0, grab[1].toInt() and 0xff)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+
+                out.write(configureWindowRequest(parent, 0x0004, 11))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val configure = socket.getInputStream().readExactly(32)
+                assertEquals(22, configure[0].toInt() and 0xff)
+                assertEquals(6, u16le(configure, 2))
+                assertEquals(parent, u32le(configure, 4))
+                val expose = socket.getInputStream().readExactly(32)
+                assertEquals(12, expose[0].toInt() and 0xff)
+                assertEquals(parent, u32le(expose, 4))
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(7, u16le(pointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `DestroyWindow validates request length and window id without closing caller`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -4062,6 +4189,111 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 3, opcode = 9, badValue = missing, sequence = 3)
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(4, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ReparentWindow clears active pointer grab for mapped grab window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val child = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent))
+                out.write(createWindowRequest(child, x = 5, y = 5, width = 20, height = 20))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(grabPointerRequest(child))
+                out.flush()
+                assertMapAndExpose(socket.getInputStream(), parent)
+                assertMapAndExpose(socket.getInputStream(), child)
+                assertEquals(0, readReply(socket.getInputStream())[1].toInt() and 0xff)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+
+                out.write(reparentWindowRequest(child, parent, x = 7, y = 8))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(7, u16le(pointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ReparentWindow clears active pointer grab for mapped confine window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val confine = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent))
+                out.write(createWindowRequest(confine, x = 5, y = 5, width = 20, height = 20))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(confine))
+                out.write(grabPointerRequest(X11Ids.RootWindow, confineTo = confine))
+                out.flush()
+                assertMapAndExpose(socket.getInputStream(), parent)
+                assertMapAndExpose(socket.getInputStream(), confine)
+                assertEquals(0, readReply(socket.getInputStream())[1].toInt() and 0xff)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+
+                out.write(reparentWindowRequest(confine, parent, x = 7, y = 8))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(7, u16le(pointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ReparentWindow clears active keyboard grab for mapped grab window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val child = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent))
+                out.write(createWindowRequest(child, x = 5, y = 5, width = 20, height = 20))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(grabKeyboardRequest(child))
+                out.flush()
+                assertMapAndExpose(socket.getInputStream(), parent)
+                assertMapAndExpose(socket.getInputStream(), child)
+                assertEquals(0, readReply(socket.getInputStream())[1].toInt() and 0xff)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"keyboard"""")
+
+                out.write(reparentWindowRequest(child, parent, x = 7, y = 8))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(7, u16le(pointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
             }
             server.close()
             serverThread.join(1_000)
@@ -4499,6 +4731,36 @@ class XCoreDrawingProtocolTest {
                 assertEquals(1, pointer[0].toInt())
                 assertEquals(3, u16le(pointer, 2))
                 assertContains(httpGet(server.localPort, "/state.json"), """"inputControlOperations":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UnmapWindow clears active keyboard grab for grab window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(mapWindowRequest(WindowId))
+                out.write(grabKeyboardRequest(WindowId))
+                out.flush()
+                assertMapAndExpose(socket.getInputStream(), WindowId)
+                assertEquals(0, readReply(socket.getInputStream())[1].toInt() and 0xff)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"keyboard"""")
+
+                out.write(unmapWindowRequest(WindowId))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(5, u16le(pointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
             }
             server.close()
             serverThread.join(1_000)
