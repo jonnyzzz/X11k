@@ -2560,6 +2560,127 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ChangeActivePointerGrab is replyless and updates active grab parameters by timestamp`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val cursor = PixmapId + 90
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createCursorRequest(cursor, source = PixmapId, mask = PixmapId + 1))
+                out.write(grabPointerRequest(WindowId, time = 5, eventMask = 0x0004))
+                out.flush()
+
+                val grab = readReply(socket.getInputStream())
+                assertEquals(1, grab[0].toInt())
+                assertEquals(3, u16le(grab, 2))
+
+                out.write(changeActivePointerGrabRequest(cursor = cursor, time = 4, eventMask = 0x0040))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val oldTimePointer = readReply(socket.getInputStream())
+                assertEquals(1, oldTimePointer[0].toInt())
+                assertEquals(5, u16le(oldTimePointer, 2))
+                val unchangedJson = httpGet(server.localPort, "/state.json")
+                assertContains(unchangedJson, """"inputGrabs":[{"kind":"pointer","window":"0x${WindowId.toString(16)}","ownerEvents":false,"eventMask":"0x4"""")
+                assertContains(unchangedJson, """"cursor":null,"time":5""")
+
+                out.write(changeActivePointerGrabRequest(cursor = cursor, time = 5, eventMask = 0x0040))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val changedPointer = readReply(socket.getInputStream())
+                assertEquals(1, changedPointer[0].toInt())
+                assertEquals(7, u16le(changedPointer, 2))
+                val changedJson = httpGet(server.localPort, "/state.json")
+                assertContains(changedJson, """"inputGrabs":[{"kind":"pointer","window":"0x${WindowId.toString(16)}","ownerEvents":false,"eventMask":"0x40"""")
+                assertContains(changedJson, """"cursor":"0x${cursor.toString(16)}","time":5""")
+
+                out.write(changeActivePointerGrabRequest(cursor = 0, time = 6, eventMask = 0x0004))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val futureTimePointer = readReply(socket.getInputStream())
+                assertEquals(1, futureTimePointer[0].toInt())
+                assertEquals(9, u16le(futureTimePointer, 2))
+                val futureIgnoredJson = httpGet(server.localPort, "/state.json")
+                assertContains(futureIgnoredJson, """"eventMask":"0x40"""")
+                assertContains(futureIgnoredJson, """"cursor":"0x${cursor.toString(16)}","time":5""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeActivePointerGrab only changes requesting client's active grab`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { other ->
+                    owner.soTimeout = 2_000
+                    other.soTimeout = 2_000
+                    setup(owner)
+                    setup(other)
+
+                    val cursor = PixmapId + 91
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(createCursorRequest(cursor, source = PixmapId, mask = PixmapId + 1))
+                    ownerOut.write(grabPointerRequest(WindowId, time = 1, eventMask = 0x0004))
+                    ownerOut.flush()
+                    assertEquals(3, u16le(readReply(owner.getInputStream()), 2))
+
+                    val otherOut = other.getOutputStream()
+                    otherOut.write(changeActivePointerGrabRequest(cursor = cursor, time = 1, eventMask = 0x0040))
+                    otherOut.write(queryPointerRequest())
+                    otherOut.flush()
+
+                    val pointer = readReply(other.getInputStream())
+                    assertEquals(1, pointer[0].toInt())
+                    assertEquals(2, u16le(pointer, 2))
+                    val stateJson = httpGet(server.localPort, "/state.json")
+                    assertContains(stateJson, """"eventMask":"0x4"""")
+                    assertContains(stateJson, """"cursor":null""")
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeActivePointerGrab validates cursor event mask and length with stream recovery`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(changeActivePointerGrabRequest(eventMask = 0x8000))
+                out.write(changeActivePointerGrabRequest(cursor = PixmapId + 92, eventMask = 0x0004))
+                out.write(changeActivePointerGrabBadLengthRequest())
+                out.write(grabPointerOversizedRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = 30, badValue = 0x8000, sequence = 1)
+                assertError(socket.getInputStream(), error = 6, opcode = 30, badValue = PixmapId + 92, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 30, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = 26, badValue = 0, sequence = 4)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(5, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `GrabButton is replyless and records passive button grab state`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -4894,10 +5015,10 @@ class XCoreDrawingProtocolTest {
         return request(opcode, 0, body)
     }
 
-    private fun grabPointerRequest(window: Int, cursor: Int = 0, time: Int = 0): ByteArray {
+    private fun grabPointerRequest(window: Int, cursor: Int = 0, time: Int = 0, eventMask: Int = 0): ByteArray {
         val body = ByteArray(20)
         put32le(body, 0, window)
-        put16le(body, 4, 0)
+        put16le(body, 4, eventMask)
         body[6] = 0
         body[7] = 0
         put32le(body, 8, 0)
@@ -4914,6 +5035,20 @@ class XCoreDrawingProtocolTest {
 
     private fun ungrabPointerBadLengthRequest(): ByteArray =
         request(27, 0, ByteArray(0))
+
+    private fun grabPointerOversizedRequest(): ByteArray =
+        request(26, 0, ByteArray(24))
+
+    private fun changeActivePointerGrabRequest(cursor: Int = 0, time: Int = 0, eventMask: Int = 0): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, cursor)
+        put32le(body, 4, time)
+        put16le(body, 8, eventMask)
+        return request(30, 0, body)
+    }
+
+    private fun changeActivePointerGrabBadLengthRequest(): ByteArray =
+        request(30, 0, ByteArray(0))
 
     private fun grabButtonRequest(
         window: Int,

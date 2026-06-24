@@ -158,7 +158,7 @@ internal object SvgScreenRenderer {
             snapshot.inputGrabs.forEachIndexed { index, grab ->
                 if (index > 0) append(',')
                 append('{')
-                append(""""kind":"${escapeJson(grab.kind)}","window":"${grab.windowIdHex}","ownerEvents":${grab.ownerEvents},"pointerMode":${grab.pointerMode},"keyboardMode":${grab.keyboardMode},"confineTo":""")
+                append(""""kind":"${escapeJson(grab.kind)}","window":"${grab.windowIdHex}","ownerEvents":${grab.ownerEvents},"eventMask":"${grab.eventMaskHex}","pointerMode":${grab.pointerMode},"keyboardMode":${grab.keyboardMode},"confineTo":""")
                 grab.confineToHex?.let { append('"').append(it).append('"') } ?: append("null")
                 append(""","cursor":""")
                 grab.cursorHex?.let { append('"').append(it).append('"') } ?: append("null")

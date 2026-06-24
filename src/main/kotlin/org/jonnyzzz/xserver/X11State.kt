@@ -329,6 +329,14 @@ internal class X11State(
     }
 
     @Synchronized
+    fun changeActivePointerGrab(owner: XEventSink, eventMask: Int, cursor: Int?, time: Int) {
+        val grab = activePointerGrab
+        if (grab?.owner == owner && validChangeActivePointerGrabTime(time, grab.time)) {
+            activePointerGrab = grab.copy(eventMask = eventMask, cursor = cursor)
+        }
+    }
+
+    @Synchronized
     fun grabButton(grab: XPassiveButtonGrab): Boolean {
         if (passiveButtonGrabs.any { it.owner != grab.owner && passiveButtonGrabConflicts(it, grab) }) return false
         passiveButtonGrabs.removeIf {
@@ -394,6 +402,16 @@ internal class X11State(
 
     private fun validUngrabTime(requestTime: Int, grabTime: Int): Boolean =
         requestTime == 0 || Integer.compareUnsigned(requestTime, grabTime) >= 0
+
+    private fun validChangeActivePointerGrabTime(requestTime: Int, grabTime: Int): Boolean =
+        requestTime == 0 ||
+            (
+                Integer.compareUnsigned(requestTime, grabTime) >= 0 &&
+                    Integer.compareUnsigned(requestTime, currentServerTime(grabTime)) <= 0
+                )
+
+    private fun currentServerTime(floor: Int): Int =
+        if (Integer.compareUnsigned(inputTime, floor) < 0) floor else inputTime
 
     private fun passiveButtonGrabConflicts(left: XPassiveButtonGrab, right: XPassiveButtonGrab): Boolean =
         left.windowId == right.windowId &&
@@ -3048,6 +3066,7 @@ internal data class XInputGrab(
     val kind: String,
     val windowId: Int,
     val ownerEvents: Boolean,
+    val eventMask: Int,
     val pointerMode: Int,
     val keyboardMode: Int,
     val confineTo: Int?,
@@ -3059,6 +3078,7 @@ internal data class XInputGrab(
             kind = kind,
             windowId = windowId,
             ownerEvents = ownerEvents,
+            eventMask = eventMask,
             pointerMode = pointerMode,
             keyboardMode = keyboardMode,
             confineTo = confineTo,
@@ -3071,6 +3091,7 @@ internal data class XInputGrabSnapshot(
     val kind: String,
     val windowId: Int,
     val ownerEvents: Boolean,
+    val eventMask: Int,
     val pointerMode: Int,
     val keyboardMode: Int,
     val confineTo: Int?,
@@ -3078,6 +3099,7 @@ internal data class XInputGrabSnapshot(
     val time: Int,
 ) {
     val windowIdHex: String get() = "0x${windowId.toUInt().toString(16)}"
+    val eventMaskHex: String get() = "0x${eventMask.toUInt().toString(16)}"
     val confineToHex: String? get() = confineTo?.let { "0x${it.toUInt().toString(16)}" }
     val cursorHex: String? get() = cursor?.let { "0x${it.toUInt().toString(16)}" }
     val timeUnsigned: Long get() = time.toUInt().toLong()
