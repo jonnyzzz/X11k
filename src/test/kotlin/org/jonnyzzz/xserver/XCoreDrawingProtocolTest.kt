@@ -3934,6 +3934,75 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `UnmapSubwindows validates request length and parent window without closing caller`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missing = WindowId + 404
+                val out = socket.getOutputStream()
+                out.write(request(11, 0, ByteArray(0)))
+                out.write(request(11, 0, ByteArray(8)))
+                out.write(unmapSubwindowsRequest(missing))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 11, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, opcode = 11, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 3, opcode = 11, badValue = missing, sequence = 3)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(4, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UnmapSubwindows unmaps all direct child windows`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val first = WindowId + 1
+                val second = WindowId + 2
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent))
+                out.write(createWindowRequest(first, parent = parent))
+                out.write(createWindowRequest(second, parent = parent))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(first))
+                out.write(mapWindowRequest(second))
+                out.write(getWindowAttributesRequest(first))
+                out.write(getWindowAttributesRequest(second))
+                out.write(unmapSubwindowsRequest(parent))
+                out.write(getWindowAttributesRequest(first))
+                out.write(getWindowAttributesRequest(second))
+                out.flush()
+
+                repeat(6) { index ->
+                    val event = socket.getInputStream().readExactly(32)
+                    assertEquals(if (index % 2 == 0) 19 else 12, event[0].toInt() and 0xff)
+                }
+                val firstMapped = readReply(socket.getInputStream())
+                val secondMapped = readReply(socket.getInputStream())
+                assertEquals(2, firstMapped[26].toInt() and 0xff)
+                assertEquals(2, secondMapped[26].toInt() and 0xff)
+
+                val firstUnmapped = readReply(socket.getInputStream())
+                val secondUnmapped = readReply(socket.getInputStream())
+                assertEquals(0, firstUnmapped[26].toInt() and 0xff)
+                assertEquals(0, secondUnmapped[26].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `FreeCursor clears active pointer grab that references cursor`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -7255,6 +7324,9 @@ class XCoreDrawingProtocolTest {
     private fun queryPointerRequest(): ByteArray =
         request(38, 0, ByteArray(4).also { put32le(it, 0, X11Ids.RootWindow) })
 
+    private fun getWindowAttributesRequest(window: Int): ByteArray =
+        request(3, 0, ByteArray(4).also { put32le(it, 0, window) })
+
     private fun getMotionEventsRequest(window: Int, start: Int, stop: Int): ByteArray {
         val body = ByteArray(12)
         put32le(body, 0, window)
@@ -7319,6 +7391,12 @@ class XCoreDrawingProtocolTest {
         val body = ByteArray(4)
         put32le(body, 0, id)
         return request(10, 0, body)
+    }
+
+    private fun unmapSubwindowsRequest(id: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, id)
+        return request(11, 0, body)
     }
 
     private fun changeWindowBackgroundPixmapRequest(id: Int, pixmap: Int): ByteArray {
