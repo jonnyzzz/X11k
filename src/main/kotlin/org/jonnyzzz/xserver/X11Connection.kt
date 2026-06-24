@@ -499,6 +499,9 @@ internal class X11Connection(
     private fun renderComposite(body: ByteArray) {
         if (body.size != 32) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = 0)
         val operation = body[0].toInt() and 0xff
+        if (!XRender.isValidOperator(operation)) {
+            return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = operation)
+        }
         val sourceId = byteOrder.u32(body, 4)
         val source = state.picture(sourceId)
             ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = sourceId)

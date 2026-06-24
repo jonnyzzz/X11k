@@ -1175,6 +1175,35 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `Render Composite validates operator values`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val source = PixmapId + 0x410
+                val destination = source + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePictureRequest(source))
+                out.write(renderCreatePictureRequest(destination))
+                out.write(renderCompositeRequest(source, destination = destination, operation = 0x2c))
+                out.write(renderCompositeRequest(source, destination = destination, operation = XRender.OpBlendMultiply))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = 0x2c, sequence = 4)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(6, u16le(pointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"drawings":1""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `OpenFont rejects duplicate resource id without replacing existing resource`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

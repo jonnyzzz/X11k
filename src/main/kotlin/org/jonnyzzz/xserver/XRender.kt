@@ -20,6 +20,13 @@ internal object XRender {
     const val OpSrc = 1
     const val OpOver = 3
     const val OpAdd = 12
+    const val OpMaximum = 13
+    const val OpDisjointClear = 0x10
+    const val OpDisjointMaximum = 0x1b
+    const val OpConjointClear = 0x20
+    const val OpConjointMaximum = 0x2b
+    const val OpBlendMultiply = 0x30
+    const val OpBlendMaximum = 0x3e
 
     const val CPRepeat = 1 shl 0
     const val PictureAttributeMask = 0x0000_1fff
@@ -67,6 +74,12 @@ internal object XRender {
 
     fun isAlphaMaskFormat(format: Int): Boolean =
         format == A8Format || format == A1Format
+
+    fun isValidOperator(operation: Int): Boolean =
+        operation in OpClear..OpMaximum ||
+            operation in OpDisjointClear..OpDisjointMaximum ||
+            operation in OpConjointClear..OpConjointMaximum ||
+            operation in OpBlendMultiply..OpBlendMaximum
 
     fun formatDepth(format: Int): Int? =
         when (format) {
