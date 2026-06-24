@@ -1475,11 +1475,10 @@ internal class X11Connection(
     }
 
     private fun glxDestroyContext(body: ByteArray) {
-        if (body.size >= 4) {
-            val context = byteOrder.u32(body, 0)
-            state.removeGlxContext(context)
-            ownedResources.remove(context)
-        }
+        if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = 4, badValue = 0)
+        val context = byteOrder.u32(body, 0)
+        state.removeGlxContext(context)
+        ownedResources.remove(context)
     }
 
     private fun glxCreateWindow(body: ByteArray) {
