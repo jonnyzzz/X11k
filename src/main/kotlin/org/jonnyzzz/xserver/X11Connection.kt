@@ -1296,7 +1296,10 @@ internal class X11Connection(
     }
 
     private fun unmapWindow(body: ByteArray) {
-        if (body.size >= 4) state.unmapWindow(byteOrder.u32(body, 0))
+        if (body.size != 4) return writeError(error = 16, opcode = 10, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        state.window(windowId) ?: return writeError(error = 3, opcode = 10, badValue = windowId)
+        state.unmapWindow(windowId)
     }
 
     private fun mapSubwindows(body: ByteArray) {
