@@ -824,6 +824,22 @@ internal class X11State(
     }
 
     @Synchronized
+    fun translateCoordinates(sourceWindowId: Int, destinationWindowId: Int, sourceX: Int, sourceY: Int): XTranslatedCoordinates? {
+        val sourceWindow = windows[sourceWindowId] ?: return null
+        val destinationWindow = windows[destinationWindowId] ?: return null
+        val sourceAbsolute = absolutePosition(sourceWindow)
+        val destinationAbsolute = absolutePosition(destinationWindow)
+        val rootX = sourceAbsolute.first + sourceX
+        val rootY = sourceAbsolute.second + sourceY
+        val childWindowId = mappedChildContaining(destinationWindowId, rootX, rootY)?.id ?: 0
+        return XTranslatedCoordinates(
+            childWindowId = childWindowId,
+            destinationX = rootX - destinationAbsolute.first,
+            destinationY = rootY - destinationAbsolute.second,
+        )
+    }
+
+    @Synchronized
     fun sendEventInputFocusWindowId(): Int? {
         val pointerWindowId = pointerWindowId()
         return when (focusWindowId) {
@@ -2825,6 +2841,18 @@ internal class X11State(
     }
 
     private fun Int.toHex(): String = "0x${toUInt().toString(16)}"
+
+    private fun mappedChildContaining(parentId: Int, rootX: Int, rootY: Int): XWindow? =
+        windows.values.toList()
+            .asReversed()
+            .firstOrNull { window ->
+                if (window.parentId != parentId || !window.mapped) return@firstOrNull false
+                val absolute = absolutePosition(window)
+                rootX >= absolute.first &&
+                    rootY >= absolute.second &&
+                    rootX < absolute.first + window.width &&
+                    rootY < absolute.second + window.height
+            }
 
     private fun windowAt(x: Int, y: Int): XWindow? =
         windows.values.toList()

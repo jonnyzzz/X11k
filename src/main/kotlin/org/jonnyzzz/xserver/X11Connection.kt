@@ -1768,10 +1768,21 @@ internal class X11Connection(
     }
 
     private fun translateCoordinates(body: ByteArray) {
+        if (body.size != 12) return writeError(error = 16, opcode = 40, badValue = 0)
+        val sourceWindowId = byteOrder.u32(body, 0)
+        if (state.window(sourceWindowId) == null) return writeError(error = 3, opcode = 40, badValue = sourceWindowId)
+        val destinationWindowId = byteOrder.u32(body, 4)
+        if (state.window(destinationWindowId) == null) return writeError(error = 3, opcode = 40, badValue = destinationWindowId)
+        val translated = state.translateCoordinates(
+            sourceWindowId = sourceWindowId,
+            destinationWindowId = destinationWindowId,
+            sourceX = byteOrder.i16(body, 8),
+            sourceY = byteOrder.i16(body, 10),
+        ) ?: return writeError(error = 3, opcode = 40, badValue = sourceWindowId)
         val reply = reply(extra = 1, payloadUnits = 0)
-        byteOrder.put32(reply, 8, 0)
-        byteOrder.put16(reply, 12, byteOrder.i16(body, 8))
-        byteOrder.put16(reply, 14, byteOrder.i16(body, 10))
+        byteOrder.put32(reply, 8, translated.childWindowId)
+        byteOrder.put16(reply, 12, translated.destinationX)
+        byteOrder.put16(reply, 14, translated.destinationY)
         write(reply)
     }
 

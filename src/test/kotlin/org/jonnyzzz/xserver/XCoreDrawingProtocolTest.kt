@@ -2502,6 +2502,100 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `TranslateCoordinates converts source window coordinates to destination window coordinates`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val destination = WindowId + 1
+                out.write(createWindowRequest(WindowId, x = 20, y = 10, width = 20, height = 20))
+                out.write(createWindowRequest(destination, x = 5, y = 4, width = 50, height = 40))
+                out.write(translateCoordinatesRequest(sourceWindow = WindowId, destinationWindow = destination, sourceX = 7, sourceY = 5))
+                out.flush()
+
+                val reply = readReply(socket.getInputStream())
+                assertEquals(1, reply[0].toInt())
+                assertEquals(1, reply[1].toInt() and 0xff)
+                assertEquals(3, u16le(reply, 2))
+                assertEquals(0, u32le(reply, 8))
+                assertEquals(22, u16le(reply, 12))
+                assertEquals(11, u16le(reply, 14))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `TranslateCoordinates reports mapped child containing translated point`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val child = WindowId + 1
+                out.write(createWindowRequest(WindowId, x = 5, y = 4, width = 50, height = 40))
+                out.write(createWindowRequest(child, x = 18, y = 8, width = 10, height = 10, parent = WindowId))
+                out.write(mapWindowRequest(WindowId))
+                out.write(mapWindowRequest(child))
+                out.write(
+                    translateCoordinatesRequest(
+                        sourceWindow = X11Ids.RootWindow,
+                        destinationWindow = WindowId,
+                        sourceX = 27,
+                        sourceY = 15,
+                    ),
+                )
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream(), WindowId)
+                assertMapAndExpose(socket.getInputStream(), child)
+                val reply = readReply(socket.getInputStream())
+                assertEquals(1, reply[0].toInt())
+                assertEquals(1, reply[1].toInt() and 0xff)
+                assertEquals(5, u16le(reply, 2))
+                assertEquals(child, u32le(reply, 8))
+                assertEquals(22, u16le(reply, 12))
+                assertEquals(11, u16le(reply, 14))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `TranslateCoordinates validates windows and request length and preserves stream recovery`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missing = WindowId + 111
+                out.write(translateCoordinatesRequest(sourceWindow = missing, destinationWindow = X11Ids.RootWindow))
+                out.write(translateCoordinatesRequest(sourceWindow = X11Ids.RootWindow, destinationWindow = missing))
+                out.write(translateCoordinatesBadLengthRequest())
+                out.write(translateCoordinatesBadLengthRequest(bodySize = 16))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 3, opcode = 40, badValue = missing, sequence = 1)
+                assertError(socket.getInputStream(), error = 3, opcode = 40, badValue = missing, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 40, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = 40, badValue = 0, sequence = 4)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(5, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `WarpPointer moves pointer to destination window coordinates`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2515,7 +2609,7 @@ class XCoreDrawingProtocolTest {
                 out.write(queryPointerRequest())
                 out.flush()
 
-                assertMapAndExpose(socket.getInputStream())
+                assertMapAndExpose(socket.getInputStream(), WindowId)
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(1, pointer[0].toInt())
                 assertEquals(1, pointer[1].toInt() and 0xff)
@@ -2586,7 +2680,7 @@ class XCoreDrawingProtocolTest {
                 out.write(queryPointerRequest())
                 out.flush()
 
-                assertMapAndExpose(socket.getInputStream())
+                assertMapAndExpose(socket.getInputStream(), WindowId)
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(1, pointer[0].toInt())
                 assertEquals(5, u16le(pointer, 2))
@@ -2613,7 +2707,7 @@ class XCoreDrawingProtocolTest {
                 out.write(queryPointerRequest())
                 out.flush()
 
-                assertMapAndExpose(socket.getInputStream())
+                assertMapAndExpose(socket.getInputStream(), WindowId)
                 val motion = socket.getInputStream().readExactly(32)
                 assertEquals(6, motion[0].toInt() and 0xff)
                 assertEquals(0, motion[1].toInt() and 0xff)
@@ -2654,7 +2748,7 @@ class XCoreDrawingProtocolTest {
                 out.write(queryPointerRequest())
                 out.flush()
 
-                assertMapAndExpose(socket.getInputStream())
+                assertMapAndExpose(socket.getInputStream(), WindowId)
                 val grab = readReply(socket.getInputStream())
                 assertEquals(1, grab[0].toInt())
                 assertEquals(0, grab[1].toInt() and 0xff)
@@ -5954,6 +6048,18 @@ class XCoreDrawingProtocolTest {
     private fun getMotionEventsBadLengthRequest(): ByteArray =
         request(39, 0, ByteArray(0))
 
+    private fun translateCoordinatesRequest(sourceWindow: Int, destinationWindow: Int, sourceX: Int = 0, sourceY: Int = 0): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, sourceWindow)
+        put32le(body, 4, destinationWindow)
+        put16le(body, 8, sourceX)
+        put16le(body, 10, sourceY)
+        return request(40, 0, body)
+    }
+
+    private fun translateCoordinatesBadLengthRequest(bodySize: Int = 8): ByteArray =
+        request(40, 0, ByteArray(bodySize))
+
     private fun warpPointerRequest(
         sourceWindow: Int = 0,
         destinationWindow: Int = 0,
@@ -6472,9 +6578,13 @@ class XCoreDrawingProtocolTest {
         return header + input.readExactly(payloadUnits * 4)
     }
 
-    private fun assertMapAndExpose(input: InputStream) {
-        assertEquals(19, input.readExactly(32)[0].toInt() and 0xff)
-        assertEquals(12, input.readExactly(32)[0].toInt() and 0xff)
+    private fun assertMapAndExpose(input: InputStream, windowId: Int) {
+        val map = input.readExactly(32)
+        assertEquals(19, map[0].toInt() and 0xff)
+        assertEquals(windowId, u32le(map, 8))
+        val expose = input.readExactly(32)
+        assertEquals(12, expose[0].toInt() and 0xff)
+        assertEquals(windowId, u32le(expose, 4))
     }
 
     private fun httpGet(port: Int, path: String): String =

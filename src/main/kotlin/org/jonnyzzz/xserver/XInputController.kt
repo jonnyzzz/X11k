@@ -139,6 +139,12 @@ internal data class XPointerQuery(
     val mask: Int,
 )
 
+internal data class XTranslatedCoordinates(
+    val childWindowId: Int,
+    val destinationX: Int,
+    val destinationY: Int,
+)
+
 internal data class XMappingNotifyEvent(
     val request: Int,
     val firstKeycode: Int = 0,
