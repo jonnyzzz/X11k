@@ -2490,14 +2490,36 @@ internal class X11Connection(
     }
 
     private fun putImage(format: Int, body: ByteArray) {
-        if (body.size < 20) return
-        val gc = state.gc(byteOrder.u32(body, 4))
+        if (body.size < 20) return writeError(error = 16, opcode = 72, badValue = 0)
+        if (format !in 0..2) return writeError(error = 2, opcode = 72, badValue = format)
+        val gcId = byteOrder.u32(body, 4)
+        if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 72, badValue = gcId)
+        val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
+        val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = 72, badValue = drawableId)
+        if (gc.drawableRootId != drawable.rootId || gc.drawableDepth != drawable.depth) {
+            return writeError(error = 8, opcode = 72, badValue = drawableId)
+        }
         val width = byteOrder.u16(body, 8)
         val height = byteOrder.u16(body, 10)
         val x = byteOrder.i16(body, 12)
         val y = byteOrder.i16(body, 14)
-        val image = decodePutImage(format = format, width = width, height = height, depth = body[17].toInt() and 0xff, data = body.copyOfRange(20, body.size))
+        val leftPad = body[16].toInt() and 0xff
+        val depth = body[17].toInt() and 0xff
+        val dataByteLength = putImageDataByteLength(format, width, height, depth, leftPad, drawable.depth)
+            ?: return writeError(error = 8, opcode = 72, badValue = drawableId)
+        if (body.size - 20 != dataByteLength) return writeError(error = 16, opcode = 72, badValue = 0)
+        val image = decodePutImage(
+            format = format,
+            width = width,
+            height = height,
+            depth = depth,
+            leftPad = leftPad,
+            drawableDepth = drawable.depth,
+            data = body.copyOfRange(20, body.size),
+            foreground = gc.foreground,
+            background = gc.background,
+        )
         val imageDataUri = image?.let { XFramebuffer.imageDataUri(it) }
         if (image != null) {
             state.putImage(drawableId, x, y, image, clipRectangles = gc.effectiveClipRectangles(), function = gc.function, planeMask = gc.planeMask)
@@ -2627,7 +2649,7 @@ internal class X11Connection(
     private fun encodeXyPixmap(image: XImagePixels, depth: Int, planeMask: Int): ByteArray {
         val effectiveDepth = depth.coerceIn(0, 32)
         val drawableMask = if (effectiveDepth >= 32) -1 else (1 shl effectiveDepth) - 1
-        val planes = (0 until effectiveDepth).filter { bit -> (planeMask and drawableMask and (1 shl bit)) != 0 }
+        val planes = (effectiveDepth - 1 downTo 0).filter { bit -> (planeMask and drawableMask and (1 shl bit)) != 0 }
         val stride = paddedLength((image.width + 7) / 8)
         val bytes = ByteArray(stride * image.height * planes.size)
         for ((planeIndex, bit) in planes.withIndex()) {
@@ -4216,12 +4238,81 @@ internal class X11Connection(
         width: Int,
         height: Int,
         depth: Int,
+        leftPad: Int,
+        drawableDepth: Int,
+        data: ByteArray,
+        foreground: Int,
+        background: Int,
+    ): XImagePixels? {
+        if (width <= 0 || height <= 0) return null
+        return when (format) {
+            0 -> decodeBitmapImage(width, height, leftPad, drawableDepth, data, foreground, background)
+            1 -> decodeXyPixmapImage(width, height, depth, leftPad, data)
+            2 -> decodeZPixmapImage(width, height, depth, data)
+            else -> null
+        }
+    }
+
+    private fun decodeBitmapImage(
+        width: Int,
+        height: Int,
+        leftPad: Int,
+        drawableDepth: Int,
+        data: ByteArray,
+        foreground: Int,
+        background: Int,
+    ): XImagePixels {
+        val stride = xyPlaneStrideBytes(width, leftPad)
+        val pixels = IntArray(width * height)
+        val foregroundPixel = imagePixelForDepth(foreground, drawableDepth)
+        val backgroundPixel = imagePixelForDepth(background, drawableDepth)
+        for (y in 0 until height) {
+            val rowOffset = y * stride
+            for (x in 0 until width) {
+                pixels[y * width + x] = if (imagePlaneBit(data, rowOffset, x + leftPad)) foregroundPixel else backgroundPixel
+            }
+        }
+        return XImagePixels(width, height, pixels)
+    }
+
+    private fun decodeXyPixmapImage(
+        width: Int,
+        height: Int,
+        depth: Int,
+        leftPad: Int,
+        data: ByteArray,
+    ): XImagePixels {
+        val stride = xyPlaneStrideBytes(width, leftPad)
+        val planeBytes = stride * height
+        val pixels = IntArray(width * height)
+        for (planeIndex in 0 until depth) {
+            val bit = depth - 1 - planeIndex
+            val planeOffset = planeIndex * planeBytes
+            val mask = 1 shl bit
+            for (y in 0 until height) {
+                val rowOffset = planeOffset + y * stride
+                for (x in 0 until width) {
+                    if (imagePlaneBit(data, rowOffset, x + leftPad)) {
+                        pixels[y * width + x] = pixels[y * width + x] or mask
+                    }
+                }
+            }
+        }
+        for (index in pixels.indices) {
+            pixels[index] = imagePixelForDepth(pixels[index], depth)
+        }
+        return XImagePixels(width, height, pixels)
+    }
+
+    private fun decodeZPixmapImage(
+        width: Int,
+        height: Int,
+        depth: Int,
         data: ByteArray,
     ): XImagePixels? {
-        if (format != 2 || width <= 0 || height <= 0 || depth !in setOf(8, 24, 32)) return null
+        if (depth !in setOf(8, 24, 32)) return null
         if (depth == 8) {
             val stride = paddedLength(width)
-            if (data.size < stride * height) return null
             val pixels = IntArray(width * height)
             for (y in 0 until height) {
                 val rowOffset = y * stride
@@ -4234,17 +4325,61 @@ internal class X11Connection(
         }
         val bytesPerPixel = 4
         val stride = paddedLength(width * bytesPerPixel)
-        if (data.size < stride * height) return null
         val pixels = IntArray(width * height)
         for (y in 0 until height) {
             val rowOffset = y * stride
             for (x in 0 until width) {
                 val pixel = byteOrder.u32(data, rowOffset + x * bytesPerPixel)
-                pixels[y * width + x] = if (depth == 24) XFramebuffer.opaque(pixel) else XFramebuffer.argb(pixel)
+                pixels[y * width + x] = imagePixelForDepth(pixel, depth)
             }
         }
         return XImagePixels(width, height, pixels)
     }
+
+    private fun putImageDataByteLength(
+        format: Int,
+        width: Int,
+        height: Int,
+        depth: Int,
+        leftPad: Int,
+        drawableDepth: Int,
+    ): Int? {
+        if (width == 0 || height == 0) return 0
+        val bytes = when (format) {
+            0 -> {
+                if (depth != 1 || leftPad >= 32) return null
+                xyPlaneStrideBytes(width, leftPad).toLong() * height
+            }
+            1 -> {
+                if (depth != drawableDepth || depth !in 1..32 || leftPad >= 32) return null
+                xyPlaneStrideBytes(width, leftPad).toLong() * height * depth
+            }
+            2 -> {
+                if (depth != drawableDepth || leftPad != 0) return null
+                when (depth) {
+                    8 -> paddedLength(width.toLong()) * height
+                    24, 32 -> paddedLength(width.toLong() * 4L) * height
+                    else -> return null
+                }
+            }
+            else -> return null
+        }
+        return bytes.takeIf { it <= Int.MAX_VALUE }?.toInt()
+    }
+
+    private fun xyPlaneStrideBytes(width: Int, leftPad: Int): Int =
+        paddedLength((leftPad + width + 7) / 8)
+
+    private fun imagePlaneBit(data: ByteArray, rowOffset: Int, bitIndex: Int): Boolean =
+        ((data[rowOffset + bitIndex / 8].toInt() ushr (bitIndex % 8)) and 1) != 0
+
+    private fun imagePixelForDepth(pixel: Int, depth: Int): Int =
+        when (depth) {
+            8 -> (pixel and 0xff) shl 24
+            24 -> XFramebuffer.opaque(pixel)
+            32 -> XFramebuffer.argb(pixel)
+            else -> pixel
+        }
 
     private fun decodeGlyphMask(
         format: Int,

@@ -1585,9 +1585,11 @@ class XCoreDrawingProtocolTest {
                 out.write(createWindowRequest(WindowId, width = 80, height = 40))
                 out.write(createPixmapRequest(PixmapId, width = 2, height = 2, depth = 8))
                 out.write(createGcRequest(GcId, foreground = Red, background = Blue))
+                out.write(createGcRequest(GcId + 1, foreground = Red, drawable = PixmapId))
                 out.write(
                     putImage8PixelsRequest(
                         PixmapId,
+                        gc = GcId + 1,
                         width = 2,
                         height = 2,
                         alphas = byteArrayOf(0xff.toByte(), 0x00, 0x00, 0xff.toByte()),
@@ -2104,6 +2106,130 @@ class XCoreDrawingProtocolTest {
                 assertEquals(0xffff_0000.toInt(), pixelAt(image, 6, 2, 2))
                 assertEquals(0xffff_0000.toInt(), pixelAt(image, 6, 1, 4))
                 assertEquals(0xffff_ffff.toInt(), pixelAt(image, 6, 5, 5))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PutImage reports request errors and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val missingDrawable = WindowId + 0x7777
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(putImageBadLengthRequest(bodySize = 16))
+                out.write(putImageRawRequest(WindowId, GcId, format = 3, width = 0, height = 0, depth = 24, data = ByteArray(0)))
+                out.write(putImage24PixelsRequest(WindowId, width = 1, height = 1, pixels = listOf(Red)))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 8))
+                out.write(createGcRequest(GcId + 1, foreground = Red, drawable = PixmapId))
+                out.write(putImage24PixelsRequest(missingDrawable, width = 1, height = 1, pixels = listOf(Red)))
+                out.write(putImageRawRequest(WindowId, GcId + 1, format = 2, width = 1, height = 1, depth = 24, data = ByteArray(4)))
+                out.write(putImageRawRequest(WindowId, GcId, format = 2, width = 1, height = 1, leftPad = 1, depth = 24, data = ByteArray(4)))
+                out.write(putImageRawRequest(WindowId, GcId, format = 2, width = 1, height = 1, depth = 8, data = ByteArray(4)))
+                out.write(putImageRawRequest(WindowId, GcId, format = 2, width = 2, height = 2, depth = 24, data = ByteArray(4)))
+                out.write(putImageRawRequest(WindowId, GcId, format = 2, width = 1, height = 1, depth = 24, data = ByteArray(8)))
+                out.write(putImage24PixelsRequest(WindowId, width = 2, height = 1, pixels = listOf(Red, Green)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 72, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 2, opcode = 72, badValue = 3, sequence = 3)
+                assertError(socket.getInputStream(), error = 13, opcode = 72, badValue = GcId, sequence = 4)
+                assertError(socket.getInputStream(), error = 9, opcode = 72, badValue = missingDrawable, sequence = 8)
+                assertError(socket.getInputStream(), error = 8, opcode = 72, badValue = WindowId, sequence = 9)
+                assertError(socket.getInputStream(), error = 8, opcode = 72, badValue = WindowId, sequence = 10)
+                assertError(socket.getInputStream(), error = 8, opcode = 72, badValue = WindowId, sequence = 11)
+                assertError(socket.getInputStream(), error = 16, opcode = 72, badValue = 0, sequence = 12)
+                assertError(socket.getInputStream(), error = 16, opcode = 72, badValue = 0, sequence = 13)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 2, 0, 0))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 2, 1, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PutImage decodes bitmap and XY pixmap formats`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red, background = Blue))
+                out.write(
+                    putImageBitmapRequest(
+                        WindowId,
+                        GcId,
+                        width = 4,
+                        height = 1,
+                        leftPad = 1,
+                        bits = listOf(true, false, true, false),
+                    ),
+                )
+                out.write(
+                    putImageXyPixmapRequest(
+                        WindowId,
+                        GcId,
+                        width = 2,
+                        height = 1,
+                        y = 1,
+                        depth = 24,
+                        pixels = listOf(Red, Green),
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 2))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 0, 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 4, 1, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 2, 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 4, 3, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 0, 1))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 4, 1, 1))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 2, 1))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 3, 1))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PutImage bitmap maps GC pixels through drawable depth`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 1, depth = 8))
+                out.write(createGcRequest(GcId, foreground = 0x80, background = 0x00, drawable = PixmapId))
+                out.write(
+                    putImageBitmapRequest(
+                        PixmapId,
+                        GcId,
+                        width = 2,
+                        height = 1,
+                        bits = listOf(true, false),
+                    ),
+                )
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(8, image[1].toInt() and 0xff)
+                assertEquals(0x8000_0000.toInt(), pixelAt(image, 2, 0, 0))
+                assertEquals(0x0000_0000, pixelAt(image, 2, 1, 0))
             }
             server.close()
             serverThread.join(1_000)
@@ -9614,6 +9740,13 @@ class XCoreDrawingProtocolTest {
         return request(69, 0, body)
     }
 
+    private fun putImageBadLengthRequest(bodySize: Int): ByteArray {
+        val body = ByteArray(bodySize)
+        if (bodySize >= 4) put32le(body, 0, WindowId)
+        if (bodySize >= 8) put32le(body, 4, GcId)
+        return request(72, 2, body)
+    }
+
     private fun copyAreaRequest(
         source: Int,
         destination: Int,
@@ -9684,7 +9817,87 @@ class XCoreDrawingProtocolTest {
         return request(72, 2, body)
     }
 
-    private fun putImage8PixelsRequest(drawable: Int, width: Int, height: Int, alphas: ByteArray): ByteArray {
+    private fun putImageRawRequest(
+        drawable: Int,
+        gc: Int,
+        format: Int,
+        width: Int,
+        height: Int,
+        x: Int = 0,
+        y: Int = 0,
+        leftPad: Int = 0,
+        depth: Int,
+        data: ByteArray,
+    ): ByteArray {
+        val body = ByteArray(20 + data.size)
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        put16le(body, 8, width)
+        put16le(body, 10, height)
+        put16le(body, 12, x)
+        put16le(body, 14, y)
+        body[16] = leftPad.toByte()
+        body[17] = depth.toByte()
+        data.copyInto(body, 20)
+        return request(72, format, body)
+    }
+
+    private fun putImageBitmapRequest(
+        drawable: Int,
+        gc: Int,
+        width: Int,
+        height: Int,
+        x: Int = 0,
+        y: Int = 0,
+        leftPad: Int = 0,
+        bits: List<Boolean>,
+    ): ByteArray {
+        require(bits.size == width * height)
+        val stride = paddedLength((leftPad + width + 7) / 8)
+        val data = ByteArray(stride * height)
+        for ((index, bit) in bits.withIndex()) {
+            if (!bit) continue
+            val row = index / width
+            val column = index % width
+            val bitIndex = column + leftPad
+            val offset = row * stride + bitIndex / 8
+            data[offset] = (data[offset].toInt() or (1 shl (bitIndex % 8))).toByte()
+        }
+        return putImageRawRequest(drawable, gc, format = 0, width = width, height = height, x = x, y = y, leftPad = leftPad, depth = 1, data = data)
+    }
+
+    private fun putImageXyPixmapRequest(
+        drawable: Int,
+        gc: Int,
+        width: Int,
+        height: Int,
+        x: Int = 0,
+        y: Int = 0,
+        leftPad: Int = 0,
+        depth: Int,
+        pixels: List<Int>,
+    ): ByteArray {
+        require(pixels.size == width * height)
+        val stride = paddedLength((leftPad + width + 7) / 8)
+        val planeBytes = stride * height
+        val data = ByteArray(planeBytes * depth)
+        for (planeIndex in 0 until depth) {
+            val bit = depth - 1 - planeIndex
+            val mask = 1 shl bit
+            val planeOffset = planeIndex * planeBytes
+            for ((index, pixel) in pixels.withIndex()) {
+                if ((pixel and mask) == 0) continue
+                val row = index / width
+                val column = index % width
+                val bitIndex = column + leftPad
+                val offset = planeOffset + row * stride + bitIndex / 8
+                data[offset] = (data[offset].toInt() or (1 shl (bitIndex % 8))).toByte()
+            }
+        }
+        return putImageRawRequest(drawable, gc, format = 1, width = width, height = height, x = x, y = y, leftPad = leftPad, depth = depth, data = data)
+    }
+
+    private fun putImage8PixelsRequest(drawable: Int, gc: Int = GcId, width: Int, height: Int, alphas: ByteArray): ByteArray {
         require(alphas.size == width * height)
         val stride = paddedLength(width)
         val data = ByteArray(stride * height)
@@ -9698,7 +9911,7 @@ class XCoreDrawingProtocolTest {
         }
         val body = ByteArray(20 + data.size)
         put32le(body, 0, drawable)
-        put32le(body, 4, GcId)
+        put32le(body, 4, gc)
         put16le(body, 8, width)
         put16le(body, 10, height)
         body[17] = 8

@@ -2379,12 +2379,19 @@ class XRenderProtocolTest {
         }
         val body = ByteArray(20 + data.size)
         put32le(body, 0, drawable)
-        put32le(body, 4, 0)
+        put32le(body, 4, PutImageGcId)
         put16le(body, 8, width)
         put16le(body, 10, height)
         body[17] = 8
         data.copyInto(body, 20)
-        return request(72, 2, body)
+        return createGcRequest(PutImageGcId, drawable) + request(72, 2, body)
+    }
+
+    private fun createGcRequest(id: Int, drawable: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, id)
+        put32le(body, 4, drawable)
+        return request(55, 0, body)
     }
 
     private fun request(opcode: Int, minorOpcode: Int, body: ByteArray): ByteArray {
@@ -2493,6 +2500,7 @@ class XRenderProtocolTest {
         const val PixmapPictureId = 0x0020_0101
         const val GlyphSetId = 0x0020_3001
         const val GlyphId = 0x0000_0041
+        const val PutImageGcId = 0x0020_4001
     }
 
     private data class RenderColor(
