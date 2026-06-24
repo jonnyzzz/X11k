@@ -3080,7 +3080,7 @@ internal class X11Connection(
     }
 
     private fun queryBestSize(sizeClass: Int, body: ByteArray) {
-        if (body.size < 8) return writeError(error = 2, opcode = 97, badValue = 0)
+        if (body.size != 8) return writeError(error = 16, opcode = 97, badValue = 0)
         if (sizeClass !in QueryBestSizeCursor..QueryBestSizeStipple) {
             return writeError(error = 2, opcode = 97, badValue = sizeClass)
         }

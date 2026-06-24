@@ -764,6 +764,37 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `QueryBestSize validates length class and drawable with stream recovery`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingDrawable = PixmapId + 950
+                val out = socket.getOutputStream()
+                out.write(request(97, 0, ByteArray(4)))
+                out.write(request(97, 0, ByteArray(12)))
+                out.write(queryBestSizeRequest(sizeClass = 3, drawable = X11Ids.RootWindow, width = 4, height = 5))
+                out.write(queryBestSizeRequest(sizeClass = 0, drawable = missingDrawable, width = 4, height = 5))
+                out.write(queryBestSizeRequest(sizeClass = 0, drawable = X11Ids.RootWindow, width = 0, height = 7))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 97, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, opcode = 97, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 2, opcode = 97, badValue = 3, sequence = 3)
+                assertError(socket.getInputStream(), error = 9, opcode = 97, badValue = missingDrawable, sequence = 4)
+
+                val reply = readReply(socket.getInputStream())
+                assertEquals(5, u16le(reply, 2))
+                assertEquals(1, u16le(reply, 8))
+                assertEquals(7, u16le(reply, 10))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `OpenFont rejects duplicate resource id without replacing existing resource`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -8957,6 +8988,14 @@ class XCoreDrawingProtocolTest {
         put16le(body, 4, 0xffff)
         put16le(body, 10, 0xffff)
         return request(96, 0, body)
+    }
+
+    private fun queryBestSizeRequest(sizeClass: Int, drawable: Int, width: Int, height: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, drawable)
+        put16le(body, 4, width)
+        put16le(body, 6, height)
+        return request(97, sizeClass, body)
     }
 
     private fun openFontRequest(font: Int, name: String = "fixed"): ByteArray {
