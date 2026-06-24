@@ -3769,6 +3769,32 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `DestroyWindow validates request length and window id without closing caller`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missing = WindowId + 401
+                val out = socket.getOutputStream()
+                out.write(request(4, 0, ByteArray(0)))
+                out.write(request(4, 0, ByteArray(8)))
+                out.write(destroyWindowRequest(missing))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 4, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, opcode = 4, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 3, opcode = 4, badValue = missing, sequence = 3)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(4, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `DestroySubwindows destroys direct children and descendants but keeps parent`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

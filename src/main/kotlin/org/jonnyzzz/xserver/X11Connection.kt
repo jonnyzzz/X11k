@@ -1249,9 +1249,10 @@ internal class X11Connection(
     }
 
     private fun destroyWindow(body: ByteArray) {
-        if (body.size >= 4) {
-            ownedResources.removeAll(state.removeWindow(byteOrder.u32(body, 0)))
-        }
+        if (body.size != 4) return writeError(error = 16, opcode = 4, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        state.window(windowId) ?: return writeError(error = 3, opcode = 4, badValue = windowId)
+        ownedResources.removeAll(state.removeWindow(windowId))
     }
 
     private fun destroySubwindows(body: ByteArray) {
