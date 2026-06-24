@@ -2332,8 +2332,10 @@ internal class X11Connection(
     }
 
     private fun polySegment(body: ByteArray) {
-        if (body.size < 16) return
-        val gc = state.gc(byteOrder.u32(body, 4))
+        if (body.size < 8 || (body.size - 8) % 8 != 0) return writeError(error = 16, opcode = 66, badValue = 0)
+        val gcId = byteOrder.u32(body, 4)
+        if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 66, badValue = gcId)
+        val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
         val points = mutableListOf<XPoint>()
         var offset = 8

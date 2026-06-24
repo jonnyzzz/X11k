@@ -1962,6 +1962,39 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `PolySegment reports request errors and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(polySegmentBadLengthRequest(bodySize = 4))
+                out.write(polySegmentBadLengthRequest(bodySize = 12))
+                out.write(polySegmentRequest(WindowId, GcId, segments = emptyList()))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(polySegmentRequest(WindowId, GcId, segments = emptyList()))
+                out.write(polySegmentRequest(WindowId, GcId, segments = listOf((0 to 0) to (1 to 0), (3 to 0) to (4 to 0))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 1))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 66, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 66, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 13, opcode = 66, badValue = GcId, sequence = 4)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 0, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 1, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 2, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 3, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 4, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `core drawing honors GC clip rectangles`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -9338,6 +9371,13 @@ class XCoreDrawingProtocolTest {
             put16le(body, offset + 6, end.second)
             offset += 8
         }
+        return request(66, 0, body)
+    }
+
+    private fun polySegmentBadLengthRequest(bodySize: Int): ByteArray {
+        val body = ByteArray(bodySize)
+        if (bodySize >= 4) put32le(body, 0, WindowId)
+        if (bodySize >= 8) put32le(body, 4, GcId)
         return request(66, 0, body)
     }
 
