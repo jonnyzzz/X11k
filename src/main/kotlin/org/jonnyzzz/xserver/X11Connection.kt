@@ -662,25 +662,40 @@ internal class X11Connection(
     }
 
     private fun renderTriStrip(body: ByteArray) {
-        renderTriangleMesh(body) { points ->
+        renderTriangleMesh(body, minorOpcode = 12) { points ->
             points.windowed(size = 3, step = 1).map { XTriangleCommand(it[0], it[1], it[2]) }
         }
     }
 
     private fun renderTriFan(body: ByteArray) {
-        renderTriangleMesh(body) { points ->
+        renderTriangleMesh(body, minorOpcode = 13) { points ->
             val anchor = points.firstOrNull() ?: return@renderTriangleMesh emptyList()
             points.drop(1).windowed(size = 2, step = 1).map { XTriangleCommand(anchor, it[0], it[1]) }
         }
     }
 
-    private fun renderTriangleMesh(body: ByteArray, trianglesFrom: (List<XFixedPoint>) -> List<XTriangleCommand>) {
-        if (body.size < 20) return
+    private fun renderTriangleMesh(body: ByteArray, minorOpcode: Int, trianglesFrom: (List<XFixedPoint>) -> List<XTriangleCommand>) {
+        if (body.size < 20 || (body.size - 20) % 8 != 0) {
+            return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
+        }
         val operation = body[0].toInt() and 0xff
-        val source = state.picture(byteOrder.u32(body, 4)) ?: return
-        val destination = state.picture(byteOrder.u32(body, 8)) ?: return
+        if (!XRender.isValidOperator(operation)) {
+            return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = operation)
+        }
+        val sourceId = byteOrder.u32(body, 4)
+        val source = state.picture(sourceId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = sourceId)
+        val destinationId = byteOrder.u32(body, 8)
+        val destination = state.picture(destinationId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = destinationId)
         val maskFormat = byteOrder.u32(body, 12)
-        if (!XRender.isAlphaMaskFormat(maskFormat)) return
+        if (maskFormat != 0 && maskFormat !in XRender.PictFormats) {
+            return writeError(error = XRender.PictFormatError, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = maskFormat)
+        }
+        if (maskFormat != 0 && !XRender.isAlphaMaskFormat(maskFormat)) {
+            return writeError(error = 8, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = maskFormat)
+        }
+        val effectiveMaskFormat = maskFormat.takeIf { it != 0 } ?: XRender.A8Format
         val destinationDrawableId = destination.drawableId ?: return
         val sourceX = byteOrder.i16(body, 16)
         val sourceY = byteOrder.i16(body, 18)
@@ -690,7 +705,7 @@ internal class X11Connection(
             operation = operation,
             source = source,
             destination = destination,
-            maskFormat = maskFormat,
+            maskFormat = effectiveMaskFormat,
             sourceX = sourceX,
             sourceY = sourceY,
             triangles = triangles,
