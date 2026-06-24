@@ -735,8 +735,93 @@ internal class X11State(
         return XPointerDispatch(targetWindowId = targetId, deliveredEvents = deliveries.size)
     }
 
+    fun warpPointer(
+        sourceWindowId: Int,
+        destinationWindowId: Int,
+        sourceX: Int,
+        sourceY: Int,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        destinationX: Int,
+        destinationY: Int,
+    ): XPointerDispatch {
+        val deliveries = mutableListOf<Pair<XEventSink, XPointerEvent>>()
+        val targetId: Int?
+        synchronized(this) {
+            val sourceWindow = sourceWindowId.takeIf { it != 0 }?.let { windows[it] }
+            if (sourceWindow != null && !sourceWindowContainsPointer(sourceWindow, sourceX, sourceY, sourceWidth, sourceHeight)) {
+                return XPointerDispatch(targetWindowId = windowAt(pointerX, pointerY)?.id, deliveredEvents = 0)
+            }
+
+            val rawPosition = if (destinationWindowId == 0) {
+                pointerX + destinationX to pointerY + destinationY
+            } else {
+                val destinationWindow = windows[destinationWindowId] ?: return XPointerDispatch(
+                    targetWindowId = windowAt(pointerX, pointerY)?.id,
+                    deliveredEvents = 0,
+                )
+                val absolute = absolutePosition(destinationWindow)
+                absolute.first + destinationX to absolute.second + destinationY
+            }
+            val (newX, newY) = confinedPointerPosition(rawPosition.first, rawPosition.second)
+            if (newX == pointerX && newY == pointerY) {
+                return XPointerDispatch(targetWindowId = windowAt(pointerX, pointerY)?.id, deliveredEvents = 0)
+            }
+
+            pointerX = newX
+            pointerY = newY
+            targetId = windowAt(pointerX, pointerY)?.id
+            val path = targetId?.let { windowPathToRoot(it) }.orEmpty()
+            val absoluteById = windows.values.associate { window -> window.id to absolutePosition(window) }
+            val childByAncestor = childByAncestor(path)
+            val time = inputTime++
+
+            for ((sink, selections) in eventSinks) {
+                for (window in path) {
+                    val selectedMask = selections[window.id] ?: continue
+                    if ((selectedMask and XEventMasks.PointerMotion) == 0) continue
+                    val absolute = absoluteById.getValue(window.id)
+                    deliveries += sink to XPointerEvent(
+                        type = XPointerEventType.MotionNotify,
+                        button = 0,
+                        rootX = pointerX,
+                        rootY = pointerY,
+                        eventWindowId = window.id,
+                        childWindowId = childByAncestor[window.id] ?: 0,
+                        eventX = pointerX - absolute.first,
+                        eventY = pointerY - absolute.second,
+                        state = pointerState,
+                        time = time,
+                    )
+                }
+            }
+        }
+
+        for ((sink, event) in deliveries) {
+            sink.sendPointerEvent(event)
+        }
+        return XPointerDispatch(targetWindowId = targetId, deliveredEvents = deliveries.size)
+    }
+
     @Synchronized
     fun pointerWindowId(): Int? = windowAt(pointerX, pointerY)?.id
+
+    @Synchronized
+    fun queryPointer(windowId: Int): XPointerQuery? {
+        val window = windows[windowId] ?: return null
+        val absolute = absolutePosition(window)
+        val pointerWindow = windowAt(pointerX, pointerY)
+        val pointerPath = pointerWindow?.let { windowPathToRoot(it.id) }.orEmpty()
+        val childWindowId = pointerPath.firstOrNull { it.parentId == windowId }?.id ?: 0
+        return XPointerQuery(
+            childWindowId = childWindowId,
+            rootX = pointerX,
+            rootY = pointerY,
+            windowX = pointerX - absolute.first,
+            windowY = pointerY - absolute.second,
+            mask = pointerState,
+        )
+    }
 
     @Synchronized
     fun sendEventInputFocusWindowId(): Int? {
@@ -926,6 +1011,12 @@ internal class X11State(
             widthMillimeters = widthMillimeters,
             heightMillimeters = heightMillimeters,
             focusWindowId = focusWindowId,
+            pointer = XPointerStateSnapshot(
+                x = pointerX,
+                y = pointerY,
+                mask = pointerState,
+                windowId = windowAt(pointerX, pointerY)?.id ?: 0,
+            ),
             windows = windowSnapshots,
             pixmaps = pixmapSnapshots,
             overlaps = overlaps(windowSnapshots),
@@ -2654,6 +2745,32 @@ internal class X11State(
         return x to y
     }
 
+    private fun sourceWindowContainsPointer(window: XWindow, sourceX: Int, sourceY: Int, sourceWidth: Int, sourceHeight: Int): Boolean {
+        val absolute = absolutePosition(window)
+        val localX = pointerX - absolute.first
+        val localY = pointerY - absolute.second
+        if (localX !in 0 until window.width || localY !in 0 until window.height) return false
+        val effectiveWidth = if (sourceWidth == 0) window.width - sourceX else sourceWidth
+        val effectiveHeight = if (sourceHeight == 0) window.height - sourceY else sourceHeight
+        if (effectiveWidth <= 0 || effectiveHeight <= 0) return false
+        return localX >= sourceX &&
+            localY >= sourceY &&
+            localX < sourceX + effectiveWidth &&
+            localY < sourceY + effectiveHeight
+    }
+
+    private fun confinedPointerPosition(x: Int, y: Int): Pair<Int, Int> {
+        var clampedX = x.coerceIn(0, width - 1)
+        var clampedY = y.coerceIn(0, height - 1)
+        val confineWindow = activePointerGrab?.confineTo?.let { windows[it] } ?: return clampedX to clampedY
+        val absolute = absolutePosition(confineWindow)
+        val bounds = visibleBounds(confineWindow, absolute.first, absolute.second) ?: return clampedX to clampedY
+        if (bounds.width <= 0 || bounds.height <= 0) return clampedX to clampedY
+        clampedX = clampedX.coerceIn(bounds.x, bounds.x + bounds.width - 1)
+        clampedY = clampedY.coerceIn(bounds.y, bounds.y + bounds.height - 1)
+        return clampedX to clampedY
+    }
+
     private fun visibleBounds(window: XWindow, absoluteX: Int, absoluteY: Int): XRectangle? {
         var left = absoluteX
         var top = absoluteY
@@ -3126,6 +3243,7 @@ internal data class XScreenSnapshot(
     val widthMillimeters: Int,
     val heightMillimeters: Int,
     val focusWindowId: Int,
+    val pointer: XPointerStateSnapshot,
     val windows: List<XWindowSnapshot>,
     val pixmaps: List<XPixmapSnapshot>,
     val overlaps: List<XWindowOverlap>,
@@ -3144,6 +3262,15 @@ internal data class XScreenSnapshot(
     val extensionQueries: List<XExtensionQuery>,
     val unsupportedRequests: List<XUnsupportedRequest>,
 )
+
+internal data class XPointerStateSnapshot(
+    val x: Int,
+    val y: Int,
+    val mask: Int,
+    val windowId: Int,
+) {
+    val windowIdHex: String get() = "0x${windowId.toUInt().toString(16)}"
+}
 
 internal data class XAccessControlSnapshot(
     val enabled: Boolean,

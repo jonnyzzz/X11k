@@ -56,7 +56,7 @@ internal object SvgScreenRenderer {
 
     fun json(snapshot: XScreenSnapshot): String =
         buildString {
-            append("""{"width":${snapshot.width},"height":${snapshot.height},"dpi":${snapshot.dpi},"widthMillimeters":${snapshot.widthMillimeters},"heightMillimeters":${snapshot.heightMillimeters},"windows":[""")
+            append("""{"width":${snapshot.width},"height":${snapshot.height},"dpi":${snapshot.dpi},"widthMillimeters":${snapshot.widthMillimeters},"heightMillimeters":${snapshot.heightMillimeters},"pointer":{"x":${snapshot.pointer.x},"y":${snapshot.pointer.y},"mask":${snapshot.pointer.mask},"window":"${snapshot.pointer.windowIdHex}"},"windows":[""")
             snapshot.windows.forEachIndexed { index, window ->
                 if (index > 0) append(',')
                 append('{')

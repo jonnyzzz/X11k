@@ -122,11 +122,21 @@ internal data class XPointerEvent(
 internal enum class XPointerEventType(val code: Int) {
     ButtonPress(4),
     ButtonRelease(5),
+    MotionNotify(6),
 }
 
 internal data class XPointerDispatch(
     val targetWindowId: Int?,
     val deliveredEvents: Int,
+)
+
+internal data class XPointerQuery(
+    val childWindowId: Int,
+    val rootX: Int,
+    val rootY: Int,
+    val windowX: Int,
+    val windowY: Int,
+    val mask: Int,
 )
 
 internal data class XMappingNotifyEvent(
@@ -165,5 +175,6 @@ internal object XEventMasks {
         when (type) {
             XPointerEventType.ButtonPress -> ButtonPress
             XPointerEventType.ButtonRelease -> ButtonRelease
+            XPointerEventType.MotionNotify -> PointerMotion
         }
 }

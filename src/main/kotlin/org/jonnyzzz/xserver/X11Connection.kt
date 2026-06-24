@@ -147,9 +147,10 @@ internal class X11Connection(
             35 -> allowEvents(minorOpcode, body)
             36 -> grabServer(body)
             37 -> ungrabServer(body)
-            38 -> queryPointer()
+            38 -> queryPointer(body)
             39 -> getMotionEvents(body)
             40 -> translateCoordinates(body)
+            41 -> warpPointer(body)
             42 -> setInputFocus(minorOpcode, body)
             43 -> getInputFocus()
             44 -> queryKeymap()
@@ -1518,15 +1519,19 @@ internal class X11Connection(
     private fun validEventCode(eventCode: Int): Boolean =
         eventCode in 2..34
 
-    private fun queryPointer() {
+    private fun queryPointer(body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = 38, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        if (state.window(windowId) == null) return writeError(error = 3, opcode = 38, badValue = windowId)
+        val pointer = state.queryPointer(windowId) ?: return writeError(error = 3, opcode = 38, badValue = windowId)
         val reply = reply(extra = 1, payloadUnits = 0)
         byteOrder.put32(reply, 8, X11Ids.RootWindow)
-        byteOrder.put32(reply, 12, 0)
-        byteOrder.put16(reply, 16, 0)
-        byteOrder.put16(reply, 18, 0)
-        byteOrder.put16(reply, 20, 0)
-        byteOrder.put16(reply, 22, 0)
-        byteOrder.put16(reply, 24, 0)
+        byteOrder.put32(reply, 12, pointer.childWindowId)
+        byteOrder.put16(reply, 16, pointer.rootX)
+        byteOrder.put16(reply, 18, pointer.rootY)
+        byteOrder.put16(reply, 20, pointer.windowX)
+        byteOrder.put16(reply, 22, pointer.windowY)
+        byteOrder.put16(reply, 24, pointer.mask)
         write(reply)
     }
 
@@ -1738,6 +1743,28 @@ internal class X11Connection(
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put32(reply, 8, 0)
         write(reply)
+    }
+
+    private fun warpPointer(body: ByteArray) {
+        if (body.size != 20) return writeError(error = 16, opcode = 41, badValue = 0)
+        val sourceWindowId = byteOrder.u32(body, 0)
+        if (sourceWindowId != 0 && state.window(sourceWindowId) == null) {
+            return writeError(error = 3, opcode = 41, badValue = sourceWindowId)
+        }
+        val destinationWindowId = byteOrder.u32(body, 4)
+        if (destinationWindowId != 0 && state.window(destinationWindowId) == null) {
+            return writeError(error = 3, opcode = 41, badValue = destinationWindowId)
+        }
+        state.warpPointer(
+            sourceWindowId = sourceWindowId,
+            destinationWindowId = destinationWindowId,
+            sourceX = byteOrder.i16(body, 8),
+            sourceY = byteOrder.i16(body, 10),
+            sourceWidth = byteOrder.u16(body, 12),
+            sourceHeight = byteOrder.u16(body, 14),
+            destinationX = byteOrder.i16(body, 16),
+            destinationY = byteOrder.i16(body, 18),
+        )
     }
 
     private fun translateCoordinates(body: ByteArray) {
@@ -2830,7 +2857,9 @@ internal class X11Connection(
             36 -> "GrabServer"
             37 -> "UngrabServer"
             38 -> "QueryPointer"
+            39 -> "GetMotionEvents"
             40 -> "TranslateCoordinates"
+            41 -> "WarpPointer"
             42 -> "SetInputFocus"
             43 -> "GetInputFocus"
             44 -> "QueryKeymap"

@@ -2502,6 +2502,204 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `WarpPointer moves pointer to destination window coordinates`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 20, y = 15, width = 40, height = 30))
+                out.write(mapWindowRequest(WindowId))
+                out.write(warpPointerRequest(destinationWindow = WindowId, destinationX = 7, destinationY = 9))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream())
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(1, pointer[1].toInt() and 0xff)
+                assertEquals(4, u16le(pointer, 2))
+                assertEquals(X11Ids.RootWindow, u32le(pointer, 8))
+                assertEquals(WindowId, u32le(pointer, 12))
+                assertEquals(27, u16le(pointer, 16))
+                assertEquals(24, u16le(pointer, 18))
+                assertEquals(27, u16le(pointer, 20))
+                assertEquals(24, u16le(pointer, 22))
+                assertEquals(0, u16le(pointer, 24))
+                assertContains(httpGet(server.localPort, "/state.json"), """"pointer":{"x":27,"y":24""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `WarpPointer moves pointer relative to current root position when destination is None`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(warpPointerRequest(destinationWindow = 0, destinationX = 10, destinationY = 11))
+                out.write(warpPointerRequest(destinationWindow = 0, destinationX = -3, destinationY = 5))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(3, u16le(pointer, 2))
+                assertEquals(7, u16le(pointer, 16))
+                assertEquals(16, u16le(pointer, 18))
+                assertEquals(7, u16le(pointer, 20))
+                assertEquals(16, u16le(pointer, 22))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `WarpPointer source rectangle outside pointer leaves position unchanged`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 10, y = 10, width = 20, height = 20))
+                out.write(mapWindowRequest(WindowId))
+                out.write(warpPointerRequest(destinationWindow = 0, destinationX = 12, destinationY = 12))
+                out.write(
+                    warpPointerRequest(
+                        sourceWindow = WindowId,
+                        sourceX = 5,
+                        sourceY = 5,
+                        sourceWidth = 6,
+                        sourceHeight = 6,
+                        destinationWindow = 0,
+                        destinationX = 50,
+                        destinationY = 50,
+                    ),
+                )
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream())
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(5, u16le(pointer, 2))
+                assertEquals(12, u16le(pointer, 16))
+                assertEquals(12, u16le(pointer, 18))
+                assertEquals(WindowId, u32le(pointer, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `WarpPointer sends MotionNotify to selected destination window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 20, y = 15, width = 40, height = 30, eventMask = 1 shl 6))
+                out.write(mapWindowRequest(WindowId))
+                out.write(warpPointerRequest(destinationWindow = WindowId, destinationX = 3, destinationY = 4))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream())
+                val motion = socket.getInputStream().readExactly(32)
+                assertEquals(6, motion[0].toInt() and 0xff)
+                assertEquals(0, motion[1].toInt() and 0xff)
+                assertEquals(3, u16le(motion, 2))
+                assertEquals(X11Ids.RootWindow, u32le(motion, 8))
+                assertEquals(WindowId, u32le(motion, 12))
+                assertEquals(0, u32le(motion, 16))
+                assertEquals(23, u16le(motion, 20))
+                assertEquals(19, u16le(motion, 22))
+                assertEquals(3, u16le(motion, 24))
+                assertEquals(4, u16le(motion, 26))
+                assertEquals(0, u16le(motion, 28))
+                assertEquals(1, motion[30].toInt() and 0xff)
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(4, u16le(pointer, 2))
+                assertEquals(23, u16le(pointer, 16))
+                assertEquals(19, u16le(pointer, 18))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `WarpPointer clamps movement to active pointer grab confine window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 10, y = 10, width = 20, height = 20))
+                out.write(mapWindowRequest(WindowId))
+                out.write(grabPointerRequest(WindowId, confineTo = WindowId))
+                out.write(warpPointerRequest(destinationWindow = 0, destinationX = 100, destinationY = 80))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream())
+                val grab = readReply(socket.getInputStream())
+                assertEquals(1, grab[0].toInt())
+                assertEquals(0, grab[1].toInt() and 0xff)
+                assertEquals(3, u16le(grab, 2))
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(5, u16le(pointer, 2))
+                assertEquals(WindowId, u32le(pointer, 12))
+                assertEquals(29, u16le(pointer, 16))
+                assertEquals(29, u16le(pointer, 18))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `WarpPointer validates windows and request length and preserves stream recovery`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missing = WindowId + 111
+                out.write(warpPointerRequest(sourceWindow = missing, destinationWindow = 0))
+                out.write(warpPointerRequest(sourceWindow = 0, destinationWindow = missing))
+                out.write(warpPointerBadLengthRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 3, opcode = 41, badValue = missing, sequence = 1)
+                assertError(socket.getInputStream(), error = 3, opcode = 41, badValue = missing, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 41, badValue = 0, sequence = 3)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(4, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `GrabPointer replies success status for valid window`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -5420,13 +5618,13 @@ class XCoreDrawingProtocolTest {
         return request(opcode, 0, body)
     }
 
-    private fun grabPointerRequest(window: Int, cursor: Int = 0, time: Int = 0, eventMask: Int = 0): ByteArray {
+    private fun grabPointerRequest(window: Int, cursor: Int = 0, time: Int = 0, eventMask: Int = 0, confineTo: Int = 0): ByteArray {
         val body = ByteArray(20)
         put32le(body, 0, window)
         put16le(body, 4, eventMask)
         body[6] = 0
         body[7] = 0
-        put32le(body, 8, 0)
+        put32le(body, 8, confineTo)
         put32le(body, 12, cursor)
         put32le(body, 16, time)
         return request(26, 0, body)
@@ -5755,6 +5953,31 @@ class XCoreDrawingProtocolTest {
 
     private fun getMotionEventsBadLengthRequest(): ByteArray =
         request(39, 0, ByteArray(0))
+
+    private fun warpPointerRequest(
+        sourceWindow: Int = 0,
+        destinationWindow: Int = 0,
+        sourceX: Int = 0,
+        sourceY: Int = 0,
+        sourceWidth: Int = 0,
+        sourceHeight: Int = 0,
+        destinationX: Int = 0,
+        destinationY: Int = 0,
+    ): ByteArray {
+        val body = ByteArray(20)
+        put32le(body, 0, sourceWindow)
+        put32le(body, 4, destinationWindow)
+        put16le(body, 8, sourceX)
+        put16le(body, 10, sourceY)
+        put16le(body, 12, sourceWidth)
+        put16le(body, 14, sourceHeight)
+        put16le(body, 16, destinationX)
+        put16le(body, 18, destinationY)
+        return request(41, 0, body)
+    }
+
+    private fun warpPointerBadLengthRequest(): ByteArray =
+        request(41, 0, ByteArray(16))
 
     private fun mapWindowRequest(id: Int): ByteArray {
         val body = ByteArray(4)
@@ -6247,6 +6470,11 @@ class XCoreDrawingProtocolTest {
         val header = input.readExactly(32)
         val payloadUnits = if (byteOrderByte == 0x42) u32be(header, 4) else u32le(header, 4)
         return header + input.readExactly(payloadUnits * 4)
+    }
+
+    private fun assertMapAndExpose(input: InputStream) {
+        assertEquals(19, input.readExactly(32)[0].toInt() and 0xff)
+        assertEquals(12, input.readExactly(32)[0].toInt() and 0xff)
     }
 
     private fun httpGet(port: Int, path: String): String =
