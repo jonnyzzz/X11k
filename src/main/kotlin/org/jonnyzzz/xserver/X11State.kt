@@ -28,8 +28,11 @@ internal class X11State(
     private val atomNames = linkedMapOf<Int, String>()
     private val selectionOwners = linkedMapOf<Int, XSelectionOwner>()
     private val windowOwners = linkedMapOf<Int, XEventSink>()
+    private val resourceOwners = linkedMapOf<Int, XEventSink>()
     private val eventSinks = linkedMapOf<XEventSink, MutableMap<Int, Int>>()
     private val saveSets = linkedMapOf<XEventSink, LinkedHashSet<Int>>()
+    private val retainedClients = linkedMapOf<Int, XRetainedClientResources>()
+    private var nextRetainedClientId = 1
     private var nextAtomId = 69
     private var focusWindowId: Int = X11Ids.RootWindow
     private var focusRevertTo: Int = 0
@@ -129,11 +132,14 @@ internal class X11State(
 
     @Synchronized
     fun removeWindow(id: Int): Set<Int> {
+        val initialRemoved = windowSubtreeIds(id)
+        processRetainedSaveSetsForWindowSubtree(initialRemoved)
         val removed = windowSubtreeIds(id)
         if (removed.isEmpty()) return emptySet()
         for (windowId in removed) {
             windows.remove(windowId)
             windowOwners.remove(windowId)
+            resourceOwners.remove(windowId)
         }
         releaseInputGrabsForResources(removed)
         selectionOwners.entries.removeIf { it.value.windowId in removed }
@@ -141,13 +147,15 @@ internal class X11State(
         saveSets.entries.removeIf { it.value.isEmpty() }
         removeEventSelections(removed)
         if (focusWindowId in removed) focusWindowId = X11Ids.RootWindow
+        discardRetainedResourceIds(removed)
         return removed
     }
 
     @Synchronized
     fun removeClientResources(owner: XEventSink, resourceIds: Set<Int>) {
-        processSaveSet(owner, resourceIds)
-        removeClientResources(resourceIds)
+        val currentResourceIds = currentResourceIdsOwnedBy(owner, resourceIds)
+        processSaveSet(owner, currentResourceIds)
+        removeClientResources(currentResourceIds)
         saveSets.remove(owner)
         releaseInputGrabs(owner)
     }
@@ -176,7 +184,50 @@ internal class X11State(
             glyphSets.remove(id)
         }
         releaseInputGrabsForResources(resourceIds)
+        discardRetainedResourceIds(resourceIds)
         ensureDefaultColormapInstalled()
+    }
+
+    @Synchronized
+    fun retainClientResources(owner: XEventSink, resourceIds: Set<Int>, closeDownMode: Int) {
+        val currentResourceIds = currentResourceIdsOwnedBy(owner, resourceIds)
+        if (currentResourceIds.isEmpty()) return
+        retainedClients[nextRetainedClientId++] = XRetainedClientResources(
+            closeDownMode = closeDownMode,
+            resourceIds = currentResourceIds,
+            saveSet = saveSets[owner]?.toList().orEmpty(),
+        )
+    }
+
+    @Synchronized
+    fun liveClientOwningResource(resourceId: Int): XEventSink? =
+        resourceOwners[resourceId]?.takeIf { it in eventSinks && !it.isKilled() }
+
+    @Synchronized
+    fun markResourceOwner(resourceId: Int, owner: XEventSink) {
+        resourceOwners[resourceId] = owner
+    }
+
+    @Synchronized
+    fun destroyRetainedClientByResource(resourceId: Int): Boolean {
+        val retained = retainedClients.entries.firstOrNull { resourceId in it.value.resourceIds } ?: return false
+        retainedClients.remove(retained.key)
+        processRetainedSaveSet(retained.value)
+        removeClientResources(retained.value.resourceIds)
+        return true
+    }
+
+    @Synchronized
+    fun destroyTemporaryRetainedClients() {
+        val temporaryIds = retainedClients
+            .filterValues { it.closeDownMode == XCloseDownMode.RetainTemporary }
+            .keys
+            .toList()
+        for (id in temporaryIds) {
+            val retained = retainedClients.remove(id) ?: continue
+            processRetainedSaveSet(retained)
+            removeClientResources(retained.resourceIds)
+        }
     }
 
     @Synchronized
@@ -663,11 +714,13 @@ internal class X11State(
         while (true) {
             requestProcessingLock.lock()
             val allowed = serverGrabLock.withLock {
-                serverGrabOwner == null || serverGrabOwner == owner
+                owner.isKilled() || serverGrabOwner == null || serverGrabOwner == owner
             }
             if (allowed) {
                 try {
-                    process()
+                    if (!owner.isKilled()) {
+                        process()
+                    }
                     return
                 } finally {
                     requestProcessingLock.unlock()
@@ -676,7 +729,7 @@ internal class X11State(
             requestProcessingLock.unlock()
 
             serverGrabLock.withLock {
-                while (serverGrabOwner != null && serverGrabOwner != owner) {
+                while (!owner.isKilled() && serverGrabOwner != null && serverGrabOwner != owner) {
                     serverGrabReleased.await()
                 }
             }
@@ -704,6 +757,15 @@ internal class X11State(
                 serverGrabOwner = null
                 serverGrabReleased.signalAll()
             }
+        }
+    }
+
+    fun signalClientKilled(owner: XEventSink) {
+        serverGrabLock.withLock {
+            if (serverGrabOwner == owner) {
+                serverGrabOwner = null
+            }
+            serverGrabReleased.signalAll()
         }
     }
 
@@ -1246,6 +1308,7 @@ internal class X11State(
     @Synchronized
     fun removeGlxContext(id: Int) {
         glxContexts.remove(id)
+        discardRetainedResourceIds(setOf(id))
     }
 
     @Synchronized
@@ -1298,6 +1361,7 @@ internal class X11State(
     @Synchronized
     fun removePicture(id: Int) {
         pictures.remove(id)
+        discardRetainedResourceIds(setOf(id))
     }
 
     @Synchronized
@@ -1317,6 +1381,7 @@ internal class X11State(
     @Synchronized
     fun removeGlyphSet(id: Int) {
         glyphSets.remove(id)
+        discardRetainedResourceIds(setOf(id))
     }
 
     @Synchronized
@@ -2551,6 +2616,7 @@ internal class X11State(
         glxContexts.remove(id)
         pictures.remove(id)
         glyphSets.remove(id)
+        discardRetainedResourceIds(setOf(id))
         releaseInputGrabsForResources(setOf(id))
         ensureDefaultColormapInstalled()
     }
@@ -2730,6 +2796,10 @@ internal class X11State(
 
     private fun processSaveSet(owner: XEventSink, resourceIds: Set<Int>) {
         val saveSet = saveSets[owner]?.toList().orEmpty()
+        processSaveSet(saveSet, resourceIds)
+    }
+
+    private fun processSaveSet(saveSet: List<Int>, resourceIds: Set<Int>) {
         if (saveSet.isEmpty()) return
         val ownedWindows = resourceIds.filterTo(linkedSetOf()) { it != X11Ids.RootWindow && windows.containsKey(it) }
         for (windowId in saveSet) {
@@ -2747,6 +2817,44 @@ internal class X11State(
             }
         }
     }
+
+    private fun processRetainedSaveSetsForWindowSubtree(windowIds: Set<Int>) {
+        if (windowIds.isEmpty()) return
+        val retained = retainedClients.values
+            .filter { resources -> resources.resourceIds.any { it in windowIds && windows.containsKey(it) } }
+            .toList()
+        for (resources in retained) {
+            processRetainedSaveSet(resources)
+        }
+    }
+
+    private fun processRetainedSaveSet(resources: XRetainedClientResources) {
+        val saveSet = resources.saveSet
+        if (saveSet.isEmpty()) return
+        resources.saveSet = emptyList()
+        processSaveSet(saveSet, resources.resourceIds)
+    }
+
+    private fun discardRetainedResourceIds(resourceIds: Set<Int>) {
+        if (resourceIds.isEmpty()) return
+        for (id in resourceIds) {
+            resourceOwners.remove(id)
+        }
+        val emptyRetainedClients = mutableListOf<Int>()
+        for ((id, retained) in retainedClients) {
+            retained.resourceIds.removeAll(resourceIds)
+            retained.saveSet = retained.saveSet.filter { it !in resourceIds }
+            if (retained.resourceIds.isEmpty()) {
+                emptyRetainedClients += id
+            }
+        }
+        for (id in emptyRetainedClients) {
+            retainedClients.remove(id)
+        }
+    }
+
+    private fun currentResourceIdsOwnedBy(owner: XEventSink, resourceIds: Set<Int>): LinkedHashSet<Int> =
+        resourceIds.filterTo(linkedSetOf()) { resourceOwners[it] == owner }
 
     private fun isInferiorOfAny(windowId: Int, ancestorIds: Set<Int>): Boolean {
         var parentId = windows[windowId]?.parentId ?: return false
@@ -3000,6 +3108,12 @@ internal class X11State(
 private data class XSelectionOwner(
     val windowId: Int,
     val sink: XEventSink,
+)
+
+private data class XRetainedClientResources(
+    val closeDownMode: Int,
+    val resourceIds: LinkedHashSet<Int>,
+    var saveSet: List<Int>,
 )
 
 internal data class XScreenSaverSettings(

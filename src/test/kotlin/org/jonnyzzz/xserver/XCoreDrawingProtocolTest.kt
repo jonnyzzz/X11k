@@ -5218,6 +5218,329 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `KillClient validates request length and resource id without closing caller`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missing = WindowId + 300
+                val out = socket.getOutputStream()
+                out.write(request(113, 0, ByteArray(0)))
+                out.write(killClientRequest(missing))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 113, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 2, opcode = 113, badValue = missing, sequence = 2)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(3, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `KillClient closes live destroy-mode client before later requests observe resources`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            val victimWindow = WindowId + 30
+            Socket("127.0.0.1", server.localPort).use { victimSocket ->
+                victimSocket.soTimeout = 2_000
+                setup(victimSocket)
+                val victimOut = victimSocket.getOutputStream()
+                victimOut.write(createWindowRequest(victimWindow))
+                victimOut.write(queryTreeRequest(X11Ids.RootWindow))
+                victimOut.flush()
+                assertTrue(victimWindow in treeChildren(readReply(victimSocket.getInputStream())))
+
+                Socket("127.0.0.1", server.localPort).use { killerSocket ->
+                    killerSocket.soTimeout = 2_000
+                    setup(killerSocket)
+                    val killerOut = killerSocket.getOutputStream()
+                    killerOut.write(killClientRequest(victimWindow))
+                    killerOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    killerOut.flush()
+
+                    val children = treeChildren(readReply(killerSocket.getInputStream()))
+                    assertFalse(victimWindow in children)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `KillClient prevents killed client request queued behind GrabServer from dispatching`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { victimSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    victimSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(victimSocket)
+                    val victimWindow = WindowId + 31
+                    val victimOut = victimSocket.getOutputStream()
+                    victimOut.write(createWindowRequest(victimWindow))
+                    victimOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    victimOut.flush()
+                    assertTrue(victimWindow in treeChildren(readReply(victimSocket.getInputStream())))
+
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(grabServerRequest())
+                    ownerOut.flush()
+                    waitForStateContains(server.localPort, """"serverGrabbed":true""")
+
+                    victimOut.write(changePropertyRequest(X11Ids.RootWindow, PrimaryAtom, StringAtom, "stale"))
+                    victimOut.write(queryPointerRequest())
+                    victimOut.flush()
+                    victimSocket.soTimeout = 300
+                    assertFailsWith<SocketTimeoutException> {
+                        readReply(victimSocket.getInputStream())
+                    }
+
+                    ownerOut.write(killClientRequest(victimWindow))
+                    ownerOut.write(ungrabServerRequest())
+                    ownerOut.write(getPropertyRequest(X11Ids.RootWindow, PrimaryAtom, StringAtom))
+                    ownerOut.flush()
+
+                    val property = readReply(ownerSocket.getInputStream())
+                    assertEquals(4, u16le(property, 2))
+                    assertEquals(0, u32le(property, 8))
+                    assertEquals(0, u32le(property, 16))
+                    waitForRootChildren(server.localPort) { victimWindow !in it }
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `KillClient destroys retained clients by resource and AllTemporary`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            val permanentWindow = WindowId + 32
+            val temporaryWindow = WindowId + 34
+
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(permanentWindow))
+                out.write(setCloseDownModeRequest(1))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.flush()
+                assertTrue(permanentWindow in treeChildren(readReply(socket.getInputStream())))
+                closeClientAndWait(socket)
+            }
+
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(temporaryWindow))
+                out.write(setCloseDownModeRequest(2))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.flush()
+                assertTrue(temporaryWindow in treeChildren(readReply(socket.getInputStream())))
+                closeClientAndWait(socket)
+            }
+
+            waitForRootChildren(server.localPort) { permanentWindow in it && temporaryWindow in it }
+
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(killClientRequest(permanentWindow))
+                out.write(killClientRequest(0))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.flush()
+
+                val children = treeChildren(readReply(socket.getInputStream()))
+                assertFalse(permanentWindow in children)
+                assertFalse(temporaryWindow in children)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `KillClient processes save set when destroying retained client resources`() {
+        XServer(ServerOptions(port = 0, width = 160, height = 120)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { appSocket ->
+                appSocket.soTimeout = 2_000
+                setup(appSocket)
+                val appWindow = WindowId + 36
+                val appOut = appSocket.getOutputStream()
+                appOut.write(createWindowRequest(appWindow, width = 20, height = 15))
+                appOut.flush()
+
+                val frameWindow = WindowId + 38
+                Socket("127.0.0.1", server.localPort).use { frameSocket ->
+                    frameSocket.soTimeout = 2_000
+                    setup(frameSocket)
+                    val frameOut = frameSocket.getOutputStream()
+                    frameOut.write(createWindowRequest(frameWindow, x = 10, y = 10, width = 50, height = 40))
+                    frameOut.write(reparentWindowRequest(appWindow, frameWindow, x = 7, y = 8))
+                    frameOut.write(changeSaveSetRequest(0, appWindow))
+                    frameOut.write(setCloseDownModeRequest(1))
+                    frameOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    frameOut.flush()
+                    assertTrue(frameWindow in treeChildren(readReply(frameSocket.getInputStream())))
+                    closeClientAndWait(frameSocket)
+                }
+
+                waitForRootChildren(server.localPort) { frameWindow in it }
+
+                Socket("127.0.0.1", server.localPort).use { killerSocket ->
+                    killerSocket.soTimeout = 2_000
+                    setup(killerSocket)
+                    val killerOut = killerSocket.getOutputStream()
+                    killerOut.write(killClientRequest(frameWindow))
+                    killerOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    killerOut.flush()
+
+                    val children = treeChildren(readReply(killerSocket.getInputStream()))
+                    assertTrue(appWindow in children)
+                    assertFalse(frameWindow in children)
+                }
+
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(
+                    json,
+                    windowJsonId(appWindow) + ""","parent":"${X11Ids.RootWindow.toJsonHex()}","x":17,"y":18,"localX":17,"localY":18,"width":20,"height":15""",
+                )
+                assertFalse(json.contains(windowJsonId(frameWindow)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `DestroyWindow processes save set when destroying retained client windows`() {
+        XServer(ServerOptions(port = 0, width = 160, height = 120)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { appSocket ->
+                appSocket.soTimeout = 2_000
+                setup(appSocket)
+                val appWindow = WindowId + 40
+                val appOut = appSocket.getOutputStream()
+                appOut.write(createWindowRequest(appWindow, width = 20, height = 15))
+                appOut.flush()
+
+                val frameWindow = WindowId + 42
+                Socket("127.0.0.1", server.localPort).use { frameSocket ->
+                    frameSocket.soTimeout = 2_000
+                    setup(frameSocket)
+                    val frameOut = frameSocket.getOutputStream()
+                    frameOut.write(createWindowRequest(frameWindow, x = 10, y = 10, width = 50, height = 40))
+                    frameOut.write(reparentWindowRequest(appWindow, frameWindow, x = 7, y = 8))
+                    frameOut.write(changeSaveSetRequest(0, appWindow))
+                    frameOut.write(setCloseDownModeRequest(1))
+                    frameOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    frameOut.flush()
+                    assertTrue(frameWindow in treeChildren(readReply(frameSocket.getInputStream())))
+                    closeClientAndWait(frameSocket)
+                }
+
+                waitForRootChildren(server.localPort) { frameWindow in it }
+
+                Socket("127.0.0.1", server.localPort).use { destroyerSocket ->
+                    destroyerSocket.soTimeout = 2_000
+                    setup(destroyerSocket)
+                    val destroyerOut = destroyerSocket.getOutputStream()
+                    destroyerOut.write(destroyWindowRequest(frameWindow))
+                    destroyerOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    destroyerOut.flush()
+
+                    val children = treeChildren(readReply(destroyerSocket.getInputStream()))
+                    assertTrue(appWindow in children)
+                    assertFalse(frameWindow in children)
+                }
+
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(
+                    json,
+                    windowJsonId(appWindow) + ""","parent":"${X11Ids.RootWindow.toJsonHex()}","x":17,"y":18,"localX":17,"localY":18,"width":20,"height":15""",
+                )
+                assertFalse(json.contains(windowJsonId(frameWindow)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `KillClient targets reused resource current owner after cross-client destroy`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            val reusedWindow = WindowId + 44
+            Socket("127.0.0.1", server.localPort).use { staleOwnerSocket ->
+                staleOwnerSocket.soTimeout = 2_000
+                setup(staleOwnerSocket)
+                val staleOwnerOut = staleOwnerSocket.getOutputStream()
+                staleOwnerOut.write(createWindowRequest(reusedWindow))
+                staleOwnerOut.write(queryTreeRequest(X11Ids.RootWindow))
+                staleOwnerOut.flush()
+                assertTrue(reusedWindow in treeChildren(readReply(staleOwnerSocket.getInputStream())))
+
+                Socket("127.0.0.1", server.localPort).use { destroyerSocket ->
+                    destroyerSocket.soTimeout = 2_000
+                    setup(destroyerSocket)
+                    val destroyerOut = destroyerSocket.getOutputStream()
+                    destroyerOut.write(destroyWindowRequest(reusedWindow))
+                    destroyerOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    destroyerOut.flush()
+                    assertFalse(reusedWindow in treeChildren(readReply(destroyerSocket.getInputStream())))
+                }
+
+                staleOwnerOut.write(setCloseDownModeRequest(1))
+                staleOwnerOut.write(queryPointerRequest())
+                staleOwnerOut.flush()
+                readReply(staleOwnerSocket.getInputStream())
+                closeClientAndWait(staleOwnerSocket)
+            }
+
+            Socket("127.0.0.1", server.localPort).use { currentOwnerSocket ->
+                currentOwnerSocket.soTimeout = 2_000
+                setup(currentOwnerSocket)
+                val currentOwnerOut = currentOwnerSocket.getOutputStream()
+                currentOwnerOut.write(createWindowRequest(reusedWindow))
+                currentOwnerOut.write(queryTreeRequest(X11Ids.RootWindow))
+                currentOwnerOut.flush()
+                assertTrue(reusedWindow in treeChildren(readReply(currentOwnerSocket.getInputStream())))
+
+                Socket("127.0.0.1", server.localPort).use { killerSocket ->
+                    killerSocket.soTimeout = 2_000
+                    setup(killerSocket)
+                    val killerOut = killerSocket.getOutputStream()
+                    killerOut.write(killClientRequest(reusedWindow))
+                    killerOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    killerOut.flush()
+                    assertFalse(reusedWindow in treeChildren(readReply(killerSocket.getInputStream())))
+                }
+
+                currentOwnerSocket.soTimeout = 500
+                assertFailsWith<Exception> {
+                    currentOwnerOut.write(queryPointerRequest())
+                    currentOwnerOut.flush()
+                    readReply(currentOwnerSocket.getInputStream())
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `NoOperation is replyless and ignores padded request bytes`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -6529,6 +6852,12 @@ class XCoreDrawingProtocolTest {
 
     private fun setCloseDownModeRequest(mode: Int): ByteArray =
         request(112, mode, ByteArray(0))
+
+    private fun killClientRequest(resource: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, resource)
+        return request(113, 0, body)
+    }
 
     private fun noOperationRequest(vararg bytes: Int): ByteArray =
         request(127, 0, ByteArray(bytes.size) { index -> bytes[index].toByte() })

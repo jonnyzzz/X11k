@@ -100,6 +100,8 @@ data class XInputResult(
 }
 
 internal interface XEventSink {
+    fun isKilled(): Boolean = false
+    fun killClient() = Unit
     fun sendPointerEvent(event: XPointerEvent)
     fun sendMappingNotifyEvent(event: XMappingNotifyEvent)
     fun sendPropertyNotifyEvent(event: XPropertyNotifyEvent)

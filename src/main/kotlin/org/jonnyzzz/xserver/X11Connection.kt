@@ -20,8 +20,13 @@ internal class X11Connection(
     private var sequence = 0
     private val trace = java.lang.Boolean.getBoolean("x.trace")
     private val writeLock = Any()
+    private val closeDownLock = Any()
     private val ownedResources = linkedSetOf<Int>()
     private var closeDownMode = XCloseDownMode.Destroy
+    @Volatile
+    private var killed = false
+    @Volatile
+    private var closeDownHandled = false
 
     fun run() {
         try {
@@ -88,11 +93,7 @@ internal class X11Connection(
                 }
             }
         } finally {
-            state.releaseServerGrab(this)
-            if (closeDownMode == XCloseDownMode.Destroy) {
-                state.removeClientResources(this, ownedResources)
-            }
-            state.unregisterEventSink(this)
+            closeDownClient()
         }
     }
 
@@ -223,6 +224,7 @@ internal class X11Connection(
             110 -> listHosts(body)
             111 -> setAccessControl(minorOpcode, body)
             112 -> setCloseDownMode(minorOpcode, body)
+            113 -> killClient(body)
             114 -> rotateProperties(body)
             115 -> forceScreenSaver(minorOpcode, body)
             116 -> setPointerMapping(minorOpcode, body)
@@ -3276,6 +3278,20 @@ internal class X11Connection(
         closeDownMode = mode
     }
 
+    private fun killClient(body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = 113, badValue = 0)
+        val resource = byteOrder.u32(body, 0)
+        if (resource == AllTemporary) {
+            state.destroyTemporaryRetainedClients()
+            return
+        }
+        if (!state.hasResource(resource)) return writeError(error = 2, opcode = 113, badValue = resource)
+        if (state.destroyRetainedClientByResource(resource)) return
+        val client = state.liveClientOwningResource(resource)
+            ?: return writeError(error = 2, opcode = 113, badValue = resource)
+        client.killClient()
+    }
+
     private fun setPointerMapping(count: Int, body: ByteArray) {
         if (body.size != paddedLength(count)) return writeError(error = 16, opcode = 116, badValue = 0)
         val current = state.pointerMapping()
@@ -4143,9 +4159,39 @@ internal class X11Connection(
 
     private fun own(id: Int) {
         ownedResources += id
+        state.markResourceOwner(id, this)
+    }
+
+    override fun isKilled(): Boolean = killed
+
+    override fun killClient() {
+        killed = true
+        state.signalClientKilled(this)
+        closeDownClient()
+        runCatching { input.close() }
+        runCatching { output.close() }
+    }
+
+    private fun closeDownClient() {
+        val mode: Int
+        val resources: Set<Int>
+        synchronized(closeDownLock) {
+            if (closeDownHandled) return
+            closeDownHandled = true
+            killed = true
+            mode = closeDownMode
+            resources = ownedResources.toSet()
+        }
+        state.releaseServerGrab(this)
+        when (mode) {
+            XCloseDownMode.Destroy -> state.removeClientResources(this, resources)
+            else -> state.retainClientResources(this, resources, mode)
+        }
+        state.unregisterEventSink(this)
     }
 
     private companion object {
+        const val AllTemporary = 0
         const val AnyKey = 0
         const val AnyModifier = 0x8000
         const val KeyModifierMask = 0x00ff
@@ -4848,7 +4894,7 @@ private data class WindowAttributeValues(
     val doNotPropagateMask: Int? = null,
 )
 
-private object XCloseDownMode {
+internal object XCloseDownMode {
     const val Destroy = 0
     const val RetainPermanent = 1
     const val RetainTemporary = 2
