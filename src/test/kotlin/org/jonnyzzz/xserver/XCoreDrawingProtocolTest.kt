@@ -2839,6 +2839,43 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ImageText reports request errors and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingDrawable = WindowId + 0x7777
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(imageTextBadLengthRequest(opcode = 76, textLength = 1, bodySize = 8))
+                out.write(imageTextBadLengthRequest(opcode = 77, textLength = 1, bodySize = 20))
+                out.write(imageText8Request(WindowId, GcId, x = 4, y = 18, text = "I"))
+                out.write(createGcRequest(GcId, foreground = Green, background = Blue))
+                out.write(imageText8Request(missingDrawable, GcId, x = 4, y = 18, text = "I"))
+                out.write(createPixmapRequest(PixmapId, width = 40, height = 36, depth = 8))
+                out.write(imageText8Request(PixmapId, GcId, x = 4, y = 18, text = "I"))
+                out.write(imageText16Request(WindowId, GcId, x = 4, y = 18, char2b = listOf(0 to 'I'.code)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 20, height = 24))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 76, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 77, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 13, opcode = 76, badValue = GcId, sequence = 4)
+                assertError(socket.getInputStream(), error = 9, opcode = 76, badValue = missingDrawable, sequence = 6)
+                assertError(socket.getInputStream(), error = 8, opcode = 76, badValue = PixmapId, sequence = 8)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(10, u16le(image, 2))
+                assertTrue(countPixels(image, 20, 24, 0xff00_ff00.toInt()) > 0)
+                assertTrue(countPixels(image, 20, 24, 0xff00_00ff.toInt()) > 0)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ImageText8 paints background and foreground into window framebuffer`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -10085,6 +10122,15 @@ class XCoreDrawingProtocolTest {
             offset += 2
         }
         return request(77, char2b.size, body)
+    }
+
+    private fun imageTextBadLengthRequest(opcode: Int, textLength: Int, bodySize: Int): ByteArray {
+        val body = ByteArray(bodySize)
+        if (bodySize >= 4) put32le(body, 0, WindowId)
+        if (bodySize >= 8) put32le(body, 4, GcId)
+        if (bodySize >= 10) put16le(body, 8, 4)
+        if (bodySize >= 12) put16le(body, 10, 18)
+        return request(opcode, textLength, body)
     }
 
     private fun polyText8Request(

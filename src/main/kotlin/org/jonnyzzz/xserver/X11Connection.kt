@@ -2585,13 +2585,20 @@ internal class X11Connection(
     }
 
     private fun imageText(length: Int, body: ByteArray, is16Bit: Boolean) {
-        if (body.size < 12) return
         val byteLength = length * if (is16Bit) 2 else 1
-        val textBytes = body.copyOfRange(12, (12 + byteLength).coerceAtMost(body.size))
-        val gc = state.gc(byteOrder.u32(body, 4))
+        val opcode = if (is16Bit) 77 else 76
+        if (body.size != paddedLength(12 + byteLength)) return writeError(error = 16, opcode = opcode, badValue = 0)
+        val gcId = byteOrder.u32(body, 4)
+        if (!state.hasGc(gcId)) return writeError(error = 13, opcode = opcode, badValue = gcId)
+        val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
+        val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = opcode, badValue = drawableId)
+        if (gc.drawableRootId != drawable.rootId || gc.drawableDepth != drawable.depth) {
+            return writeError(error = 8, opcode = opcode, badValue = drawableId)
+        }
         val x = byteOrder.i16(body, 8)
         val y = byteOrder.i16(body, 10)
+        val textBytes = body.copyOfRange(12, 12 + byteLength)
         val text = if (is16Bit) decodeText16(textBytes) else decodeText8(textBytes)
         state.drawText(
             drawableId = drawableId,
