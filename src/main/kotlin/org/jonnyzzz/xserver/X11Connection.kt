@@ -1233,8 +1233,14 @@ internal class X11Connection(
     }
 
     private fun changeWindowAttributes(body: ByteArray) {
-        if (body.size < 8) return
+        if (body.size < 8) return writeError(error = 16, opcode = 2, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
+        val mask = byteOrder.u32(body, 4)
+        val expectedSize = 8 + mask.countOneBits() * 4
+        if (body.size != expectedSize) return writeError(error = 16, opcode = 2, badValue = 0)
+        if ((mask and WindowAttributeValueMask.inv()) != 0) {
+            return writeError(error = 2, opcode = 2, badValue = mask)
+        }
         val attributes = windowAttributeValues(body, maskOffset = 4, valuesOffset = 8)
         if (attributes.backgroundPixel != null || attributes.backgroundPixmapId != null) {
             state.updateWindowAttributes(windowId, backgroundPixel = attributes.backgroundPixel, backgroundPixmapId = attributes.backgroundPixmapId)
@@ -4616,6 +4622,7 @@ internal class X11Connection(
         const val AnyModifier = 0x8000
         const val KeyModifierMask = 0x00ff
         const val GcValueMask = 0x007f_ffff
+        const val WindowAttributeValueMask = 0x0000_7fff
         const val ConfigureWindowValueMask = 0x007f
         const val QueryBestSizeCursor = 0
         const val QueryBestSizeTile = 1

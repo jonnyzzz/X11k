@@ -5221,6 +5221,35 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ChangeWindowAttributes validates value mask length and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(request(2, 0, ByteArray(4)))
+                out.write(changeWindowAttributesRawRequest(WindowId, 0x0000_0001))
+                out.write(changeWindowAttributesRawRequest(WindowId, 0, 0))
+                out.write(changeWindowAttributesRawRequest(WindowId, 0x0000_8000, 0))
+                out.write(changeWindowEventMaskRequest(WindowId, XEventMasks.PropertyChange))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 2, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 2, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = 2, badValue = 0, sequence = 4)
+                assertError(socket.getInputStream(), error = 2, opcode = 2, badValue = 0x0000_8000, sequence = 5)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(7, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `MapWindow validates request length and window id without closing caller`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -9722,6 +9751,16 @@ class XCoreDrawingProtocolTest {
         put32le(body, 0, window)
         put32le(body, 4, 1 shl 11)
         put32le(body, 8, eventMask)
+        return request(2, 0, body)
+    }
+
+    private fun changeWindowAttributesRawRequest(window: Int, mask: Int, vararg values: Int): ByteArray {
+        val body = ByteArray(8 + values.size * 4)
+        put32le(body, 0, window)
+        put32le(body, 4, mask)
+        values.forEachIndexed { index, value ->
+            put32le(body, 8 + index * 4, value)
+        }
         return request(2, 0, body)
     }
 
