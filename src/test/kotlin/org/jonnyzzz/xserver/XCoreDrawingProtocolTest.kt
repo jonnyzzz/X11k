@@ -1863,22 +1863,22 @@ class XCoreDrawingProtocolTest {
                 setup(socket)
                 val out = socket.getOutputStream()
                 out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(setDashesBadLengthRequest(bodySize = 4))
+                out.write(setDashesBadLengthRequest(bodySize = 16, dashCount = 1))
+                out.write(setDashesBadLengthRequest(bodySize = 8, dashCount = 1))
                 out.write(setDashesRequest(GcId, dashOffset = 0, dashes = listOf(2)))
                 out.write(createGcRequest(GcId, foreground = Red))
+                out.write(setDashesRequest(GcId, dashOffset = 0, dashes = emptyList()))
                 out.write(setDashesRequest(GcId, dashOffset = 0, dashes = listOf(0)))
                 out.flush()
 
-                val missingGc = socket.getInputStream().readExactly(32)
-                assertEquals(0, missingGc[0].toInt())
-                assertEquals(13, missingGc[1].toInt() and 0xff)
-                assertEquals(GcId, u32le(missingGc, 4))
-                assertEquals(58, missingGc[10].toInt() and 0xff)
+                assertError(socket.getInputStream(), error = 16, opcode = 58, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 58, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = 58, badValue = 0, sequence = 4)
 
-                val zeroDash = socket.getInputStream().readExactly(32)
-                assertEquals(0, zeroDash[0].toInt())
-                assertEquals(2, zeroDash[1].toInt() and 0xff)
-                assertEquals(0, u32le(zeroDash, 4))
-                assertEquals(58, zeroDash[10].toInt() and 0xff)
+                assertError(socket.getInputStream(), error = 13, opcode = 58, badValue = GcId, sequence = 5)
+                assertError(socket.getInputStream(), error = 2, opcode = 58, badValue = 0, sequence = 7)
+                assertError(socket.getInputStream(), error = 2, opcode = 58, badValue = 0, sequence = 8)
             }
             server.close()
             serverThread.join(1_000)
@@ -9208,6 +9208,13 @@ class XCoreDrawingProtocolTest {
         dashes.forEachIndexed { index, dash ->
             body[8 + index] = dash.toByte()
         }
+        return request(58, 0, body)
+    }
+
+    private fun setDashesBadLengthRequest(bodySize: Int, dashCount: Int = 0): ByteArray {
+        val body = ByteArray(bodySize)
+        if (bodySize >= 4) put32le(body, 0, GcId)
+        if (bodySize >= 8) put16le(body, 6, dashCount)
         return request(58, 0, body)
     }
 

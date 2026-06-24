@@ -2123,13 +2123,13 @@ internal class X11Connection(
     }
 
     private fun setDashes(body: ByteArray) {
-        if (body.size < 8) return
+        if (body.size < 8) return writeError(error = 16, opcode = 58, badValue = 0)
         val gcId = byteOrder.u32(body, 0)
-        if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 58, badValue = gcId)
         val dashOffset = byteOrder.u16(body, 4)
         val dashCount = byteOrder.u16(body, 6)
+        if (body.size != 8 + paddedLength(dashCount)) return writeError(error = 16, opcode = 58, badValue = 0)
+        if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 58, badValue = gcId)
         if (dashCount <= 0) return writeError(error = 2, opcode = 58, badValue = dashCount)
-        if (body.size < 8 + dashCount) return
         val dashes = (0 until dashCount).map { body[8 + it].toInt() and 0xff }
         val invalidDash = dashes.firstOrNull { it == 0 }
         if (invalidDash != null) return writeError(error = 2, opcode = 58, badValue = invalidDash)
