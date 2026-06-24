@@ -611,6 +611,31 @@ internal class X11State(
     }
 
     @Synchronized
+    fun allowEvents(owner: XEventSink, mode: Int, time: Int) {
+        var lastGrabTime = 0
+        val pointerGrab = activePointerGrab
+        if (pointerGrab?.owner == owner) lastGrabTime = pointerGrab.time
+        val keyboardGrab = activeKeyboardGrab
+        if (keyboardGrab?.owner == owner && Integer.compareUnsigned(keyboardGrab.time, lastGrabTime) > 0) {
+            lastGrabTime = keyboardGrab.time
+        }
+        val serverTime = currentServerTime(lastGrabTime)
+        if (time != 0 &&
+            (
+                Integer.compareUnsigned(time, lastGrabTime) < 0 ||
+                    Integer.compareUnsigned(time, serverTime) > 0
+                )
+        ) {
+            return
+        }
+        recordInputControlOperation(
+            operation = "AllowEvents",
+            mode = mode,
+            time = if (time == 0) serverTime else time,
+        )
+    }
+
+    @Synchronized
     fun releaseInputGrabs(owner: XEventSink) {
         if (activePointerGrab?.owner == owner) activePointerGrab = null
         if (activeKeyboardGrab?.owner == owner) activeKeyboardGrab = null

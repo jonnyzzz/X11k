@@ -1855,8 +1855,8 @@ internal class X11Connection(
     private fun allowEvents(mode: Int, body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = 35, badValue = 0)
         if (mode !in 0..7) return writeError(error = 2, opcode = 35, badValue = mode)
-        state.recordInputControlOperation(
-            operation = "AllowEvents",
+        state.allowEvents(
+            owner = this,
             mode = mode,
             time = byteOrder.u32(body, 0),
         )

@@ -4765,7 +4765,7 @@ class XCoreDrawingProtocolTest {
                 socket.soTimeout = 2_000
                 setup(socket)
                 val out = socket.getOutputStream()
-                out.write(allowEventsRequest(mode = 6, time = 0x8000_0000.toInt()))
+                out.write(allowEventsRequest(mode = 6))
                 out.write(queryPointerRequest())
                 out.flush()
 
@@ -4773,7 +4773,37 @@ class XCoreDrawingProtocolTest {
                 assertEquals(1, pointer[0].toInt())
                 assertEquals(2, u16le(pointer, 2))
                 val stateJson = httpGet(server.localPort, "/state.json")
-                assertContains(stateJson, """"inputControlOperations":[{"id":1,"operation":"AllowEvents","mode":6,"modeName":"AsyncBoth","time":2147483648}]""")
+                assertContains(stateJson, """"inputControlOperations":[{"id":1,"operation":"AllowEvents","mode":6,"modeName":"AsyncBoth","time":1}]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `AllowEvents ignores stale or future timestamps for active grabs`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                server.input.pointerDown(1, 1)
+                val out = socket.getOutputStream()
+                out.write(grabPointerRequest(X11Ids.RootWindow, time = 2))
+                out.write(allowEventsRequest(mode = 6, time = 3))
+                out.write(allowEventsRequest(mode = 6, time = 1))
+                out.write(allowEventsRequest(mode = 6, time = 2))
+                out.write(allowEventsRequest(mode = 7))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val grab = readReply(socket.getInputStream())
+                assertEquals(0, grab[1].toInt() and 0xff)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(6, u16le(pointer, 2))
+                val stateJson = httpGet(server.localPort, "/state.json")
+                assertContains(stateJson, """"inputControlOperations":[{"id":1,"operation":"AllowEvents","mode":6,"modeName":"AsyncBoth","time":2},{"id":2,"operation":"AllowEvents","mode":7,"modeName":"SyncBoth","time":2}]""")
             }
             server.close()
             serverThread.join(1_000)
