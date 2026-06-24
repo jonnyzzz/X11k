@@ -553,12 +553,27 @@ internal class X11Connection(
     }
 
     private fun renderTrapezoids(body: ByteArray) {
-        if (body.size < 20) return
+        if (body.size < 20 || (body.size - 20) % 40 != 0) {
+            return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 10, badValue = 0)
+        }
         val operation = body[0].toInt() and 0xff
-        val source = state.picture(byteOrder.u32(body, 4)) ?: return
-        val destination = state.picture(byteOrder.u32(body, 8)) ?: return
+        if (!XRender.isValidOperator(operation)) {
+            return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = 10, badValue = operation)
+        }
+        val sourceId = byteOrder.u32(body, 4)
+        val source = state.picture(sourceId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 10, badValue = sourceId)
+        val destinationId = byteOrder.u32(body, 8)
+        val destination = state.picture(destinationId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 10, badValue = destinationId)
         val maskFormat = byteOrder.u32(body, 12)
-        if (!XRender.isAlphaMaskFormat(maskFormat)) return
+        if (maskFormat != 0 && maskFormat !in XRender.PictFormats) {
+            return writeError(error = XRender.PictFormatError, opcode = XRender.MajorOpcode, minorOpcode = 10, badValue = maskFormat)
+        }
+        if (maskFormat != 0 && !XRender.isAlphaMaskFormat(maskFormat)) {
+            return writeError(error = 8, opcode = XRender.MajorOpcode, minorOpcode = 10, badValue = maskFormat)
+        }
+        val effectiveMaskFormat = maskFormat.takeIf { it != 0 } ?: XRender.A8Format
         val destinationDrawableId = destination.drawableId ?: return
         val sourceX = byteOrder.i16(body, 16)
         val sourceY = byteOrder.i16(body, 18)
@@ -568,7 +583,7 @@ internal class X11Connection(
             operation = operation,
             source = source,
             destination = destination,
-            maskFormat = maskFormat,
+            maskFormat = effectiveMaskFormat,
             sourceX = sourceX,
             sourceY = sourceY,
             trapezoids = trapezoids,

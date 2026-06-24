@@ -1497,6 +1497,48 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER Trapezoids validates request framing resources and mask format`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missingSource = SolidPictureId + 0x100
+                val missingDestination = PictureId + 0x100
+                val unknownMaskFormat = 0x7fff_1010
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 12, height = 10, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderTrapezoidsRaw(trapezoidsHeader(SolidPictureId, PictureId).copyOf(16)))
+                out.write(renderTrapezoidsRaw(trapezoidsHeader(SolidPictureId, PictureId).copyOf(24)))
+                out.write(renderTrapezoidsRaw(trapezoidsHeader(SolidPictureId, PictureId, operation = XRender.OpBlendMaximum + 1)))
+                out.write(renderTrapezoidsRaw(trapezoidsHeader(missingSource, PictureId)))
+                out.write(renderTrapezoidsRaw(trapezoidsHeader(SolidPictureId, missingDestination)))
+                out.write(renderTrapezoidsRaw(trapezoidsHeader(SolidPictureId, PictureId, maskFormat = unknownMaskFormat)))
+                out.write(renderTrapezoidsRaw(trapezoidsHeader(SolidPictureId, PictureId, maskFormat = XRender.Rgb24Format)))
+                out.write(renderTrapezoids(SolidPictureId, PictureId, x = 3, y = 2, width = 5, height = 4, maskFormat = 0))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 12, height = 10))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 5, minorOpcode = 10)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 6, minorOpcode = 10)
+                assertError(socket.getInputStream(), error = 2, badValue = XRender.OpBlendMaximum + 1, sequence = 7, minorOpcode = 10)
+                assertError(socket.getInputStream(), error = XRender.PictureError, badValue = missingSource, sequence = 8, minorOpcode = 10)
+                assertError(socket.getInputStream(), error = XRender.PictureError, badValue = missingDestination, sequence = 9, minorOpcode = 10)
+                assertError(socket.getInputStream(), error = XRender.PictFormatError, badValue = unknownMaskFormat, sequence = 10, minorOpcode = 10)
+                assertError(socket.getInputStream(), error = 8, badValue = XRender.Rgb24Format, sequence = 11, minorOpcode = 10)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 12, x = 4, y = 3))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 12, x = 2, y = 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER trapezoids sample generated source using src origin`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2515,6 +2557,23 @@ class XRenderProtocolTest {
         putFixedPoint(body, 52, x + width, y + height)
         return request(XRender.MajorOpcode, 10, body)
     }
+
+    private fun trapezoidsHeader(
+        source: Int,
+        destination: Int,
+        operation: Int = XRender.OpSrc,
+        maskFormat: Int = XRender.A8Format,
+    ): ByteArray {
+        val body = ByteArray(20)
+        body[0] = operation.toByte()
+        put32le(body, 4, source)
+        put32le(body, 8, destination)
+        put32le(body, 12, maskFormat)
+        return body
+    }
+
+    private fun renderTrapezoidsRaw(body: ByteArray): ByteArray =
+        request(XRender.MajorOpcode, 10, body)
 
     private fun renderAddTraps(picture: Int, xOffset: Int, yOffset: Int, x: Int, y: Int, width: Int, height: Int): ByteArray {
         val body = ByteArray(32)
