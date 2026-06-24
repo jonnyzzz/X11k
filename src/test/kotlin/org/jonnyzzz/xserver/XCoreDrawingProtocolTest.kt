@@ -4348,6 +4348,28 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `NoOperation is replyless and ignores padded request bytes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(noOperationRequest())
+                out.write(noOperationRequest(0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(3, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SetSelectionOwner updates and clears GetSelectionOwner reply`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -5532,6 +5554,9 @@ class XCoreDrawingProtocolTest {
 
     private fun setCloseDownModeRequest(mode: Int): ByteArray =
         request(112, mode, ByteArray(0))
+
+    private fun noOperationRequest(vararg bytes: Int): ByteArray =
+        request(127, 0, ByteArray(bytes.size) { index -> bytes[index].toByte() })
 
     private fun setAccessControlRequest(mode: Int): ByteArray =
         request(111, mode, ByteArray(0))

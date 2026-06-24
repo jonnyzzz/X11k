@@ -221,7 +221,7 @@ internal class X11Connection(
             117 -> getPointerMapping(body)
             118 -> setModifierMapping(minorOpcode, body)
             119 -> getModifierMapping(body)
-            127 -> unitReplyless()
+            127 -> noOperation(body)
             else -> unsupportedRequest(opcode, minorOpcode, requestName(opcode, minorOpcode))
         }
     }
@@ -3108,7 +3108,8 @@ internal class X11Connection(
         write(reply)
     }
 
-    private fun unitReplyless() = Unit
+    @Suppress("UNUSED_PARAMETER")
+    private fun noOperation(body: ByteArray) = Unit
 
     private fun sendExpose(window: XWindow) {
         val event = ByteArray(32)
