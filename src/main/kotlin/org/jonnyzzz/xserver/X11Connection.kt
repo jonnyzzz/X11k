@@ -828,14 +828,33 @@ internal class X11Connection(
     }
 
     private fun renderCompositeGlyphs(minorOpcode: Int, body: ByteArray) {
-        if (body.size < 24) return
+        if (body.size < 24) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
         val operation = body[0].toInt() and 0xff
-        val source = state.picture(byteOrder.u32(body, 4)) ?: return
-        val destination = state.picture(byteOrder.u32(body, 8)) ?: return
+        if (!XRender.isValidOperator(operation)) {
+            return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = operation)
+        }
+        val sourceId = byteOrder.u32(body, 4)
+        val source = state.picture(sourceId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = sourceId)
+        val destinationId = byteOrder.u32(body, 8)
+        val destination = state.picture(destinationId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = destinationId)
+        val maskFormat = byteOrder.u32(body, 12)
+        if (maskFormat != 0 && maskFormat !in XRender.PictFormats) {
+            return writeError(error = XRender.PictFormatError, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = maskFormat)
+        }
+        val glyphSetId = byteOrder.u32(body, 16)
+        if (!state.hasGlyphSet(glyphSetId)) {
+            return writeError(error = XRender.GlyphSetError, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = glyphSetId)
+        }
         val destinationDrawableId = destination.drawableId ?: return
         val sourceX = byteOrder.i16(body, 20)
         val sourceY = byteOrder.i16(body, 22)
-        val placementsByGlyphSet = compositeGlyphPlacements(minorOpcode, body)
+        val parseResult = compositeGlyphPlacements(minorOpcode, body, glyphSetId)
+        parseResult.error?.let {
+            return writeError(error = it.error, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = it.badValue)
+        }
+        val placementsByGlyphSet = parseResult.placements
         val origin = placementsByGlyphSet.values.firstOrNull()?.firstOrNull() ?: return
         for ((glyphSetId, placements) in placementsByGlyphSet) {
             state.compositeGlyphs(operation, source, destination, glyphSetId, sourceX, sourceY, origin.x, origin.y, placements)
@@ -851,26 +870,31 @@ internal class X11Connection(
         )
     }
 
-    private fun compositeGlyphPlacements(minorOpcode: Int, body: ByteArray): Map<Int, List<XGlyphPlacement>> {
+    private fun compositeGlyphPlacements(minorOpcode: Int, body: ByteArray, initialGlyphSetId: Int): XCompositeGlyphParseResult {
         val glyphIdBytes = when (minorOpcode) {
             23 -> 1
             24 -> 2
             else -> 4
         }
-        var glyphSetId = byteOrder.u32(body, 16)
+        var glyphSetId = initialGlyphSetId
         var x = 0
         var y = 0
         var offset = 24
         val result = linkedMapOf<Int, MutableList<XGlyphPlacement>>()
-        while (offset + 8 <= body.size) {
+        while (offset < body.size) {
+            if (offset + 8 > body.size) return XCompositeGlyphParseResult.badLength()
             val length = body[offset].toInt() and 0xff
             val deltaX = byteOrder.i16(body, offset + 2)
             val deltaY = byteOrder.i16(body, offset + 4)
             if (length == 0xff) {
-                if (offset + 12 > body.size) break
+                if (offset + 12 > body.size) return XCompositeGlyphParseResult.badLength()
                 x += deltaX
                 y += deltaY
-                glyphSetId = byteOrder.u32(body, offset + 8)
+                val nextGlyphSetId = byteOrder.u32(body, offset + 8)
+                if (!state.hasGlyphSet(nextGlyphSetId)) {
+                    return XCompositeGlyphParseResult.error(XRender.GlyphSetError, nextGlyphSetId)
+                }
+                glyphSetId = nextGlyphSetId
                 offset += 12
                 continue
             }
@@ -878,22 +902,24 @@ internal class X11Connection(
             x += deltaX
             y += deltaY
             offset += 8
+            val glyphBytes = length * glyphIdBytes
+            val paddedGlyphBytes = (glyphBytes + 3) and -4
+            if (offset + paddedGlyphBytes > body.size) return XCompositeGlyphParseResult.badLength()
             repeat(length) {
-                if (offset + glyphIdBytes > body.size) return result
+                val glyphOffset = offset + it * glyphIdBytes
                 val glyphId = when (glyphIdBytes) {
-                    1 -> body[offset].toInt() and 0xff
-                    2 -> byteOrder.u16(body, offset)
-                    else -> byteOrder.u32(body, offset)
+                    1 -> body[glyphOffset].toInt() and 0xff
+                    2 -> byteOrder.u16(body, glyphOffset)
+                    else -> byteOrder.u32(body, glyphOffset)
                 }
                 result.getOrPut(glyphSetId) { mutableListOf() } += XGlyphPlacement(glyphId, x, y)
                 val glyph = state.glyph(glyphSetId, glyphId)
                 x += glyph?.xOff ?: 0
                 y += glyph?.yOff ?: 0
-                offset += glyphIdBytes
             }
-            offset = (offset + 3) and -4
+            offset += paddedGlyphBytes
         }
-        return result
+        return XCompositeGlyphParseResult(result)
     }
 
     private fun renderFillRectangles(body: ByteArray) {
@@ -5562,6 +5588,23 @@ private object XPropertyType {
 
 private data class XRenderPictureAttributes(
     val repeat: Int? = null,
+)
+
+private data class XCompositeGlyphParseResult(
+    val placements: Map<Int, List<XGlyphPlacement>> = emptyMap(),
+    val error: XCompositeGlyphParseError? = null,
+) {
+    companion object {
+        fun badLength(): XCompositeGlyphParseResult = error(16, 0)
+
+        fun error(error: Int, badValue: Int): XCompositeGlyphParseResult =
+            XCompositeGlyphParseResult(error = XCompositeGlyphParseError(error, badValue))
+    }
+}
+
+private data class XCompositeGlyphParseError(
+    val error: Int,
+    val badValue: Int,
 )
 
 private data class XTextRun(

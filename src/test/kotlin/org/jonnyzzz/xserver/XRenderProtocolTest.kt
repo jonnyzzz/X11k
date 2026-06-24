@@ -2488,6 +2488,68 @@ class XRenderProtocolTest {
         }
     }
 
+    @Test
+    fun `RENDER CompositeGlyphs validates framing resources and mask format`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missingSource = SolidPictureId + 0x300
+                val missingDestination = PictureId + 0x300
+                val missingGlyphSet = GlyphSetId + 0x300
+                val unknownMaskFormat = 0x7fff_7010
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderCreateGlyphSet(GlyphSetId, XRender.A8Format))
+                out.write(renderAddA8Glyph(GlyphSetId, GlyphId, width = 2, height = 2, xOff = 2, alphas = ByteArray(4) { 0xff.toByte() }))
+                out.write(renderCompositeGlyphsRaw(25, compositeGlyphsHeader(SolidPictureId, PictureId, GlyphSetId).copyOf(20)))
+                out.write(renderCompositeGlyphs32(SolidPictureId, PictureId, GlyphSetId, sourceX = 0, sourceY = 0, deltaX = 1, deltaY = 1, glyphIds = listOf(GlyphId), operation = XRender.OpBlendMaximum + 1))
+                out.write(renderCompositeGlyphsRaw(25, compositeGlyphsHeader(missingSource, PictureId, GlyphSetId)))
+                out.write(renderCompositeGlyphsRaw(25, compositeGlyphsHeader(SolidPictureId, missingDestination, GlyphSetId)))
+                out.write(renderCompositeGlyphsRaw(25, compositeGlyphsHeader(SolidPictureId, PictureId, GlyphSetId, maskFormat = unknownMaskFormat)))
+                out.write(renderCompositeGlyphsRaw(25, compositeGlyphsHeader(SolidPictureId, PictureId, missingGlyphSet)))
+                out.write(renderCompositeGlyphsRaw(25, compositeGlyphsHeader(SolidPictureId, PictureId, GlyphSetId) + ByteArray(4)))
+                out.write(
+                    renderCompositeGlyphsRaw(
+                        25,
+                        compositeGlyphsHeader(SolidPictureId, PictureId, GlyphSetId) + ByteArray(12).also {
+                            it[0] = 0xff.toByte()
+                            put32le(it, 8, missingGlyphSet)
+                        },
+                    ),
+                )
+                out.write(
+                    renderCompositeGlyphsRaw(
+                        25,
+                        compositeGlyphsHeader(SolidPictureId, PictureId, GlyphSetId) + ByteArray(8).also {
+                            it[0] = 1
+                        },
+                    ),
+                )
+                out.write(renderCompositeGlyphs32(SolidPictureId, PictureId, GlyphSetId, sourceX = 0, sourceY = 0, deltaX = 1, deltaY = 1, glyphIds = listOf(GlyphId), operation = XRender.OpSrc))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 4))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 6, minorOpcode = 25)
+                assertError(socket.getInputStream(), error = 2, badValue = XRender.OpBlendMaximum + 1, sequence = 7, minorOpcode = 25)
+                assertError(socket.getInputStream(), error = XRender.PictureError, badValue = missingSource, sequence = 8, minorOpcode = 25)
+                assertError(socket.getInputStream(), error = XRender.PictureError, badValue = missingDestination, sequence = 9, minorOpcode = 25)
+                assertError(socket.getInputStream(), error = XRender.PictFormatError, badValue = unknownMaskFormat, sequence = 10, minorOpcode = 25)
+                assertError(socket.getInputStream(), error = XRender.GlyphSetError, badValue = missingGlyphSet, sequence = 11, minorOpcode = 25)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 12, minorOpcode = 25)
+                assertError(socket.getInputStream(), error = XRender.GlyphSetError, badValue = missingGlyphSet, sequence = 13, minorOpcode = 25)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 14, minorOpcode = 25)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 1))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
     private fun setup(socket: Socket) {
         socket.getOutputStream().write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
         socket.getOutputStream().flush()
@@ -2952,17 +3014,11 @@ class XRenderProtocolTest {
         deltaY: Int,
         glyphIds: List<Int>,
         operation: Int = XRender.OpOver,
+        maskFormat: Int = XRender.A8Format,
     ): ByteArray {
         val idsOffset = 32
         val paddedSize = (idsOffset + glyphIds.size * 4 + 3) and -4
-        val body = ByteArray(paddedSize)
-        body[0] = operation.toByte()
-        put32le(body, 4, source)
-        put32le(body, 8, destination)
-        put32le(body, 12, XRender.A8Format)
-        put32le(body, 16, glyphSet)
-        put16le(body, 20, sourceX)
-        put16le(body, 22, sourceY)
+        val body = compositeGlyphsHeader(source, destination, glyphSet, operation, maskFormat, sourceX, sourceY).copyOf(paddedSize)
         body[24] = glyphIds.size.toByte()
         put16le(body, 26, deltaX)
         put16le(body, 28, deltaY)
@@ -2970,6 +3026,29 @@ class XRenderProtocolTest {
             put32le(body, idsOffset + index * 4, glyphId)
         }
         return request(XRender.MajorOpcode, 25, body)
+    }
+
+    private fun renderCompositeGlyphsRaw(minorOpcode: Int, body: ByteArray): ByteArray =
+        request(XRender.MajorOpcode, minorOpcode, body)
+
+    private fun compositeGlyphsHeader(
+        source: Int,
+        destination: Int,
+        glyphSet: Int,
+        operation: Int = XRender.OpOver,
+        maskFormat: Int = XRender.A8Format,
+        sourceX: Int = 0,
+        sourceY: Int = 0,
+    ): ByteArray {
+        val body = ByteArray(24)
+        body[0] = operation.toByte()
+        put32le(body, 4, source)
+        put32le(body, 8, destination)
+        put32le(body, 12, maskFormat)
+        put32le(body, 16, glyphSet)
+        put16le(body, 20, sourceX)
+        put16le(body, 22, sourceY)
+        return body
     }
 
     private fun renderTriangles(
