@@ -4084,6 +4084,66 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ConfigureWindow validates value mask length and window without closing caller`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missing = WindowId + 405
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(request(12, 0, ByteArray(0)))
+                out.write(configureWindowRequest(WindowId, 0x0001))
+                out.write(request(12, 0, ByteArray(12).also {
+                    put32le(it, 0, WindowId)
+                }))
+                out.write(configureWindowRequest(WindowId, 0x0080, 0))
+                out.write(configureWindowRequest(missing, 0))
+                out.write(configureWindowRequest(WindowId, 0x0060, WindowId, 0))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 12, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 12, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = 12, badValue = 0, sequence = 4)
+                assertError(socket.getInputStream(), error = 2, opcode = 12, badValue = 0x0080, sequence = 5)
+                assertError(socket.getInputStream(), error = 3, opcode = 12, badValue = missing, sequence = 6)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(8, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ConfigureWindow updates modeled geometry fields`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 40, height = 30))
+                out.write(configureWindowRequest(WindowId, 0x001f, 11, 12, 50, 35, 3))
+                out.write(getGeometryRequest(WindowId))
+                out.flush()
+
+                val geometry = readReply(socket.getInputStream())
+                assertEquals(3, u16le(geometry, 2))
+                assertEquals(11, u16le(geometry, 12))
+                assertEquals(12, u16le(geometry, 14))
+                assertEquals(50, u16le(geometry, 16))
+                assertEquals(35, u16le(geometry, 18))
+                assertEquals(3, u16le(geometry, 20))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `FreeCursor clears active pointer grab that references cursor`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -7478,6 +7538,16 @@ class XCoreDrawingProtocolTest {
         val body = ByteArray(4)
         put32le(body, 0, id)
         return request(11, 0, body)
+    }
+
+    private fun configureWindowRequest(window: Int, mask: Int, vararg values: Int): ByteArray {
+        val body = ByteArray(8 + values.size * 4)
+        put32le(body, 0, window)
+        put16le(body, 4, mask)
+        values.forEachIndexed { index, value ->
+            put32le(body, 8 + index * 4, value)
+        }
+        return request(12, 0, body)
     }
 
     private fun changeWindowBackgroundPixmapRequest(id: Int, pixmap: Int): ByteArray {

@@ -1330,9 +1330,15 @@ internal class X11Connection(
     }
 
     private fun configureWindow(body: ByteArray) {
-        if (body.size < 6) return
-        val window = state.window(byteOrder.u32(body, 0)) ?: return
+        if (body.size < 8) return writeError(error = 16, opcode = 12, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
         val mask = byteOrder.u16(body, 4)
+        val window = state.window(windowId) ?: return writeError(error = 3, opcode = 12, badValue = windowId)
+        val expectedSize = 8 + mask.countOneBits() * 4
+        if (body.size != expectedSize) return writeError(error = 16, opcode = 12, badValue = 0)
+        if ((mask and ConfigureWindowValueMask.inv()) != 0) {
+            return writeError(error = 2, opcode = 12, badValue = mask)
+        }
         var offset = 8
         fun next(): Int {
             val value = byteOrder.u32(body, offset)
@@ -1344,6 +1350,8 @@ internal class X11Connection(
         val width = if ((mask and 0x0004) != 0) next() else null
         val height = if ((mask and 0x0008) != 0) next() else null
         val borderWidth = if ((mask and 0x0010) != 0) next() else null
+        if ((mask and 0x0020) != 0) next()
+        if ((mask and 0x0040) != 0) next()
         val configured = state.configureWindow(window.id, x = x, y = y, width = width, height = height, borderWidth = borderWidth) ?: return
         if (configured.mapped) {
             sendConfigureNotify(configured)
@@ -4223,6 +4231,7 @@ internal class X11Connection(
         const val AnyModifier = 0x8000
         const val KeyModifierMask = 0x00ff
         const val GcValueMask = 0x007f_ffff
+        const val ConfigureWindowValueMask = 0x007f
         const val QueryBestSizeCursor = 0
         const val QueryBestSizeTile = 1
         const val QueryBestSizeStipple = 2
