@@ -6196,6 +6196,48 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `Empty-body reply requests validate length and stream recovers`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(request(43, 0, ByteArray(4)))
+                out.write(request(44, 0, ByteArray(4)))
+                out.write(request(52, 0, ByteArray(4)))
+                out.write(getInputFocusRequest())
+                out.write(queryKeymapRequest())
+                out.write(getFontPathRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 43, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, opcode = 44, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 52, badValue = 0, sequence = 3)
+
+                val focus = readReply(socket.getInputStream())
+                assertEquals(4, u16le(focus, 2))
+                assertEquals(0, focus[1].toInt() and 0xff)
+                assertEquals(X11Ids.RootWindow, u32le(focus, 8))
+
+                val keymap = readReply(socket.getInputStream())
+                assertEquals(5, u16le(keymap, 2))
+                assertEquals(2, u32le(keymap, 4))
+                for (index in 8 until 40) {
+                    assertEquals(0, keymap[index].toInt() and 0xff)
+                }
+
+                val fontPath = readReply(socket.getInputStream())
+                assertEquals(6, u16le(fontPath, 2))
+                assertEquals(0, u32le(fontPath, 4))
+                assertEquals(0, u16le(fontPath, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `Bell validates signed percent and preserves connection after errors`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -9422,6 +9464,9 @@ class XCoreDrawingProtocolTest {
 
     private fun getInputFocusRequest(): ByteArray =
         request(43, 0, ByteArray(0))
+
+    private fun queryKeymapRequest(): ByteArray =
+        request(44, 0, ByteArray(0))
 
     private fun queryTreeRequest(window: Int): ByteArray {
         val body = ByteArray(4)

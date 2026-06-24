@@ -155,8 +155,8 @@ internal class X11Connection(
             40 -> translateCoordinates(body)
             41 -> warpPointer(body)
             42 -> setInputFocus(minorOpcode, body)
-            43 -> getInputFocus()
-            44 -> queryKeymap()
+            43 -> getInputFocus(body)
+            44 -> queryKeymap(body)
             45 -> openFont(body)
             46 -> closeResource(opcode = 46, body = body, error = 7, exists = state::hasFont)
             47 -> queryFont(body)
@@ -164,7 +164,7 @@ internal class X11Connection(
             49 -> listFonts(body)
             50 -> listFontsWithInfo(body)
             51 -> setFontPath(body)
-            52 -> getFontPath()
+            52 -> getFontPath(body)
             53 -> createPixmap(minorOpcode, body)
             54 -> closeResource(opcode = 54, body = body, error = 4, exists = state::hasPixmap)
             55 -> createGc(body)
@@ -1933,7 +1933,8 @@ internal class X11Connection(
         write(reply)
     }
 
-    private fun getInputFocus() {
+    private fun getInputFocus(body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = 43, badValue = 0)
         val (focusWindowId, revertTo) = state.inputFocus()
         val reply = reply(extra = 0, payloadUnits = 0)
         reply[1] = revertTo.toByte()
@@ -1952,7 +1953,8 @@ internal class X11Connection(
         state.setInputFocus(focusWindowId, revertTo, byteOrder.u32(body, 4))
     }
 
-    private fun queryKeymap() {
+    private fun queryKeymap(body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = 44, badValue = 0)
         write(reply(extra = 0, payloadUnits = 2))
     }
 
@@ -2033,7 +2035,8 @@ internal class X11Connection(
         write(reply(extra = 0, payloadUnits = 7))
     }
 
-    private fun getFontPath() {
+    private fun getFontPath(body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = 52, badValue = 0)
         val path = state.fontPath().map { it.toByteArray(StandardCharsets.ISO_8859_1) }
         val payloadBytes = path.sumOf { 1 + it.size }
         val reply = reply(extra = 0, payloadUnits = paddedLength(payloadBytes) / 4)
