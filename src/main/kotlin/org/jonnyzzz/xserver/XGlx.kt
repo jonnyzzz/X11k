@@ -4,6 +4,7 @@ internal object XGlx {
     const val MajorOpcode = 128
     const val FirstEvent = 0
     const val FirstError = 128
+    const val BadContext = FirstError
     const val BadPixmap = FirstError + 3
     const val BadFBConfig = FirstError + 9
     const val MajorVersion = 1
@@ -21,6 +22,7 @@ internal object XGlx {
     const val CreatePixmap = 22
     const val DestroyPixmap = 23
     const val CreateNewContext = 24
+    const val QueryContext = 25
     const val MakeContextCurrent = 26
     const val CreateContextAttribsARB = 34
 
@@ -30,6 +32,11 @@ internal object XGlx {
 
     const val RgbaType = 0x8014
     const val RootFbConfigId = X11Ids.RootVisual
+    const val ShareContextExt = 0x800A
+    const val VisualIdExt = 0x800B
+    const val ScreenExt = 0x800C
+    const val RenderType = 0x8011
+    const val FbConfigId = 0x8013
 
     fun operationName(minorOpcode: Int): String =
         when (minorOpcode) {
@@ -57,7 +64,7 @@ internal object XGlx {
             CreatePixmap -> "CreatePixmap"
             DestroyPixmap -> "DestroyPixmap"
             CreateNewContext -> "CreateNewContext"
-            25 -> "QueryContext"
+            QueryContext -> "QueryContext"
             MakeContextCurrent -> "MakeContextCurrent"
             27 -> "CreatePbuffer"
             28 -> "DestroyPbuffer"

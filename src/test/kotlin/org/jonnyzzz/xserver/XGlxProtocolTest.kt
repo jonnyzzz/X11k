@@ -152,6 +152,40 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX QueryContext returns context attributes and recovers after missing context`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_0150
+            val missingContext = 0x0020_0151
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryContext, u32(contextId) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryContext, u32(missingContext))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val query = readReply(socket.getInputStream())
+            assertEquals(2, u16le(query, 2))
+            assertEquals(10, u32le(query, 4))
+            assertEquals(5, u32le(query, 8))
+            val attributes = attributeMap(query, offset = 32, count = u32le(query, 8))
+            assertEquals(0, attributes.getValue(XGlx.ShareContextExt))
+            assertEquals(XGlx.RootFbConfigId, attributes.getValue(XGlx.VisualIdExt))
+            assertEquals(0, attributes.getValue(XGlx.ScreenExt))
+            assertEquals(XGlx.RootFbConfigId, attributes.getValue(XGlx.FbConfigId))
+            assertEquals(XGlx.RgbaType, attributes.getValue(XGlx.RenderType))
+
+            val missingError = socket.getInputStream().readExactly(32)
+            assertEquals(0, missingError[0].toInt())
+            assertEquals(XGlx.BadContext, missingError[1].toInt() and 0xff)
+            assertEquals(missingContext, u32le(missingError, 4))
+            assertEquals(XGlx.QueryContext, u16le(missingError, 8))
+            assertEquals(XGlx.MajorOpcode, missingError[10].toInt() and 0xff)
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(4, u16le(pointer, 2))
+        }
+    }
+
+    @Test
     fun `GLX CreateGLXPixmap models pixmap resource and validates duplicate ids`() {
         withServer { socket ->
             socket.soTimeout = 2_000
@@ -443,6 +477,11 @@ class XGlxProtocolTest {
         val payloadUnits = u32le(header, 4)
         return header + input.readExactly(payloadUnits * 4)
     }
+
+    private fun attributeMap(reply: ByteArray, offset: Int, count: Int): Map<Int, Int> =
+        (0 until count).associate { index ->
+            u32le(reply, offset + index * 8) to u32le(reply, offset + index * 8 + 4)
+        }
 
     private fun padded(bytes: ByteArray): ByteArray =
         bytes + ByteArray(((bytes.size + 3) and -4) - bytes.size)

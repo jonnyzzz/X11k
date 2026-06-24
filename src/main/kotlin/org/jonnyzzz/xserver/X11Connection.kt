@@ -261,6 +261,7 @@ internal class X11Connection(
             XGlx.CreatePixmap -> glxCreateFbConfigPixmap(body)
             XGlx.DestroyPixmap -> glxDestroyFbConfigPixmap(body)
             XGlx.CreateNewContext -> glxCreateNewContext(body)
+            XGlx.QueryContext -> glxQueryContext(body)
             XGlx.MakeContextCurrent -> glxMakeCurrent(body, isContextCurrent = true)
             XGlx.CreateContextAttribsARB -> glxCreateContextAttribs(body)
             else -> unsupportedRequest(majorOpcode, minorOpcode, operation)
@@ -1436,6 +1437,29 @@ internal class X11Connection(
         }
     }
 
+    private fun glxQueryContext(body: ByteArray) {
+        if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.QueryContext, badValue = 0)
+        val context = byteOrder.u32(body, 0)
+        val glxContext = state.glxContext(context)
+            ?: return writeError(error = XGlx.BadContext, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.QueryContext, badValue = context)
+        val attributes = intArrayOf(
+            XGlx.ShareContextExt,
+            0,
+            XGlx.VisualIdExt,
+            glxContext.fbConfigId,
+            XGlx.ScreenExt,
+            glxContext.screen,
+            XGlx.FbConfigId,
+            glxContext.fbConfigId,
+            XGlx.RenderType,
+            glxContext.renderType,
+        )
+        val reply = reply(extra = 0, payloadUnits = attributes.size)
+        byteOrder.put32(reply, 8, attributes.size / 2)
+        putIntArray(reply, 32, attributes)
+        write(reply)
+    }
+
     private fun glxMakeCurrent(body: ByteArray, isContextCurrent: Boolean) {
         val contextOffset = if (isContextCurrent) 12 else 4
         if (body.size < contextOffset + 4) {
@@ -1477,6 +1501,7 @@ internal class X11Connection(
             XGlx.ClientInfo -> "client=${u32(0)}.${u32(4)} bytes=${u32(8)}"
             XGlx.GetFBConfigs -> "screen=${u32(0)}"
             XGlx.CreateNewContext -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} renderType=${hex(12)} direct=${body.getOrNull(20)?.toInt() == 1}"
+            XGlx.QueryContext -> "context=${hex(0)}"
             XGlx.MakeContextCurrent -> "oldTag=${hex(0)} drawable=${hex(4)} readDrawable=${hex(8)} context=${hex(12)}"
             XGlx.CreateContextAttribsARB -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} share=${hex(12)} direct=${body.getOrNull(16)?.toInt() == 1} attribs=${u32(20)}"
             1, 2 -> "contextTag=${hex(0)}"
