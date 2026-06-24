@@ -847,8 +847,11 @@ internal class X11Connection(
     }
 
     private fun renderSetPictureTransform(body: ByteArray) {
-        if (body.size < 40) return
+        if (body.size != 40) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 28, badValue = 0)
         val picture = byteOrder.u32(body, 0)
+        if (state.picture(picture) == null) {
+            return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 28, badValue = picture)
+        }
         val transform = (0 until 9).map { index -> byteOrder.u32(body, 4 + index * 4) }
         if (!isInvertibleTransform(transform)) {
             return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = 28, badValue = 0)

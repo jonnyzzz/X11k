@@ -1042,6 +1042,54 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `Render SetPictureTransform validates framing picture resources and matrix invertibility`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val picture = PixmapId + 0x390
+                val missingPicture = picture + 1
+                val transform = listOf(
+                    0x0001_0000,
+                    0,
+                    0x0002_0000,
+                    0,
+                    0x0001_0000,
+                    0x0003_0000,
+                    0,
+                    0,
+                    0x0001_0000,
+                )
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePictureRequest(picture))
+                out.write(renderRequest(28, ByteArray(36)))
+                out.write(renderSetPictureTransformRaw(ByteArray(44).also { put32le(it, 0, picture) }))
+                out.write(renderSetPictureTransformRequest(missingPicture, transform))
+                out.write(renderSetPictureTransformRequest(picture, List(9) { 0 }))
+                out.write(renderSetPictureTransformRequest(picture, transform))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 28, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 28, badValue = 0, sequence = 4)
+                assertError(socket.getInputStream(), error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 28, badValue = missingPicture, sequence = 5)
+                assertError(socket.getInputStream(), error = 2, opcode = XRender.MajorOpcode, minorOpcode = 28, badValue = 0, sequence = 6)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(8, u16le(pointer, 2))
+                assertContains(
+                    httpGet(server.localPort, "/state.json"),
+                    """"transform":["0x10000","0x0","0x20000","0x0","0x10000","0x30000","0x0","0x0","0x10000"]""",
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `OpenFont rejects duplicate resource id without replacing existing resource`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -11092,6 +11140,19 @@ class XCoreDrawingProtocolTest {
         put32le(body, 0, picture)
         return renderRequest(7, body)
     }
+
+    private fun renderSetPictureTransformRequest(picture: Int, transform: List<Int>): ByteArray {
+        require(transform.size == 9)
+        val body = ByteArray(40)
+        put32le(body, 0, picture)
+        transform.forEachIndexed { index, value ->
+            put32le(body, 4 + index * 4, value)
+        }
+        return renderSetPictureTransformRaw(body)
+    }
+
+    private fun renderSetPictureTransformRaw(body: ByteArray): ByteArray =
+        renderRequest(28, body)
 
     private fun readReply(input: InputStream, byteOrderByte: Int = 0x6c): ByteArray {
         val header = input.readExactly(32)
