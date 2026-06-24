@@ -587,6 +587,41 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreateCursor validates pixmap ids and length with stream recovery`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val source = PixmapId + 20
+                val mask = PixmapId + 21
+                val missingSource = PixmapId + 22
+                val missingMask = PixmapId + 23
+                val cursor = PixmapId + 24
+                val out = socket.getOutputStream()
+                out.write(createPixmapRequest(source, width = 2, height = 2, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createPixmapRequest(mask, width = 2, height = 2, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(request(93, 0, ByteArray(24)))
+                out.write(createCursorRequest(cursor, source = missingSource, mask = 0))
+                out.write(createCursorRequest(cursor, source = source, mask = missingMask))
+                out.write(createCursorRequest(cursor, source = source, mask = 0))
+                out.write(recolorCursorRequest(cursor))
+                out.write(allocColorRequest(X11Ids.DefaultColormap, red = 0, green = 0, blue = 0xffff))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 93, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 4, opcode = 93, badValue = missingSource, sequence = 4)
+                assertError(socket.getInputStream(), error = 4, opcode = 93, badValue = missingMask, sequence = 5)
+
+                val blue = readReply(socket.getInputStream())
+                assertEquals(Blue, u32le(blue, 16))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CreateGlyphCursor rejects duplicate resource id with glyph cursor opcode`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -625,18 +660,19 @@ class XCoreDrawingProtocolTest {
                 val cursor = PixmapId + 80
                 val missingCursor = cursor + 1
                 val out = socket.getOutputStream()
-                out.write(createCursorRequest(cursor, source = PixmapId, mask = PixmapId + 1))
+                out.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createCursorRequest(cursor, source = PixmapId, mask = 0))
                 out.write(recolorCursorRequest(cursor))
                 out.write(recolorCursorRequest(missingCursor))
                 out.write(request(96, 0, ByteArray(12)))
                 out.write(allocColorRequest(X11Ids.DefaultColormap, red = 0xffff, green = 0, blue = 0))
                 out.flush()
 
-                assertError(socket.getInputStream(), error = 6, opcode = 96, badValue = missingCursor, sequence = 3)
-                assertError(socket.getInputStream(), error = 16, opcode = 96, badValue = 0, sequence = 4)
+                assertError(socket.getInputStream(), error = 6, opcode = 96, badValue = missingCursor, sequence = 4)
+                assertError(socket.getInputStream(), error = 16, opcode = 96, badValue = 0, sequence = 5)
 
                 val red = readReply(socket.getInputStream())
-                assertEquals(5, u16le(red, 2))
+                assertEquals(6, u16le(red, 2))
                 assertEquals(Red, u32le(red, 16))
             }
             server.close()
@@ -719,7 +755,7 @@ class XCoreDrawingProtocolTest {
                 val cursor = PixmapId + 900
                 val out = socket.getOutputStream()
                 out.write(createWindowRequest(WindowId, width = 80, height = 40))
-                out.write(createPixmapRequest(PixmapId, width = 8, height = 8))
+                out.write(createPixmapRequest(PixmapId, width = 8, height = 8, depth = 1))
                 out.write(createGcRequest(GcId, foreground = Blue))
                 out.write(createColormapRequest(ColormapId, window = X11Ids.RootWindow))
                 out.write(createCursorRequest(cursor, source = PixmapId, mask = PixmapId))
@@ -3960,13 +3996,14 @@ class XCoreDrawingProtocolTest {
                 val cursor = PixmapId + 90
                 server.input.pointerDown(1, 1)
                 val out = socket.getOutputStream()
-                out.write(createCursorRequest(cursor, source = PixmapId, mask = PixmapId + 1))
+                out.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createCursorRequest(cursor, source = PixmapId, mask = 0))
                 out.write(grabPointerRequest(X11Ids.RootWindow, time = 2, eventMask = 0x0004))
                 out.flush()
 
                 val grab = readReply(socket.getInputStream())
                 assertEquals(1, grab[0].toInt())
-                assertEquals(2, u16le(grab, 2))
+                assertEquals(3, u16le(grab, 2))
 
                 out.write(changeActivePointerGrabRequest(cursor = cursor, time = 1, eventMask = 0x0040))
                 out.write(queryPointerRequest())
@@ -3974,7 +4011,7 @@ class XCoreDrawingProtocolTest {
 
                 val oldTimePointer = readReply(socket.getInputStream())
                 assertEquals(1, oldTimePointer[0].toInt())
-                assertEquals(4, u16le(oldTimePointer, 2))
+                assertEquals(5, u16le(oldTimePointer, 2))
                 val unchangedJson = httpGet(server.localPort, "/state.json")
                 assertContains(unchangedJson, """"inputGrabs":[{"kind":"pointer","window":"0x${X11Ids.RootWindow.toString(16)}","ownerEvents":false,"eventMask":"0x4"""")
                 assertContains(unchangedJson, """"cursor":null,"time":2""")
@@ -3985,7 +4022,7 @@ class XCoreDrawingProtocolTest {
 
                 val changedPointer = readReply(socket.getInputStream())
                 assertEquals(1, changedPointer[0].toInt())
-                assertEquals(6, u16le(changedPointer, 2))
+                assertEquals(7, u16le(changedPointer, 2))
                 val changedJson = httpGet(server.localPort, "/state.json")
                 assertContains(changedJson, """"inputGrabs":[{"kind":"pointer","window":"0x${X11Ids.RootWindow.toString(16)}","ownerEvents":false,"eventMask":"0x40"""")
                 assertContains(changedJson, """"cursor":"0x${cursor.toString(16)}","time":2""")
@@ -3996,7 +4033,7 @@ class XCoreDrawingProtocolTest {
 
                 val futureTimePointer = readReply(socket.getInputStream())
                 assertEquals(1, futureTimePointer[0].toInt())
-                assertEquals(8, u16le(futureTimePointer, 2))
+                assertEquals(9, u16le(futureTimePointer, 2))
                 val futureIgnoredJson = httpGet(server.localPort, "/state.json")
                 assertContains(futureIgnoredJson, """"eventMask":"0x40"""")
                 assertContains(futureIgnoredJson, """"cursor":"0x${cursor.toString(16)}","time":2""")
@@ -4019,10 +4056,11 @@ class XCoreDrawingProtocolTest {
 
                     val cursor = PixmapId + 91
                     val ownerOut = owner.getOutputStream()
-                    ownerOut.write(createCursorRequest(cursor, source = PixmapId, mask = PixmapId + 1))
+                    ownerOut.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                    ownerOut.write(createCursorRequest(cursor, source = PixmapId, mask = 0))
                     ownerOut.write(grabPointerRequest(X11Ids.RootWindow, time = 1, eventMask = 0x0004))
                     ownerOut.flush()
-                    assertEquals(2, u16le(readReply(owner.getInputStream()), 2))
+                    assertEquals(3, u16le(readReply(owner.getInputStream()), 2))
 
                     val otherOut = other.getOutputStream()
                     otherOut.write(changeActivePointerGrabRequest(cursor = cursor, time = 1, eventMask = 0x0040))
@@ -5411,7 +5449,8 @@ class XCoreDrawingProtocolTest {
                 setup(socket)
                 val cursor = PixmapId + 90
                 val out = socket.getOutputStream()
-                out.write(createCursorRequest(cursor, source = PixmapId, mask = PixmapId + 1))
+                out.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createCursorRequest(cursor, source = PixmapId, mask = 0))
                 out.write(grabPointerRequest(X11Ids.RootWindow, cursor = cursor))
                 out.flush()
                 assertEquals(1, readReply(socket.getInputStream())[0].toInt())

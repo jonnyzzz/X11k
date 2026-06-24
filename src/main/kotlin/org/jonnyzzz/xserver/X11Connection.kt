@@ -205,8 +205,8 @@ internal class X11Connection(
             90 -> storeNamedColor(minorOpcode, body)
             91 -> queryColors(body)
             92 -> lookupColor(body)
-            93 -> createCursor(opcode, body)
-            94 -> createCursor(opcode, body)
+            93 -> createCursor(body)
+            94 -> createGlyphCursor(body)
             95 -> closeResource(opcode = 95, body = body, error = 6, exists = state::hasCursor)
             96 -> recolorCursor(body)
             97 -> queryBestSize(minorOpcode, body)
@@ -3036,10 +3036,22 @@ internal class X11Connection(
         write(reply)
     }
 
-    private fun createCursor(opcode: Int, body: ByteArray) {
+    private fun createCursor(body: ByteArray) {
+        if (body.size != 28) return writeError(error = 16, opcode = 93, badValue = 0)
+        val id = byteOrder.u32(body, 0)
+        val source = byteOrder.u32(body, 4)
+        val mask = byteOrder.u32(body, 8)
+        if (state.hasResource(id)) return writeError(error = 14, opcode = 93, badValue = id)
+        if (!state.hasPixmap(source)) return writeError(error = 4, opcode = 93, badValue = source)
+        if (mask != 0 && !state.hasPixmap(mask)) return writeError(error = 4, opcode = 93, badValue = mask)
+        state.putCursor(id)
+        own(id)
+    }
+
+    private fun createGlyphCursor(body: ByteArray) {
         if (body.size >= 4) {
             val id = byteOrder.u32(body, 0)
-            if (state.hasResource(id)) return writeError(error = 14, opcode = opcode, badValue = id)
+            if (state.hasResource(id)) return writeError(error = 14, opcode = 94, badValue = id)
             state.putCursor(id)
             own(id)
         }
