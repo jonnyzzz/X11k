@@ -398,16 +398,26 @@ internal class X11Connection(
     }
 
     private fun renderCreatePicture(body: ByteArray) {
-        if (body.size < 16) return
+        if (body.size < 16) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = 0)
         val id = byteOrder.u32(body, 0)
         if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = id)
+        val drawable = byteOrder.u32(body, 4)
+        val drawableState = state.drawable(drawable) ?: return writeError(error = 9, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = drawable)
+        val format = byteOrder.u32(body, 8)
+        if (format !in XRender.PictFormats) {
+            return writeError(error = XRender.PictFormatError, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = format)
+        }
+        if (drawableState.depth != XRender.formatDepth(format)) {
+            return writeError(error = 8, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = format)
+        }
         val valueMask = byteOrder.u32(body, 12)
+        if (!validateRenderPictureValueLength(valueMask, body, valuesOffset = 16, minorOpcode = 4)) return
         val attributes = renderPictureAttributes(valueMask, body, valuesOffset = 16)
         state.putPicture(
             XPicture(
                 id = id,
-                drawableId = byteOrder.u32(body, 4),
-                format = byteOrder.u32(body, 8),
+                drawableId = drawable,
+                format = format,
                 valueMask = valueMask,
                 repeat = attributes.repeat ?: XRender.RepeatNone,
             ),
@@ -416,10 +426,27 @@ internal class X11Connection(
     }
 
     private fun renderChangePicture(body: ByteArray) {
-        if (body.size < 8) return
+        if (body.size < 8) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 5, badValue = 0)
+        val picture = byteOrder.u32(body, 0)
+        if (state.picture(picture) == null) {
+            return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 5, badValue = picture)
+        }
         val valueMask = byteOrder.u32(body, 4)
+        if (!validateRenderPictureValueLength(valueMask, body, valuesOffset = 8, minorOpcode = 5)) return
         val attributes = renderPictureAttributes(valueMask, body, valuesOffset = 8)
-        state.updatePicture(byteOrder.u32(body, 0), valueMask, repeat = attributes.repeat)
+        state.updatePicture(picture, valueMask, repeat = attributes.repeat)
+    }
+
+    private fun validateRenderPictureValueLength(valueMask: Int, body: ByteArray, valuesOffset: Int, minorOpcode: Int): Boolean {
+        if ((valueMask and XRender.PictureAttributeMask.inv()) != 0) {
+            writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = valueMask)
+            return false
+        }
+        if (body.size != valuesOffset + valueMask.countOneBits() * 4) {
+            writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
+            return false
+        }
+        return true
     }
 
     private fun renderPictureAttributes(valueMask: Int, body: ByteArray, valuesOffset: Int): XRenderPictureAttributes {

@@ -910,6 +910,58 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `Render picture requests validate resources value masks and update repeat`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val picture = PixmapId + 0x300
+                val missingDrawable = WindowId + 409
+                val missingPicture = picture + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderRequest(4, ByteArray(12)))
+                out.write(renderCreatePictureRequest(picture, valueMask = XRender.CPRepeat))
+                out.write(renderCreatePictureRequest(picture, format = 0x7fff_1001))
+                out.write(renderCreatePictureRequest(picture, drawable = missingDrawable))
+                out.write(renderCreatePictureRequest(picture, format = XRender.A8Format))
+                out.write(renderCreatePictureRequest(picture, WindowId, XRender.Rgb24Format, 0x0000_2000, 0))
+                out.write(renderCreatePictureRequest(picture, WindowId, XRender.Rgb24Format, XRender.CPRepeat, XRender.RepeatNormal))
+                out.write(renderCreatePictureRequest(picture))
+                out.write(renderRequest(5, ByteArray(4)))
+                out.write(renderChangePictureRequest(missingPicture, valueMask = 0))
+                out.write(renderChangePictureRequest(picture, valueMask = XRender.CPRepeat))
+                out.write(renderChangePictureRequest(picture, 0x0000_2000, 0))
+                out.write(renderChangePictureRequest(picture, XRender.CPRepeat, XRender.RepeatPad))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = XRender.PictFormatError, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = 0x7fff_1001, sequence = 4)
+                assertError(socket.getInputStream(), error = 9, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = missingDrawable, sequence = 5)
+                assertError(socket.getInputStream(), error = 8, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = XRender.A8Format, sequence = 6)
+                assertError(socket.getInputStream(), error = 2, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = 0x0000_2000, sequence = 7)
+                assertError(socket.getInputStream(), error = 14, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = picture, sequence = 9)
+                assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 5, badValue = 0, sequence = 10)
+                assertError(socket.getInputStream(), error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 5, badValue = missingPicture, sequence = 11)
+                assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 5, badValue = 0, sequence = 12)
+                assertError(socket.getInputStream(), error = 2, opcode = XRender.MajorOpcode, minorOpcode = 5, badValue = 0x0000_2000, sequence = 13)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(15, u16le(pointer, 2))
+                assertContains(
+                    httpGet(server.localPort, "/state.json"),
+                    """"id":"0x${picture.toString(16)}","drawable":"0x${WindowId.toString(16)}","kind":"window","format":${XRender.Rgb24Format},"repeat":"pad"""",
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `OpenFont rejects duplicate resource id without replacing existing resource`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -10902,6 +10954,34 @@ class XCoreDrawingProtocolTest {
         val body = ByteArray(4)
         put32le(body, 0, format)
         return renderRequest(2, body)
+    }
+
+    private fun renderCreatePictureRequest(
+        picture: Int,
+        drawable: Int = WindowId,
+        format: Int = XRender.Rgb24Format,
+        valueMask: Int = 0,
+        vararg values: Int,
+    ): ByteArray {
+        val body = ByteArray(16 + values.size * 4)
+        put32le(body, 0, picture)
+        put32le(body, 4, drawable)
+        put32le(body, 8, format)
+        put32le(body, 12, valueMask)
+        values.forEachIndexed { index, value ->
+            put32le(body, 16 + index * 4, value)
+        }
+        return renderRequest(4, body)
+    }
+
+    private fun renderChangePictureRequest(picture: Int, valueMask: Int, vararg values: Int): ByteArray {
+        val body = ByteArray(8 + values.size * 4)
+        put32le(body, 0, picture)
+        put32le(body, 4, valueMask)
+        values.forEachIndexed { index, value ->
+            put32le(body, 8 + index * 4, value)
+        }
+        return renderRequest(5, body)
     }
 
     private fun readReply(input: InputStream, byteOrderByte: Int = 0x6c): ByteArray {

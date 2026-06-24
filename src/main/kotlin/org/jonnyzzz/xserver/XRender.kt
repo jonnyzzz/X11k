@@ -7,6 +7,7 @@ internal object XRender {
     const val MajorVersion = 0
     const val MinorVersion = 11
     const val PictFormatError = FirstError
+    const val PictureError = FirstError + 1
 
     const val Argb32Format = 0x0000_0029
     const val Rgb24Format = 0x0000_002a
@@ -21,6 +22,7 @@ internal object XRender {
     const val OpAdd = 12
 
     const val CPRepeat = 1 shl 0
+    const val PictureAttributeMask = 0x0000_1fff
 
     const val RepeatNone = 0
     const val RepeatNormal = 1
@@ -65,6 +67,15 @@ internal object XRender {
 
     fun isAlphaMaskFormat(format: Int): Boolean =
         format == A8Format || format == A1Format
+
+    fun formatDepth(format: Int): Int? =
+        when (format) {
+            Argb32Format -> 32
+            Rgb24Format -> 24
+            A8Format -> 8
+            A1Format -> 1
+            else -> null
+        }
 
     fun argb32Pixel(red: Int, green: Int, blue: Int, alpha: Int): Int =
         ((alpha ushr 8).coerceIn(0, 255) shl 24) or
