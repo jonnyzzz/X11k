@@ -2275,9 +2275,11 @@ internal class X11Connection(
     }
 
     private fun polyPoint(coordMode: Int, body: ByteArray) {
-        if (body.size < 12) return
+        if (body.size < 8) return writeError(error = 16, opcode = 64, badValue = 0)
         if (coordMode !in 0..1) return writeError(error = 2, opcode = 64, badValue = coordMode)
-        val gc = state.gc(byteOrder.u32(body, 4))
+        val gcId = byteOrder.u32(body, 4)
+        if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 64, badValue = gcId)
+        val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
         val points = points(body, 8, coordMode)
         state.drawPoints(drawableId, gc.foreground, points, lineWidth = 1, clipRectangles = gc.effectiveClipRectangles(), function = gc.function, planeMask = gc.planeMask)
@@ -2293,9 +2295,11 @@ internal class X11Connection(
     }
 
     private fun polyLine(coordMode: Int, body: ByteArray) {
-        if (body.size < 12) return
+        if (body.size < 8) return writeError(error = 16, opcode = 65, badValue = 0)
         if (coordMode !in 0..1) return writeError(error = 2, opcode = 65, badValue = coordMode)
-        val gc = state.gc(byteOrder.u32(body, 4))
+        val gcId = byteOrder.u32(body, 4)
+        if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 65, badValue = gcId)
+        val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
         val points = points(body, 8, coordMode)
         state.drawPolyline(

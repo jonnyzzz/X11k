@@ -1922,6 +1922,46 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `PolyPoint and PolyLine report request errors and recover stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(polyPointBadLengthRequest())
+                out.write(polyLineBadLengthRequest())
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 2, points = emptyList()))
+                out.write(polyLineRequest(WindowId, GcId, coordMode = 2, points = emptyList()))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = emptyList()))
+                out.write(polyLineRequest(WindowId, GcId, coordMode = 0, points = listOf(2 to 0, 3 to 0)))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 1, points = emptyList()))
+                out.write(polyLineRequest(WindowId, GcId, coordMode = 1, points = emptyList()))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(1 to 0)))
+                out.write(polyLineRequest(WindowId, GcId, coordMode = 0, points = listOf(2 to 0, 3 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 1))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 64, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 65, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 2, opcode = 64, badValue = 2, sequence = 4)
+                assertError(socket.getInputStream(), error = 2, opcode = 65, badValue = 2, sequence = 5)
+                assertError(socket.getInputStream(), error = 13, opcode = 64, badValue = GcId, sequence = 6)
+                assertError(socket.getInputStream(), error = 13, opcode = 65, badValue = GcId, sequence = 7)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 0, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 1, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 2, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 3, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `core drawing honors GC clip rectangles`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -9267,6 +9307,9 @@ class XCoreDrawingProtocolTest {
         return request(64, coordMode, body)
     }
 
+    private fun polyPointBadLengthRequest(): ByteArray =
+        request(64, 0, ByteArray(4))
+
     private fun polyLineRequest(drawable: Int, gc: Int, coordMode: Int = 0, points: List<Pair<Int, Int>>): ByteArray {
         val body = ByteArray(8 + points.size * 4)
         put32le(body, 0, drawable)
@@ -9279,6 +9322,9 @@ class XCoreDrawingProtocolTest {
         }
         return request(65, coordMode, body)
     }
+
+    private fun polyLineBadLengthRequest(): ByteArray =
+        request(65, 0, ByteArray(4))
 
     private fun polySegmentRequest(drawable: Int, gc: Int, segments: List<Pair<Pair<Int, Int>, Pair<Int, Int>>>): ByteArray {
         val body = ByteArray(8 + segments.size * 8)
