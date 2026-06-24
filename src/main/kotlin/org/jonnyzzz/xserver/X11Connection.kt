@@ -1287,8 +1287,9 @@ internal class X11Connection(
     }
 
     private fun glxQueryServerString(body: ByteArray) {
+        if (body.size != 8) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.QueryServerString, badValue = 0)
         if (!glxScreenIsValid(body, offset = 0)) return
-        val name = if (body.size >= 8) byteOrder.u32(body, 4) else 0
+        val name = byteOrder.u32(body, 4)
         glxStringReply(XGlx.serverString(name))
     }
 
@@ -1829,7 +1830,7 @@ internal class X11Connection(
     private fun Int.isPowerOfTwo(): Boolean = this > 0 && (this and (this - 1)) == 0
 
     private fun glxIsDirect(body: ByteArray) {
-        if (body.size < 4) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.IsDirect, badValue = 0)
+        if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.IsDirect, badValue = 0)
         val context = byteOrder.u32(body, 0)
         val reply = reply(extra = 0, payloadUnits = 0)
         reply[8] = if (state.glxContext(context)?.direct == true) 1 else 0

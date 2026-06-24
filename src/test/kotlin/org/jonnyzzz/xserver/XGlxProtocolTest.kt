@@ -137,6 +137,36 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX fixed size string and direct queries validate request length`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_0103
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryServerString, u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryServerString, u32(0) + u32(XGlx.VendorName) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryServerString, u32(0) + u32(XGlx.VendorName))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.IsDirect, ByteArray(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = true))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.IsDirect, u32(contextId) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.IsDirect, u32(contextId))
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.QueryServerString, sequence = 1)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.QueryServerString, sequence = 2)
+
+            val vendor = readReply(socket.getInputStream())
+            assertEquals(3, u16le(vendor, 2))
+            val vendorLength = u32le(vendor, 12)
+            assertEquals("jonnyzzz/x", vendor.copyOfRange(32, 32 + vendorLength).decodeToString())
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.IsDirect, sequence = 4)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.IsDirect, sequence = 6)
+
+            val direct = readReply(socket.getInputStream())
+            assertEquals(7, u16le(direct, 2))
+            assertEquals(1, direct[8].toInt())
+        }
+    }
+
+    @Test
     fun `GLX WaitGL WaitX and SwapBuffers accept valid modeled resources without replies`() {
         withServer { socket ->
             socket.soTimeout = 2_000
