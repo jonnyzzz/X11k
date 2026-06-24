@@ -326,6 +326,85 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX GetDrawableAttributes returns modeled pixmap attributes and recovers after missing drawable`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val pixmap = 0x0020_0800
+            val glxPixmap = 0x0020_0801
+            val missingDrawable = 0x0020_0802
+            writeRequest(socket, 53, 24, u32(pixmap) + u32(X11Ids.RootWindow) + u16(9) + u16(7))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePixmap, createFbConfigPixmapBody(pixmap, glxPixmap))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetDrawableAttributes, u32(glxPixmap) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetDrawableAttributes, u32(missingDrawable))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val attributesReply = readReply(socket.getInputStream())
+            assertEquals(3, u16le(attributesReply, 2))
+            assertEquals(16, u32le(attributesReply, 4))
+            assertEquals(8, u32le(attributesReply, 8))
+            val attributes = attributeMap(attributesReply, offset = 32, count = u32le(attributesReply, 8))
+            assertEquals(0, attributes.getValue(XGlx.YInvertedExt))
+            assertEquals(9, attributes.getValue(XGlx.Width))
+            assertEquals(7, attributes.getValue(XGlx.Height))
+            assertEquals(0, attributes.getValue(XGlx.ScreenExt))
+            assertEquals(XGlx.TextureRectangleExt, attributes.getValue(XGlx.TextureTargetExt))
+            assertEquals(0, attributes.getValue(XGlx.EventMask))
+            assertEquals(XGlx.RootFbConfigId, attributes.getValue(XGlx.FbConfigId))
+            assertEquals(XGlx.PixmapBit, attributes.getValue(XGlx.DrawableType))
+
+            val missingError = socket.getInputStream().readExactly(32)
+            assertEquals(0, missingError[0].toInt())
+            assertEquals(XGlx.BadDrawable, missingError[1].toInt() and 0xff)
+            assertEquals(missingDrawable, u32le(missingError, 4))
+            assertEquals(XGlx.GetDrawableAttributes, u16le(missingError, 8))
+            assertEquals(XGlx.MajorOpcode, missingError[10].toInt() and 0xff)
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(5, u16le(pointer, 2))
+        }
+    }
+
+    @Test
+    fun `GLX GetDrawableAttributes returns naked window attributes`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetDrawableAttributes, u32(X11Ids.RootWindow) + u32(0))
+
+            val attributesReply = readReply(socket.getInputStream())
+            assertEquals(1, u16le(attributesReply, 2))
+            assertEquals(10, u32le(attributesReply, 4))
+            assertEquals(5, u32le(attributesReply, 8))
+            val attributes = attributeMap(attributesReply, offset = 32, count = u32le(attributesReply, 8))
+            assertEquals(0, attributes.getValue(XGlx.YInvertedExt))
+            assertEquals(640, attributes.getValue(XGlx.Width))
+            assertEquals(480, attributes.getValue(XGlx.Height))
+            assertEquals(0, attributes.getValue(XGlx.ScreenExt))
+            assertEquals(XGlx.WindowBit, attributes.getValue(XGlx.DrawableType))
+        }
+    }
+
+    @Test
+    fun `GLX GetDrawableAttributes rejects non GLX core pixmap`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val pixmap = 0x0020_0900
+            writeRequest(socket, 53, 24, u32(pixmap) + u32(X11Ids.RootWindow) + u16(8) + u16(8))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetDrawableAttributes, u32(pixmap))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val error = socket.getInputStream().readExactly(32)
+            assertEquals(0, error[0].toInt())
+            assertEquals(XGlx.BadDrawable, error[1].toInt() and 0xff)
+            assertEquals(pixmap, u32le(error, 4))
+            assertEquals(XGlx.GetDrawableAttributes, u16le(error, 8))
+            assertEquals(XGlx.MajorOpcode, error[10].toInt() and 0xff)
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(3, u16le(pointer, 2))
+        }
+    }
+
+    @Test
     fun `GLX DestroyPixmap accepts legacy oversized request and recovers stream`() {
         withServer { socket ->
             socket.soTimeout = 2_000

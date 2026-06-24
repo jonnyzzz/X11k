@@ -5,6 +5,7 @@ internal object XGlx {
     const val FirstEvent = 0
     const val FirstError = 128
     const val BadContext = FirstError
+    const val BadDrawable = FirstError + 2
     const val BadPixmap = FirstError + 3
     const val BadFBConfig = FirstError + 9
     const val MajorVersion = 1
@@ -24,6 +25,7 @@ internal object XGlx {
     const val CreateNewContext = 24
     const val QueryContext = 25
     const val MakeContextCurrent = 26
+    const val GetDrawableAttributes = 29
     const val CreateContextAttribsARB = 34
 
     const val VendorName = 1
@@ -35,8 +37,18 @@ internal object XGlx {
     const val ShareContextExt = 0x800A
     const val VisualIdExt = 0x800B
     const val ScreenExt = 0x800C
+    const val DrawableType = 0x8010
     const val RenderType = 0x8011
     const val FbConfigId = 0x8013
+    const val Width = 0x801D
+    const val Height = 0x801E
+    const val EventMask = 0x801F
+    const val WindowBit = 0x00000001
+    const val PixmapBit = 0x00000002
+    const val YInvertedExt = 0x20D4
+    const val TextureTargetExt = 0x20D6
+    const val Texture2DExt = 0x20DC
+    const val TextureRectangleExt = 0x20DD
 
     fun operationName(minorOpcode: Int): String =
         when (minorOpcode) {
@@ -68,7 +80,7 @@ internal object XGlx {
             MakeContextCurrent -> "MakeContextCurrent"
             27 -> "CreatePbuffer"
             28 -> "DestroyPbuffer"
-            29 -> "GetDrawableAttributes"
+            GetDrawableAttributes -> "GetDrawableAttributes"
             30 -> "ChangeDrawableAttributes"
             31 -> "CreateWindow"
             32 -> "DestroyWindow"

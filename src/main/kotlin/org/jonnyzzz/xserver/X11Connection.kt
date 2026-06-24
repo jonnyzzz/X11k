@@ -263,6 +263,7 @@ internal class X11Connection(
             XGlx.CreateNewContext -> glxCreateNewContext(body)
             XGlx.QueryContext -> glxQueryContext(body)
             XGlx.MakeContextCurrent -> glxMakeCurrent(body, isContextCurrent = true)
+            XGlx.GetDrawableAttributes -> glxGetDrawableAttributes(body)
             XGlx.CreateContextAttribsARB -> glxCreateContextAttribs(body)
             else -> unsupportedRequest(majorOpcode, minorOpcode, operation)
         }
@@ -1471,6 +1472,40 @@ internal class X11Connection(
         write(reply)
     }
 
+    private fun glxGetDrawableAttributes(body: ByteArray) {
+        if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetDrawableAttributes, badValue = 0)
+        val drawableId = byteOrder.u32(body, 0)
+        val glxPixmap = state.glxPixmap(drawableId)
+        val window = state.window(drawableId)
+        if (glxPixmap == null && window == null) {
+            return writeError(error = XGlx.BadDrawable, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetDrawableAttributes, badValue = drawableId)
+        }
+        val attributes = mutableListOf(
+            XGlx.YInvertedExt to 0,
+            XGlx.Width to (glxPixmap?.width ?: window!!.width),
+            XGlx.Height to (glxPixmap?.height ?: window!!.height),
+            XGlx.ScreenExt to (glxPixmap?.screen ?: 0),
+        )
+        if (glxPixmap != null) {
+            attributes += XGlx.TextureTargetExt to glxTextureTarget(glxPixmap.width, glxPixmap.height)
+            attributes += XGlx.EventMask to 0
+            attributes += XGlx.FbConfigId to glxPixmap.fbConfigId
+            attributes += XGlx.DrawableType to XGlx.PixmapBit
+        } else {
+            attributes += XGlx.DrawableType to XGlx.WindowBit
+        }
+        val flat = attributes.flatMap { (attribute, value) -> listOf(attribute, value) }.toIntArray()
+        val reply = reply(extra = 0, payloadUnits = flat.size)
+        byteOrder.put32(reply, 8, attributes.size)
+        putIntArray(reply, 32, flat)
+        write(reply)
+    }
+
+    private fun glxTextureTarget(width: Int, height: Int): Int =
+        if (width.isPowerOfTwo() && height.isPowerOfTwo()) XGlx.Texture2DExt else XGlx.TextureRectangleExt
+
+    private fun Int.isPowerOfTwo(): Boolean = this > 0 && (this and (this - 1)) == 0
+
     private fun glxIsDirect(body: ByteArray) {
         if (body.size < 4) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.IsDirect, badValue = 0)
         val context = byteOrder.u32(body, 0)
@@ -1503,6 +1538,7 @@ internal class X11Connection(
             XGlx.CreateNewContext -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} renderType=${hex(12)} direct=${body.getOrNull(20)?.toInt() == 1}"
             XGlx.QueryContext -> "context=${hex(0)}"
             XGlx.MakeContextCurrent -> "oldTag=${hex(0)} drawable=${hex(4)} readDrawable=${hex(8)} context=${hex(12)}"
+            XGlx.GetDrawableAttributes -> "drawable=${hex(0)}"
             XGlx.CreateContextAttribsARB -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} share=${hex(12)} direct=${body.getOrNull(16)?.toInt() == 1} attribs=${u32(20)}"
             1, 2 -> "contextTag=${hex(0)}"
             8, 9, 11 -> "drawable/context=${hex(0)}"

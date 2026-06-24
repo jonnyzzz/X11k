@@ -1513,6 +1513,9 @@ internal class X11State(
     fun hasGlxPixmap(id: Int): Boolean = glxPixmaps.containsKey(id)
 
     @Synchronized
+    fun glxPixmap(id: Int): XGlxPixmap? = glxPixmaps[id]
+
+    @Synchronized
     fun recordGlxOperation(
         minorOpcode: Int,
         operation: String,
