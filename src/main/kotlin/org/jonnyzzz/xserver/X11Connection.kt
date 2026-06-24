@@ -1330,7 +1330,7 @@ internal class X11Connection(
     }
 
     private fun glxCreateContext(body: ByteArray) {
-        if (body.size < 20) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = 3, badValue = 0)
+        if (body.size != 20) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = 3, badValue = 0)
         val context = byteOrder.u32(body, 0)
         val visual = byteOrder.u32(body, 4)
         val screen = byteOrder.u32(body, 8)
@@ -1348,7 +1348,7 @@ internal class X11Connection(
     }
 
     private fun glxCreateNewContext(body: ByteArray) {
-        if (body.size < 24) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateNewContext, badValue = 0)
+        if (body.size != 24) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateNewContext, badValue = 0)
         val context = byteOrder.u32(body, 0)
         val fbConfig = byteOrder.u32(body, 4)
         val screen = byteOrder.u32(body, 8)

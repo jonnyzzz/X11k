@@ -524,6 +524,35 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX CreateContext and CreateNewContext validate fixed request length before creating context`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val legacyContext = 0x0020_0101
+            val fbConfigContext = 0x0020_0102
+            writeRequest(socket, XGlx.MajorOpcode, 3, createContextBody(legacyContext, direct = false).copyOf(16))
+            writeRequest(socket, XGlx.MajorOpcode, 3, createContextBody(legacyContext, direct = true) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, 3, createContextBody(legacyContext, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.IsDirect, u32(legacyContext))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(fbConfigContext, direct = false).copyOf(20))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(fbConfigContext, direct = false) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(fbConfigContext, direct = true))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.IsDirect, u32(fbConfigContext))
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = 3, sequence = 1)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = 3, sequence = 2)
+            val legacyDirect = readReply(socket.getInputStream())
+            assertEquals(4, u16le(legacyDirect, 2))
+            assertEquals(0, legacyDirect[8].toInt())
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.CreateNewContext, sequence = 5)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.CreateNewContext, sequence = 6)
+            val fbConfigDirect = readReply(socket.getInputStream())
+            assertEquals(8, u16le(fbConfigDirect, 2))
+            assertEquals(1, fbConfigDirect[8].toInt())
+        }
+    }
+
+    @Test
     fun `GLX CreateContextAttribs rejects duplicate resource id without replacing existing context`() {
         withServer { socket ->
             socket.soTimeout = 2_000
