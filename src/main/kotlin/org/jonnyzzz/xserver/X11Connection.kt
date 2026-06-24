@@ -2088,12 +2088,13 @@ internal class X11Connection(
     }
 
     private fun createGc(body: ByteArray) {
-        if (body.size < 12) return
+        if (body.size < 12) return writeError(error = 16, opcode = 55, badValue = 0)
         val id = byteOrder.u32(body, 0)
         val drawableId = byteOrder.u32(body, 4)
         if (state.hasResource(id)) return writeError(error = 14, opcode = 55, badValue = id)
         val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = 55, badValue = drawableId)
         val mask = byteOrder.u32(body, 8)
+        if (!validateGcValueLength(mask, body, 12, opcode = 55)) return
         if (!validateGcValues(mask, body, 12, opcode = 55)) return
         state.putGc(XGraphicsContext(id = id, drawableRootId = drawable.rootId, drawableDepth = drawable.depth))
         own(id)
@@ -2101,10 +2102,12 @@ internal class X11Connection(
     }
 
     private fun changeGc(body: ByteArray) {
-        if (body.size < 8) return
+        if (body.size < 8) return writeError(error = 16, opcode = 56, badValue = 0)
         val id = byteOrder.u32(body, 0)
         if (!state.hasGc(id)) return writeError(error = 13, opcode = 56, badValue = id)
-        applyGcValues(id, byteOrder.u32(body, 4), body, 8, opcode = 56)
+        val mask = byteOrder.u32(body, 4)
+        if (!validateGcValueLength(mask, body, 8, opcode = 56)) return
+        applyGcValues(id, mask, body, 8, opcode = 56)
     }
 
     private fun copyGc(body: ByteArray) {
@@ -3825,6 +3828,16 @@ internal class X11Connection(
         return WindowAttributeValues(backgroundPixmapId, backgroundPixel, eventMask, doNotPropagateMask)
     }
 
+    private fun validateGcValueLength(mask: Int, body: ByteArray, valuesOffset: Int, opcode: Int): Boolean {
+        if ((mask and GcValueMask.inv()) != 0) return true
+        val valueCount = Integer.bitCount(mask)
+        if (body.size != valuesOffset + valueCount * 4) {
+            writeError(error = 16, opcode = opcode, badValue = 0)
+            return false
+        }
+        return true
+    }
+
     private fun validateGcValues(mask: Int, body: ByteArray, valuesOffset: Int, opcode: Int): Boolean {
         if ((mask and GcValueMask.inv()) != 0) {
             writeError(error = 2, opcode = opcode, badValue = mask)
@@ -3859,6 +3872,10 @@ internal class X11Connection(
                 }
                 10, 11 -> if (state.pixmapImage(value) == null) {
                     writeError(error = 4, opcode = opcode, badValue = value)
+                    return false
+                }
+                14 -> if (value != 0 && !state.hasFont(value)) {
+                    writeError(error = 7, opcode = opcode, badValue = value)
                     return false
                 }
                 20 -> if (value !in 0..0xffff) {

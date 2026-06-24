@@ -1351,6 +1351,44 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreateGC and ChangeGC validate value list length and font resources`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingFont = PixmapId + 1_100
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(request(55, 0, ByteArray(8)))
+                out.write(createGcRawRequest(GcId, mask = 0x0000_0004))
+                out.write(createGcRawRequest(GcId, mask = 0, values = listOf(Red)))
+                out.write(createGcRawRequest(GcId, mask = 0x0000_4000, values = listOf(missingFont)))
+                out.write(createGcRequest(GcId, foreground = Blue))
+                out.write(changeGcRawRequest(GcId, mask = 0x0000_0004))
+                out.write(changeGcRawRequest(GcId, mask = 0, values = listOf(Red)))
+                out.write(changeGcRawRequest(GcId, mask = 0x0000_4000, values = listOf(missingFont)))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 55, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 55, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = 55, badValue = 0, sequence = 4)
+                assertError(socket.getInputStream(), error = 7, opcode = 55, badValue = missingFont, sequence = 5)
+                assertError(socket.getInputStream(), error = 16, opcode = 56, badValue = 0, sequence = 7)
+                assertError(socket.getInputStream(), error = 16, opcode = 56, badValue = 0, sequence = 8)
+                assertError(socket.getInputStream(), error = 7, opcode = 56, badValue = missingFont, sequence = 9)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CreateGC and ChangeGC reject undefined value mask bits`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
