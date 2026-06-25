@@ -2234,6 +2234,12 @@ internal class X11Connection(
         }
         val windowId = byteOrder.u32(body, 0)
         state.window(windowId) ?: return writeError(error = 3, opcode = 13, badValue = windowId)
+        val target = state.circulateWindowTarget(windowId, direction) ?: return
+        val requests = state.circulateRequestSinks(this, target)
+        if (requests.isNotEmpty()) {
+            sendCirculateRequest(requests)
+            return
+        }
         val result = state.circulateWindow(windowId, direction) ?: return
         sendCirculateNotify(state.circulateNotifySinks(result))
     }
@@ -4637,6 +4643,16 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendCirculateRequestEvent(event: XCirculateRequestEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 27
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.parentId)
+        byteOrder.put32(bytes, 8, event.windowId)
+        bytes[16] = event.place.toByte()
+        write(bytes)
+    }
+
     override fun sendConfigureNotifyEvent(event: XConfigureNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = 22
@@ -5585,6 +5601,12 @@ internal class X11Connection(
     private fun sendCirculateNotify(notifications: List<XCirculateNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendCirculateNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendCirculateRequest(notifications: List<XCirculateRequestDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendCirculateRequestEvent(notification.event) }
         }
     }
 

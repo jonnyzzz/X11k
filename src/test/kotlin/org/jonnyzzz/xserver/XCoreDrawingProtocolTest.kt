@@ -8959,6 +8959,65 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CirculateWindow delivers CirculateRequest to parent SubstructureRedirect without restacking`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val first = WindowId + 436
+                    val second = WindowId + 437
+                    val third = WindowId + 438
+                    val ownerOut = ownerSocket.getOutputStream()
+                    val ownerInput = ownerSocket.getInputStream()
+                    ownerOut.write(createWindowRequest(first, x = 0, y = 0, width = 30, height = 30))
+                    ownerOut.write(createWindowRequest(second, x = 10, y = 10, width = 30, height = 30))
+                    ownerOut.write(createWindowRequest(third, x = 80, y = 80, width = 20, height = 20))
+                    ownerOut.write(mapWindowRequest(first))
+                    ownerOut.write(mapWindowRequest(second))
+                    ownerOut.write(mapWindowRequest(third))
+                    ownerOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    ownerOut.flush()
+
+                    assertMapAndExpose(ownerInput, first)
+                    assertMapAndExpose(ownerInput, second)
+                    assertMapAndExpose(ownerInput, third)
+                    assertEquals(listOf(first, second, third), treeChildren(readReply(ownerInput)))
+
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureRedirect))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    ownerOut.write(circulateWindowRequest(XCirculateResult.LowerHighest, X11Ids.RootWindow))
+                    ownerOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    ownerOut.flush()
+
+                    assertCirculateRequest(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 2,
+                        parent = X11Ids.RootWindow,
+                        window = second,
+                        place = XCirculateResult.Bottom,
+                    )
+                    assertEquals(listOf(first, second, third), treeChildren(readReply(ownerInput)))
+
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CirculateWindow delivers selected structure notifications without requester local event`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -13385,6 +13444,17 @@ class XCoreDrawingProtocolTest {
         assertEquals(0, event[1].toInt() and 0xff)
         assertEquals(sequence, u16le(event, 2))
         assertEquals(eventWindow, u32le(event, 4))
+        assertEquals(window, u32le(event, 8))
+        assertZeroBytes(event, 12, 16)
+        assertEquals(place, event[16].toInt() and 0xff)
+        assertZeroBytes(event, 17, 32)
+    }
+
+    private fun assertCirculateRequest(event: ByteArray, sequence: Int, parent: Int, window: Int, place: Int) {
+        assertEquals(27, event[0].toInt() and 0xff)
+        assertEquals(0, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(parent, u32le(event, 4))
         assertEquals(window, u32le(event, 8))
         assertZeroBytes(event, 12, 16)
         assertEquals(place, event[16].toInt() and 0xff)

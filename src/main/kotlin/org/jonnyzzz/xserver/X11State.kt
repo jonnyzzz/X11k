@@ -330,6 +330,13 @@ internal class X11State(
 
     @Synchronized
     fun circulateWindow(id: Int, direction: Int): XCirculateResult? {
+        val result = circulateWindowTarget(id, direction) ?: return null
+        restackChild(result.window, result.place)
+        return result
+    }
+
+    @Synchronized
+    fun circulateWindowTarget(id: Int, direction: Int): XCirculateResult? {
         if (!windows.containsKey(id)) return null
         val children = childrenOf(id)
         val target = when (direction) {
@@ -343,7 +350,6 @@ internal class X11State(
         } ?: return null
 
         val place = if (direction == XCirculateResult.RaiseLowest) XCirculateResult.Top else XCirculateResult.Bottom
-        restackChild(target, place)
         return XCirculateResult(parentId = id, window = target, place = place)
     }
 
@@ -555,6 +561,17 @@ internal class X11State(
                 event = XCirculateNotifyEvent(eventWindowId = result.parentId, windowId = result.window.id, place = result.place),
             )
         }
+
+    @Synchronized
+    fun circulateRequestSinks(requester: XEventSink, result: XCirculateResult): List<XCirculateRequestDispatch> =
+        eventSelectionsForWindow(result.parentId, XEventMasks.SubstructureRedirect)
+            .filter { sink -> sink != requester }
+            .map { sink ->
+                XCirculateRequestDispatch(
+                    sink = sink,
+                    event = XCirculateRequestEvent(parentId = result.parentId, windowId = result.window.id, place = result.place),
+                )
+            }
 
     @Synchronized
     fun configureNotifySinks(result: XConfigureWindowResult): List<XConfigureNotifyDispatch> =
