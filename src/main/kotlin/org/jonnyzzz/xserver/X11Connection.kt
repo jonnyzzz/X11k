@@ -241,7 +241,6 @@ internal class X11Connection(
         val operation = XGlx.operationName(minorOpcode)
         val detail = glxDetail(minorOpcode, body)
         state.recordGlxOperation(minorOpcode, operation, detail)
-        System.err.println("glx seq=$sequence minor=$minorOpcode operation=$operation body=${body.size} $detail")
 
         when (minorOpcode) {
             XGlx.QueryVersion -> glxQueryVersion(body)
@@ -302,7 +301,6 @@ internal class X11Connection(
         val operation = XRender.operationName(minorOpcode)
         val detail = renderDetail(minorOpcode, body)
         state.recordRenderOperation(minorOpcode, operation, detail)
-        System.err.println("render seq=$sequence minor=$minorOpcode operation=$operation body=${body.size} $detail")
 
         when (minorOpcode) {
             0 -> renderQueryVersion(body)
@@ -1987,9 +1985,6 @@ internal class X11Connection(
             backgroundPixmapId = attributes.backgroundPixmapId?.takeIf { it != 0 },
             doNotPropagateMask = attributes.doNotPropagateMask ?: 0,
         )
-        if (attributes.backgroundPixmapId != null) {
-            System.err.println("core seq=$sequence CreateWindow window=${id.toHex()} backgroundPixmap=${attributes.backgroundPixmapId.toHex()}")
-        }
         state.putWindow(window, this)
         own(id)
         attributes.eventMask?.let { state.selectEvents(this, id, it) }
@@ -2011,11 +2006,6 @@ internal class X11Connection(
         val attributes = windowAttributeValues(body, maskOffset = 4, valuesOffset = 8)
         if (attributes.backgroundPixel != null || attributes.backgroundPixmapId != null) {
             state.updateWindowAttributes(windowId, backgroundPixel = attributes.backgroundPixel, backgroundPixmapId = attributes.backgroundPixmapId)
-            System.err.println(
-                "core seq=$sequence ChangeWindowAttributes window=${windowId.toHex()}" +
-                    " backgroundPixel=${attributes.backgroundPixel?.toHex() ?: "none"}" +
-                    " backgroundPixmap=${attributes.backgroundPixmapId?.toHex() ?: "none"}",
-            )
         }
         attributes.doNotPropagateMask?.let { state.updateWindowAttributes(windowId, doNotPropagateMask = it) }
         attributes.eventMask?.let { state.selectEvents(this, windowId, it) }

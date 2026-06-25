@@ -1,6 +1,8 @@
 package org.jonnyzzz.xserver
 
+import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.io.PrintStream
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
@@ -13,6 +15,44 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class XCoreDrawingProtocolTest {
+    @Test
+    fun `protocol diagnostics stay in state without writing stderr by default`() {
+        val originalErr = System.err
+        val capturedErr = ByteArrayOutputStream()
+        System.setErr(PrintStream(capturedErr, true, StandardCharsets.UTF_8.name()))
+        try {
+            XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+                val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+                Socket("127.0.0.1", server.localPort).use { socket ->
+                    setup(socket)
+                    val out = socket.getOutputStream()
+                    out.write(createWindowRawRequest(WindowId, valueMask = 1, values = listOf(0)))
+                    out.write(changeWindowAttributesRawRequest(WindowId, 1 shl 1, 0x00ee_ddcc))
+                    out.write(renderQueryVersionRequest())
+                    out.write(glxQueryVersionRequest())
+                    out.flush()
+
+                    val renderVersion = readReply(socket.getInputStream())
+                    assertEquals(XRender.MajorVersion, u32le(renderVersion, 8))
+                    val glxVersion = readReply(socket.getInputStream())
+                    assertEquals(XGlx.MajorVersion, u32le(glxVersion, 8))
+                }
+
+                waitForStateContains(server.localPort, """"renderOperations":1""")
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "RENDER operations:")
+                assertContains(text, "QueryVersion")
+                assertContains(text, "GLX operations:")
+                server.close()
+                serverThread.join(1_000)
+            }
+        } finally {
+            System.err.flush()
+            System.setErr(originalErr)
+        }
+        assertEquals("", capturedErr.toString(StandardCharsets.UTF_8.name()))
+    }
+
     @Test
     fun `PolyPoint paints exact framebuffer pixels for origin and previous coordinate modes`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
@@ -11515,6 +11555,13 @@ class XCoreDrawingProtocolTest {
             put32le(body, 4, XRender.MinorVersion)
         }
         return renderRequest(0, body)
+    }
+
+    private fun glxQueryVersionRequest(): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, XGlx.MajorVersion)
+        put32le(body, 4, XGlx.MinorVersion)
+        return request(XGlx.MajorOpcode, XGlx.QueryVersion, body)
     }
 
     private fun renderQueryPictIndexValuesRequest(format: Int): ByteArray {
