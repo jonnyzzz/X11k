@@ -104,6 +104,7 @@ internal interface XEventSink {
     fun killClient() = Unit
     fun sendPointerEvent(event: XPointerEvent)
     fun sendMappingNotifyEvent(event: XMappingNotifyEvent)
+    fun sendUnmapNotifyEvent(event: XUnmapNotifyEvent)
     fun sendPropertyNotifyEvent(event: XPropertyNotifyEvent)
     fun sendSelectionClearEvent(event: XSelectionClearEvent)
     fun sendSelectionRequestEvent(event: XSelectionRequestEvent)
@@ -162,6 +163,17 @@ internal data class XPropertyNotifyEvent(
     val time: Int = 0,
 )
 
+internal data class XUnmapNotifyEvent(
+    val eventWindowId: Int,
+    val windowId: Int,
+    val fromConfigure: Boolean = false,
+)
+
+internal data class XUnmapNotifyDispatch(
+    val sink: XEventSink,
+    val event: XUnmapNotifyEvent,
+)
+
 internal data class XSelectionClearEvent(
     val time: Int,
     val ownerWindowId: Int,
@@ -198,6 +210,8 @@ internal object XEventMasks {
     const val ButtonPress = 1 shl 2
     const val ButtonRelease = 1 shl 3
     const val PointerMotion = 1 shl 6
+    const val StructureNotify = 1 shl 17
+    const val SubstructureNotify = 1 shl 19
     const val PropertyChange = 1 shl 22
 
     fun forPointerType(type: XPointerEventType): Int =

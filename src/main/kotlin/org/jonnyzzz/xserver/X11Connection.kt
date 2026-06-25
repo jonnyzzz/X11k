@@ -2077,8 +2077,11 @@ internal class X11Connection(
     private fun unmapWindow(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = 10, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
-        state.window(windowId) ?: return writeError(error = 3, opcode = 10, badValue = windowId)
+        val window = state.window(windowId) ?: return writeError(error = 3, opcode = 10, badValue = windowId)
+        if (!window.mapped) return
+        val notifications = state.unmapNotifySinks(window)
         state.unmapWindow(windowId)
+        sendUnmapNotify(notifications)
     }
 
     private fun mapSubwindows(body: ByteArray) {
@@ -2104,7 +2107,11 @@ internal class X11Connection(
         val windowId = byteOrder.u32(body, 0)
         state.window(windowId) ?: return writeError(error = 3, opcode = 11, badValue = windowId)
         for (child in state.childrenOf(windowId)) {
-            state.unmapWindow(child.id)
+            if (child.mapped) {
+                val notifications = state.unmapNotifySinks(child)
+                state.unmapWindow(child.id)
+                sendUnmapNotify(notifications)
+            }
         }
     }
 
@@ -4529,6 +4536,16 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendUnmapNotifyEvent(event: XUnmapNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 18
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.eventWindowId)
+        byteOrder.put32(bytes, 8, event.windowId)
+        bytes[12] = if (event.fromConfigure) 1 else 0
+        write(bytes)
+    }
+
     override fun sendSelectionClearEvent(event: XSelectionClearEvent) {
         val bytes = ByteArray(32)
         bytes[0] = 29
@@ -5400,6 +5417,12 @@ internal class X11Connection(
     private fun sendPropertyNotify(windowId: Int, property: Int, propertyState: Int) {
         for (sink in state.propertyNotifySinks(windowId)) {
             runCatching { sink.sendPropertyNotifyEvent(XPropertyNotifyEvent(windowId = windowId, atom = property, state = propertyState)) }
+        }
+    }
+
+    private fun sendUnmapNotify(notifications: List<XUnmapNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendUnmapNotifyEvent(notification.event) }
         }
     }
 

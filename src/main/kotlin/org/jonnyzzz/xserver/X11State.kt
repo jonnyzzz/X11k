@@ -410,6 +410,20 @@ internal class X11State(
         eventSelectionsForWindow(windowId, XEventMasks.PropertyChange)
 
     @Synchronized
+    fun unmapNotifySinks(window: XWindow): List<XUnmapNotifyDispatch> =
+        eventSelectionsForWindow(window.id, XEventMasks.StructureNotify).map { sink ->
+            XUnmapNotifyDispatch(
+                sink = sink,
+                event = XUnmapNotifyEvent(eventWindowId = window.id, windowId = window.id),
+            )
+        } + eventSelectionsForWindow(window.parentId, XEventMasks.SubstructureNotify).map { sink ->
+            XUnmapNotifyDispatch(
+                sink = sink,
+                event = XUnmapNotifyEvent(eventWindowId = window.parentId, windowId = window.id),
+            )
+        }
+
+    @Synchronized
     fun pointerLogicalButton(physicalButton: Int): Int =
         pointerMapping.getOrNull(physicalButton - 1) ?: physicalButton
 

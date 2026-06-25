@@ -6163,6 +6163,77 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `UnmapWindow ignores already unmapped window without duplicate events`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(WindowId, eventMask = XEventMasks.StructureNotify))
+                out.write(mapWindowRequest(WindowId))
+                out.write(unmapWindowRequest(WindowId))
+                out.write(unmapWindowRequest(WindowId))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, WindowId)
+                assertUnmapNotify(input.readExactly(32), sequence = 3, eventWindow = WindowId, window = WindowId)
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(5, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UnmapWindow delivers SubstructureNotify to another client selecting parent`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val child = WindowId + 405
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureNotify))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(child))
+                    ownerOut.write(mapWindowRequest(child))
+                    ownerOut.write(unmapWindowRequest(child))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    assertMapAndExpose(ownerSocket.getInputStream(), child)
+                    assertEquals(4, u16le(readReply(ownerSocket.getInputStream()), 2))
+                    assertUnmapNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 2,
+                        eventWindow = X11Ids.RootWindow,
+                        window = child,
+                    )
+
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `UnmapSubwindows validates request length and parent window without closing caller`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -6182,6 +6253,46 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 3, opcode = 11, badValue = missing, sequence = 3)
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(4, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UnmapSubwindows unmaps only mapped children in bottom to top order`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val bottom = WindowId + 1
+                val middle = WindowId + 2
+                val top = WindowId + 3
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(parent, eventMask = XEventMasks.SubstructureNotify))
+                out.write(createWindowRequest(bottom, parent = parent))
+                out.write(createWindowRequest(middle, parent = parent))
+                out.write(createWindowRequest(top, parent = parent))
+                out.write(mapWindowRequest(bottom))
+                out.write(mapWindowRequest(middle))
+                out.write(mapWindowRequest(top))
+                out.write(unmapWindowRequest(middle))
+                out.write(unmapSubwindowsRequest(parent))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, bottom)
+                assertMapAndExpose(input, middle)
+                assertMapAndExpose(input, top)
+                assertUnmapNotify(input.readExactly(32), sequence = 8, eventWindow = parent, window = middle)
+                assertUnmapNotify(input.readExactly(32), sequence = 9, eventWindow = parent, window = bottom)
+                assertUnmapNotify(input.readExactly(32), sequence = 9, eventWindow = parent, window = top)
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(10, u16le(pointer, 2))
             }
             server.close()
             serverThread.join(1_000)
@@ -11936,6 +12047,16 @@ class XCoreDrawingProtocolTest {
         val expose = input.readExactly(32)
         assertEquals(12, expose[0].toInt() and 0xff)
         assertEquals(windowId, u32le(expose, 4))
+    }
+
+    private fun assertUnmapNotify(event: ByteArray, sequence: Int, eventWindow: Int, window: Int) {
+        assertEquals(18, event[0].toInt() and 0xff)
+        assertEquals(0, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(eventWindow, u32le(event, 4))
+        assertEquals(window, u32le(event, 8))
+        assertEquals(0, event[12].toInt() and 0xff)
+        assertZeroBytes(event, 13, 32)
     }
 
     private fun httpGet(port: Int, path: String): String =
