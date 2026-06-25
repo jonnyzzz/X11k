@@ -57,7 +57,7 @@ class X11WindowEventTest {
     }
 
     private fun createWindowRequest(id: Int, x: Int, y: Int, width: Int, height: Int): ByteArray {
-        val bytes = ByteArray(32)
+        val bytes = ByteArray(36)
         bytes[0] = 1
         bytes[1] = 24
         put16le(bytes, 2, bytes.size / 4)
@@ -70,6 +70,8 @@ class X11WindowEventTest {
         put16le(bytes, 20, 1)
         put16le(bytes, 22, 1)
         put32le(bytes, 24, X11Ids.RootVisual)
+        put32le(bytes, 28, 1 shl 11)
+        put32le(bytes, 32, XEventMasks.StructureNotify)
         return bytes
     }
 

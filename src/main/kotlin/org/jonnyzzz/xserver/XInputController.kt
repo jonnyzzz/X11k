@@ -104,6 +104,7 @@ internal interface XEventSink {
     fun killClient() = Unit
     fun sendPointerEvent(event: XPointerEvent)
     fun sendMappingNotifyEvent(event: XMappingNotifyEvent)
+    fun sendMapNotifyEvent(event: XMapNotifyEvent)
     fun sendUnmapNotifyEvent(event: XUnmapNotifyEvent)
     fun sendPropertyNotifyEvent(event: XPropertyNotifyEvent)
     fun sendSelectionClearEvent(event: XSelectionClearEvent)
@@ -161,6 +162,17 @@ internal data class XPropertyNotifyEvent(
     val atom: Int,
     val state: Int,
     val time: Int = 0,
+)
+
+internal data class XMapNotifyEvent(
+    val eventWindowId: Int,
+    val windowId: Int,
+    val overrideRedirect: Boolean = false,
+)
+
+internal data class XMapNotifyDispatch(
+    val sink: XEventSink,
+    val event: XMapNotifyEvent,
 )
 
 internal data class XUnmapNotifyEvent(

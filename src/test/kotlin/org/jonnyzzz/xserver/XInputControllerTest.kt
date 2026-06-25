@@ -21,7 +21,7 @@ class XInputControllerTest {
                 out.write(selectButtonEventsRequest(0x0020_0001))
                 out.write(mapWindowRequest(0x0020_0001))
                 out.flush()
-                readUntilEvent(input, 19)
+                readUntilEvent(input, 12)
 
                 val direct = server.input.click(130, 150)
                 assertEquals("0x200001", direct.targetWindowIdHex)

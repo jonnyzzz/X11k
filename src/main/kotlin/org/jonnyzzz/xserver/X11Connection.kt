@@ -2064,11 +2064,12 @@ internal class X11Connection(
         val windowId = byteOrder.u32(body, 0)
         val current = state.window(windowId) ?: return writeError(error = 3, opcode = 8, badValue = windowId)
         if (current.mapped) return
+        val notifications = state.mapNotifySinks(current)
         val window = state.mapWindow(windowId) ?: return
         if (window.windowClass == XWindowClass.InputOutput) {
             state.paintWindowBackground(window.id)
         }
-        sendMapNotify(window)
+        sendMapNotify(notifications)
         if (window.windowClass == XWindowClass.InputOutput) {
             sendExpose(window)
         }
@@ -2090,11 +2091,12 @@ internal class X11Connection(
         state.window(windowId) ?: return writeError(error = 3, opcode = 9, badValue = windowId)
         for (child in state.childrenOf(windowId).asReversed()) {
             if (!child.mapped) {
+                val notifications = state.mapNotifySinks(child)
                 val mapped = state.mapWindow(child.id) ?: continue
                 if (mapped.windowClass == XWindowClass.InputOutput) {
                     state.paintWindowBackground(mapped.id)
                 }
-                sendMapNotify(mapped)
+                sendMapNotify(notifications)
                 if (mapped.windowClass == XWindowClass.InputOutput) {
                     sendExpose(mapped)
                 }
@@ -4451,15 +4453,6 @@ internal class X11Connection(
         write(event)
     }
 
-    private fun sendMapNotify(window: XWindow) {
-        val event = ByteArray(32)
-        event[0] = 19
-        byteOrder.put16(event, 2, sequence)
-        byteOrder.put32(event, 4, window.parentId)
-        byteOrder.put32(event, 8, window.id)
-        write(event)
-    }
-
     private fun sendConfigureNotify(window: XWindow, aboveSiblingId: Int = 0) {
         val event = ByteArray(32)
         event[0] = 22
@@ -4533,6 +4526,16 @@ internal class X11Connection(
         byteOrder.put32(bytes, 8, event.atom)
         byteOrder.put32(bytes, 12, event.time)
         bytes[16] = event.state.toByte()
+        write(bytes)
+    }
+
+    override fun sendMapNotifyEvent(event: XMapNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 19
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.eventWindowId)
+        byteOrder.put32(bytes, 8, event.windowId)
+        bytes[12] = if (event.overrideRedirect) 1 else 0
         write(bytes)
     }
 
@@ -5417,6 +5420,12 @@ internal class X11Connection(
     private fun sendPropertyNotify(windowId: Int, property: Int, propertyState: Int) {
         for (sink in state.propertyNotifySinks(windowId)) {
             runCatching { sink.sendPropertyNotifyEvent(XPropertyNotifyEvent(windowId = windowId, atom = property, state = propertyState)) }
+        }
+    }
+
+    private fun sendMapNotify(notifications: List<XMapNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendMapNotifyEvent(notification.event) }
         }
     }
 

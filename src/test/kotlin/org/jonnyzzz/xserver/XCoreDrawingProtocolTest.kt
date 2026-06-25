@@ -2997,10 +2997,7 @@ class XCoreDrawingProtocolTest {
                 out.write(getImageRequest(WindowId, x = 0, y = 0, width = 7, height = 2))
                 out.flush()
 
-                val mapNotify = socket.getInputStream().readExactly(32)
-                assertEquals(19, mapNotify[0].toInt())
-                val expose = socket.getInputStream().readExactly(32)
-                assertEquals(12, expose[0].toInt())
+                assertMapAndExpose(socket.getInputStream(), WindowId)
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xffff_ffff.toInt(), pixelAt(image, 7, 3, 1))
                 val svg = httpGet(server.localPort, "/screen.svg")
@@ -3509,10 +3506,7 @@ class XCoreDrawingProtocolTest {
                 out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 8, height = 8))
                 out.flush()
 
-                val mapNotify = socket.getInputStream().readExactly(32)
-                assertEquals(19, mapNotify[0].toInt())
-                val expose = socket.getInputStream().readExactly(32)
-                assertEquals(12, expose[0].toInt())
+                assertMapAndExpose(socket.getInputStream(), WindowId)
                 val windowImage = readReply(socket.getInputStream())
                 assertEquals(0xff00_ff00.toInt(), pixelAt(windowImage, 22, 15, 15))
                 assertEquals(0xffff_ffff.toInt(), pixelAt(windowImage, 22, 11, 15))
@@ -5779,12 +5773,13 @@ class XCoreDrawingProtocolTest {
                 val out = socket.getOutputStream()
                 out.write(createWindowRequest(WindowId, x = 5, y = 7, width = 40, height = 30, depth = 0, windowClass = XWindowClass.InputOnly))
                 out.write(createGcRequest(GcId, foreground = Red, drawable = WindowId))
+                out.write(changeWindowEventMaskRequest(WindowId, XEventMasks.StructureNotify))
                 out.write(mapWindowRequest(WindowId))
                 out.flush()
 
                 assertError(socket.getInputStream(), error = 8, opcode = 55, badValue = WindowId, sequence = 2)
                 val mapNotify = socket.getInputStream().readExactly(32)
-                assertEquals(19, mapNotify[0].toInt() and 0xff)
+                assertMapNotify(mapNotify, sequence = 4, eventWindow = WindowId, window = WindowId)
                 assertFailsWith<SocketTimeoutException> {
                     socket.getInputStream().readExactly(32)
                 }
@@ -5956,15 +5951,59 @@ class XCoreDrawingProtocolTest {
                 val out = socket.getOutputStream()
                 val input = socket.getInputStream()
                 out.write(createWindowRequest(WindowId))
+                out.write(changeWindowEventMaskRequest(WindowId, XEventMasks.StructureNotify))
                 out.write(mapWindowRequest(WindowId))
                 out.write(mapWindowRequest(WindowId))
                 out.write(queryPointerRequest())
                 out.flush()
 
-                assertMapAndExpose(input, WindowId)
+                assertSelectedMapAndExpose(input, WindowId)
                 val pointer = readReply(input)
                 assertEquals(1, pointer[0].toInt())
-                assertEquals(4, u16le(pointer, 2))
+                assertEquals(5, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `MapWindow delivers SubstructureNotify to another client selecting parent`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val child = WindowId + 404
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureNotify))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(child))
+                    ownerOut.write(mapWindowRequest(child))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    assertExpose(ownerSocket.getInputStream().readExactly(32), child)
+                    assertEquals(3, u16le(readReply(ownerSocket.getInputStream()), 2))
+                    assertMapNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 2,
+                        eventWindow = X11Ids.RootWindow,
+                        window = child,
+                    )
+
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
+                }
             }
             server.close()
             serverThread.join(1_000)
@@ -6011,17 +6050,17 @@ class XCoreDrawingProtocolTest {
                 val out = socket.getOutputStream()
                 val input = socket.getInputStream()
                 out.write(createWindowRequest(parent))
-                out.write(createWindowRequest(bottom, parent = parent))
-                out.write(createWindowRequest(middle, parent = parent))
-                out.write(createWindowRequest(top, parent = parent))
+                out.write(createWindowRequest(bottom, parent = parent, eventMask = XEventMasks.StructureNotify))
+                out.write(createWindowRequest(middle, parent = parent, eventMask = XEventMasks.StructureNotify))
+                out.write(createWindowRequest(top, parent = parent, eventMask = XEventMasks.StructureNotify))
                 out.write(mapWindowRequest(middle))
                 out.write(mapSubwindowsRequest(parent))
                 out.write(queryPointerRequest())
                 out.flush()
 
-                assertMapAndExpose(input, middle)
-                assertMapAndExpose(input, top)
-                assertMapAndExpose(input, bottom)
+                assertSelectedMapAndExpose(input, middle)
+                assertSelectedMapAndExpose(input, top)
+                assertSelectedMapAndExpose(input, bottom)
                 val pointer = readReply(input)
                 assertEquals(1, pointer[0].toInt())
                 assertEquals(7, u16le(pointer, 2))
@@ -6216,6 +6255,12 @@ class XCoreDrawingProtocolTest {
 
                     assertMapAndExpose(ownerSocket.getInputStream(), child)
                     assertEquals(4, u16le(readReply(ownerSocket.getInputStream()), 2))
+                    assertMapNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 2,
+                        eventWindow = X11Ids.RootWindow,
+                        window = child,
+                    )
                     assertUnmapNotify(
                         observerSocket.getInputStream().readExactly(32),
                         sequence = 2,
@@ -6284,9 +6329,9 @@ class XCoreDrawingProtocolTest {
                 out.write(queryPointerRequest())
                 out.flush()
 
-                assertMapAndExpose(input, bottom)
-                assertMapAndExpose(input, middle)
-                assertMapAndExpose(input, top)
+                assertSelectedMapAndExpose(input, bottom, eventWindow = parent)
+                assertSelectedMapAndExpose(input, middle, eventWindow = parent)
+                assertSelectedMapAndExpose(input, top, eventWindow = parent)
                 assertUnmapNotify(input.readExactly(32), sequence = 8, eventWindow = parent, window = middle)
                 assertUnmapNotify(input.readExactly(32), sequence = 9, eventWindow = parent, window = bottom)
                 assertUnmapNotify(input.readExactly(32), sequence = 9, eventWindow = parent, window = top)
@@ -6349,10 +6394,9 @@ class XCoreDrawingProtocolTest {
                 out.write(getWindowAttributesRequest(second))
                 out.flush()
 
-                repeat(6) { index ->
-                    val event = socket.getInputStream().readExactly(32)
-                    assertEquals(if (index % 2 == 0) 19 else 12, event[0].toInt() and 0xff)
-                }
+                assertMapAndExpose(socket.getInputStream(), parent)
+                assertMapAndExpose(socket.getInputStream(), first)
+                assertMapAndExpose(socket.getInputStream(), second)
                 val firstMapped = readReply(socket.getInputStream())
                 val secondMapped = readReply(socket.getInputStream())
                 assertEquals(2, firstMapped[26].toInt() and 0xff)
@@ -6470,10 +6514,9 @@ class XCoreDrawingProtocolTest {
                 out.write(getGeometryRequest(first))
                 out.flush()
 
-                repeat(3) {
-                    assertEquals(19, input.readExactly(32)[0].toInt() and 0xff)
-                    assertEquals(12, input.readExactly(32)[0].toInt() and 0xff)
-                }
+                assertMapAndExpose(input, first)
+                assertMapAndExpose(input, second)
+                assertMapAndExpose(input, third)
                 assertEquals(listOf(first, second, third), treeChildren(readReply(input)))
                 assertConfigureNotify(input.readExactly(32), sequence = 9, window = first, aboveSibling = third)
                 assertEquals(listOf(second, third, first), treeChildren(readReply(input)))
@@ -6530,8 +6573,7 @@ class XCoreDrawingProtocolTest {
 
                 assertEquals(listOf(first, second), treeChildren(readReply(input)))
                 assertEquals(listOf(first, second), treeChildren(readReply(input)))
-                assertEquals(19, input.readExactly(32)[0].toInt() and 0xff)
-                assertEquals(12, input.readExactly(32)[0].toInt() and 0xff)
+                assertMapAndExpose(input, first)
                 assertEquals(listOf(first, second), treeChildren(readReply(input)))
             }
             server.close()
@@ -7143,14 +7185,8 @@ class XCoreDrawingProtocolTest {
                 out.write(getInputFocusRequest())
                 out.flush()
 
-                val mapNotify = socket.getInputStream().readExactly(32)
-                assertEquals(19, mapNotify[0].toInt())
-                val expose = socket.getInputStream().readExactly(32)
-                assertEquals(12, expose[0].toInt())
-                val secondMapNotify = socket.getInputStream().readExactly(32)
-                assertEquals(19, secondMapNotify[0].toInt())
-                val secondExpose = socket.getInputStream().readExactly(32)
-                assertEquals(12, secondExpose[0].toInt())
+                assertMapAndExpose(socket.getInputStream(), WindowId)
+                assertMapAndExpose(socket.getInputStream(), WindowId + 1)
                 val focus = readReply(socket.getInputStream())
                 assertEquals(1, focus[0].toInt())
                 assertEquals(2, focus[1].toInt() and 0xff)
@@ -7207,10 +7243,7 @@ class XCoreDrawingProtocolTest {
                 out.write(getInputFocusRequest())
                 out.flush()
 
-                val mapNotify = socket.getInputStream().readExactly(32)
-                assertEquals(19, mapNotify[0].toInt())
-                val expose = socket.getInputStream().readExactly(32)
-                assertEquals(12, expose[0].toInt())
+                assertMapAndExpose(socket.getInputStream(), childId)
                 val error = socket.getInputStream().readExactly(32)
                 assertEquals(0, error[0].toInt())
                 assertEquals(8, error[1].toInt() and 0xff)
@@ -7796,8 +7829,7 @@ class XCoreDrawingProtocolTest {
                 out.write(setPointerMappingRequest(3, 2, 1))
                 out.flush()
 
-                assertEquals(19, input.readExactly(32)[0].toInt() and 0xff)
-                assertEquals(12, input.readExactly(32)[0].toInt() and 0xff)
+                assertMapAndExpose(input, WindowId)
                 assertMappingStatus(readReply(input), sequence = 3, status = 0)
                 assertMappingNotify(input.readExactly(32), sequence = 3)
 
@@ -8183,10 +8215,10 @@ class XCoreDrawingProtocolTest {
                 out.write(queryTreeRequest(X11Ids.RootWindow))
                 out.flush()
 
-                repeat(4) {
-                    assertEquals(19, input.readExactly(32)[0].toInt() and 0xff)
-                    assertEquals(12, input.readExactly(32)[0].toInt() and 0xff)
-                }
+                assertMapAndExpose(input, first)
+                assertMapAndExpose(input, nested)
+                assertMapAndExpose(input, second)
+                assertMapAndExpose(input, third)
                 assertEquals(listOf(first, second, third), treeChildren(readReply(input)))
                 assertCirculateNotify(input.readExactly(32), sequence = 10, eventWindow = X11Ids.RootWindow, window = first, place = 0)
                 assertEquals(listOf(second, third, first), treeChildren(readReply(input)))
@@ -9912,10 +9944,8 @@ class XCoreDrawingProtocolTest {
                 )
                 socket.getOutputStream().flush()
 
-                assertEquals(19, socket.getInputStream().readExactly(32)[0].toInt() and 0xff)
-                assertEquals(12, socket.getInputStream().readExactly(32)[0].toInt() and 0xff)
-                assertEquals(19, socket.getInputStream().readExactly(32)[0].toInt() and 0xff)
-                assertEquals(12, socket.getInputStream().readExactly(32)[0].toInt() and 0xff)
+                assertMapAndExpose(socket.getInputStream(), focus)
+                assertMapAndExpose(socket.getInputStream(), destination)
                 val event = socket.getInputStream().readExactly(32)
                 assertEquals(0x80 or 4, event[0].toInt() and 0xff)
                 assertEquals(6, u16le(event, 2))
@@ -9943,10 +9973,7 @@ class XCoreDrawingProtocolTest {
                 )
                 socket.getOutputStream().flush()
 
-                val mapNotify = socket.getInputStream().readExactly(32)
-                assertEquals(19, mapNotify[0].toInt() and 0xff)
-                val expose = socket.getInputStream().readExactly(32)
-                assertEquals(12, expose[0].toInt() and 0xff)
+                assertMapAndExpose(socket.getInputStream(), WindowId)
                 val event = socket.getInputStream().readExactly(32)
                 assertEquals(0x80 or 31, event[0].toInt() and 0xff)
                 assertEquals(4, u16le(event, 2))
@@ -12041,10 +12068,32 @@ class XCoreDrawingProtocolTest {
     }
 
     private fun assertMapAndExpose(input: InputStream, windowId: Int) {
+        val first = input.readExactly(32)
+        if ((first[0].toInt() and 0xff) == 19) {
+            assertMapNotify(first, sequence = u16le(first, 2), eventWindow = windowId, window = windowId)
+            assertExpose(input.readExactly(32), windowId)
+        } else {
+            assertExpose(first, windowId)
+        }
+    }
+
+    private fun assertSelectedMapAndExpose(input: InputStream, windowId: Int, eventWindow: Int = windowId) {
         val map = input.readExactly(32)
-        assertEquals(19, map[0].toInt() and 0xff)
-        assertEquals(windowId, u32le(map, 8))
-        val expose = input.readExactly(32)
+        assertMapNotify(map, sequence = u16le(map, 2), eventWindow = eventWindow, window = windowId)
+        assertExpose(input.readExactly(32), windowId)
+    }
+
+    private fun assertMapNotify(event: ByteArray, sequence: Int, eventWindow: Int, window: Int) {
+        assertEquals(19, event[0].toInt() and 0xff)
+        assertEquals(0, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(eventWindow, u32le(event, 4))
+        assertEquals(window, u32le(event, 8))
+        assertEquals(0, event[12].toInt() and 0xff)
+        assertZeroBytes(event, 13, 32)
+    }
+
+    private fun assertExpose(expose: ByteArray, windowId: Int) {
         assertEquals(12, expose[0].toInt() and 0xff)
         assertEquals(windowId, u32le(expose, 4))
     }

@@ -410,6 +410,20 @@ internal class X11State(
         eventSelectionsForWindow(windowId, XEventMasks.PropertyChange)
 
     @Synchronized
+    fun mapNotifySinks(window: XWindow): List<XMapNotifyDispatch> =
+        eventSelectionsForWindow(window.id, XEventMasks.StructureNotify).map { sink ->
+            XMapNotifyDispatch(
+                sink = sink,
+                event = XMapNotifyEvent(eventWindowId = window.id, windowId = window.id),
+            )
+        } + eventSelectionsForWindow(window.parentId, XEventMasks.SubstructureNotify).map { sink ->
+            XMapNotifyDispatch(
+                sink = sink,
+                event = XMapNotifyEvent(eventWindowId = window.parentId, windowId = window.id),
+            )
+        }
+
+    @Synchronized
     fun unmapNotifySinks(window: XWindow): List<XUnmapNotifyDispatch> =
         eventSelectionsForWindow(window.id, XEventMasks.StructureNotify).map { sink ->
             XUnmapNotifyDispatch(
