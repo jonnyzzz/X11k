@@ -6224,8 +6224,145 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 16, opcode = 12, badValue = 0, sequence = 4)
                 assertError(socket.getInputStream(), error = 2, opcode = 12, badValue = 0x0080, sequence = 5)
                 assertError(socket.getInputStream(), error = 3, opcode = 12, badValue = missing, sequence = 6)
+                assertError(socket.getInputStream(), error = 8, opcode = 12, badValue = WindowId, sequence = 7)
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(8, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ConfigureWindow validates stack mode and sibling constraints without closing caller`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val first = WindowId
+                val second = WindowId + 1
+                val nested = WindowId + 2
+                val missing = WindowId + 499
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(first))
+                out.write(createWindowRequest(second))
+                out.write(createWindowRequest(nested, parent = first))
+                out.write(configureWindowRequest(first, 0x0020, second))
+                out.write(configureWindowRequest(first, 0x0040, 5))
+                out.write(configureWindowRequest(first, 0x0060, missing, 0))
+                out.write(configureWindowRequest(first, 0x0060, nested, 0))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 8, opcode = 12, badValue = second, sequence = 4)
+                assertError(socket.getInputStream(), error = 2, opcode = 12, badValue = 5, sequence = 5)
+                assertError(socket.getInputStream(), error = 3, opcode = 12, badValue = missing, sequence = 6)
+                assertError(socket.getInputStream(), error = 8, opcode = 12, badValue = nested, sequence = 7)
+                assertEquals(listOf(first, second), treeChildren(readReply(socket.getInputStream())))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ConfigureWindow restacks with stack mode and final geometry`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val first = WindowId
+                val second = WindowId + 1
+                val third = WindowId + 2
+                val nested = WindowId + 3
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(first, x = 0, y = 0, width = 20, height = 20))
+                out.write(createWindowRequest(nested, parent = first, x = 1, y = 1, width = 5, height = 5))
+                out.write(createWindowRequest(second, x = 50, y = 50, width = 20, height = 20))
+                out.write(createWindowRequest(third, x = 80, y = 80, width = 10, height = 10))
+                out.write(mapWindowRequest(first))
+                out.write(mapWindowRequest(second))
+                out.write(mapWindowRequest(third))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.write(configureWindowRequest(first, 0x0040, 0))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.write(configureWindowRequest(first, 0x0060, second, 1))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.write(configureWindowRequest(third, 0x0060, first, 0))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.write(configureWindowRequest(first, 0x0043, 50, 50, 2))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.write(configureWindowRequest(first, 0x0040, 3))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.write(getGeometryRequest(first))
+                out.flush()
+
+                repeat(3) {
+                    assertEquals(19, input.readExactly(32)[0].toInt() and 0xff)
+                    assertEquals(12, input.readExactly(32)[0].toInt() and 0xff)
+                }
+                assertEquals(listOf(first, second, third), treeChildren(readReply(input)))
+                assertConfigureNotify(input.readExactly(32), sequence = 9, window = first, aboveSibling = third)
+                assertEquals(listOf(second, third, first), treeChildren(readReply(input)))
+                assertConfigureNotify(input.readExactly(32), sequence = 11, window = first, aboveSibling = 0)
+                assertEquals(listOf(first, second, third), treeChildren(readReply(input)))
+                assertConfigureNotify(input.readExactly(32), sequence = 13, window = third, aboveSibling = first)
+                assertEquals(listOf(first, third, second), treeChildren(readReply(input)))
+                assertConfigureNotify(input.readExactly(32), sequence = 15, window = first, aboveSibling = second)
+                assertEquals(listOf(third, second, first), treeChildren(readReply(input)))
+                assertConfigureNotify(input.readExactly(32), sequence = 17, window = first, aboveSibling = 0)
+                assertEquals(listOf(first, third, second), treeChildren(readReply(input)))
+                val geometry = readReply(input)
+                assertEquals(19, u16le(geometry, 2))
+                assertEquals(50, u16le(geometry, 12))
+                assertEquals(50, u16le(geometry, 14))
+
+                val json = httpGet(server.localPort, "/state.json")
+                assertEquals(
+                    true,
+                    json.indexOf(windowJsonId(first)) < json.indexOf(windowJsonId(nested)),
+                    "ConfigureWindow restacking should keep a window's descendants after the parent in snapshot/render order",
+                )
+                assertEquals(
+                    true,
+                    json.indexOf(windowJsonId(nested)) < json.indexOf(windowJsonId(third)),
+                    "ConfigureWindow Above should place the moving window after the sibling's whole subtree in snapshot/render order",
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ConfigureWindow conditional restack ignores unmapped occluding siblings`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val first = WindowId
+                val second = WindowId + 1
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(first, x = 0, y = 0, width = 20, height = 20))
+                out.write(createWindowRequest(second, x = 5, y = 5, width = 20, height = 20))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.write(configureWindowRequest(first, 0x0040, 2))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.write(mapWindowRequest(first))
+                out.write(configureWindowRequest(first, 0x0060, second, 2))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.flush()
+
+                assertEquals(listOf(first, second), treeChildren(readReply(input)))
+                assertEquals(listOf(first, second), treeChildren(readReply(input)))
+                assertEquals(19, input.readExactly(32)[0].toInt() and 0xff)
+                assertEquals(12, input.readExactly(32)[0].toInt() and 0xff)
+                assertEquals(listOf(first, second), treeChildren(readReply(input)))
             }
             server.close()
             serverThread.join(1_000)
@@ -12010,6 +12147,15 @@ class XCoreDrawingProtocolTest {
         assertEquals(firstKeycode, event[5].toInt() and 0xff)
         assertEquals(count, event[6].toInt() and 0xff)
         assertZeroBytes(event, 7, 32)
+    }
+
+    private fun assertConfigureNotify(event: ByteArray, sequence: Int, window: Int, aboveSibling: Int) {
+        assertEquals(22, event[0].toInt() and 0xff)
+        assertEquals(0, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(window, u32le(event, 4))
+        assertEquals(window, u32le(event, 8))
+        assertEquals(aboveSibling, u32le(event, 12))
     }
 
     private fun assertCirculateNotify(event: ByteArray, sequence: Int, eventWindow: Int, window: Int, place: Int) {

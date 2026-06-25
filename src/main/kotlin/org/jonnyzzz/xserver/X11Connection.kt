@@ -2122,17 +2122,38 @@ internal class X11Connection(
         val width = if ((mask and 0x0004) != 0) next() else null
         val height = if ((mask and 0x0008) != 0) next() else null
         val borderWidth = if ((mask and 0x0010) != 0) next() else null
-        if ((mask and 0x0020) != 0) next()
-        if ((mask and 0x0040) != 0) next()
+        val siblingId = if ((mask and 0x0020) != 0) next() else null
+        val stackMode = if ((mask and 0x0040) != 0) next() else null
         if (width == 0) return writeError(error = 2, opcode = 12, badValue = width)
         if (height == 0) return writeError(error = 2, opcode = 12, badValue = height)
         if (window.windowClass == XWindowClass.InputOnly && borderWidth != null && borderWidth != 0) {
             return writeError(error = 8, opcode = 12, badValue = borderWidth)
         }
-        val configured = state.configureWindow(window.id, x = x, y = y, width = width, height = height, borderWidth = borderWidth) ?: return
-        if (configured.mapped) {
-            sendConfigureNotify(configured)
-            if (configured.windowClass == XWindowClass.InputOutput && (width != null || height != null)) sendExpose(configured)
+        if (siblingId != null && stackMode == null) {
+            return writeError(error = 8, opcode = 12, badValue = siblingId)
+        }
+        if (stackMode != null && stackMode !in XStackMode.Above..XStackMode.Opposite) {
+            return writeError(error = 2, opcode = 12, badValue = stackMode)
+        }
+        if (siblingId != null) {
+            val sibling = state.window(siblingId) ?: return writeError(error = 3, opcode = 12, badValue = siblingId)
+            if (sibling.id == window.id || sibling.parentId != window.parentId) {
+                return writeError(error = 8, opcode = 12, badValue = siblingId)
+            }
+        }
+        val configured = state.configureWindow(
+            window.id,
+            x = x,
+            y = y,
+            width = width,
+            height = height,
+            borderWidth = borderWidth,
+            siblingId = siblingId,
+            stackMode = stackMode,
+        ) ?: return
+        if (configured.window.mapped && configured.changed) {
+            sendConfigureNotify(configured.window, configured.aboveSiblingId)
+            if (configured.window.windowClass == XWindowClass.InputOutput && configured.sizeChanged) sendExpose(configured.window)
         }
     }
 
@@ -4425,13 +4446,13 @@ internal class X11Connection(
         write(event)
     }
 
-    private fun sendConfigureNotify(window: XWindow) {
+    private fun sendConfigureNotify(window: XWindow, aboveSiblingId: Int = 0) {
         val event = ByteArray(32)
         event[0] = 22
         byteOrder.put16(event, 2, sequence)
         byteOrder.put32(event, 4, window.id)
         byteOrder.put32(event, 8, window.id)
-        byteOrder.put32(event, 12, 0)
+        byteOrder.put32(event, 12, aboveSiblingId)
         byteOrder.put16(event, 16, window.x)
         byteOrder.put16(event, 18, window.y)
         byteOrder.put16(event, 20, window.width)

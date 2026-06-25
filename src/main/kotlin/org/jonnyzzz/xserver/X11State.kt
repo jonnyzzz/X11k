@@ -1273,18 +1273,39 @@ internal class X11State(
         width: Int? = null,
         height: Int? = null,
         borderWidth: Int? = null,
-    ): XWindow? {
+        siblingId: Int? = null,
+        stackMode: Int? = null,
+    ): XConfigureWindowResult? {
         val window = windows[id] ?: return null
+        val oldX = window.x
+        val oldY = window.y
+        val oldWidth = window.width
+        val oldHeight = window.height
+        val oldBorderWidth = window.borderWidth
         x?.let { window.x = it }
         y?.let { window.y = it }
         width?.let { window.width = it }
         height?.let { window.height = it }
         borderWidth?.let { window.borderWidth = it }
-        if (width != null || height != null) {
+        val geometryChanged = oldX != window.x || oldY != window.y || oldWidth != window.width || oldHeight != window.height ||
+            oldBorderWidth != window.borderWidth
+        val sizeChanged = oldWidth != window.width || oldHeight != window.height
+        if (sizeChanged) {
             window.framebuffer.resize(window.width, window.height, window.backgroundPixel)
         }
-        releaseActiveGrabsForVisibilityChanges()
-        return window
+        val stackChanged = if (stackMode != null) {
+            restackConfiguredWindow(window, siblingId, stackMode)
+        } else {
+            false
+        }
+        val changed = geometryChanged || stackChanged
+        if (changed) releaseActiveGrabsForVisibilityChanges()
+        return XConfigureWindowResult(
+            window = window,
+            changed = changed,
+            sizeChanged = sizeChanged,
+            aboveSiblingId = siblingBelow(window),
+        )
     }
 
     @Synchronized
@@ -3267,6 +3288,7 @@ internal class X11State(
 
         val entries = windows.entries.map { it.key to it.value }
         val moving = entries.filter { (id, _) -> id in movingIds }
+        val insertAfterId = if (place == XCirculateResult.Top) lastSubtreeEntryId(anchorId, entries) else anchorId
         windows.clear()
         for ((id, window) in entries) {
             if (id in movingIds) continue
@@ -3274,10 +3296,101 @@ internal class X11State(
                 moving.forEach { (movingId, movingWindow) -> windows[movingId] = movingWindow }
             }
             windows[id] = window
-            if (place == XCirculateResult.Top && id == anchorId) {
+            if (place == XCirculateResult.Top && id == insertAfterId) {
                 moving.forEach { (movingId, movingWindow) -> windows[movingId] = movingWindow }
             }
         }
+    }
+
+    private fun restackConfiguredWindow(window: XWindow, siblingId: Int?, stackMode: Int): Boolean {
+        val before = childrenOf(window.parentId).map { it.id }
+        val siblings = childrenOf(window.parentId)
+        val sibling = siblingId?.let { id -> siblings.firstOrNull { it.id == id } }
+        when (stackMode) {
+            XStackMode.Above -> {
+                if (sibling != null) restackChildRelativeTo(window, sibling, above = true) else restackChild(window, XCirculateResult.Top)
+            }
+            XStackMode.Below -> {
+                if (sibling != null) restackChildRelativeTo(window, sibling, above = false) else restackChild(window, XCirculateResult.Bottom)
+            }
+            XStackMode.TopIf -> {
+                val occluded = if (sibling != null) {
+                    siblingOccludesWindow(siblings, sibling, window)
+                } else {
+                    childrenAfter(siblings, window).any { it.occludes(window) }
+                }
+                if (occluded) restackChild(window, XCirculateResult.Top)
+            }
+            XStackMode.BottomIf -> {
+                val occludes = if (sibling != null) {
+                    windowOccludesSibling(siblings, window, sibling)
+                } else {
+                    childrenBefore(siblings, window).any { window.occludes(it) }
+                }
+                if (occludes) restackChild(window, XCirculateResult.Bottom)
+            }
+            XStackMode.Opposite -> {
+                val occluded = if (sibling != null) {
+                    siblingOccludesWindow(siblings, sibling, window)
+                } else {
+                    childrenAfter(siblings, window).any { it.occludes(window) }
+                }
+                if (occluded) {
+                    restackChild(window, XCirculateResult.Top)
+                } else {
+                    val occludes = if (sibling != null) {
+                        windowOccludesSibling(siblings, window, sibling)
+                    } else {
+                        childrenBefore(siblings, window).any { window.occludes(it) }
+                    }
+                    if (occludes) restackChild(window, XCirculateResult.Bottom)
+                }
+            }
+        }
+        return childrenOf(window.parentId).map { it.id } != before
+    }
+
+    private fun siblingOccludesWindow(siblings: List<XWindow>, sibling: XWindow, window: XWindow): Boolean =
+        siblingIsAbove(siblings, sibling, window) && sibling.occludes(window)
+
+    private fun windowOccludesSibling(siblings: List<XWindow>, window: XWindow, sibling: XWindow): Boolean =
+        siblingIsAbove(siblings, window, sibling) && window.occludes(sibling)
+
+    private fun siblingIsAbove(siblings: List<XWindow>, upper: XWindow, lower: XWindow): Boolean =
+        siblings.indexOfFirst { it.id == upper.id } > siblings.indexOfFirst { it.id == lower.id }
+
+    private fun XWindow.occludes(other: XWindow): Boolean =
+        mapped && other.mapped && windowsOverlap(this, other)
+
+    private fun restackChildRelativeTo(child: XWindow, sibling: XWindow, above: Boolean) {
+        val movingIds = subtreeIds(child.id)
+        if (sibling.id in movingIds) return
+
+        val entries = windows.entries.map { it.key to it.value }
+        val moving = entries.filter { (id, _) -> id in movingIds }
+        val insertAfterId = if (above) lastSubtreeEntryId(sibling.id, entries) else sibling.id
+        windows.clear()
+        for ((id, window) in entries) {
+            if (id in movingIds) continue
+            if (!above && id == sibling.id) {
+                moving.forEach { (movingId, movingWindow) -> windows[movingId] = movingWindow }
+            }
+            windows[id] = window
+            if (above && id == insertAfterId) {
+                moving.forEach { (movingId, movingWindow) -> windows[movingId] = movingWindow }
+            }
+        }
+    }
+
+    private fun lastSubtreeEntryId(rootId: Int, entries: List<Pair<Int, XWindow>>): Int {
+        val subtree = subtreeIds(rootId)
+        return entries.last { (id, _) -> id in subtree }.first
+    }
+
+    private fun siblingBelow(window: XWindow): Int {
+        val siblings = childrenOf(window.parentId)
+        val index = siblings.indexOfFirst { it.id == window.id }
+        return if (index > 0) siblings[index - 1].id else 0
     }
 
     private fun subtreeIds(rootId: Int): Set<Int> {
@@ -3639,6 +3752,21 @@ internal data class XCirculateResult(
         const val Top = 0
         const val Bottom = 1
     }
+}
+
+internal data class XConfigureWindowResult(
+    val window: XWindow,
+    val changed: Boolean,
+    val sizeChanged: Boolean,
+    val aboveSiblingId: Int,
+)
+
+internal object XStackMode {
+    const val Above = 0
+    const val Below = 1
+    const val TopIf = 2
+    const val BottomIf = 3
+    const val Opposite = 4
 }
 
 internal data class XWindow(
