@@ -470,6 +470,17 @@ internal class X11State(
             }
 
     @Synchronized
+    fun resizeRequestSinks(requester: XEventSink, window: XWindow, width: Int, height: Int): List<XResizeRequestDispatch> =
+        eventSelectionsForWindow(window.id, XEventMasks.ResizeRedirect)
+            .filter { sink -> sink != requester }
+            .map { sink ->
+                XResizeRequestDispatch(
+                    sink = sink,
+                    event = XResizeRequestEvent(windowId = window.id, width = width, height = height),
+                )
+            }
+
+    @Synchronized
     fun createNotifySinks(window: XWindow): List<XCreateNotifyDispatch> =
         eventSelectionsForWindow(window.parentId, XEventMasks.SubstructureNotify).map { sink ->
             XCreateNotifyDispatch(
@@ -1187,9 +1198,10 @@ internal class X11State(
     @Synchronized
     fun canSelectEvents(sink: XEventSink, windowId: Int, eventMask: Int): Boolean {
         if (!windows.containsKey(windowId)) return false
-        if ((eventMask and XEventMasks.SubstructureRedirect) == 0) return true
+        val exclusiveMask = eventMask and (XEventMasks.ResizeRedirect or XEventMasks.SubstructureRedirect)
+        if (exclusiveMask == 0) return true
         return eventSinks.none { (otherSink, selections) ->
-            otherSink != sink && (selections[windowId]?.let { it and XEventMasks.SubstructureRedirect } ?: 0) != 0
+            otherSink != sink && (selections[windowId]?.let { it and exclusiveMask } ?: 0) != 0
         }
     }
 

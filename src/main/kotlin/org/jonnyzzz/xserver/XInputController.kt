@@ -106,6 +106,7 @@ internal interface XEventSink {
     fun sendMappingNotifyEvent(event: XMappingNotifyEvent)
     fun sendMapNotifyEvent(event: XMapNotifyEvent)
     fun sendMapRequestEvent(event: XMapRequestEvent)
+    fun sendResizeRequestEvent(event: XResizeRequestEvent)
     fun sendConfigureRequestEvent(event: XConfigureRequestEvent)
     fun sendCreateNotifyEvent(event: XCreateNotifyEvent)
     fun sendDestroyNotifyEvent(event: XDestroyNotifyEvent)
@@ -191,6 +192,17 @@ internal data class XMapRequestEvent(
 internal data class XMapRequestDispatch(
     val sink: XEventSink,
     val event: XMapRequestEvent,
+)
+
+internal data class XResizeRequestEvent(
+    val windowId: Int,
+    val width: Int,
+    val height: Int,
+)
+
+internal data class XResizeRequestDispatch(
+    val sink: XEventSink,
+    val event: XResizeRequestEvent,
 )
 
 internal data class XCreateNotifyEvent(
@@ -338,6 +350,7 @@ internal object XEventMasks {
     const val ButtonRelease = 1 shl 3
     const val PointerMotion = 1 shl 6
     const val StructureNotify = 1 shl 17
+    const val ResizeRedirect = 1 shl 18
     const val SubstructureNotify = 1 shl 19
     const val SubstructureRedirect = 1 shl 20
     const val PropertyChange = 1 shl 22

@@ -2211,12 +2211,25 @@ internal class X11Connection(
                 return
             }
         }
+        val requestedWidth = width ?: window.width
+        val requestedHeight = height ?: window.height
+        val resizeRedirected = requestedWidth != window.width || requestedHeight != window.height
+        val resizeRequests = if (resizeRedirected) {
+            state.resizeRequestSinks(this, window, requestedWidth, requestedHeight)
+        } else {
+            emptyList()
+        }
+        val effectiveWidth = width.takeIf { resizeRequests.isEmpty() }
+        val effectiveHeight = height.takeIf { resizeRequests.isEmpty() }
+        if (resizeRequests.isNotEmpty()) {
+            sendResizeRequest(resizeRequests)
+        }
         val configured = state.configureWindow(
             window.id,
             x = x,
             y = y,
-            width = width,
-            height = height,
+            width = effectiveWidth,
+            height = effectiveHeight,
             borderWidth = borderWidth,
             siblingId = siblingId,
             stackMode = stackMode,
@@ -4653,6 +4666,16 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendResizeRequestEvent(event: XResizeRequestEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 25
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.windowId)
+        byteOrder.put16(bytes, 8, event.width)
+        byteOrder.put16(bytes, 10, event.height)
+        write(bytes)
+    }
+
     override fun sendConfigureNotifyEvent(event: XConfigureNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = 22
@@ -5607,6 +5630,12 @@ internal class X11Connection(
     private fun sendCirculateRequest(notifications: List<XCirculateRequestDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendCirculateRequestEvent(notification.event) }
+        }
+    }
+
+    private fun sendResizeRequest(notifications: List<XResizeRequestDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendResizeRequestEvent(notification.event) }
         }
     }
 
