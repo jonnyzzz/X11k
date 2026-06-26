@@ -988,6 +988,51 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD SetDeviceInfo accepts button actions and LED feedback without changing empty device info`() {
+        withServer { socket, _ ->
+            val wanted = XXkb.XiFeatureButtonActions or XXkb.XiFeatureIndicatorNames or XXkb.XiFeatureIndicatorMaps
+            val out = socket.getOutputStream()
+            out.write(setDeviceInfoRequest(nButtons = 2, nDeviceLedFeedbacks = 1))
+            out.write(getDeviceInfoRequest(wanted = wanted, allButtons = false, firstButton = 1, nButtons = 2))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(1, u32le(reply, 4))
+            assertEquals(wanted, u16le(reply, 12))
+            assertEquals(1, reply[16].toInt() and 0xff)
+            assertEquals(2, reply[17].toInt() and 0xff)
+            assertEquals(3, reply[20].toInt() and 0xff)
+            assertEquals(36, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetDeviceInfo validates variable payload length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.SetDeviceInfo, ByteArray(4)))
+            out.write(setDeviceInfoRequest(nButtons = 1, nDeviceLedFeedbacks = 1, bodySize = 48))
+            out.write(setDeviceInfoRequest(nButtons = 1, nDeviceLedFeedbacks = 1, bodySize = 56))
+            out.write(setDeviceInfoRequest(nButtons = 2, nDeviceLedFeedbacks = 2, change = 0))
+            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 2, nButtons = 1))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetDeviceInfo)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetDeviceInfo)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetDeviceInfo)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(5, u16le(reply, 2))
+            assertEquals(1, u32le(reply, 4))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 12))
+            assertEquals(2, reply[16].toInt() and 0xff)
+            assertEquals(1, reply[17].toInt() and 0xff)
+            assertEquals(3, reply[20].toInt() and 0xff)
+            assertEquals(36, reply.size)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD SetDebuggingFlags reports no supported debugging flags`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -1031,16 +1076,16 @@ class XXkbProtocolTest {
     fun `XKEYBOARD unimplemented requests return BadImplementation and recover stream`() {
         withServer { socket, port ->
             val out = socket.getOutputStream()
-            out.write(request(XXkb.MajorOpcode, 25, ByteArray(8)))
+            out.write(request(XXkb.MajorOpcode, 26, ByteArray(0)))
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 25)
+            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 26)
             val version = readReply(socket.getInputStream())
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
 
-            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.SetDeviceInfo:")
+            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.Unknown:")
         }
     }
 
@@ -1471,6 +1516,75 @@ class XXkbProtocolTest {
         put16le(body, 8, ledClass)
         put16le(body, 10, ledId)
         return request(XXkb.MajorOpcode, XXkb.GetDeviceInfo, body)
+    }
+
+    private fun setDeviceInfoRequest(
+        nButtons: Int,
+        nDeviceLedFeedbacks: Int,
+        change: Int = XXkb.XiFeatureButtonActions or XXkb.XiFeatureIndicatorNames or XXkb.XiFeatureIndicatorMaps,
+        ledNamesPresent: Int = 0x0000_0001,
+        ledMapsPresent: Int = 0x0000_0001,
+        bodySize: Int = setDeviceInfoBodySize(nButtons, nDeviceLedFeedbacks, change, ledNamesPresent, ledMapsPresent),
+    ): ByteArray {
+        val body = ByteArray(bodySize)
+        put16le(body, 0, 0x0100)
+        if (body.size > 2) body[2] = 1
+        if (body.size > 3) body[3] = nButtons.toByte()
+        if (body.size >= 6) put16le(body, 4, change)
+        if (body.size >= 8) put16le(body, 6, nDeviceLedFeedbacks)
+        var offset = 8
+        if (change and XXkb.XiFeatureButtonActions != 0) {
+            repeat(nButtons) {
+                if (offset + 8 <= body.size) {
+                    body[offset] = 1
+                }
+                offset += 8
+            }
+        }
+        if (change and XXkb.XiFeatureIndicators != 0) {
+            repeat(nDeviceLedFeedbacks) {
+                if (offset + 20 <= body.size) {
+                    put16le(body, offset, 0x0300)
+                    put16le(body, offset + 2, 0x0400)
+                    put32le(body, offset + 4, ledNamesPresent)
+                    put32le(body, offset + 8, ledMapsPresent)
+                }
+                offset += 20
+                repeat(Integer.bitCount(ledNamesPresent)) { index ->
+                    if (offset + 4 <= body.size) put32le(body, offset, 0x40 + index)
+                    offset += 4
+                }
+                repeat(Integer.bitCount(ledMapsPresent)) {
+                    if (offset + 12 <= body.size) {
+                        body[offset] = 1
+                        body[offset + 1] = 1
+                        body[offset + 2] = 1
+                        body[offset + 3] = 1
+                        body[offset + 4] = 1
+                        body[offset + 5] = 1
+                        put16le(body, offset + 6, 1)
+                        put32le(body, offset + 8, XXkb.BoolCtrlRepeatKeys)
+                    }
+                    offset += 12
+                }
+            }
+        }
+        return request(XXkb.MajorOpcode, XXkb.SetDeviceInfo, body)
+    }
+
+    private fun setDeviceInfoBodySize(
+        nButtons: Int,
+        nDeviceLedFeedbacks: Int,
+        change: Int,
+        ledNamesPresent: Int,
+        ledMapsPresent: Int,
+    ): Int {
+        var size = 8
+        if (change and XXkb.XiFeatureButtonActions != 0) size += nButtons * 8
+        if (change and XXkb.XiFeatureIndicators != 0) {
+            size += nDeviceLedFeedbacks * (20 + Integer.bitCount(ledNamesPresent) * 4 + Integer.bitCount(ledMapsPresent) * 12)
+        }
+        return size
     }
 
     private fun setDebuggingFlagsRequest(message: String, affectFlags: Int, flags: Int, affectCtrls: Int, ctrls: Int, extraBytes: Int = 0): ByteArray {

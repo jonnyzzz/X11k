@@ -29,6 +29,7 @@ internal object XXkb {
     const val ListComponents = 22
     const val GetKbdByName = 23
     const val GetDeviceInfo = 24
+    const val SetDeviceInfo = 25
     const val SetDebuggingFlags = 101
 
     const val BoolCtrlRepeatKeys = 1 shl 0
@@ -58,6 +59,7 @@ internal object XXkb {
     const val XiFeatureIndicatorNames = 1 shl 2
     const val XiFeatureIndicatorMaps = 1 shl 3
     const val XiFeatureIndicatorState = 1 shl 4
+    const val XiFeatureIndicators = XiFeatureIndicatorNames or XiFeatureIndicatorMaps or XiFeatureIndicatorState
     const val DefaultMouseKeysButton = 1
     const val DefaultGroupCount = 1
     const val DefaultRepeatDelay = 660
@@ -87,7 +89,7 @@ internal object XXkb {
             ListComponents -> "ListComponents"
             GetKbdByName -> "GetKbdByName"
             GetDeviceInfo -> "GetDeviceInfo"
-            25 -> "SetDeviceInfo"
+            SetDeviceInfo -> "SetDeviceInfo"
             SetDebuggingFlags -> "SetDebuggingFlags"
             else -> "Unknown"
         }

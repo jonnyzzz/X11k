@@ -397,6 +397,7 @@ internal class X11Connection(
             XXkb.ListComponents -> xkbListComponents(body, majorOpcode)
             XXkb.GetKbdByName -> xkbGetKbdByName(body, majorOpcode)
             XXkb.GetDeviceInfo -> xkbGetDeviceInfo(body, majorOpcode)
+            XXkb.SetDeviceInfo -> xkbSetDeviceInfo(body, majorOpcode)
             XXkb.SetDebuggingFlags -> xkbSetDebuggingFlags(body, majorOpcode)
             else -> xkbBadImplementation(majorOpcode, minorOpcode)
         }
@@ -677,6 +678,31 @@ internal class X11Connection(
         reply[17] = buttonCount.toByte()
         reply[20] = state.pointerMapping().size.toByte()
         write(reply)
+    }
+
+    private fun xkbSetDeviceInfo(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
+        val change = byteOrder.u16(body, 4)
+        val nButtons = body[3].toInt() and 0xff
+        val nDeviceLedFeedbacks = byteOrder.u16(body, 6)
+        var offset = 8
+        if (change and XXkb.XiFeatureButtonActions != 0) {
+            val nextOffset = offset + nButtons * 8
+            if (nextOffset > body.size) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
+            offset = nextOffset
+        }
+        if (change and XXkb.XiFeatureIndicators != 0) {
+            repeat(nDeviceLedFeedbacks) {
+                if (offset > body.size - 20) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
+                val namesPresent = byteOrder.u32(body, offset + 4)
+                val mapsPresent = byteOrder.u32(body, offset + 8)
+                val ledBytes = 20L + Integer.bitCount(namesPresent) * 4L + Integer.bitCount(mapsPresent) * 12L
+                val nextOffset = offset.toLong() + ledBytes
+                if (nextOffset > body.size) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
+                offset = nextOffset.toInt()
+            }
+        }
+        if (offset != body.size) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
     }
 
     private fun xkbSetDebuggingFlags(body: ByteArray, majorOpcode: Int) {
