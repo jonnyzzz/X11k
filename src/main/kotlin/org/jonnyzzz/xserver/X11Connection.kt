@@ -1976,8 +1976,16 @@ internal class X11Connection(
         attributes.doNotPropagateMask?.let {
             if ((it and XEventMasks.ValidDeviceEventMask.inv()) != 0) return writeError(error = 2, opcode = 1, badValue = it)
         }
+        attributes.colormapId?.let {
+            if (it != 0 && !state.hasColormap(it)) return writeError(error = 12, opcode = 1, badValue = it)
+        }
         attributes.cursorId?.let {
             if (it != 0 && !state.hasCursor(it)) return writeError(error = 6, opcode = 1, badValue = it)
+        }
+        val colormapId = when {
+            windowClass == XWindowClass.InputOnly -> null
+            attributes.colormapId == null || attributes.colormapId == 0 -> parentWindow.colormapId
+            else -> attributes.colormapId
         }
         val window = XWindow(
             id = id,
@@ -1994,6 +2002,7 @@ internal class X11Connection(
             backgroundPixmapId = attributes.backgroundPixmapId?.takeIf { it != 0 },
             overrideRedirect = attributes.overrideRedirect ?: false,
             doNotPropagateMask = attributes.doNotPropagateMask ?: 0,
+            colormapId = colormapId,
             cursorId = attributes.cursorId?.takeIf { it != 0 },
         )
         state.putWindow(window, this)
@@ -2023,6 +2032,10 @@ internal class X11Connection(
         attributes.doNotPropagateMask?.let {
             if ((it and XEventMasks.ValidDeviceEventMask.inv()) != 0) return writeError(error = 2, opcode = 2, badValue = it)
         }
+        val colormapId = attributes.colormapId?.let {
+            if (it != 0 && !state.hasColormap(it)) return writeError(error = 12, opcode = 2, badValue = it)
+            if (it == 0) state.window(window.parentId)?.colormapId ?: window.colormapId else it
+        }
         attributes.cursorId?.let {
             if (it != 0 && !state.hasCursor(it)) return writeError(error = 6, opcode = 2, badValue = it)
         }
@@ -2031,6 +2044,7 @@ internal class X11Connection(
         }
         attributes.overrideRedirect?.let { state.updateWindowAttributes(windowId, overrideRedirect = it) }
         attributes.doNotPropagateMask?.let { state.updateWindowAttributes(windowId, doNotPropagateMask = it) }
+        attributes.colormapId?.let { state.updateWindowAttributes(windowId, colormapId = colormapId, colormapIdChanged = true) }
         attributes.cursorId?.let { state.updateWindowAttributes(windowId, cursorId = it.takeIf { id -> id != 0 }, cursorIdChanged = true) }
         attributes.eventMask?.let { state.selectEvents(this, windowId, it) }
     }
@@ -2294,10 +2308,10 @@ internal class X11Connection(
         byteOrder.put32(reply, 16, -1)
         byteOrder.put32(reply, 20, 0)
         reply[24] = 0
-        reply[25] = 1
+        reply[25] = if (window.colormapId?.let { state.isColormapInstalled(it) } == true) 1 else 0
         reply[26] = if (window.mapped) 2 else 0
         reply[27] = if (window.overrideRedirect) 1 else 0
-        byteOrder.put32(reply, 28, X11Ids.DefaultColormap)
+        byteOrder.put32(reply, 28, window.colormapId ?: 0)
         byteOrder.put32(reply, 32, 0)
         byteOrder.put32(reply, 36, 0)
         byteOrder.put16(reply, 40, 0)
@@ -4953,6 +4967,7 @@ internal class X11Connection(
         var overrideRedirect: Boolean? = null
         var eventMask: Int? = null
         var doNotPropagateMask: Int? = null
+        var colormapId: Int? = null
         var cursorId: Int? = null
         for (bit in 0..14) {
             if ((mask and (1 shl bit)) == 0) continue
@@ -4964,11 +4979,12 @@ internal class X11Connection(
                 9 -> overrideRedirect = value != 0
                 11 -> eventMask = value
                 12 -> doNotPropagateMask = value
+                13 -> colormapId = value
                 14 -> cursorId = value
             }
             offset += 4
         }
-        return WindowAttributeValues(backgroundPixmapId, backgroundPixel, overrideRedirect, eventMask, doNotPropagateMask, cursorId)
+        return WindowAttributeValues(backgroundPixmapId, backgroundPixel, overrideRedirect, eventMask, doNotPropagateMask, colormapId, cursorId)
     }
 
     private fun validateGcValueLength(mask: Int, body: ByteArray, valuesOffset: Int, opcode: Int): Boolean {
@@ -6435,6 +6451,7 @@ private data class WindowAttributeValues(
     val overrideRedirect: Boolean? = null,
     val eventMask: Int? = null,
     val doNotPropagateMask: Int? = null,
+    val colormapId: Int? = null,
     val cursorId: Int? = null,
 )
 

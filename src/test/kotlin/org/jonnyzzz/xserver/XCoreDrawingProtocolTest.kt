@@ -5925,6 +5925,7 @@ class XCoreDrawingProtocolTest {
                 out.write(changeWindowEventMaskRequest(missing, XEventMasks.PropertyChange))
                 out.write(changeWindowEventMaskRequest(WindowId, 0xfe00_0000.toInt()))
                 out.write(changeWindowAttributesRawRequest(WindowId, 1 shl 12, 1 shl 5))
+                out.write(changeWindowAttributesRawRequest(WindowId, 1 shl 13, ColormapId + 501))
                 out.write(changeWindowAttributesRawRequest(WindowId, 1 shl 14, PixmapId + 501))
                 out.write(changeWindowEventMaskRequest(WindowId, XEventMasks.PropertyChange))
                 out.write(queryPointerRequest())
@@ -5937,9 +5938,10 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 3, opcode = 2, badValue = missing, sequence = 6)
                 assertError(socket.getInputStream(), error = 2, opcode = 2, badValue = 0xfe00_0000.toInt(), sequence = 7)
                 assertError(socket.getInputStream(), error = 2, opcode = 2, badValue = 1 shl 5, sequence = 8)
-                assertError(socket.getInputStream(), error = 6, opcode = 2, badValue = PixmapId + 501, sequence = 9)
+                assertError(socket.getInputStream(), error = 12, opcode = 2, badValue = ColormapId + 501, sequence = 9)
+                assertError(socket.getInputStream(), error = 6, opcode = 2, badValue = PixmapId + 501, sequence = 10)
                 val pointer = readReply(socket.getInputStream())
-                assertEquals(11, u16le(pointer, 2))
+                assertEquals(12, u16le(pointer, 2))
             }
             server.close()
             serverThread.join(1_000)
@@ -5962,6 +5964,7 @@ class XCoreDrawingProtocolTest {
                 out.write(createWindowRawRequest(WindowId, width = 0))
                 out.write(createWindowRequest(WindowId, eventMask = 0xfe00_0000.toInt()))
                 out.write(createWindowRequest(WindowId, doNotPropagateMask = 1 shl 5))
+                out.write(createWindowRequest(WindowId, colormap = ColormapId + 502))
                 out.write(createWindowRequest(WindowId, cursor = PixmapId + 502))
                 out.write(createWindowRequest(WindowId))
                 out.write(queryPointerRequest())
@@ -5974,9 +5977,57 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 2, opcode = 1, badValue = 0, sequence = 5)
                 assertError(socket.getInputStream(), error = 2, opcode = 1, badValue = 0xfe00_0000.toInt(), sequence = 6)
                 assertError(socket.getInputStream(), error = 2, opcode = 1, badValue = 1 shl 5, sequence = 7)
-                assertError(socket.getInputStream(), error = 6, opcode = 1, badValue = PixmapId + 502, sequence = 8)
+                assertError(socket.getInputStream(), error = 12, opcode = 1, badValue = ColormapId + 502, sequence = 8)
+                assertError(socket.getInputStream(), error = 6, opcode = 1, badValue = PixmapId + 502, sequence = 9)
                 val pointer = readReply(socket.getInputStream())
-                assertEquals(10, u16le(pointer, 2))
+                assertEquals(11, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CreateWindow and ChangeWindowAttributes preserve colormap in attributes and state snapshot`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val child = WindowId + 1
+                val inherited = ColormapId + 510
+                val changed = ColormapId + 511
+                val out = socket.getOutputStream()
+                out.write(createColormapRequest(inherited, window = X11Ids.RootWindow))
+                out.write(createColormapRequest(changed, window = X11Ids.RootWindow))
+                out.write(createWindowRequest(parent, colormap = inherited))
+                out.write(createWindowRequest(child, parent = parent, colormap = 0))
+                out.write(getWindowAttributesRequest(child))
+                out.write(changeWindowAttributesRawRequest(child, 1 shl 13, changed))
+                out.write(getWindowAttributesRequest(parent))
+                out.write(getWindowAttributesRequest(child))
+                out.write(installColormapRequest(changed))
+                out.write(getWindowAttributesRequest(child))
+                out.flush()
+
+                val childInheritedAttributes = readReply(socket.getInputStream())
+                val parentAttributes = readReply(socket.getInputStream())
+                val childAttributes = readReply(socket.getInputStream())
+                val childInstalledAttributes = readReply(socket.getInputStream())
+                assertEquals(inherited, u32le(childInheritedAttributes, 28))
+                assertEquals(0, childInheritedAttributes[25].toInt() and 0xff)
+                assertEquals(inherited, u32le(parentAttributes, 28))
+                assertEquals(changed, u32le(childAttributes, 28))
+                assertEquals(0, parentAttributes[25].toInt() and 0xff)
+                assertEquals(0, childAttributes[25].toInt() and 0xff)
+                assertEquals(changed, u32le(childInstalledAttributes, 28))
+                assertEquals(1, childInstalledAttributes[25].toInt() and 0xff)
+                val stateJson = httpGet(server.localPort, "/state.json")
+                val parentJson = Regex("""\{"id":"0x${parent.toUInt().toString(16)}".*?\}""").find(stateJson)?.value.orEmpty()
+                val childJson = Regex("""\{"id":"0x${child.toUInt().toString(16)}".*?\}""").find(stateJson)?.value.orEmpty()
+                assertContains(parentJson, """"colormap":"0x${inherited.toUInt().toString(16)}"""")
+                assertContains(childJson, """"colormap":"0x${changed.toUInt().toString(16)}"""")
             }
             server.close()
             serverThread.join(1_000)
@@ -11495,12 +11546,14 @@ class XCoreDrawingProtocolTest {
         overrideRedirect: Boolean? = null,
         eventMask: Int? = null,
         doNotPropagateMask: Int? = null,
+        colormap: Int? = null,
         cursor: Int? = null,
     ): ByteArray {
         val extraValues = listOfNotNull(
             overrideRedirect?.let { (1 shl 9) to if (it) 1 else 0 },
             eventMask?.let { (1 shl 11) to it },
             doNotPropagateMask?.let { (1 shl 12) to it },
+            colormap?.let { (1 shl 13) to it },
             cursor?.let { (1 shl 14) to it },
         )
         val body = ByteArray(28 + extraValues.size * 4)

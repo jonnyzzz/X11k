@@ -51,6 +51,7 @@ internal object TextScreenRenderer {
                 append(" class=").append(window.className)
                 append(" depth=").append(window.depth)
                 append(" visual=").append(window.visualHex)
+                append(" colormap=").append(window.colormapIdHex ?: "none")
                 append(" cursor=").append(window.cursorIdHex ?: "none")
                 append(" mapped=").append(window.mapped)
                 append(" focused=").append(window.focused)

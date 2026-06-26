@@ -1547,6 +1547,8 @@ internal class X11State(
         backgroundPixmapId: Int? = null,
         overrideRedirect: Boolean? = null,
         doNotPropagateMask: Int? = null,
+        colormapId: Int? = null,
+        colormapIdChanged: Boolean = false,
         cursorId: Int? = null,
         cursorIdChanged: Boolean = false,
     ): XWindow? {
@@ -1563,6 +1565,9 @@ internal class X11State(
         }
         doNotPropagateMask?.let {
             window.doNotPropagateMask = it
+        }
+        if (colormapIdChanged) {
+            window.colormapId = colormapId
         }
         if (cursorIdChanged) {
             window.cursorId = cursorId
@@ -1616,6 +1621,7 @@ internal class X11State(
                 depth = window.depth,
                 visual = window.visual,
                 overrideRedirect = window.overrideRedirect,
+                colormapId = window.colormapId,
                 cursorId = window.cursorId,
             )
         }
@@ -3182,6 +3188,9 @@ internal class X11State(
     fun hasColormap(id: Int): Boolean = colormaps.contains(id)
 
     @Synchronized
+    fun isColormapInstalled(id: Int): Boolean = installedColormaps.contains(id)
+
+    @Synchronized
     fun installColormap(id: Int) {
         if (!colormaps.contains(id)) return
         installedColormaps.clear()
@@ -4051,6 +4060,7 @@ internal data class XWindow(
     var backgroundPixmapId: Int? = null,
     var overrideRedirect: Boolean = false,
     var doNotPropagateMask: Int = 0,
+    var colormapId: Int? = X11Ids.DefaultColormap,
     var cursorId: Int? = null,
     val properties: MutableMap<Int, XProperty> = linkedMapOf(),
     val framebuffer: XFramebuffer = XFramebuffer(width, height, backgroundPixel),
@@ -4815,6 +4825,7 @@ internal data class XWindowSnapshot(
     val depth: Int,
     val visual: Int,
     val overrideRedirect: Boolean,
+    val colormapId: Int?,
     val cursorId: Int?,
 ) {
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
@@ -4825,6 +4836,7 @@ internal data class XWindowSnapshot(
         else -> "Class$windowClass"
     }
     val visualHex: String get() = "0x${visual.toUInt().toString(16)}"
+    val colormapIdHex: String? get() = colormapId?.let { "0x${it.toUInt().toString(16)}" }
     val cursorIdHex: String? get() = cursorId?.let { "0x${it.toUInt().toString(16)}" }
 }
 
