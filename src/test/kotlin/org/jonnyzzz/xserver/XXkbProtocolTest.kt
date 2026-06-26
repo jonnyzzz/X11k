@@ -457,6 +457,48 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD SetIndicatorMap accepts map records without creating indicators`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(setIndicatorMapRequest(which = 0x3))
+            out.write(getIndicatorMapRequest(which = 0x3))
+            out.write(getIndicatorStateRequest())
+            out.flush()
+
+            val map = readReply(socket.getInputStream())
+            assertEquals(2, u16le(map, 2))
+            assertEquals(0, u32le(map, 8))
+            assertEquals(0, u32le(map, 12))
+            assertEquals(0, map[16].toInt() and 0xff)
+
+            val state = readReply(socket.getInputStream())
+            assertEquals(3, u16le(state, 2))
+            assertEquals(0, u32le(state, 8))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetIndicatorMap validates variable map length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.SetIndicatorMap, ByteArray(4)))
+            out.write(setIndicatorMapRequest(which = 0x3, bodySize = 20))
+            out.write(setIndicatorMapRequest(which = 0x3, bodySize = 44))
+            out.write(setIndicatorMapRequest(which = 0))
+            out.write(getIndicatorMapRequest(which = 0x3))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetIndicatorMap)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetIndicatorMap)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetIndicatorMap)
+            val map = readReply(socket.getInputStream())
+            assertEquals(5, u16le(map, 2))
+            assertEquals(0, u32le(map, 8))
+            assertEquals(0, map[16].toInt() and 0xff)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetNamedIndicator reports queried indicator absent`() {
         withServer { socket, _ ->
             val indicator = 0x0020_0400
@@ -1012,6 +1054,27 @@ class XXkbProtocolTest {
         put16le(body, 0, 0x0100)
         put32le(body, 4, which)
         return request(XXkb.MajorOpcode, XXkb.GetIndicatorMap, body)
+    }
+
+    private fun setIndicatorMapRequest(which: Int, bodySize: Int = 8 + Integer.bitCount(which) * 12): ByteArray {
+        val body = ByteArray(bodySize)
+        put16le(body, 0, 0x0100)
+        if (body.size >= 8) {
+            put32le(body, 4, which)
+        }
+        for (index in 0 until Integer.bitCount(which)) {
+            val offset = 8 + index * 12
+            if (offset + 12 > body.size) break
+            body[offset] = 1
+            body[offset + 1] = 1
+            body[offset + 2] = 1
+            body[offset + 3] = 1
+            body[offset + 4] = 1
+            body[offset + 5] = 1
+            put16le(body, offset + 6, 1)
+            put32le(body, offset + 8, XXkb.BoolCtrlRepeatKeys)
+        }
+        return request(XXkb.MajorOpcode, XXkb.SetIndicatorMap, body)
     }
 
     private fun getNamedIndicatorRequest(indicator: Int): ByteArray {
