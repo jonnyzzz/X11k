@@ -462,6 +462,67 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD ListComponents reports no component names`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(listComponentsRequest(maxNames = 64))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, reply[0].toInt())
+            assertEquals(0, reply[1].toInt() and 0xff)
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u16le(reply, 8))
+            assertEquals(0, u16le(reply, 10))
+            assertEquals(0, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(0, u16le(reply, 16))
+            assertEquals(0, u16le(reply, 18))
+            assertEquals(0, u16le(reply, 20))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD ListComponents accepts and ignores trailing pattern data`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val trailingPatterns = ByteArray(12)
+            put16le(trailingPatterns, 0, 4)
+            "base".encodeToByteArray().copyInto(trailingPatterns, 2)
+            out.write(listComponentsRequest(maxNames = 1, trailingPatterns = trailingPatterns))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, reply[0].toInt())
+            assertEquals(0, reply[1].toInt() and 0xff)
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u16le(reply, 8))
+            assertEquals(0, u16le(reply, 20))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD ListComponents validates fixed prefix length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.ListComponents, ByteArray(0)))
+            out.write(listComponentsRequest(maxNames = 1))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.ListComponents)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(0, u16le(reply, 8))
+            assertEquals(0, u16le(reply, 20))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetDeviceInfo reports unsupported XI features and pointer button count`() {
         withServer { socket, _ ->
             val wanted = XXkb.XiFeatureButtonActions or XXkb.XiFeatureIndicatorNames or XXkb.XiFeatureIndicatorMaps or XXkb.XiFeatureIndicatorState
@@ -701,6 +762,14 @@ class XXkbProtocolTest {
         put32le(body, 16, autoCtrls)
         put32le(body, 20, autoCtrlsValues)
         return request(XXkb.MajorOpcode, XXkb.PerClientFlags, body)
+    }
+
+    private fun listComponentsRequest(maxNames: Int, trailingPatterns: ByteArray = ByteArray(0)): ByteArray {
+        val body = ByteArray(4 + trailingPatterns.size)
+        put16le(body, 0, 0x0100)
+        put16le(body, 2, maxNames)
+        trailingPatterns.copyInto(body, 4)
+        return request(XXkb.MajorOpcode, XXkb.ListComponents, body)
     }
 
     private fun getDeviceInfoRequest(

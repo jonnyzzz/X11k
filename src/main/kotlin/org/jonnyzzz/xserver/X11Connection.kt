@@ -386,6 +386,7 @@ internal class X11Connection(
             XXkb.GetNamedIndicator -> xkbGetNamedIndicator(body, majorOpcode)
             XXkb.GetNames -> xkbGetNames(body, majorOpcode)
             XXkb.PerClientFlags -> xkbPerClientFlags(body, majorOpcode)
+            XXkb.ListComponents -> xkbListComponents(body, majorOpcode)
             XXkb.GetDeviceInfo -> xkbGetDeviceInfo(body, majorOpcode)
             XXkb.SetDebuggingFlags -> xkbSetDebuggingFlags(body, majorOpcode)
             else -> xkbBadImplementation(majorOpcode, minorOpcode)
@@ -468,6 +469,12 @@ internal class X11Connection(
 
     private fun xkbPerClientFlags(body: ByteArray, majorOpcode: Int) {
         if (body.size != 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.PerClientFlags, badValue = 0)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        write(reply)
+    }
+
+    private fun xkbListComponents(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.ListComponents, badValue = 0)
         val reply = reply(extra = 0, payloadUnits = 0)
         write(reply)
     }
