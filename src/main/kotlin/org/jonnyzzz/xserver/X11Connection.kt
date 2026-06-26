@@ -4990,8 +4990,9 @@ internal class X11Connection(
         var backingPlanes: Int? = null
         var backingPixel: Int? = null
         var overrideRedirect: Boolean? = null
+        var overrideRedirectValue: Int? = null
         var saveUnder: Boolean? = null
-        var saveUnderRaw: Int? = null
+        var saveUnderValue: Int? = null
         var eventMask: Int? = null
         var doNotPropagateMask: Int? = null
         var colormapId: Int? = null
@@ -5000,18 +5001,22 @@ internal class X11Connection(
             if ((mask and (1 shl bit)) == 0) continue
             if (offset + 4 > body.size) break
             val value = byteOrder.u32(body, offset)
+            val value8 = byteOrder.valueListU8(body, offset)
             when (bit) {
                 0 -> backgroundPixmapId = value
                 1 -> backgroundPixel = value
-                4 -> bitGravity = value
-                5 -> winGravity = value
-                6 -> backingStore = value
+                4 -> bitGravity = value8
+                5 -> winGravity = value8
+                6 -> backingStore = value8
                 7 -> backingPlanes = value
                 8 -> backingPixel = value
-                9 -> overrideRedirect = value != 0
+                9 -> {
+                    overrideRedirect = value8 != 0
+                    overrideRedirectValue = value8
+                }
                 10 -> {
-                    saveUnder = value != 0
-                    saveUnderRaw = value
+                    saveUnder = value8 != 0
+                    saveUnderValue = value8
                 }
                 11 -> eventMask = value
                 12 -> doNotPropagateMask = value
@@ -5029,8 +5034,9 @@ internal class X11Connection(
             backingPlanes = backingPlanes,
             backingPixel = backingPixel,
             overrideRedirect = overrideRedirect,
+            overrideRedirectValue = overrideRedirectValue,
             saveUnder = saveUnder,
-            saveUnderRaw = saveUnderRaw,
+            saveUnderValue = saveUnderValue,
             eventMask = eventMask,
             doNotPropagateMask = doNotPropagateMask,
             colormapId = colormapId,
@@ -5057,7 +5063,13 @@ internal class X11Connection(
                 return false
             }
         }
-        attributes.saveUnderRaw?.let {
+        attributes.overrideRedirectValue?.let {
+            if (it !in 0..1) {
+                writeError(error = 2, opcode = opcode, badValue = it)
+                return false
+            }
+        }
+        attributes.saveUnderValue?.let {
             if (it !in 0..1) {
                 writeError(error = 2, opcode = opcode, badValue = it)
                 return false
@@ -6533,8 +6545,9 @@ private data class WindowAttributeValues(
     val backingPlanes: Int? = null,
     val backingPixel: Int? = null,
     val overrideRedirect: Boolean? = null,
+    val overrideRedirectValue: Int? = null,
     val saveUnder: Boolean? = null,
-    val saveUnderRaw: Int? = null,
+    val saveUnderValue: Int? = null,
     val eventMask: Int? = null,
     val doNotPropagateMask: Int? = null,
     val colormapId: Int? = null,

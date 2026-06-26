@@ -28,6 +28,12 @@ internal enum class ByteOrder {
                 (bytes[offset + 3].toInt() and 0xff)
         }
 
+    fun valueListU8(bytes: ByteArray, offset: Int): Int =
+        when (this) {
+            LsbFirst -> bytes[offset].toInt() and 0xff
+            MsbFirst -> bytes[offset + 3].toInt() and 0xff
+        }
+
     fun put16(bytes: ByteArray, offset: Int, value: Int) {
         when (this) {
             LsbFirst -> {

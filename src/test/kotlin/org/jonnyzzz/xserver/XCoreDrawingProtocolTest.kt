@@ -5928,6 +5928,7 @@ class XCoreDrawingProtocolTest {
                 out.write(changeWindowAttributesRawRequest(WindowId, 1 shl 4, 11))
                 out.write(changeWindowAttributesRawRequest(WindowId, 1 shl 5, 11))
                 out.write(changeWindowAttributesRawRequest(WindowId, 1 shl 6, 3))
+                out.write(changeWindowAttributesRawRequest(WindowId, 1 shl 9, 2))
                 out.write(changeWindowAttributesRawRequest(WindowId, 1 shl 10, 2))
                 out.write(changeWindowAttributesRawRequest(WindowId, 1 shl 13, ColormapId + 501))
                 out.write(changeWindowAttributesRawRequest(WindowId, 1 shl 14, PixmapId + 501))
@@ -5946,10 +5947,11 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 2, opcode = 2, badValue = 11, sequence = 10)
                 assertError(socket.getInputStream(), error = 2, opcode = 2, badValue = 3, sequence = 11)
                 assertError(socket.getInputStream(), error = 2, opcode = 2, badValue = 2, sequence = 12)
-                assertError(socket.getInputStream(), error = 12, opcode = 2, badValue = ColormapId + 501, sequence = 13)
-                assertError(socket.getInputStream(), error = 6, opcode = 2, badValue = PixmapId + 501, sequence = 14)
+                assertError(socket.getInputStream(), error = 2, opcode = 2, badValue = 2, sequence = 13)
+                assertError(socket.getInputStream(), error = 12, opcode = 2, badValue = ColormapId + 501, sequence = 14)
+                assertError(socket.getInputStream(), error = 6, opcode = 2, badValue = PixmapId + 501, sequence = 15)
                 val pointer = readReply(socket.getInputStream())
-                assertEquals(16, u16le(pointer, 2))
+                assertEquals(17, u16le(pointer, 2))
             }
             server.close()
             serverThread.join(1_000)
@@ -5975,6 +5977,7 @@ class XCoreDrawingProtocolTest {
                 out.write(createWindowRequest(WindowId, bitGravity = 11))
                 out.write(createWindowRequest(WindowId, winGravity = 11))
                 out.write(createWindowRequest(WindowId, backingStore = 3))
+                out.write(createWindowRequest(WindowId, overrideRedirectRaw = 2))
                 out.write(createWindowRequest(WindowId, saveUnderRaw = 2))
                 out.write(createWindowRequest(WindowId, colormap = ColormapId + 502))
                 out.write(createWindowRequest(WindowId, cursor = PixmapId + 502))
@@ -5993,10 +5996,11 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 2, opcode = 1, badValue = 11, sequence = 9)
                 assertError(socket.getInputStream(), error = 2, opcode = 1, badValue = 3, sequence = 10)
                 assertError(socket.getInputStream(), error = 2, opcode = 1, badValue = 2, sequence = 11)
-                assertError(socket.getInputStream(), error = 12, opcode = 1, badValue = ColormapId + 502, sequence = 12)
-                assertError(socket.getInputStream(), error = 6, opcode = 1, badValue = PixmapId + 502, sequence = 13)
+                assertError(socket.getInputStream(), error = 2, opcode = 1, badValue = 2, sequence = 12)
+                assertError(socket.getInputStream(), error = 12, opcode = 1, badValue = ColormapId + 502, sequence = 13)
+                assertError(socket.getInputStream(), error = 6, opcode = 1, badValue = PixmapId + 502, sequence = 14)
                 val pointer = readReply(socket.getInputStream())
-                assertEquals(15, u16le(pointer, 2))
+                assertEquals(16, u16le(pointer, 2))
             }
             server.close()
             serverThread.join(1_000)
@@ -6012,7 +6016,8 @@ class XCoreDrawingProtocolTest {
                 setup(socket)
                 val created = WindowId
                 val changed = WindowId + 1
-                val changedMask = (1 shl 4) or (1 shl 5) or (1 shl 6) or (1 shl 7) or (1 shl 8) or (1 shl 10)
+                val padded = WindowId + 2
+                val changedMask = (1 shl 4) or (1 shl 5) or (1 shl 6) or (1 shl 7) or (1 shl 8) or (1 shl 9) or (1 shl 10)
                 val out = socket.getOutputStream()
                 out.write(
                     createWindowRequest(
@@ -6026,28 +6031,54 @@ class XCoreDrawingProtocolTest {
                     ),
                 )
                 out.write(createWindowRequest(changed))
-                out.write(changeWindowAttributesRawRequest(changed, changedMask, 1, 2, 1, 0x0f0f_0f0f, 0x0001_0203, 0))
+                out.write(createWindowRequest(padded))
+                out.write(changeWindowAttributesRawRequest(changed, changedMask, 1, 2, 1, 0x0f0f_0f0f, 0x0001_0203, 1, 0))
+                out.write(
+                    changeWindowAttributesRawRequest(
+                        padded,
+                        changedMask,
+                        0x0000_010a,
+                        0x0000_0209,
+                        0x0000_0302,
+                        0x0f0f_0f0f,
+                        0x0001_0203,
+                        0x0000_0401,
+                        0x0000_0501,
+                    ),
+                )
                 out.write(getWindowAttributesRequest(created))
                 out.write(getWindowAttributesRequest(changed))
+                out.write(getWindowAttributesRequest(padded))
                 out.flush()
 
                 val createdAttributes = readReply(socket.getInputStream())
                 val changedAttributes = readReply(socket.getInputStream())
+                val paddedAttributes = readReply(socket.getInputStream())
                 assertEquals(XBackingStore.Always, createdAttributes[1].toInt() and 0xff)
                 assertEquals(XWindowGravity.Static, createdAttributes[14].toInt() and 0xff)
                 assertEquals(XWindowGravity.SouthEast, createdAttributes[15].toInt() and 0xff)
                 assertEquals(0x00ff_00ff, u32le(createdAttributes, 16))
                 assertEquals(0x0012_3456, u32le(createdAttributes, 20))
                 assertEquals(1, createdAttributes[24].toInt() and 0xff)
+                assertEquals(0, createdAttributes[27].toInt() and 0xff)
                 assertEquals(1, changedAttributes[1].toInt() and 0xff)
                 assertEquals(1, changedAttributes[14].toInt() and 0xff)
                 assertEquals(2, changedAttributes[15].toInt() and 0xff)
                 assertEquals(0x0f0f_0f0f, u32le(changedAttributes, 16))
                 assertEquals(0x0001_0203, u32le(changedAttributes, 20))
                 assertEquals(0, changedAttributes[24].toInt() and 0xff)
+                assertEquals(1, changedAttributes[27].toInt() and 0xff)
+                assertEquals(XBackingStore.Always, paddedAttributes[1].toInt() and 0xff)
+                assertEquals(XWindowGravity.Static, paddedAttributes[14].toInt() and 0xff)
+                assertEquals(XWindowGravity.SouthEast, paddedAttributes[15].toInt() and 0xff)
+                assertEquals(0x0f0f_0f0f, u32le(paddedAttributes, 16))
+                assertEquals(0x0001_0203, u32le(paddedAttributes, 20))
+                assertEquals(1, paddedAttributes[24].toInt() and 0xff)
+                assertEquals(1, paddedAttributes[27].toInt() and 0xff)
                 val stateJson = httpGet(server.localPort, "/state.json")
                 val createdJson = Regex("""\{"id":"0x${created.toUInt().toString(16)}".*?\}""").find(stateJson)?.value.orEmpty()
                 val changedJson = Regex("""\{"id":"0x${changed.toUInt().toString(16)}".*?\}""").find(stateJson)?.value.orEmpty()
+                val paddedJson = Regex("""\{"id":"0x${padded.toUInt().toString(16)}".*?\}""").find(stateJson)?.value.orEmpty()
                 assertContains(createdJson, """"bitGravity":10""")
                 assertContains(createdJson, """"winGravity":9""")
                 assertContains(createdJson, """"backingStore":2""")
@@ -6060,6 +6091,14 @@ class XCoreDrawingProtocolTest {
                 assertContains(changedJson, """"backingPlanes":252645135""")
                 assertContains(changedJson, """"backingPixel":66051""")
                 assertContains(changedJson, """"saveUnder":false""")
+                assertContains(changedJson, """"overrideRedirect":true""")
+                assertContains(paddedJson, """"bitGravity":10""")
+                assertContains(paddedJson, """"winGravity":9""")
+                assertContains(paddedJson, """"backingStore":2""")
+                assertContains(paddedJson, """"backingPlanes":252645135""")
+                assertContains(paddedJson, """"backingPixel":66051""")
+                assertContains(paddedJson, """"saveUnder":true""")
+                assertContains(paddedJson, """"overrideRedirect":true""")
             }
             server.close()
             serverThread.join(1_000)
@@ -11628,6 +11667,7 @@ class XCoreDrawingProtocolTest {
         backingPlanes: Int? = null,
         backingPixel: Int? = null,
         overrideRedirect: Boolean? = null,
+        overrideRedirectRaw: Int? = null,
         saveUnder: Boolean? = null,
         saveUnderRaw: Int? = null,
         eventMask: Int? = null,
@@ -11641,7 +11681,7 @@ class XCoreDrawingProtocolTest {
             backingStore?.let { (1 shl 6) to it },
             backingPlanes?.let { (1 shl 7) to it },
             backingPixel?.let { (1 shl 8) to it },
-            overrideRedirect?.let { (1 shl 9) to if (it) 1 else 0 },
+            (overrideRedirectRaw ?: overrideRedirect?.let { if (it) 1 else 0 })?.let { (1 shl 9) to it },
             (saveUnderRaw ?: saveUnder?.let { if (it) 1 else 0 })?.let { (1 shl 10) to it },
             eventMask?.let { (1 shl 11) to it },
             doNotPropagateMask?.let { (1 shl 12) to it },

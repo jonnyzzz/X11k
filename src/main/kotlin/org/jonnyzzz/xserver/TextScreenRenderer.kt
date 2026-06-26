@@ -57,6 +57,7 @@ internal object TextScreenRenderer {
                 append(" backingPlanes=").append(window.backingPlanes)
                 append(" backingPixel=").append(window.backingPixel)
                 append(" saveUnder=").append(window.saveUnder)
+                append(" overrideRedirect=").append(window.overrideRedirect)
                 append(" colormap=").append(window.colormapIdHex ?: "none")
                 append(" cursor=").append(window.cursorIdHex ?: "none")
                 append(" mapped=").append(window.mapped)
