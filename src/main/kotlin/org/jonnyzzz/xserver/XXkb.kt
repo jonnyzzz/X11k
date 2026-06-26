@@ -13,6 +13,7 @@ internal object XXkb {
     const val GetControls = 6
     const val GetIndicatorState = 12
     const val GetIndicatorMap = 13
+    const val GetNamedIndicator = 15
 
     const val BoolCtrlRepeatKeys = 1 shl 0
     const val DefaultMouseKeysButton = 1
@@ -36,7 +37,7 @@ internal object XXkb {
             GetIndicatorState -> "GetIndicatorState"
             GetIndicatorMap -> "GetIndicatorMap"
             14 -> "SetIndicatorMap"
-            15 -> "GetNamedIndicator"
+            GetNamedIndicator -> "GetNamedIndicator"
             16 -> "SetNamedIndicator"
             17 -> "GetNames"
             18 -> "SetNames"
