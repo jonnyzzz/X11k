@@ -5221,7 +5221,7 @@ class XCoreDrawingProtocolTest {
                 assertEquals(1, pointer[0].toInt())
                 assertEquals(3, u16le(pointer, 2))
                 val stateJson = httpGet(server.localPort, "/state.json")
-                assertContains(stateJson, """"passiveButtonGrabs":[{"window":"0x${WindowId.toString(16)}","ownerEvents":true,"eventMask":"0xc","pointerMode":0,"keyboardMode":0,"confineTo":null,"cursor":null,"button":0,"buttonName":"AnyButton","modifiers":32768,"modifiersName":"AnyModifier"}]""")
+                assertContains(stateJson, """"passiveButtonGrabs":[{"window":"0x${WindowId.toString(16)}","ownerEvents":true,"eventMask":"0xc","pointerMode":0,"keyboardMode":0,"confineTo":null,"cursor":null,"button":0,"buttonName":"AnyButton","modifiers":32768,"modifiersName":"AnyModifier","releasedCombinations":[]}]""")
             }
             server.close()
             serverThread.join(1_000)
@@ -5258,33 +5258,148 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
-    fun `UngrabButton specific combination does not clear wildcard passive grab`() {
+    fun `UngrabButton releases exact combinations from wildcard passive button grab`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
-            Socket("127.0.0.1", server.localPort).use { socket ->
-                socket.soTimeout = 2_000
-                setup(socket)
-                val out = socket.getOutputStream()
-                out.write(createWindowRequest(WindowId))
-                out.write(grabButtonRequest(WindowId, button = 0, modifiers = 0x8000))
-                out.write(ungrabButtonRequest(WindowId, button = 1, modifiers = 0))
-                out.write(queryPointerRequest())
-                out.flush()
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { other ->
+                    owner.soTimeout = 2_000
+                    other.soTimeout = 2_000
+                    setup(owner)
+                    setup(other)
 
-                val pointer = readReply(socket.getInputStream())
-                assertEquals(1, pointer[0].toInt())
-                assertEquals(4, u16le(pointer, 2))
-                val stateJson = httpGet(server.localPort, "/state.json")
-                assertContains(stateJson, """"button":0,"buttonName":"AnyButton","modifiers":32768""")
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(grabButtonRequest(WindowId, button = 0, modifiers = 0x8000))
+                    ownerOut.write(ungrabButtonRequest(WindowId, button = 1, modifiers = 0))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
 
-                out.write(ungrabButtonRequest(WindowId, button = 0, modifiers = 0x8000))
-                out.write(queryPointerRequest())
-                out.flush()
+                    val ownerPointer = readReply(owner.getInputStream())
+                    assertEquals(1, ownerPointer[0].toInt())
+                    assertEquals(4, u16le(ownerPointer, 2))
+                    val partiallyReleasedJson = httpGet(server.localPort, "/state.json")
+                    assertContains(partiallyReleasedJson, """"button":0,"buttonName":"AnyButton","modifiers":32768""")
+                    assertContains(partiallyReleasedJson, """"releasedCombinations":[{"button":1,"buttonName":"1","modifiers":0,"modifiersName":"0x0"}]""")
 
-                val clearedPointer = readReply(socket.getInputStream())
-                assertEquals(1, clearedPointer[0].toInt())
-                assertEquals(6, u16le(clearedPointer, 2))
-                assertContains(httpGet(server.localPort, "/state.json"), """"passiveButtonGrabs":[]""")
+                    val otherOut = other.getOutputStream()
+                    otherOut.write(grabButtonRequest(WindowId, button = 1, modifiers = 0))
+                    otherOut.write(queryPointerRequest())
+                    otherOut.write(grabButtonRequest(WindowId, button = 2, modifiers = 0))
+                    otherOut.write(queryPointerRequest())
+                    otherOut.flush()
+
+                    val otherPointer = readReply(other.getInputStream())
+                    assertEquals(1, otherPointer[0].toInt())
+                    assertEquals(2, u16le(otherPointer, 2))
+                    assertError(other.getInputStream(), error = 10, opcode = 28, badValue = 0, sequence = 3)
+                    val recoveredPointer = readReply(other.getInputStream())
+                    assertEquals(1, recoveredPointer[0].toInt())
+                    assertEquals(4, u16le(recoveredPointer, 2))
+                    val stateJson = httpGet(server.localPort, "/state.json")
+                    assertContains(stateJson, """"button":0,"buttonName":"AnyButton","modifiers":32768""")
+                    assertContains(stateJson, """"releasedCombinations":[{"button":1,"buttonName":"1","modifiers":0,"modifiersName":"0x0"}]""")
+                    assertContains(stateJson, """},{"window":"0x${WindowId.toString(16)}","ownerEvents":false,"eventMask":"0xc","pointerMode":0,"keyboardMode":0,"confineTo":null,"cursor":null,"button":1,"buttonName":"1","modifiers":0""")
+                    assertFalse(stateJson.contains(""""button":2,"buttonName":"2","modifiers":0"""))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UngrabButton preserves wildcard modifier release patterns in state`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { other ->
+                    owner.soTimeout = 2_000
+                    other.soTimeout = 2_000
+                    setup(owner)
+                    setup(other)
+
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(grabButtonRequest(WindowId, button = 0, modifiers = 0x8000))
+                    ownerOut.write(ungrabButtonRequest(WindowId, button = 1, modifiers = 0x8000))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    val pointer = readReply(owner.getInputStream())
+                    assertEquals(1, pointer[0].toInt())
+                    assertEquals(4, u16le(pointer, 2))
+                    val stateJson = httpGet(server.localPort, "/state.json")
+                    assertContains(stateJson, """"button":0,"buttonName":"AnyButton","modifiers":32768""")
+                    assertContains(stateJson, """"releasedCombinations":[{"button":1,"buttonName":"1","modifiers":32768,"modifiersName":"AnyModifier"}]""")
+                    assertEquals(1, """"button":1,"buttonName":"1","modifiers":32768,"modifiersName":"AnyModifier"""".toRegex().findAll(stateJson).count())
+
+                    val otherOut = other.getOutputStream()
+                    otherOut.write(grabButtonRequest(WindowId, button = 1, modifiers = 5))
+                    otherOut.write(queryPointerRequest())
+                    otherOut.write(grabButtonRequest(WindowId, button = 2, modifiers = 5))
+                    otherOut.write(queryPointerRequest())
+                    otherOut.flush()
+
+                    val releasedPointer = readReply(other.getInputStream())
+                    assertEquals(1, releasedPointer[0].toInt())
+                    assertEquals(2, u16le(releasedPointer, 2))
+                    assertError(other.getInputStream(), error = 10, opcode = 28, badValue = 0, sequence = 3)
+                    val recoveredPointer = readReply(other.getInputStream())
+                    assertEquals(1, recoveredPointer[0].toInt())
+                    assertEquals(4, u16le(recoveredPointer, 2))
+                    val updatedJson = httpGet(server.localPort, "/state.json")
+                    assertContains(updatedJson, """},{"window":"0x${WindowId.toString(16)}","ownerEvents":false,"eventMask":"0xc","pointerMode":0,"keyboardMode":0,"confineTo":null,"cursor":null,"button":1,"buttonName":"1","modifiers":5""")
+                    assertFalse(updatedJson.contains(""""button":2,"buttonName":"2","modifiers":5"""))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UngrabButton honors AnyButton release patterns during conflict checks`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { other ->
+                    owner.soTimeout = 2_000
+                    other.soTimeout = 2_000
+                    setup(owner)
+                    setup(other)
+
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(grabButtonRequest(WindowId, button = 0, modifiers = 0x8000))
+                    ownerOut.write(ungrabButtonRequest(WindowId, button = 0, modifiers = 2))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    val ownerPointer = readReply(owner.getInputStream())
+                    assertEquals(1, ownerPointer[0].toInt())
+                    assertEquals(4, u16le(ownerPointer, 2))
+                    val stateJson = httpGet(server.localPort, "/state.json")
+                    assertContains(stateJson, """"releasedCombinations":[{"button":0,"buttonName":"AnyButton","modifiers":2,"modifiersName":"0x2"}]""")
+
+                    val otherOut = other.getOutputStream()
+                    otherOut.write(grabButtonRequest(WindowId, button = 1, modifiers = 2))
+                    otherOut.write(queryPointerRequest())
+                    otherOut.write(grabButtonRequest(WindowId, button = 1, modifiers = 3))
+                    otherOut.write(queryPointerRequest())
+                    otherOut.flush()
+
+                    val releasedPointer = readReply(other.getInputStream())
+                    assertEquals(1, releasedPointer[0].toInt())
+                    assertEquals(2, u16le(releasedPointer, 2))
+                    assertError(other.getInputStream(), error = 10, opcode = 28, badValue = 0, sequence = 3)
+                    val recoveredPointer = readReply(other.getInputStream())
+                    assertEquals(1, recoveredPointer[0].toInt())
+                    assertEquals(4, u16le(recoveredPointer, 2))
+                    val updatedJson = httpGet(server.localPort, "/state.json")
+                    assertContains(updatedJson, """},{"window":"0x${WindowId.toString(16)}","ownerEvents":false,"eventMask":"0xc","pointerMode":0,"keyboardMode":0,"confineTo":null,"cursor":null,"button":1,"buttonName":"1","modifiers":2""")
+                    assertFalse(updatedJson.contains(""""button":1,"buttonName":"1","modifiers":3"""))
+                }
             }
             server.close()
             serverThread.join(1_000)

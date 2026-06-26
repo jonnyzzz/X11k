@@ -785,11 +785,20 @@ internal class X11State(
     @Synchronized
     fun grabButton(grab: XPassiveButtonGrab): Boolean {
         if (passiveButtonGrabs.any { it.owner != grab.owner && passiveButtonGrabConflicts(it, grab) }) return false
-        passiveButtonGrabs.removeIf {
-            it.owner == grab.owner &&
-                it.windowId == grab.windowId &&
-                it.button == grab.button &&
-                it.modifiers == grab.modifiers
+        var index = passiveButtonGrabs.lastIndex
+        while (index >= 0) {
+            val existing = passiveButtonGrabs[index]
+            if (existing.owner == grab.owner && existing.windowId == grab.windowId) {
+                val releasedCombinations = buttonGrabReleasedCombinations(existing, grab.button, grab.modifiers)
+                if (releasedCombinations != null) {
+                    if (buttonGrabFullyReleased(existing, releasedCombinations)) {
+                        passiveButtonGrabs.removeAt(index)
+                    } else {
+                        passiveButtonGrabs[index] = existing.copy(releasedCombinations = releasedCombinations)
+                    }
+                }
+            }
+            index--
         }
         passiveButtonGrabs += grab
         return true
@@ -797,11 +806,20 @@ internal class X11State(
 
     @Synchronized
     fun ungrabButton(owner: XEventSink, windowId: Int, button: Int, modifiers: Int) {
-        passiveButtonGrabs.removeIf {
-            it.owner == owner &&
-                it.windowId == windowId &&
-                requestedButtonRemovesGrab(button, it.button) &&
-                requestedModifierRemovesGrab(modifiers, it.modifiers)
+        var index = passiveButtonGrabs.lastIndex
+        while (index >= 0) {
+            val grab = passiveButtonGrabs[index]
+            if (grab.owner == owner && grab.windowId == windowId) {
+                val releasedCombinations = buttonGrabReleasedCombinations(grab, button, modifiers)
+                if (releasedCombinations != null) {
+                    if (buttonGrabFullyReleased(grab, releasedCombinations)) {
+                        passiveButtonGrabs.removeAt(index)
+                    } else {
+                        passiveButtonGrabs[index] = grab.copy(releasedCombinations = releasedCombinations)
+                    }
+                }
+            }
+            index--
         }
     }
 
@@ -989,24 +1007,78 @@ internal class X11State(
     }
 
     private fun passiveButtonGrabConflicts(left: XPassiveButtonGrab, right: XPassiveButtonGrab): Boolean =
-        left.windowId == right.windowId &&
-            passiveButtonMatches(left.button, right.button) &&
-            passiveModifierMatches(left.modifiers, right.modifiers)
+        left.windowId == right.windowId && concreteButtonGrabOverlap(left, right)
 
-    private fun passiveButtonMatches(left: Int, right: Int): Boolean =
-        left == AnyButton || right == AnyButton || left == right
+    private fun concreteButtonGrabOverlap(left: XPassiveButtonGrab, right: XPassiveButtonGrab): Boolean {
+        val buttons = intersectRanges(buttonRange(left.button), buttonRange(right.button)) ?: return false
+        val modifiers = intersectRanges(modifierRange(left.modifiers), modifierRange(right.modifiers)) ?: return false
+        for (button in buttons) {
+            for (modifier in modifiers) {
+                if (!buttonGrabCombinationReleased(left, button, modifier) && !buttonGrabCombinationReleased(right, button, modifier)) return true
+            }
+        }
+        return false
+    }
 
-    private fun passiveModifierMatches(left: Int, right: Int): Boolean =
-        left == AnyModifier || right == AnyModifier || left == right
+    private fun buttonGrabReleasedCombinations(grab: XPassiveButtonGrab, button: Int, modifiers: Int): Set<XPassiveButtonGrabCombination>? {
+        val releasedButton = intersectButtonPattern(grab.button, button) ?: return null
+        val releasedModifiers = intersectModifierPattern(grab.modifiers, modifiers) ?: return null
+        return addButtonGrabRelease(
+            grab.releasedCombinations,
+            XPassiveButtonGrabCombination(releasedButton, releasedModifiers),
+        )
+    }
+
+    private fun buttonGrabFullyReleased(grab: XPassiveButtonGrab, releasedCombinations: Set<XPassiveButtonGrabCombination>): Boolean {
+        for (button in buttonRange(grab.button)) {
+            for (modifier in modifierRange(grab.modifiers)) {
+                if (!buttonGrabCombinationReleased(releasedCombinations, button, modifier)) return false
+            }
+        }
+        return true
+    }
+
+    private fun buttonGrabCombinationReleased(grab: XPassiveButtonGrab, button: Int, modifiers: Int): Boolean =
+        buttonGrabCombinationReleased(grab.releasedCombinations, button, modifiers)
+
+    private fun buttonGrabCombinationReleased(
+        releasedCombinations: Set<XPassiveButtonGrabCombination>,
+        button: Int,
+        modifiers: Int,
+    ): Boolean =
+        releasedCombinations.any {
+            buttonPatternCovers(it.button, button) && modifierPatternCovers(it.modifiers, modifiers)
+        }
+
+    private fun addButtonGrabRelease(
+        releasedCombinations: Set<XPassiveButtonGrabCombination>,
+        release: XPassiveButtonGrabCombination,
+    ): Set<XPassiveButtonGrabCombination> {
+        if (releasedCombinations.any { buttonGrabPatternCovers(it, release) }) return releasedCombinations
+        return releasedCombinations
+            .filterNot { buttonGrabPatternCovers(release, it) }
+            .toSet() + release
+    }
+
+    private fun buttonGrabPatternCovers(left: XPassiveButtonGrabCombination, right: XPassiveButtonGrabCombination): Boolean =
+        buttonPatternCovers(left.button, right.button) && modifierPatternCovers(left.modifiers, right.modifiers)
+
+    private fun intersectButtonPattern(left: Int, right: Int): Int? =
+        when {
+            left == right -> left
+            left == AnyButton -> right
+            right == AnyButton -> left
+            else -> null
+        }
+
+    private fun buttonPatternCovers(pattern: Int, concreteButton: Int): Boolean =
+        pattern == AnyButton || pattern == concreteButton
+
+    private fun buttonRange(button: Int): IntRange =
+        if (button == AnyButton) 1..255 else button..button
 
     private fun passiveKeyGrabConflicts(left: XPassiveKeyGrab, right: XPassiveKeyGrab): Boolean =
         left.windowId == right.windowId && concreteKeyGrabOverlap(left, right)
-
-    private fun requestedButtonRemovesGrab(requested: Int, grabbed: Int): Boolean =
-        requested == AnyButton || requested == grabbed
-
-    private fun requestedModifierRemovesGrab(requested: Int, grabbed: Int): Boolean =
-        requested == AnyModifier || requested == grabbed
 
     private fun concreteKeyGrabOverlap(left: XPassiveKeyGrab, right: XPassiveKeyGrab): Boolean {
         val keys = intersectRanges(keyRange(left.key), keyRange(right.key)) ?: return false
@@ -4641,6 +4713,7 @@ internal data class XPassiveButtonGrab(
     val cursor: Int?,
     val button: Int,
     val modifiers: Int,
+    val releasedCombinations: Set<XPassiveButtonGrabCombination> = emptySet(),
 ) {
     fun snapshot(): XPassiveButtonGrabSnapshot =
         XPassiveButtonGrabSnapshot(
@@ -4653,7 +4726,18 @@ internal data class XPassiveButtonGrab(
             cursor = cursor,
             button = button,
             modifiers = modifiers,
+            releasedCombinations = releasedCombinations.sortedWith(
+                compareBy<XPassiveButtonGrabCombination> { it.button }.thenBy { it.modifiers },
+            ),
         )
+}
+
+internal data class XPassiveButtonGrabCombination(
+    val button: Int,
+    val modifiers: Int,
+) {
+    val buttonName: String get() = if (button == 0) "AnyButton" else button.toString()
+    val modifiersName: String get() = if (modifiers == 0x8000) "AnyModifier" else "0x${modifiers.toUInt().toString(16)}"
 }
 
 internal data class XPassiveButtonGrabSnapshot(
@@ -4666,6 +4750,7 @@ internal data class XPassiveButtonGrabSnapshot(
     val cursor: Int?,
     val button: Int,
     val modifiers: Int,
+    val releasedCombinations: List<XPassiveButtonGrabCombination>,
 ) {
     val windowIdHex: String get() = "0x${windowId.toUInt().toString(16)}"
     val eventMaskHex: String get() = "0x${eventMask.toUInt().toString(16)}"

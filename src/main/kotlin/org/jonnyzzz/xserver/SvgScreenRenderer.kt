@@ -215,7 +215,12 @@ internal object SvgScreenRenderer {
                 grab.confineToHex?.let { append('"').append(it).append('"') } ?: append("null")
                 append(""","cursor":""")
                 grab.cursorHex?.let { append('"').append(it).append('"') } ?: append("null")
-                append(""","button":${grab.button},"buttonName":"${escapeJson(grab.buttonName)}","modifiers":${grab.modifiers},"modifiersName":"${escapeJson(grab.modifiersName)}"""")
+                append(""","button":${grab.button},"buttonName":"${escapeJson(grab.buttonName)}","modifiers":${grab.modifiers},"modifiersName":"${escapeJson(grab.modifiersName)}","releasedCombinations":[""")
+                grab.releasedCombinations.forEachIndexed { combinationIndex, combination ->
+                    if (combinationIndex > 0) append(',')
+                    append("""{"button":${combination.button},"buttonName":"${escapeJson(combination.buttonName)}","modifiers":${combination.modifiers},"modifiersName":"${escapeJson(combination.modifiersName)}"}""")
+                }
+                append(']')
                 append('}')
             }
             append("""],"passiveKeyGrabs":[""")
