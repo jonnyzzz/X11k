@@ -111,6 +111,10 @@ internal class X11Connection(
                 render(minorOpcode, body, opcode)
                 return
             }
+            if (extension.name == "MIT-SHM") {
+                shm(minorOpcode, body, opcode)
+                return
+            }
         }
         when (opcode) {
             1 -> createWindow(minorOpcode, body)
@@ -340,6 +344,29 @@ internal class X11Connection(
             36 -> renderCreateConicalGradient(body)
             else -> unsupportedRequest(majorOpcode, minorOpcode, "RENDER.$operation")
         }
+    }
+
+    private fun shm(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        when (minorOpcode) {
+            XShm.QueryVersion -> shmQueryVersion(body)
+            else -> shmBadImplementation(majorOpcode, minorOpcode)
+        }
+    }
+
+    private fun shmQueryVersion(body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = XShm.MajorOpcode, minorOpcode = XShm.QueryVersion, badValue = 0)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put16(reply, 8, XShm.MajorVersion)
+        byteOrder.put16(reply, 10, XShm.MinorVersion)
+        byteOrder.put16(reply, 12, 0)
+        byteOrder.put16(reply, 14, 0)
+        reply[16] = XShm.ZPixmap.toByte()
+        write(reply)
+    }
+
+    private fun shmBadImplementation(majorOpcode: Int, minorOpcode: Int) {
+        state.recordUnsupportedRequest(majorOpcode, minorOpcode, "MIT-SHM.${XShm.operationName(minorOpcode)}")
+        writeError(error = 17, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = 0)
     }
 
     private fun renderQueryVersion(body: ByteArray) {
@@ -4125,6 +4152,7 @@ internal class X11Connection(
             XGlx.MajorOpcode -> "GLX.${XGlx.operationName(minorOpcode)}"
             XBigRequests.MajorOpcode -> "BIG-REQUESTS.$minorOpcode"
             XRender.MajorOpcode -> "RENDER.${XRender.operationName(minorOpcode)}"
+            XShm.MajorOpcode -> "MIT-SHM.${XShm.operationName(minorOpcode)}"
             1 -> "CreateWindow"
             2 -> "ChangeWindowAttributes"
             3 -> "GetWindowAttributes"

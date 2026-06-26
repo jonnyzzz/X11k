@@ -106,6 +106,12 @@ internal class X11State(
             firstEvent = XRender.FirstEvent,
             firstError = XRender.FirstError,
         ),
+        XExtension(
+            name = "MIT-SHM",
+            majorOpcode = XShm.MajorOpcode,
+            firstEvent = XShm.FirstEvent,
+            firstError = XShm.FirstError,
+        ),
     )
 
     init {
