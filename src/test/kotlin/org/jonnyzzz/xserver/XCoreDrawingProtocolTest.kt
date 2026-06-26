@@ -6044,6 +6044,62 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreateWindow and ChangeWindowAttributes validate and preserve border attributes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingPixmap = PixmapId + 504
+                val parent = WindowId
+                val child = WindowId + 1
+                val copied = WindowId + 2
+                val changed = WindowId + 3
+                val pixmapped = WindowId + 4
+                val validPixmap = PixmapId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent, borderPixel = 0x0001_0203))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2, depth = 8, drawable = parent))
+                out.write(createPixmapRequest(validPixmap, width = 2, height = 2, drawable = parent))
+                out.write(createWindowRequest(child, parent = parent, borderPixmap = missingPixmap))
+                out.write(changeWindowAttributesRawRequest(parent, 1 shl 2, missingPixmap))
+                out.write(createWindowRequest(child, parent = parent, borderPixmap = PixmapId))
+                out.write(changeWindowAttributesRawRequest(parent, 1 shl 2, PixmapId))
+                out.write(createWindowRequest(copied, parent = parent))
+                out.write(createWindowRequest(changed, parent = parent, borderPixmap = XWindowBorder.CopyFromParent))
+                out.write(changeWindowAttributesRawRequest(changed, (1 shl 2) or (1 shl 3), XWindowBorder.CopyFromParent, 0x0004_0506))
+                out.write(createWindowRequest(pixmapped, parent = parent, borderPixmap = validPixmap))
+                out.write(changeWindowAttributesRawRequest(X11Ids.RootWindow, 1 shl 3, 0x0007_0809))
+                out.write(changeWindowAttributesRawRequest(X11Ids.RootWindow, 1 shl 2, XWindowBorder.CopyFromParent))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 4, opcode = 1, badValue = missingPixmap, sequence = 4)
+                assertError(socket.getInputStream(), error = 4, opcode = 2, badValue = missingPixmap, sequence = 5)
+                assertError(socket.getInputStream(), error = 8, opcode = 1, badValue = PixmapId, sequence = 6)
+                assertError(socket.getInputStream(), error = 8, opcode = 2, badValue = PixmapId, sequence = 7)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(14, u16le(pointer, 2))
+
+                val json = httpGet(server.localPort, "/state.json")
+                val rootJson = Regex("""\{"id":"0x${X11Ids.RootWindow.toUInt().toString(16)}".*?\}""").find(json)?.value.orEmpty()
+                val copiedJson = Regex("""\{"id":"0x${copied.toUInt().toString(16)}".*?\}""").find(json)?.value.orEmpty()
+                val changedJson = Regex("""\{"id":"0x${changed.toUInt().toString(16)}".*?\}""").find(json)?.value.orEmpty()
+                val pixmappedJson = Regex("""\{"id":"0x${pixmapped.toUInt().toString(16)}".*?\}""").find(json)?.value.orEmpty()
+                assertContains(rootJson, """"borderPixel":0""")
+                assertContains(rootJson, """"borderPixmap":null""")
+                assertContains(copiedJson, """"borderPixel":66051""")
+                assertContains(copiedJson, """"borderPixmap":null""")
+                assertContains(changedJson, """"borderPixel":263430""")
+                assertContains(changedJson, """"borderPixmap":null""")
+                assertContains(pixmappedJson, """"borderPixmap":"0x${validPixmap.toUInt().toString(16)}"""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CreateWindow and ChangeWindowAttributes preserve scalar window attributes`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -11698,6 +11754,8 @@ class XCoreDrawingProtocolTest {
         visual: Int = X11Ids.RootVisual,
         borderWidth: Int = 0,
         backgroundPixmap: Int? = null,
+        borderPixmap: Int? = null,
+        borderPixel: Int? = null,
         bitGravity: Int? = null,
         winGravity: Int? = null,
         backingStore: Int? = null,
@@ -11714,6 +11772,8 @@ class XCoreDrawingProtocolTest {
     ): ByteArray {
         val extraValues = listOfNotNull(
             backgroundPixmap?.let { (1 shl 0) to it },
+            borderPixmap?.let { (1 shl 2) to it },
+            borderPixel?.let { (1 shl 3) to it },
             bitGravity?.let { (1 shl 4) to it },
             winGravity?.let { (1 shl 5) to it },
             backingStore?.let { (1 shl 6) to it },

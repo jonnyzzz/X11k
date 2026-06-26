@@ -1972,6 +1972,7 @@ internal class X11Connection(
         val attributes = windowAttributeValues(body, maskOffset = 24, valuesOffset = 28)
         if (!validateScalarWindowAttributes(attributes, opcode = 1)) return
         if (!validateBackgroundPixmap(attributes.backgroundPixmapId, depth, parentWindow.depth, opcode = 1)) return
+        if (!validateBorderPixmap(attributes.borderPixmapId, depth, parentWindow.depth, opcode = 1)) return
         attributes.eventMask?.let {
             if ((it and XEventMasks.ValidCoreMask.inv()) != 0) return writeError(error = 2, opcode = 1, badValue = it)
         }
@@ -1983,6 +1984,15 @@ internal class X11Connection(
         }
         attributes.cursorId?.let {
             if (it != 0 && !state.hasCursor(it)) return writeError(error = 6, opcode = 1, badValue = it)
+        }
+        val copiedBorderPixmapId = attributes.borderPixmapId?.let {
+            if (it == XWindowBorder.CopyFromParent) parentWindow.borderPixmapId else it
+        } ?: parentWindow.borderPixmapId
+        val borderPixmapId = copiedBorderPixmapId.takeIf { attributes.borderPixel == null }
+        val borderPixel = when {
+            attributes.borderPixel != null -> attributes.borderPixel
+            attributes.borderPixmapId == XWindowBorder.CopyFromParent -> parentWindow.borderPixel
+            else -> parentWindow.borderPixel
         }
         val colormapId = when {
             windowClass == XWindowClass.InputOnly -> null
@@ -2002,6 +2012,8 @@ internal class X11Connection(
             borderWidth = borderWidth,
             backgroundPixel = attributes.backgroundPixel ?: 0x00ff_ffff,
             backgroundPixmapId = attributes.backgroundPixmapId?.takeIf { it != 0 },
+            borderPixel = borderPixel,
+            borderPixmapId = borderPixmapId,
             bitGravity = attributes.bitGravity ?: XWindowGravity.Forget,
             winGravity = attributes.winGravity ?: XWindowGravity.NorthWest,
             backingStore = attributes.backingStore ?: XBackingStore.NotUseful,
@@ -2036,6 +2048,7 @@ internal class X11Connection(
         if (!validateScalarWindowAttributes(attributes, opcode = 2)) return
         val parentDepth = state.window(window.parentId)?.depth ?: window.depth
         if (!validateBackgroundPixmap(attributes.backgroundPixmapId, window.depth, parentDepth, opcode = 2)) return
+        if (!validateBorderPixmap(attributes.borderPixmapId, window.depth, parentDepth, opcode = 2)) return
         attributes.eventMask?.let {
             if ((it and XEventMasks.ValidCoreMask.inv()) != 0) return writeError(error = 2, opcode = 2, badValue = it)
             if (!state.canSelectEvents(this, windowId, it)) return writeError(error = 10, opcode = 2, badValue = 0)
@@ -2053,6 +2066,16 @@ internal class X11Connection(
         if (attributes.backgroundPixel != null || attributes.backgroundPixmapId != null) {
             state.updateWindowAttributes(windowId, backgroundPixel = attributes.backgroundPixel, backgroundPixmapId = attributes.backgroundPixmapId)
         }
+        if (attributes.borderPixmapId != null) {
+            val parentWindow = state.window(window.parentId)
+            state.updateWindowAttributes(
+                windowId,
+                borderPixel = if (attributes.borderPixmapId == XWindowBorder.CopyFromParent) parentWindow?.borderPixel ?: 0 else null,
+                borderPixmapId = if (attributes.borderPixmapId == XWindowBorder.CopyFromParent) parentWindow?.borderPixmapId else attributes.borderPixmapId,
+                borderPixmapIdChanged = true,
+            )
+        }
+        attributes.borderPixel?.let { state.updateWindowAttributes(windowId, borderPixel = it, borderPixmapId = null, borderPixmapIdChanged = true) }
         if (attributes.bitGravity != null || attributes.winGravity != null || attributes.backingStore != null ||
             attributes.backingPlanes != null || attributes.backingPixel != null || attributes.saveUnder != null) {
             state.updateWindowAttributes(
@@ -4987,6 +5010,8 @@ internal class X11Connection(
         var offset = valuesOffset
         var backgroundPixmapId: Int? = null
         var backgroundPixel: Int? = null
+        var borderPixmapId: Int? = null
+        var borderPixel: Int? = null
         var bitGravity: Int? = null
         var winGravity: Int? = null
         var backingStore: Int? = null
@@ -5008,6 +5033,8 @@ internal class X11Connection(
             when (bit) {
                 0 -> backgroundPixmapId = value
                 1 -> backgroundPixel = value
+                2 -> borderPixmapId = value
+                3 -> borderPixel = value
                 4 -> bitGravity = value8
                 5 -> winGravity = value8
                 6 -> backingStore = value8
@@ -5031,6 +5058,8 @@ internal class X11Connection(
         return WindowAttributeValues(
             backgroundPixmapId = backgroundPixmapId,
             backgroundPixel = backgroundPixel,
+            borderPixmapId = borderPixmapId,
+            borderPixel = borderPixel,
             bitGravity = bitGravity,
             winGravity = winGravity,
             backingStore = backingStore,
@@ -5096,6 +5125,26 @@ internal class X11Connection(
         }
         if (pixmap.rootId != X11Ids.RootWindow || pixmap.depth != windowDepth) {
             writeError(error = 8, opcode = opcode, badValue = backgroundPixmapId)
+            return false
+        }
+        return true
+    }
+
+    private fun validateBorderPixmap(borderPixmapId: Int?, windowDepth: Int, parentDepth: Int, opcode: Int): Boolean {
+        if (borderPixmapId == null) return true
+        if (borderPixmapId == XWindowBorder.CopyFromParent) {
+            if (windowDepth != parentDepth) {
+                writeError(error = 8, opcode = opcode, badValue = borderPixmapId)
+                return false
+            }
+            return true
+        }
+        val pixmap = state.pixmap(borderPixmapId) ?: run {
+            writeError(error = 4, opcode = opcode, badValue = borderPixmapId)
+            return false
+        }
+        if (pixmap.rootId != X11Ids.RootWindow || pixmap.depth != windowDepth) {
+            writeError(error = 8, opcode = opcode, badValue = borderPixmapId)
             return false
         }
         return true
@@ -6562,6 +6611,8 @@ internal class X11Connection(
 private data class WindowAttributeValues(
     val backgroundPixmapId: Int? = null,
     val backgroundPixel: Int? = null,
+    val borderPixmapId: Int? = null,
+    val borderPixel: Int? = null,
     val bitGravity: Int? = null,
     val winGravity: Int? = null,
     val backingStore: Int? = null,
@@ -6593,6 +6644,10 @@ internal object XBackingStore {
 internal object XWindowBackground {
     const val None = 0
     const val ParentRelative = 1
+}
+
+internal object XWindowBorder {
+    const val CopyFromParent = 0
 }
 
 internal object XCloseDownMode {

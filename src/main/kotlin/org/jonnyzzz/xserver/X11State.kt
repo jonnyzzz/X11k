@@ -1545,6 +1545,9 @@ internal class X11State(
         id: Int,
         backgroundPixel: Int? = null,
         backgroundPixmapId: Int? = null,
+        borderPixel: Int? = null,
+        borderPixmapId: Int? = null,
+        borderPixmapIdChanged: Boolean = false,
         bitGravity: Int? = null,
         winGravity: Int? = null,
         backingStore: Int? = null,
@@ -1565,6 +1568,12 @@ internal class X11State(
         }
         if (backgroundPixmapId != null) {
             window.backgroundPixmapId = backgroundPixmapId.takeIf { it != 0 }
+        }
+        borderPixel?.let {
+            window.borderPixel = it
+        }
+        if (borderPixmapIdChanged) {
+            window.borderPixmapId = borderPixmapId
         }
         bitGravity?.let {
             window.bitGravity = it
@@ -1641,6 +1650,8 @@ internal class X11State(
                 visibleHeight = visible?.height ?: 0,
                 backgroundPixel = window.backgroundPixel,
                 backgroundPixmapId = window.backgroundPixmapId,
+                borderPixel = window.borderPixel,
+                borderPixmapId = window.borderPixmapId,
                 framebufferDataUri = window.framebuffer.toDataUri(),
                 windowClass = window.windowClass,
                 depth = window.depth,
@@ -4089,6 +4100,8 @@ internal data class XWindow(
     var mapped: Boolean = false,
     var backgroundPixel: Int = 0x00ff_ffff,
     var backgroundPixmapId: Int? = null,
+    var borderPixel: Int = 0,
+    var borderPixmapId: Int? = null,
     var bitGravity: Int = XWindowGravity.Forget,
     var winGravity: Int = XWindowGravity.NorthWest,
     var backingStore: Int = XBackingStore.NotUseful,
@@ -4858,6 +4871,8 @@ internal data class XWindowSnapshot(
     val visibleHeight: Int,
     val backgroundPixel: Int,
     val backgroundPixmapId: Int?,
+    val borderPixel: Int,
+    val borderPixmapId: Int?,
     val framebufferDataUri: String?,
     val windowClass: Int,
     val depth: Int,
@@ -4875,6 +4890,7 @@ internal data class XWindowSnapshot(
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val parentIdHex: String get() = "0x${parentId.toUInt().toString(16)}"
     val backgroundPixmapIdHex: String? get() = backgroundPixmapId?.let { "0x${it.toUInt().toString(16)}" }
+    val borderPixmapIdHex: String? get() = borderPixmapId?.let { "0x${it.toUInt().toString(16)}" }
     val className: String get() = when (windowClass) {
         XWindowClass.InputOutput -> "InputOutput"
         XWindowClass.InputOnly -> "InputOnly"
