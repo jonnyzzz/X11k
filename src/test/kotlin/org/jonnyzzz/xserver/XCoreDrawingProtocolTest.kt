@@ -5925,6 +5925,7 @@ class XCoreDrawingProtocolTest {
                 out.write(changeWindowEventMaskRequest(missing, XEventMasks.PropertyChange))
                 out.write(changeWindowEventMaskRequest(WindowId, 0xfe00_0000.toInt()))
                 out.write(changeWindowAttributesRawRequest(WindowId, 1 shl 12, 1 shl 5))
+                out.write(changeWindowAttributesRawRequest(WindowId, 1 shl 14, PixmapId + 501))
                 out.write(changeWindowEventMaskRequest(WindowId, XEventMasks.PropertyChange))
                 out.write(queryPointerRequest())
                 out.flush()
@@ -5936,8 +5937,9 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 3, opcode = 2, badValue = missing, sequence = 6)
                 assertError(socket.getInputStream(), error = 2, opcode = 2, badValue = 0xfe00_0000.toInt(), sequence = 7)
                 assertError(socket.getInputStream(), error = 2, opcode = 2, badValue = 1 shl 5, sequence = 8)
+                assertError(socket.getInputStream(), error = 6, opcode = 2, badValue = PixmapId + 501, sequence = 9)
                 val pointer = readReply(socket.getInputStream())
-                assertEquals(10, u16le(pointer, 2))
+                assertEquals(11, u16le(pointer, 2))
             }
             server.close()
             serverThread.join(1_000)
@@ -5960,6 +5962,7 @@ class XCoreDrawingProtocolTest {
                 out.write(createWindowRawRequest(WindowId, width = 0))
                 out.write(createWindowRequest(WindowId, eventMask = 0xfe00_0000.toInt()))
                 out.write(createWindowRequest(WindowId, doNotPropagateMask = 1 shl 5))
+                out.write(createWindowRequest(WindowId, cursor = PixmapId + 502))
                 out.write(createWindowRequest(WindowId))
                 out.write(queryPointerRequest())
                 out.flush()
@@ -5971,8 +5974,52 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 2, opcode = 1, badValue = 0, sequence = 5)
                 assertError(socket.getInputStream(), error = 2, opcode = 1, badValue = 0xfe00_0000.toInt(), sequence = 6)
                 assertError(socket.getInputStream(), error = 2, opcode = 1, badValue = 1 shl 5, sequence = 7)
+                assertError(socket.getInputStream(), error = 6, opcode = 1, badValue = PixmapId + 502, sequence = 8)
                 val pointer = readReply(socket.getInputStream())
-                assertEquals(9, u16le(pointer, 2))
+                assertEquals(10, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CreateWindow and ChangeWindowAttributes preserve cursor in state snapshot`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val firstWindow = WindowId
+                val secondWindow = WindowId + 1
+                val source = PixmapId + 510
+                val cursor = PixmapId + 511
+                val out = socket.getOutputStream()
+                out.write(createPixmapRequest(source, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createCursorRequest(cursor, source = source, mask = 0))
+                out.write(createWindowRequest(firstWindow, cursor = cursor))
+                out.write(createWindowRequest(secondWindow))
+                out.write(changeWindowAttributesRawRequest(secondWindow, 1 shl 14, cursor))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointerAfterSet = readReply(socket.getInputStream())
+                assertEquals(6, u16le(pointerAfterSet, 2))
+                val stateJsonAfterSet = httpGet(server.localPort, "/state.json")
+                val firstWindowJson = Regex("""\{"id":"0x${firstWindow.toUInt().toString(16)}".*?\}""").find(stateJsonAfterSet)?.value.orEmpty()
+                val secondWindowJsonAfterSet = Regex("""\{"id":"0x${secondWindow.toUInt().toString(16)}".*?\}""").find(stateJsonAfterSet)?.value.orEmpty()
+                assertContains(firstWindowJson, """"cursor":"0x${cursor.toUInt().toString(16)}"""")
+                assertContains(secondWindowJsonAfterSet, """"cursor":"0x${cursor.toUInt().toString(16)}"""")
+
+                out.write(changeWindowAttributesRawRequest(secondWindow, 1 shl 14, 0))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointerAfterClear = readReply(socket.getInputStream())
+                assertEquals(8, u16le(pointerAfterClear, 2))
+                val stateJsonAfterClear = httpGet(server.localPort, "/state.json")
+                val secondWindowJsonAfterClear = Regex("""\{"id":"0x${secondWindow.toUInt().toString(16)}".*?\}""").find(stateJsonAfterClear)?.value.orEmpty()
+                assertContains(secondWindowJsonAfterClear, """"cursor":null""")
             }
             server.close()
             serverThread.join(1_000)
@@ -11448,11 +11495,13 @@ class XCoreDrawingProtocolTest {
         overrideRedirect: Boolean? = null,
         eventMask: Int? = null,
         doNotPropagateMask: Int? = null,
+        cursor: Int? = null,
     ): ByteArray {
         val extraValues = listOfNotNull(
             overrideRedirect?.let { (1 shl 9) to if (it) 1 else 0 },
             eventMask?.let { (1 shl 11) to it },
             doNotPropagateMask?.let { (1 shl 12) to it },
+            cursor?.let { (1 shl 14) to it },
         )
         val body = ByteArray(28 + extraValues.size * 4)
         put32le(body, 0, id)

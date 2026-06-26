@@ -1976,6 +1976,9 @@ internal class X11Connection(
         attributes.doNotPropagateMask?.let {
             if ((it and XEventMasks.ValidDeviceEventMask.inv()) != 0) return writeError(error = 2, opcode = 1, badValue = it)
         }
+        attributes.cursorId?.let {
+            if (it != 0 && !state.hasCursor(it)) return writeError(error = 6, opcode = 1, badValue = it)
+        }
         val window = XWindow(
             id = id,
             parentId = parent,
@@ -1991,6 +1994,7 @@ internal class X11Connection(
             backgroundPixmapId = attributes.backgroundPixmapId?.takeIf { it != 0 },
             overrideRedirect = attributes.overrideRedirect ?: false,
             doNotPropagateMask = attributes.doNotPropagateMask ?: 0,
+            cursorId = attributes.cursorId?.takeIf { it != 0 },
         )
         state.putWindow(window, this)
         own(id)
@@ -2019,11 +2023,15 @@ internal class X11Connection(
         attributes.doNotPropagateMask?.let {
             if ((it and XEventMasks.ValidDeviceEventMask.inv()) != 0) return writeError(error = 2, opcode = 2, badValue = it)
         }
+        attributes.cursorId?.let {
+            if (it != 0 && !state.hasCursor(it)) return writeError(error = 6, opcode = 2, badValue = it)
+        }
         if (attributes.backgroundPixel != null || attributes.backgroundPixmapId != null) {
             state.updateWindowAttributes(windowId, backgroundPixel = attributes.backgroundPixel, backgroundPixmapId = attributes.backgroundPixmapId)
         }
         attributes.overrideRedirect?.let { state.updateWindowAttributes(windowId, overrideRedirect = it) }
         attributes.doNotPropagateMask?.let { state.updateWindowAttributes(windowId, doNotPropagateMask = it) }
+        attributes.cursorId?.let { state.updateWindowAttributes(windowId, cursorId = it.takeIf { id -> id != 0 }, cursorIdChanged = true) }
         attributes.eventMask?.let { state.selectEvents(this, windowId, it) }
     }
 
@@ -4945,6 +4953,7 @@ internal class X11Connection(
         var overrideRedirect: Boolean? = null
         var eventMask: Int? = null
         var doNotPropagateMask: Int? = null
+        var cursorId: Int? = null
         for (bit in 0..14) {
             if ((mask and (1 shl bit)) == 0) continue
             if (offset + 4 > body.size) break
@@ -4955,10 +4964,11 @@ internal class X11Connection(
                 9 -> overrideRedirect = value != 0
                 11 -> eventMask = value
                 12 -> doNotPropagateMask = value
+                14 -> cursorId = value
             }
             offset += 4
         }
-        return WindowAttributeValues(backgroundPixmapId, backgroundPixel, overrideRedirect, eventMask, doNotPropagateMask)
+        return WindowAttributeValues(backgroundPixmapId, backgroundPixel, overrideRedirect, eventMask, doNotPropagateMask, cursorId)
     }
 
     private fun validateGcValueLength(mask: Int, body: ByteArray, valuesOffset: Int, opcode: Int): Boolean {
@@ -6425,6 +6435,7 @@ private data class WindowAttributeValues(
     val overrideRedirect: Boolean? = null,
     val eventMask: Int? = null,
     val doNotPropagateMask: Int? = null,
+    val cursorId: Int? = null,
 )
 
 internal object XCloseDownMode {
