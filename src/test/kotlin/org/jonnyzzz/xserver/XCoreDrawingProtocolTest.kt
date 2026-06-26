@@ -5923,6 +5923,7 @@ class XCoreDrawingProtocolTest {
                 out.write(changeWindowAttributesRawRequest(WindowId, 0, 0))
                 out.write(changeWindowAttributesRawRequest(WindowId, 0x0000_8000, 0))
                 out.write(changeWindowEventMaskRequest(missing, XEventMasks.PropertyChange))
+                out.write(changeWindowEventMaskRequest(WindowId, 0xfe00_0000.toInt()))
                 out.write(changeWindowEventMaskRequest(WindowId, XEventMasks.PropertyChange))
                 out.write(queryPointerRequest())
                 out.flush()
@@ -5932,8 +5933,9 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 16, opcode = 2, badValue = 0, sequence = 4)
                 assertError(socket.getInputStream(), error = 2, opcode = 2, badValue = 0x0000_8000, sequence = 5)
                 assertError(socket.getInputStream(), error = 3, opcode = 2, badValue = missing, sequence = 6)
+                assertError(socket.getInputStream(), error = 2, opcode = 2, badValue = 0xfe00_0000.toInt(), sequence = 7)
                 val pointer = readReply(socket.getInputStream())
-                assertEquals(8, u16le(pointer, 2))
+                assertEquals(9, u16le(pointer, 2))
             }
             server.close()
             serverThread.join(1_000)

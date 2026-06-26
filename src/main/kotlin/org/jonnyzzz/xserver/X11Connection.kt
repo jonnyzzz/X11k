@@ -2007,6 +2007,7 @@ internal class X11Connection(
         }
         val attributes = windowAttributeValues(body, maskOffset = 4, valuesOffset = 8)
         attributes.eventMask?.let {
+            if ((it and XEventMasks.ValidCoreMask.inv()) != 0) return writeError(error = 2, opcode = 2, badValue = it)
             if (!state.canSelectEvents(this, windowId, it)) return writeError(error = 10, opcode = 2, badValue = 0)
         }
         if (attributes.backgroundPixel != null || attributes.backgroundPixmapId != null) {
