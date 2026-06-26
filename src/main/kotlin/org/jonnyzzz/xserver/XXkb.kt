@@ -13,6 +13,7 @@ internal object XXkb {
     const val GetState = 4
     const val LatchLockState = 5
     const val GetControls = 6
+    const val SetControls = 7
     const val GetMap = 8
     const val GetCompatMap = 10
     const val GetIndicatorState = 12
@@ -43,7 +44,7 @@ internal object XXkb {
             GetState -> "GetState"
             LatchLockState -> "LatchLockState"
             GetControls -> "GetControls"
-            7 -> "SetControls"
+            SetControls -> "SetControls"
             GetMap -> "GetMap"
             9 -> "SetMap"
             GetCompatMap -> "GetCompatMap"

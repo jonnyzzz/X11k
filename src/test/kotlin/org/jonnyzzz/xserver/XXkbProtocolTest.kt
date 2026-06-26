@@ -266,6 +266,49 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD SetControls updates supported RepeatKeys enabled state`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getControlsRequest())
+            out.write(setControlsRequest(affectEnabledControls = XXkb.BoolCtrlRepeatKeys, enabledControls = 0))
+            out.write(getControlsRequest())
+            out.write(getKeyboardControlRequest())
+            out.write(setControlsRequest(affectEnabledControls = XXkb.BoolCtrlRepeatKeys, enabledControls = XXkb.BoolCtrlRepeatKeys))
+            out.write(getControlsRequest())
+            out.write(getKeyboardControlRequest())
+            out.flush()
+
+            assertGetControls(readReply(socket.getInputStream()), sequence = 1, enabledControls = XXkb.BoolCtrlRepeatKeys)
+            assertGetControls(readReply(socket.getInputStream()), sequence = 3, enabledControls = 0)
+            val disabledCore = readReply(socket.getInputStream())
+            assertEquals(4, u16le(disabledCore, 2))
+            assertEquals(0, disabledCore[1].toInt() and 0xff)
+            assertGetControls(readReply(socket.getInputStream()), sequence = 6, enabledControls = XXkb.BoolCtrlRepeatKeys)
+            val enabledCore = readReply(socket.getInputStream())
+            assertEquals(7, u16le(enabledCore, 2))
+            assertEquals(1, enabledCore[1].toInt() and 0xff)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetControls ignores unsupported controls and validates fixed length`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(setControlsRequest(affectEnabledControls = 1 shl 9, enabledControls = 0))
+            out.write(getControlsRequest())
+            out.write(request(XXkb.MajorOpcode, XXkb.SetControls, ByteArray(92)))
+            out.write(request(XXkb.MajorOpcode, XXkb.SetControls, ByteArray(100)))
+            out.write(getControlsRequest())
+            out.flush()
+
+            assertGetControls(readReply(socket.getInputStream()), sequence = 2, enabledControls = XXkb.BoolCtrlRepeatKeys)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetControls)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.SetControls)
+            assertGetControls(readReply(socket.getInputStream()), sequence = 5, enabledControls = XXkb.BoolCtrlRepeatKeys)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetMap reports key range with no map parts`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -759,16 +802,16 @@ class XXkbProtocolTest {
     fun `XKEYBOARD unimplemented requests return BadImplementation and recover stream`() {
         withServer { socket, port ->
             val out = socket.getOutputStream()
-            out.write(request(XXkb.MajorOpcode, 7, ByteArray(96)))
+            out.write(request(XXkb.MajorOpcode, 9, ByteArray(32)))
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 7)
+            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 9)
             val version = readReply(socket.getInputStream())
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
 
-            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.SetControls:")
+            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.SetMap:")
         }
     }
 
@@ -860,6 +903,25 @@ class XXkbProtocolTest {
         val body = ByteArray(4)
         put16le(body, 0, 0x0100)
         return request(XXkb.MajorOpcode, XXkb.GetControls, body)
+    }
+
+    private fun getKeyboardControlRequest(): ByteArray =
+        request(103, 0, ByteArray(0))
+
+    private fun setControlsRequest(affectEnabledControls: Int, enabledControls: Int): ByteArray {
+        val body = ByteArray(96) { 0 }
+        put16le(body, 0, 0x0100)
+        body[14] = XXkb.DefaultMouseKeysButton.toByte()
+        body[15] = XXkb.DefaultGroupCount.toByte()
+        put32le(body, 20, affectEnabledControls)
+        put32le(body, 24, enabledControls)
+        put32le(body, 28, affectEnabledControls)
+        put16le(body, 32, XXkb.DefaultRepeatDelay)
+        put16le(body, 34, XXkb.DefaultRepeatInterval)
+        for (index in 64 until 96) {
+            body[index] = 0xff.toByte()
+        }
+        return request(XXkb.MajorOpcode, XXkb.SetControls, body)
     }
 
     private fun getMapRequest(full: Int, partial: Int): ByteArray {

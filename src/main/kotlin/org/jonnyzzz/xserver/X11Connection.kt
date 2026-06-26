@@ -381,6 +381,7 @@ internal class X11Connection(
             XXkb.GetState -> xkbGetState(body, majorOpcode)
             XXkb.LatchLockState -> xkbLatchLockState(body, majorOpcode)
             XXkb.GetControls -> xkbGetControls(body, majorOpcode)
+            XXkb.SetControls -> xkbSetControls(body, majorOpcode)
             XXkb.GetMap -> xkbGetMap(body, majorOpcode)
             XXkb.GetCompatMap -> xkbGetCompatMap(body, majorOpcode)
             XXkb.GetIndicatorState -> xkbGetIndicatorState(body, majorOpcode)
@@ -436,6 +437,23 @@ internal class X11Connection(
         byteOrder.put32(reply, 56, if (keyboardControl.globalAutoRepeat) XXkb.BoolCtrlRepeatKeys else 0)
         keyboardControl.autoRepeats.copyInto(reply, 60)
         write(reply)
+    }
+
+    private fun xkbSetControls(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 96) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetControls, badValue = 0)
+        val affectEnabledControls = byteOrder.u32(body, 20)
+        if ((affectEnabledControls and XXkb.BoolCtrlRepeatKeys) != 0) {
+            val enabledControls = byteOrder.u32(body, 24)
+            state.updateKeyboardControl(
+                XKeyboardControlUpdate(
+                    autoRepeatMode = if ((enabledControls and XXkb.BoolCtrlRepeatKeys) != 0) {
+                        XKeyboardAutoRepeatMode.On
+                    } else {
+                        XKeyboardAutoRepeatMode.Off
+                    },
+                ),
+            )
+        }
     }
 
     private fun xkbGetMap(body: ByteArray, majorOpcode: Int) {
