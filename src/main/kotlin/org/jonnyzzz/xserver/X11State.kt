@@ -2637,6 +2637,70 @@ internal class X11State(
         )
     }
 
+    @Synchronized
+    fun scale(
+        colorScale: Int,
+        alphaScale: Int,
+        source: XPicture,
+        destination: XPicture,
+        sourceX: Int,
+        sourceY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+    ): XImagePixels? {
+        val destinationDrawableId = destination.drawableId ?: return null
+        val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
+        val sourcePixelAt = scaledSourcePixelAt(source, colorScale, alphaScale) ?: return null
+        return destinationFramebuffer.compositeGeneratedOptional(
+            sourceX = sourceX,
+            sourceY = sourceY,
+            destinationX = destinationX,
+            destinationY = destinationY,
+            width = width,
+            height = height,
+            operation = XRender.OpSrc,
+            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+        ) { x, y ->
+            sourcePixelAt(x, y)
+        }
+    }
+
+    private fun scaledSourcePixelAt(source: XPicture, colorScale: Int, alphaScale: Int): ((x: Int, y: Int) -> Int?)? {
+        val gradientSampler = source.gradientSampler()
+        if (gradientSampler != null) {
+            return { x, y -> scaledPixel(gradientSampler(x, y), colorScale, alphaScale) }
+        }
+        val solid = source.solidPixel
+        if (solid != null) {
+            val scaled = scaledPixel(solid, colorScale, alphaScale)
+            return { _, _ -> scaled }
+        }
+        val sourceDrawableId = source.drawableId ?: return null
+        val sourceFramebuffer = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
+        if (source.transform != IdentityTransform || source.repeat != XRender.RepeatNone) {
+            return { x, y ->
+                sourceFramebuffer.transformedPixelAtOrNull(x, y, source.repeat, source.transform, source.filterName)
+                    ?.let { scaledPixel(it, colorScale, alphaScale) }
+            }
+        }
+        return { x, y -> sourceFramebuffer.pixelAt(x, y)?.let { scaledPixel(it, colorScale, alphaScale) } }
+    }
+
+    private fun scaledPixel(pixel: Int, colorScale: Int, alphaScale: Int): Int {
+        fun unsigned(scale: Int): Long = Integer.toUnsignedLong(scale)
+        fun channel(shift: Int, scale: Int): Int =
+            ((((pixel ushr shift) and 0xff).toLong() * unsigned(scale)) / 65_536L)
+                .coerceIn(0L, 255L)
+                .toInt()
+        val alpha = channel(24, alphaScale)
+        val red = channel(16, colorScale)
+        val green = channel(8, colorScale)
+        val blue = channel(0, colorScale)
+        return (alpha shl 24) or (red shl 16) or (green shl 8) or blue
+    }
+
     private fun XPicture.maskAlphaSampler(): ((x: Int, y: Int) -> Int)? {
         if (transform == IdentityTransform && repeat == XRender.RepeatNone) return null
         val framebuffer = drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer } ?: return null
@@ -2651,6 +2715,19 @@ internal class X11State(
         val sampleX = repeatedPixelCoordinate(sample.first, width, repeat) ?: return 0
         val sampleY = repeatedPixelCoordinate(sample.second, height, repeat) ?: return 0
         return pixelAt(sampleX, sampleY) ?: 0
+    }
+
+    private fun XFramebuffer.transformedPixelAtOrNull(x: Int, y: Int, repeat: Int, transform: List<Int>, filterName: String?): Int? {
+        val sample = transformedPoint(x + 0.5, y + 0.5, transform)
+        if (repeat == XRender.RepeatNone && (sample.first < 0.5 || sample.first >= width + 0.5 || sample.second < 0.5 || sample.second >= height + 0.5)) {
+            return null
+        }
+        if (isBilinearFilter(filterName)) {
+            return bilinearPixelAt(sample.first, sample.second, repeat)
+        }
+        val sampleX = repeatedPixelCoordinate(sample.first, width, repeat) ?: return null
+        val sampleY = repeatedPixelCoordinate(sample.second, height, repeat) ?: return null
+        return pixelAt(sampleX, sampleY)
     }
 
     private fun XFramebuffer.transformedAlphaAt(x: Int, y: Int, repeat: Int, transform: List<Int>, filterName: String?): Int =

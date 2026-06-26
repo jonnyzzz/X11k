@@ -560,6 +560,39 @@ internal class XFramebuffer(
         return XImagePixels(bounds.width, bounds.height, generated)
     }
 
+    fun compositeGeneratedOptional(
+        sourceX: Int,
+        sourceY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        operation: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        sourcePixelAt: (x: Int, y: Int) -> Int?,
+    ): XImagePixels? {
+        val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return null
+
+        val generated = IntArray(bounds.width * bounds.height)
+        var painted = false
+        for (row in 0 until bounds.height) {
+            for (column in 0 until bounds.width) {
+                val dx = bounds.destinationX + column
+                val dy = bounds.destinationY + row
+                val sx = sourceX + dx - destinationX
+                val sy = sourceY + dy - destinationY
+                val sourcePixel = sourcePixelAt(sx, sy) ?: continue
+                generated[row * bounds.width + column] = sourcePixel
+                if (!insideClip(dx, dy, clipRectangles)) continue
+                val index = dy * this.width + dx
+                pixels[index] = renderPixel(sourcePixel, pixels[index], operation, maskAlpha = 255)
+                painted = true
+            }
+        }
+        if (painted) markPainted()
+        return XImagePixels(bounds.width, bounds.height, generated)
+    }
+
     fun putImage(
         x: Int,
         y: Int,

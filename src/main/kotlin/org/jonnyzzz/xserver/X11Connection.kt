@@ -320,7 +320,7 @@ internal class X11Connection(
             6 -> renderSetPictureClipRectangles(body)
             7 -> renderFreePicture(body)
             8 -> renderComposite(body)
-            9 -> renderBadImplementation(minorOpcode)
+            9 -> renderScale(body)
             10 -> renderTrapezoids(body)
             11 -> renderTriangles(body)
             12 -> renderTriStrip(body)
@@ -1084,6 +1084,49 @@ internal class X11Connection(
             sourceY = sourceY,
             maskX = maskX,
             maskY = maskY,
+            destinationX = destinationX,
+            destinationY = destinationY,
+            width = width,
+            height = height,
+        ) ?: return
+        state.draw(
+            XDrawingCommand(
+                drawableId = destinationDrawableId,
+                kind = if (source.solidPixel != null || source.linearGradient != null) XDrawingKind.FillRectangle else XDrawingKind.CopyArea,
+                foreground = source.solidPixel ?: 0,
+                rectangles = listOf(rectangle),
+                imageDataUri = XFramebuffer.imageDataUri(image),
+                sourceDrawableId = source.drawableId,
+                framebufferBacked = true,
+            ),
+        )
+    }
+
+    private fun renderScale(body: ByteArray) {
+        if (body.size != 28) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 9, badValue = 0)
+        val sourceId = byteOrder.u32(body, 0)
+        val source = state.picture(sourceId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 9, badValue = sourceId)
+        val destinationId = byteOrder.u32(body, 4)
+        val destination = state.picture(destinationId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 9, badValue = destinationId)
+        val colorScale = byteOrder.u32(body, 8)
+        val alphaScale = byteOrder.u32(body, 12)
+        val destinationDrawableId = destination.drawableId ?: return
+        val sourceX = byteOrder.i16(body, 16)
+        val sourceY = byteOrder.i16(body, 18)
+        val destinationX = byteOrder.i16(body, 20)
+        val destinationY = byteOrder.i16(body, 22)
+        val width = byteOrder.u16(body, 24)
+        val height = byteOrder.u16(body, 26)
+        val rectangle = XRectangleCommand(destinationX, destinationY, width, height)
+        val image = state.scale(
+            colorScale = colorScale,
+            alphaScale = alphaScale,
+            source = source,
+            destination = destination,
+            sourceX = sourceX,
+            sourceY = sourceY,
             destinationX = destinationX,
             destinationY = destinationY,
             width = width,
@@ -2433,6 +2476,7 @@ internal class X11Connection(
             6 -> "picture=${hex(0)} origin=${i16(4)},${i16(6)} rects=${(body.size - 8).coerceAtLeast(0) / 8}"
             7 -> "picture=${hex(0)}"
             8 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} mask=${hex(8)} dst=${hex(12)} dst=${i16(24)},${i16(26)} ${u16(28)}x${u16(30)}"
+            9 -> "src=${hex(0)} dst=${hex(4)} colorScale=${u32(8)} alphaScale=${u32(12)} src=${i16(16)},${i16(18)} dst=${i16(20)},${i16(22)} ${u16(24)}x${u16(26)}"
             10 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} traps=${(body.size - 20).coerceAtLeast(0) / 40}"
             11 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} triangles=${(body.size - 20).coerceAtLeast(0) / 24}"
             12, 13 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} points=${(body.size - 20).coerceAtLeast(0) / 8}"
