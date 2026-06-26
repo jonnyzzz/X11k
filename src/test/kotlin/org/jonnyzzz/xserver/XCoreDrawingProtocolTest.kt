@@ -5784,6 +5784,476 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `key input delivers selected key events to focus window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, eventMask = XEventMasks.KeyPress or XEventMasks.KeyRelease))
+                out.write(mapWindowRequest(WindowId))
+                out.flush()
+
+                assertMapAndExpose(input, WindowId)
+                assertEquals(1, server.input.keyDown(10, modifiers = 4).deliveredEvents)
+                assertKeyEvent(input.readExactly(32), type = 2, detail = 10, eventWindow = WindowId, state = 4)
+                assertEquals(1, server.input.keyUp(10, modifiers = 4).deliveredEvents)
+                assertKeyEvent(input.readExactly(32), type = 3, detail = 10, eventWindow = WindowId, state = 4)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `key input resolves focus ancestor to pointer descendant`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val parent = WindowId
+                val child = WindowId + 1
+                out.write(createWindowRequest(parent, width = 80, height = 60))
+                out.write(createWindowRequest(child, parent = parent, width = 20, height = 20, eventMask = XEventMasks.KeyPress))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(setInputFocusRequest(parent, revertTo = 2))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, child)
+                assertEquals(1, readReply(input)[0].toInt())
+                assertEquals(1, server.input.keyDown(10).deliveredEvents)
+                assertKeyEvent(input.readExactly(32), type = 2, detail = 10, eventWindow = child)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `key input propagation stops at first selected window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val parent = WindowId
+                val child = WindowId + 1
+                out.write(createWindowRequest(parent, width = 80, height = 60, eventMask = XEventMasks.KeyPress))
+                out.write(createWindowRequest(child, parent = parent, width = 20, height = 20, eventMask = XEventMasks.KeyPress))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(setInputFocusRequest(parent, revertTo = 2))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, child)
+                assertEquals(1, readReply(input)[0].toInt())
+                assertEquals(1, server.input.keyDown(10).deliveredEvents)
+                assertKeyEvent(input.readExactly(32), type = 2, detail = 10, eventWindow = child)
+                socket.soTimeout = 250
+                assertFailsWith<SocketTimeoutException> {
+                    input.readExactly(32)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `key input does not propagate above real focus ancestor`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val focus = WindowId
+                val child = WindowId + 1
+                out.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.KeyPress))
+                out.write(createWindowRequest(focus, width = 80, height = 60))
+                out.write(createWindowRequest(child, parent = focus, width = 20, height = 20))
+                out.write(mapWindowRequest(focus))
+                out.write(mapWindowRequest(child))
+                out.write(setInputFocusRequest(focus, revertTo = 2))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, focus)
+                assertMapAndExpose(input, child)
+                assertEquals(1, readReply(input)[0].toInt())
+                assertEquals(0, server.input.keyDown(10).deliveredEvents)
+                socket.soTimeout = 250
+                assertFailsWith<SocketTimeoutException> {
+                    input.readExactly(32)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `key input outside focus does not propagate to root selection`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val focus = WindowId
+                out.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.KeyPress))
+                out.write(createWindowRequest(focus, x = 60, y = 60, width = 20, height = 20))
+                out.write(mapWindowRequest(focus))
+                out.write(setInputFocusRequest(focus, revertTo = 2))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, focus)
+                assertEquals(1, readReply(input)[0].toInt())
+                assertEquals(0, server.input.keyDown(10).deliveredEvents)
+                socket.soTimeout = 250
+                assertFailsWith<SocketTimeoutException> {
+                    input.readExactly(32)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `active GrabKeyboard receives key events when input focus is None`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val parent = WindowId
+                val child = WindowId + 1
+                out.write(createWindowRequest(parent, width = 80, height = 60))
+                out.write(createWindowRequest(child, parent = parent, width = 20, height = 20))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(grabKeyboardRequest(parent))
+                out.write(setInputFocusRequest(0, revertTo = 2))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, child)
+                val grab = readReply(input)
+                assertEquals(1, grab[0].toInt())
+                assertEquals(0, grab[1].toInt())
+                assertEquals(1, readReply(input)[0].toInt())
+                assertEquals(1, server.input.keyDown(10).deliveredEvents)
+                assertKeyEvent(input.readExactly(32), type = 2, detail = 10, eventWindow = parent, childWindow = child)
+                assertEquals(1, server.input.keyUp(10).deliveredEvents)
+                assertKeyEvent(input.readExactly(32), type = 3, detail = 10, eventWindow = parent, childWindow = child)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `active GrabKeyboard uses None child when pointer is outside grab window subtree`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val parent = WindowId
+                val child = WindowId + 1
+                out.write(createWindowRequest(parent, x = 30, y = 30, width = 40, height = 30))
+                out.write(createWindowRequest(child, parent = parent, width = 20, height = 20))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(setInputFocusRequest(child, revertTo = 2))
+                out.write(grabKeyboardRequest(parent))
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, child)
+                val grab = readReply(input)
+                assertEquals(1, grab[0].toInt())
+                assertEquals(0, grab[1].toInt())
+                assertEquals(1, server.input.keyDown(10).deliveredEvents)
+                assertKeyEvent(input.readExactly(32), type = 2, detail = 10, eventWindow = parent, childWindow = 0)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `passive GrabKey activates keyboard grab and routes key events to grab owner`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { observer ->
+                    owner.soTimeout = 2_000
+                    observer.soTimeout = 250
+                    setup(owner)
+                    setup(observer)
+                    val ownerInput = owner.getInputStream()
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(grabKeyRequest(WindowId, key = 10))
+                    ownerOut.write(mapWindowRequest(WindowId))
+                    ownerOut.flush()
+                    assertMapAndExpose(ownerInput, WindowId)
+
+                    val observerOut = observer.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(WindowId, XEventMasks.KeyPress or XEventMasks.KeyRelease))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(1, readReply(observer.getInputStream())[0].toInt())
+
+                    assertEquals(1, server.input.keyDown(10).deliveredEvents)
+                    assertKeyEvent(ownerInput.readExactly(32), type = 2, detail = 10, eventWindow = WindowId)
+                    assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"keyboard","window":"0x${WindowId.toString(16)}"""")
+                    assertFailsWith<SocketTimeoutException> {
+                        observer.getInputStream().readExactly(32)
+                    }
+
+                    assertEquals(1, server.input.keyUp(10).deliveredEvents)
+                    assertKeyEvent(ownerInput.readExactly(32), type = 3, detail = 10, eventWindow = WindowId)
+                    assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+                    assertFailsWith<SocketTimeoutException> {
+                        observer.getInputStream().readExactly(32)
+                    }
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `passive GrabKey releases active grab when focus becomes None before key release`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabKeyRequest(WindowId, key = 10))
+                out.write(mapWindowRequest(WindowId))
+                out.flush()
+
+                assertMapAndExpose(input, WindowId)
+                assertEquals(1, server.input.keyDown(10).deliveredEvents)
+                assertKeyEvent(input.readExactly(32), type = 2, detail = 10, eventWindow = WindowId)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"keyboard","window":"0x${WindowId.toString(16)}"""")
+
+                out.write(setInputFocusRequest(0, revertTo = 2))
+                out.write(queryPointerRequest())
+                out.flush()
+                assertEquals(1, readReply(input)[0].toInt())
+
+                assertEquals(1, server.input.keyUp(10).deliveredEvents)
+                assertKeyEvent(input.readExactly(32), type = 3, detail = 10, eventWindow = WindowId)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `passive GrabKey owner events use normal owner selection before grab window fallback`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, eventMask = XEventMasks.KeyPress or XEventMasks.KeyRelease))
+                out.write(grabKeyRequest(X11Ids.RootWindow, ownerEvents = 1, key = 10))
+                out.write(mapWindowRequest(WindowId))
+                out.flush()
+
+                assertMapAndExpose(input, WindowId)
+                assertEquals(1, server.input.keyDown(10).deliveredEvents)
+                assertKeyEvent(input.readExactly(32), type = 2, detail = 10, eventWindow = WindowId)
+                assertEquals(1, server.input.keyUp(10).deliveredEvents)
+                assertKeyEvent(input.readExactly(32), type = 3, detail = 10, eventWindow = WindowId)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `passive GrabKey owner events fall back to grab window when owner has no normal selection`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { observer ->
+                    owner.soTimeout = 2_000
+                    observer.soTimeout = 250
+                    setup(owner)
+                    setup(observer)
+                    val parent = WindowId
+                    val child = WindowId + 1
+                    val ownerInput = owner.getInputStream()
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(parent, width = 80, height = 60))
+                    ownerOut.write(createWindowRequest(child, parent = parent, width = 20, height = 20))
+                    ownerOut.write(grabKeyRequest(parent, ownerEvents = 1, key = 10))
+                    ownerOut.write(mapWindowRequest(parent))
+                    ownerOut.write(mapWindowRequest(child))
+                    ownerOut.flush()
+                    assertMapAndExpose(ownerInput, parent)
+                    assertMapAndExpose(ownerInput, child)
+
+                    val observerOut = observer.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(child, XEventMasks.KeyPress or XEventMasks.KeyRelease))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(1, readReply(observer.getInputStream())[0].toInt())
+
+                    assertEquals(1, server.input.keyDown(10).deliveredEvents)
+                    assertKeyEvent(ownerInput.readExactly(32), type = 2, detail = 10, eventWindow = parent, childWindow = child)
+                    assertFailsWith<SocketTimeoutException> {
+                        observer.getInputStream().readExactly(32)
+                    }
+
+                    assertEquals(1, server.input.keyUp(10).deliveredEvents)
+                    assertKeyEvent(ownerInput.readExactly(32), type = 3, detail = 10, eventWindow = parent, childWindow = child)
+                    assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+                    assertFailsWith<SocketTimeoutException> {
+                        observer.getInputStream().readExactly(32)
+                    }
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `passive GrabKey owner events ignore owner selections above real focus`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val parent = WindowId
+                val child = WindowId + 1
+                out.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.KeyPress))
+                out.write(createWindowRequest(parent, width = 80, height = 60))
+                out.write(createWindowRequest(child, parent = parent, width = 20, height = 20))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(grabKeyRequest(parent, ownerEvents = 1, key = 10))
+                out.write(setInputFocusRequest(parent, revertTo = 2))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, child)
+                assertEquals(1, readReply(input)[0].toInt())
+                assertEquals(1, server.input.keyDown(10).deliveredEvents)
+                assertKeyEvent(input.readExactly(32), type = 2, detail = 10, eventWindow = parent, childWindow = child)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `passive GrabKey skips released wildcard combination during activation`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { observer ->
+                    owner.soTimeout = 250
+                    observer.soTimeout = 2_000
+                    setup(owner)
+                    setup(observer)
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(grabKeyRequest(WindowId, key = 0, modifiers = 0x8000))
+                    ownerOut.write(ungrabKeyRequest(WindowId, key = 10, modifiers = 0))
+                    ownerOut.write(mapWindowRequest(WindowId))
+                    ownerOut.flush()
+                    assertMapAndExpose(owner.getInputStream(), WindowId)
+
+                    val observerInput = observer.getInputStream()
+                    val observerOut = observer.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(WindowId, XEventMasks.KeyPress or XEventMasks.KeyRelease))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(1, readReply(observerInput)[0].toInt())
+
+                    assertEquals(1, server.input.keyDown(10).deliveredEvents)
+                    assertKeyEvent(observerInput.readExactly(32), type = 2, detail = 10, eventWindow = WindowId)
+                    assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+                    assertFailsWith<SocketTimeoutException> {
+                        owner.getInputStream().readExactly(32)
+                    }
+
+                    assertEquals(1, server.input.keyUp(10).deliveredEvents)
+                    assertKeyEvent(observerInput.readExactly(32), type = 3, detail = 10, eventWindow = WindowId)
+
+                    owner.soTimeout = 2_000
+                    ownerOut.write(ungrabKeyRequest(WindowId, key = 11, modifiers = 0x8000))
+                    ownerOut.write(ungrabKeyRequest(WindowId, key = 0, modifiers = 2))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertEquals(1, readReply(owner.getInputStream())[0].toInt())
+                    owner.soTimeout = 250
+
+                    assertEquals(1, server.input.keyDown(11, modifiers = 5).deliveredEvents)
+                    assertKeyEvent(observerInput.readExactly(32), type = 2, detail = 11, eventWindow = WindowId, state = 5)
+                    assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+                    assertFailsWith<SocketTimeoutException> {
+                        owner.getInputStream().readExactly(32)
+                    }
+                    assertEquals(1, server.input.keyUp(11, modifiers = 5).deliveredEvents)
+                    assertKeyEvent(observerInput.readExactly(32), type = 3, detail = 11, eventWindow = WindowId, state = 5)
+
+                    assertEquals(1, server.input.keyDown(12, modifiers = 2).deliveredEvents)
+                    assertKeyEvent(observerInput.readExactly(32), type = 2, detail = 12, eventWindow = WindowId, state = 2)
+                    assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+                    assertFailsWith<SocketTimeoutException> {
+                        owner.getInputStream().readExactly(32)
+                    }
+                    assertEquals(1, server.input.keyUp(12, modifiers = 2).deliveredEvents)
+                    assertKeyEvent(observerInput.readExactly(32), type = 3, detail = 12, eventWindow = WindowId, state = 2)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `UngrabKey releases matching passive key grabs and preserves stream recovery`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -15137,6 +15607,23 @@ class XCoreDrawingProtocolTest {
     private fun assertButtonEvent(event: ByteArray, type: Int, detail: Int) {
         assertEquals(type, event[0].toInt() and 0xff)
         assertEquals(detail, event[1].toInt() and 0xff)
+    }
+
+    private fun assertKeyEvent(
+        event: ByteArray,
+        type: Int,
+        detail: Int,
+        eventWindow: Int,
+        state: Int = 0,
+        childWindow: Int? = null,
+    ) {
+        assertEquals(type, event[0].toInt() and 0xff)
+        assertEquals(detail, event[1].toInt() and 0xff)
+        assertEquals(X11Ids.RootWindow, u32le(event, 8))
+        assertEquals(eventWindow, u32le(event, 12))
+        childWindow?.let { assertEquals(it, u32le(event, 16)) }
+        assertEquals(state, u16le(event, 28))
+        assertEquals(1, event[30].toInt() and 0xff)
     }
 
     private fun assertMotionEvent(reply: ByteArray, index: Int, time: Int, x: Int, y: Int) {

@@ -1140,6 +1140,20 @@ internal class X11State(
             keyPatternCovers(it.key, key) && modifierPatternCovers(it.modifiers, modifiers)
         }
 
+    private fun matchingPassiveKeyGrab(path: List<XWindow>, key: Int, modifiers: Int): XPassiveKeyGrab? {
+        for (window in path.asReversed()) {
+            passiveKeyGrabs.firstOrNull { grab ->
+                grab.windowId == window.id &&
+                    keyPatternCovers(grab.key, key) &&
+                    modifierPatternCovers(grab.modifiers, modifiers) &&
+                    !keyGrabCombinationReleased(grab, key, modifiers)
+            }?.let { grab ->
+                return if (windowIsViewable(grab.windowId)) grab else null
+            }
+        }
+        return null
+    }
+
     private fun addKeyGrabRelease(
         releasedCombinations: Set<XPassiveKeyGrabCombination>,
         release: XPassiveKeyGrabCombination,
@@ -1431,6 +1445,110 @@ internal class X11State(
             sink.sendPointerEvent(event)
         }
         return XPointerDispatch(targetWindowId = targetId, deliveredEvents = deliveries.size)
+    }
+
+    fun keyboardKey(keycode: Int, modifiers: Int, pressed: Boolean): XKeyDispatch {
+        val deliveries = mutableListOf<Pair<XEventSink, XKeyEvent>>()
+        val targetId: Int?
+        synchronized(this) {
+            targetId = sendEventInputFocusWindowId()
+            val type = if (pressed) XKeyEventType.KeyPress else XKeyEventType.KeyRelease
+            val mask = XEventMasks.forKeyType(type)
+            val path = targetId?.let { windowPathToRoot(it) }.orEmpty()
+            val selectionPath = keyEventSelectionPath(path)
+            val absoluteById = windows.values.associate { window -> window.id to absolutePosition(window) }
+            val pointerPath = (pointerWindowId() ?: X11Ids.RootWindow).let { windowPathToRoot(it) }
+            val childByPointerAncestor = childByAncestor(pointerPath)
+            val state = (pointerState and KeyModifierMask.inv()) or (modifiers and KeyModifierMask)
+            val time = inputTime++
+            val normalSelection = firstKeyEventSelection(selectionPath, mask)
+
+            if (pressed && targetId != null && activeKeyboardGrab == null) {
+                matchingPassiveKeyGrab(path, keycode, modifiers and KeyModifierMask)?.let { grab ->
+                    activeKeyboardGrab = XInputGrab(
+                        owner = grab.owner,
+                        kind = "keyboard",
+                        windowId = grab.windowId,
+                        ownerEvents = grab.ownerEvents,
+                        eventMask = 0,
+                        pointerMode = grab.pointerMode,
+                        keyboardMode = grab.keyboardMode,
+                        confineTo = null,
+                        cursor = null,
+                        time = time,
+                        activatedByPassiveGrab = true,
+                        passiveGrabKey = keycode,
+                    )
+                    lastKeyboardGrabTime = time
+                }
+            }
+
+            val grab = activeKeyboardGrab
+            if (grab != null) {
+                val ownerEventWindow = if (grab.ownerEvents) {
+                    normalSelection?.first?.takeIf { normalSelection.second.contains(grab.owner) }
+                } else {
+                    null
+                }
+                val eventWindowId = ownerEventWindow?.id ?: grab.windowId
+                val absolute = windows[eventWindowId]?.let { absoluteById[it.id] } ?: (0 to 0)
+                deliveries += grab.owner to XKeyEvent(
+                    type = type,
+                    keycode = keycode,
+                    rootX = pointerX,
+                    rootY = pointerY,
+                    eventWindowId = eventWindowId,
+                    childWindowId = childByPointerAncestor[eventWindowId] ?: 0,
+                    eventX = pointerX - absolute.first,
+                    eventY = pointerY - absolute.second,
+                    state = state,
+                    time = time,
+                )
+            } else if (normalSelection != null) {
+                val window = normalSelection.first
+                val absolute = absoluteById.getValue(window.id)
+                for (sink in normalSelection.second) {
+                    deliveries += sink to XKeyEvent(
+                        type = type,
+                        keycode = keycode,
+                        rootX = pointerX,
+                        rootY = pointerY,
+                        eventWindowId = window.id,
+                        childWindowId = childByPointerAncestor[window.id] ?: 0,
+                        eventX = pointerX - absolute.first,
+                        eventY = pointerY - absolute.second,
+                        state = state,
+                        time = time,
+                    )
+                }
+            }
+
+            if (!pressed && activeKeyboardGrab?.activatedByPassiveGrab == true && activeKeyboardGrab?.passiveGrabKey == keycode) {
+                activeKeyboardGrab = null
+            }
+        }
+
+        for ((sink, event) in deliveries) {
+            sink.sendKeyEvent(event)
+        }
+        return XKeyDispatch(targetWindowId = targetId, deliveredEvents = deliveries.size)
+    }
+
+    private fun firstKeyEventSelection(path: List<XWindow>, mask: Int): Pair<XWindow, List<XEventSink>>? {
+        var remainingMask = mask
+        for (window in path) {
+            val sinks = eventSelectionsForWindow(window.id, remainingMask)
+            if (sinks.isNotEmpty()) return window to sinks
+            remainingMask = remainingMask and window.doNotPropagateMask.inv()
+            if (remainingMask == 0) return null
+        }
+        return null
+    }
+
+    private fun keyEventSelectionPath(path: List<XWindow>): List<XWindow> {
+        if (focusWindowId in 0..1) return path
+        val focusIndex = path.indexOfFirst { it.id == focusWindowId }
+        return if (focusIndex >= 0) path.take(focusIndex + 1) else path
     }
 
     fun warpPointer(
@@ -4759,6 +4877,7 @@ internal data class XInputGrab(
     val cursor: Int?,
     val time: Int,
     val activatedByPassiveGrab: Boolean = false,
+    val passiveGrabKey: Int? = null,
 ) {
     fun snapshot(): XInputGrabSnapshot =
         XInputGrabSnapshot(

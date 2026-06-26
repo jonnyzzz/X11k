@@ -24,8 +24,30 @@ class XInputController internal constructor(
         return pointerResolved(x = x, y = y, button = button, buttonName = buttonName(button), pressed = false)
     }
 
+    fun keyDown(keycode: Int, modifiers: Int = 0): XInputResult {
+        requireValidKeycode(keycode)
+        requireValidModifiers(modifiers)
+        return keyResolved(keycode = keycode, modifiers = modifiers, pressed = true)
+    }
+
+    fun keyUp(keycode: Int, modifiers: Int = 0): XInputResult {
+        requireValidKeycode(keycode)
+        requireValidModifiers(modifiers)
+        return keyResolved(keycode = keycode, modifiers = modifiers, pressed = false)
+    }
+
     private fun requireValidButton(button: Int) {
         require(button in 1..255) { "X11 pointer button must be in 1..255" }
+    }
+
+    private fun requireValidKeycode(keycode: Int) {
+        require(keycode in XKeyboard.MinKeycode..XKeyboard.MaxKeycode) {
+            "X11 keycode must be in ${XKeyboard.MinKeycode}..${XKeyboard.MaxKeycode}"
+        }
+    }
+
+    private fun requireValidModifiers(modifiers: Int) {
+        require((modifiers and CoreKeyModifierMask.inv()) == 0) { "X11 key modifiers must fit the core modifier mask" }
     }
 
     private fun clickResolved(x: Int, y: Int, button: Int, buttonName: String): XInputResult {
@@ -78,6 +100,27 @@ class XInputController internal constructor(
         return result
     }
 
+    private fun keyResolved(keycode: Int, modifiers: Int, pressed: Boolean): XInputResult {
+        val dispatch = state.keyboardKey(
+            keycode = keycode,
+            modifiers = modifiers,
+            pressed = pressed,
+        )
+        val result = XInputResult(
+            targetWindowId = dispatch.targetWindowId,
+            deliveredEvents = dispatch.deliveredEvents,
+        )
+        state.recordInputOperation(
+            kind = if (pressed) "key-down" else "key-up",
+            x = 0,
+            y = 0,
+            button = keycode.toString(),
+            targetWindowId = result.targetWindowId,
+            deliveredEvents = result.deliveredEvents,
+        )
+        return result
+    }
+
     private fun buttonNumber(value: String): Int =
         when (value.lowercase()) {
             "", "left", "primary" -> 1
@@ -97,6 +140,10 @@ class XInputController internal constructor(
             5 -> "wheel-down"
             else -> value.toString()
         }
+
+    private companion object {
+        const val CoreKeyModifierMask = 0x00ff
+    }
 }
 
 data class XInputResult(
@@ -110,6 +157,7 @@ internal interface XEventSink {
     fun isKilled(): Boolean = false
     fun killClient() = Unit
     fun sendPointerEvent(event: XPointerEvent)
+    fun sendKeyEvent(event: XKeyEvent)
     fun sendMappingNotifyEvent(event: XMappingNotifyEvent)
     fun sendMapNotifyEvent(event: XMapNotifyEvent)
     fun sendMapRequestEvent(event: XMapRequestEvent)
@@ -148,6 +196,29 @@ internal enum class XPointerEventType(val code: Int) {
 }
 
 internal data class XPointerDispatch(
+    val targetWindowId: Int?,
+    val deliveredEvents: Int,
+)
+
+internal data class XKeyEvent(
+    val type: XKeyEventType,
+    val keycode: Int,
+    val rootX: Int,
+    val rootY: Int,
+    val eventWindowId: Int,
+    val childWindowId: Int,
+    val eventX: Int,
+    val eventY: Int,
+    val state: Int,
+    val time: Int,
+)
+
+internal enum class XKeyEventType(val code: Int) {
+    KeyPress(2),
+    KeyRelease(3),
+}
+
+internal data class XKeyDispatch(
     val targetWindowId: Int?,
     val deliveredEvents: Int,
 )
@@ -354,6 +425,8 @@ internal object XEventMasks {
     const val ValidCoreMask = 0x01ff_ffff
     const val ValidDeviceEventMask = 0x0000_3f4f
     const val ValidPointerEventMask = 0x0000_7ffc
+    const val KeyPress = 1 shl 0
+    const val KeyRelease = 1 shl 1
     const val ButtonPress = 1 shl 2
     const val ButtonRelease = 1 shl 3
     const val PointerMotion = 1 shl 6
@@ -368,5 +441,11 @@ internal object XEventMasks {
             XPointerEventType.ButtonPress -> ButtonPress
             XPointerEventType.ButtonRelease -> ButtonRelease
             XPointerEventType.MotionNotify -> PointerMotion
+        }
+
+    fun forKeyType(type: XKeyEventType): Int =
+        when (type) {
+            XKeyEventType.KeyPress -> KeyPress
+            XKeyEventType.KeyRelease -> KeyRelease
         }
 }
