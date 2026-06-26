@@ -376,6 +376,7 @@ internal class X11Connection(
     private fun xkb(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
         when (minorOpcode) {
             XXkb.UseExtension -> xkbUseExtension(body, majorOpcode)
+            XXkb.SelectEvents -> xkbSelectEvents(body, majorOpcode)
             else -> xkbBadImplementation(majorOpcode, minorOpcode)
         }
     }
@@ -386,6 +387,10 @@ internal class X11Connection(
         byteOrder.put16(reply, 8, XXkb.MajorVersion)
         byteOrder.put16(reply, 10, XXkb.MinorVersion)
         write(reply)
+    }
+
+    private fun xkbSelectEvents(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
     }
 
     private fun xkbBadImplementation(majorOpcode: Int, minorOpcode: Int) {

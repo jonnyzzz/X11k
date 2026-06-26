@@ -8,11 +8,12 @@ internal object XXkb {
     const val MinorVersion = 0
 
     const val UseExtension = 0
+    const val SelectEvents = 1
 
     fun operationName(minorOpcode: Int): String =
         when (minorOpcode) {
             UseExtension -> "UseExtension"
-            1 -> "SelectEvents"
+            SelectEvents -> "SelectEvents"
             3 -> "Bell"
             4 -> "GetState"
             5 -> "LatchLockState"

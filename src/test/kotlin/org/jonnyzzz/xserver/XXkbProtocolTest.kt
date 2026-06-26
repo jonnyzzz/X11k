@@ -62,19 +62,53 @@ class XXkbProtocolTest {
     }
 
     @Test
-    fun `XKEYBOARD unimplemented requests return BadImplementation and recover stream`() {
+    fun `XKEYBOARD SelectEvents accepts fixed prefix no-op and recovers stream`() {
         withServer { socket, port ->
             val out = socket.getOutputStream()
-            out.write(request(XXkb.MajorOpcode, 1, ByteArray(12)))
+            out.write(selectEventsRequest())
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 1)
+            val version = readReply(socket.getInputStream())
+            assertEquals(2, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+            assertEquals(XXkb.MajorVersion, u16le(version, 8))
+            assertEquals(XXkb.MinorVersion, u16le(version, 10))
+
+            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.SelectEvents: 1")
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SelectEvents validates fixed prefix length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.SelectEvents, ByteArray(8)))
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SelectEvents)
+            val version = readReply(socket.getInputStream())
+            assertEquals(2, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+            assertEquals(XXkb.MajorVersion, u16le(version, 8))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD unimplemented requests return BadImplementation and recover stream`() {
+        withServer { socket, port ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, 3, ByteArray(16)))
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 3)
             val version = readReply(socket.getInputStream())
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
 
-            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.SelectEvents:")
+            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.Bell:")
         }
     }
 
@@ -114,6 +148,17 @@ class XXkbProtocolTest {
         put16le(body, 0, XXkb.MajorVersion)
         put16le(body, 2, XXkb.MinorVersion)
         return request(XXkb.MajorOpcode, XXkb.UseExtension, body)
+    }
+
+    private fun selectEventsRequest(): ByteArray {
+        val body = ByteArray(12)
+        put16le(body, 0, 0x0100)
+        put16le(body, 2, 0)
+        put16le(body, 4, 0)
+        put16le(body, 6, 0)
+        put16le(body, 8, 0)
+        put16le(body, 10, 0)
+        return request(XXkb.MajorOpcode, XXkb.SelectEvents, body)
     }
 
     private fun request(opcode: Int, minorOpcode: Int, body: ByteArray): ByteArray {
