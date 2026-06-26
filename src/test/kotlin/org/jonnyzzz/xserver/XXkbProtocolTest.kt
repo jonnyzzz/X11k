@@ -165,6 +165,71 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetState separates pointer buttons from core aggregate modifier state`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val buttonMask = 0x100
+                server.input.pointerDown(10, 10, button = 1)
+                server.input.keyDown(10, modifiers = 5)
+
+                val out = socket.getOutputStream()
+                out.write(getStateRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val state = readReply(socket.getInputStream())
+                assertEquals(5, state[8].toInt() and 0xff)
+                assertEquals(5, state[9].toInt() and 0xff)
+                assertEquals(0, state[10].toInt() and 0xff)
+                assertEquals(0, state[11].toInt() and 0xff)
+                assertEquals(5, state[18].toInt() and 0xff)
+                assertEquals(5, state[19].toInt() and 0xff)
+                assertEquals(5, state[20].toInt() and 0xff)
+                assertEquals(5, state[21].toInt() and 0xff)
+                assertEquals(5, state[22].toInt() and 0xff)
+                assertEquals(buttonMask, u16le(state, 24))
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(buttonMask or 5, u16le(pointer, 24))
+
+                server.input.keyUp(10, modifiers = 0)
+                out.write(getStateRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val releasedState = readReply(socket.getInputStream())
+                assertEquals(0, releasedState[8].toInt() and 0xff)
+                assertEquals(0, releasedState[9].toInt() and 0xff)
+                assertEquals(0, releasedState[18].toInt() and 0xff)
+                assertEquals(0, releasedState[19].toInt() and 0xff)
+                assertEquals(0, releasedState[20].toInt() and 0xff)
+                assertEquals(0, releasedState[21].toInt() and 0xff)
+                assertEquals(0, releasedState[22].toInt() and 0xff)
+                assertEquals(buttonMask, u16le(releasedState, 24))
+
+                val releasedPointer = readReply(socket.getInputStream())
+                assertEquals(buttonMask, u16le(releasedPointer, 24))
+
+                server.input.pointerUp(10, 10, button = 1)
+                out.write(getStateRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val finalState = readReply(socket.getInputStream())
+                assertEquals(0, u16le(finalState, 24))
+
+                val finalPointer = readReply(socket.getInputStream())
+                assertEquals(0, u16le(finalPointer, 24))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetState validates request length and recovers stream`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -1243,6 +1308,12 @@ class XXkbProtocolTest {
         val body = ByteArray(4)
         put16le(body, 0, 0x0100)
         return request(XXkb.MajorOpcode, XXkb.GetState, body)
+    }
+
+    private fun queryPointerRequest(): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, X11Ids.RootWindow)
+        return request(38, 0, body)
     }
 
     private fun latchLockStateRequest(modLocks: Int, groupLock: Int, latchGroup: Boolean, groupLatch: Int): ByteArray {

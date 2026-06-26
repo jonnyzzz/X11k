@@ -442,7 +442,16 @@ internal class X11Connection(
     private fun xkbGetState(body: ByteArray, majorOpcode: Int) {
         if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetState, badValue = 0)
         val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put16(reply, 24, state.pointerMask())
+        val keyboardPointerState = state.keyboardPointerState()
+        val modifiers = keyboardPointerState.modifiers
+        reply[8] = modifiers.toByte()
+        reply[9] = modifiers.toByte()
+        reply[18] = modifiers.toByte()
+        reply[19] = modifiers.toByte()
+        reply[20] = modifiers.toByte()
+        reply[21] = modifiers.toByte()
+        reply[22] = modifiers.toByte()
+        byteOrder.put16(reply, 24, keyboardPointerState.pointerButtons)
         write(reply)
     }
 

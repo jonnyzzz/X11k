@@ -46,6 +46,7 @@ internal class X11State(
     private var pointerX: Int = 0
     private var pointerY: Int = 0
     private var pointerState: Int = 0
+    private var keyboardModifierState: Int = 0
     private val pressedLogicalButtons = mutableSetOf<Int>()
     private var inputTime: Int = 1
     private val motionHistory = mutableListOf<XMotionHistoryEntry>()
@@ -658,7 +659,14 @@ internal class X11State(
     }
 
     @Synchronized
-    fun pointerMask(): Int = pointerState
+    fun pointerMask(): Int = pointerState or keyboardModifierState
+
+    @Synchronized
+    fun keyboardPointerState(): XKeyboardPointerState =
+        XKeyboardPointerState(
+            modifiers = keyboardModifierState,
+            pointerButtons = pointerState,
+        )
 
     @Synchronized
     fun keyboardMapping(firstKeycode: Int, count: Int): XKeyboardMapping {
@@ -1345,7 +1353,7 @@ internal class X11State(
             val previousY = pointerY
             pointerX = x.coerceIn(0, width - 1)
             pointerY = y.coerceIn(0, height - 1)
-            val previousState = pointerState
+            val previousState = pointerMask()
             val logicalButton = pointerLogicalButton(button)
             val type = if (pressed) XPointerEventType.ButtonPress else XPointerEventType.ButtonRelease
             val mask = XEventMasks.forPointerType(type)
@@ -1459,7 +1467,9 @@ internal class X11State(
             val absoluteById = windows.values.associate { window -> window.id to absolutePosition(window) }
             val pointerPath = (pointerWindowId() ?: X11Ids.RootWindow).let { windowPathToRoot(it) }
             val childByPointerAncestor = childByAncestor(pointerPath)
-            val state = (pointerState and KeyModifierMask.inv()) or (modifiers and KeyModifierMask)
+            val modifierState = modifiers and KeyModifierMask
+            val state = pointerState or modifierState
+            keyboardModifierState = modifierState
             val time = inputTime++
             val normalSelection = firstKeyEventSelection(selectionPath, mask)
 
@@ -1613,7 +1623,7 @@ internal class X11State(
                         childWindowId = childByAncestor[eventWindowId] ?: 0,
                         eventX = pointerX - absolute.first,
                         eventY = pointerY - absolute.second,
-                        state = pointerState,
+                        state = pointerMask(),
                         time = time,
                     )
                 }
@@ -1632,7 +1642,7 @@ internal class X11State(
                             childWindowId = childByAncestor[window.id] ?: 0,
                             eventX = pointerX - absolute.first,
                             eventY = pointerY - absolute.second,
-                            state = pointerState,
+                            state = pointerMask(),
                             time = time,
                         )
                     }
@@ -1662,7 +1672,7 @@ internal class X11State(
             rootY = pointerY,
             windowX = pointerX - absolute.first,
             windowY = pointerY - absolute.second,
-            mask = pointerState,
+            mask = pointerMask(),
         )
     }
 
@@ -2022,7 +2032,7 @@ internal class X11State(
             pointer = XPointerStateSnapshot(
                 x = pointerX,
                 y = pointerY,
-                mask = pointerState,
+                mask = pointerMask(),
                 logicalButtonsDown = pressedLogicalButtons.sorted(),
                 windowId = windowAt(pointerX, pointerY)?.id ?: 0,
             ),
@@ -4791,6 +4801,11 @@ internal data class XKeyboardControlSnapshot(
     val ledMaskHex: String get() = "0x${ledMask.toUInt().toString(16)}"
     val autoRepeatsHex: List<String> get() = autoRepeats.map { "0x${it.toString(16)}" }
 }
+
+internal data class XKeyboardPointerState(
+    val modifiers: Int,
+    val pointerButtons: Int,
+)
 
 internal data class XPointerStateSnapshot(
     val x: Int,
