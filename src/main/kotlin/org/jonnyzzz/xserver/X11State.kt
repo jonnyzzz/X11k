@@ -1545,7 +1545,13 @@ internal class X11State(
         id: Int,
         backgroundPixel: Int? = null,
         backgroundPixmapId: Int? = null,
+        bitGravity: Int? = null,
+        winGravity: Int? = null,
+        backingStore: Int? = null,
+        backingPlanes: Int? = null,
+        backingPixel: Int? = null,
         overrideRedirect: Boolean? = null,
+        saveUnder: Boolean? = null,
         doNotPropagateMask: Int? = null,
         colormapId: Int? = null,
         colormapIdChanged: Boolean = false,
@@ -1560,8 +1566,26 @@ internal class X11State(
         if (backgroundPixmapId != null) {
             window.backgroundPixmapId = backgroundPixmapId.takeIf { it != 0 }
         }
+        bitGravity?.let {
+            window.bitGravity = it
+        }
+        winGravity?.let {
+            window.winGravity = it
+        }
+        backingStore?.let {
+            window.backingStore = it
+        }
+        backingPlanes?.let {
+            window.backingPlanes = it
+        }
+        backingPixel?.let {
+            window.backingPixel = it
+        }
         overrideRedirect?.let {
             window.overrideRedirect = it
+        }
+        saveUnder?.let {
+            window.saveUnder = it
         }
         doNotPropagateMask?.let {
             window.doNotPropagateMask = it
@@ -1620,7 +1644,13 @@ internal class X11State(
                 windowClass = window.windowClass,
                 depth = window.depth,
                 visual = window.visual,
+                bitGravity = window.bitGravity,
+                winGravity = window.winGravity,
+                backingStore = window.backingStore,
+                backingPlanes = window.backingPlanes,
+                backingPixel = window.backingPixel,
                 overrideRedirect = window.overrideRedirect,
+                saveUnder = window.saveUnder,
                 colormapId = window.colormapId,
                 cursorId = window.cursorId,
             )
@@ -4058,7 +4088,13 @@ internal data class XWindow(
     var mapped: Boolean = false,
     var backgroundPixel: Int = 0x00ff_ffff,
     var backgroundPixmapId: Int? = null,
+    var bitGravity: Int = XWindowGravity.Forget,
+    var winGravity: Int = XWindowGravity.NorthWest,
+    var backingStore: Int = XBackingStore.NotUseful,
+    var backingPlanes: Int = -1,
+    var backingPixel: Int = 0,
     var overrideRedirect: Boolean = false,
+    var saveUnder: Boolean = false,
     var doNotPropagateMask: Int = 0,
     var colormapId: Int? = X11Ids.DefaultColormap,
     var cursorId: Int? = null,
@@ -4824,7 +4860,13 @@ internal data class XWindowSnapshot(
     val windowClass: Int,
     val depth: Int,
     val visual: Int,
+    val bitGravity: Int,
+    val winGravity: Int,
+    val backingStore: Int,
+    val backingPlanes: Int,
+    val backingPixel: Int,
     val overrideRedirect: Boolean,
+    val saveUnder: Boolean,
     val colormapId: Int?,
     val cursorId: Int?,
 ) {

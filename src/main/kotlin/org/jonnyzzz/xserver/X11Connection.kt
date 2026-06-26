@@ -1970,6 +1970,7 @@ internal class X11Connection(
             }
         }
         val attributes = windowAttributeValues(body, maskOffset = 24, valuesOffset = 28)
+        if (!validateScalarWindowAttributes(attributes, opcode = 1)) return
         attributes.eventMask?.let {
             if ((it and XEventMasks.ValidCoreMask.inv()) != 0) return writeError(error = 2, opcode = 1, badValue = it)
         }
@@ -2000,7 +2001,13 @@ internal class X11Connection(
             borderWidth = borderWidth,
             backgroundPixel = attributes.backgroundPixel ?: 0x00ff_ffff,
             backgroundPixmapId = attributes.backgroundPixmapId?.takeIf { it != 0 },
+            bitGravity = attributes.bitGravity ?: XWindowGravity.Forget,
+            winGravity = attributes.winGravity ?: XWindowGravity.NorthWest,
+            backingStore = attributes.backingStore ?: XBackingStore.NotUseful,
+            backingPlanes = attributes.backingPlanes ?: -1,
+            backingPixel = attributes.backingPixel ?: 0,
             overrideRedirect = attributes.overrideRedirect ?: false,
+            saveUnder = attributes.saveUnder ?: false,
             doNotPropagateMask = attributes.doNotPropagateMask ?: 0,
             colormapId = colormapId,
             cursorId = attributes.cursorId?.takeIf { it != 0 },
@@ -2025,6 +2032,7 @@ internal class X11Connection(
             return writeError(error = 8, opcode = 2, badValue = mask)
         }
         val attributes = windowAttributeValues(body, maskOffset = 4, valuesOffset = 8)
+        if (!validateScalarWindowAttributes(attributes, opcode = 2)) return
         attributes.eventMask?.let {
             if ((it and XEventMasks.ValidCoreMask.inv()) != 0) return writeError(error = 2, opcode = 2, badValue = it)
             if (!state.canSelectEvents(this, windowId, it)) return writeError(error = 10, opcode = 2, badValue = 0)
@@ -2041,6 +2049,18 @@ internal class X11Connection(
         }
         if (attributes.backgroundPixel != null || attributes.backgroundPixmapId != null) {
             state.updateWindowAttributes(windowId, backgroundPixel = attributes.backgroundPixel, backgroundPixmapId = attributes.backgroundPixmapId)
+        }
+        if (attributes.bitGravity != null || attributes.winGravity != null || attributes.backingStore != null ||
+            attributes.backingPlanes != null || attributes.backingPixel != null || attributes.saveUnder != null) {
+            state.updateWindowAttributes(
+                windowId,
+                bitGravity = attributes.bitGravity,
+                winGravity = attributes.winGravity,
+                backingStore = attributes.backingStore,
+                backingPlanes = attributes.backingPlanes,
+                backingPixel = attributes.backingPixel,
+                saveUnder = attributes.saveUnder,
+            )
         }
         attributes.overrideRedirect?.let { state.updateWindowAttributes(windowId, overrideRedirect = it) }
         attributes.doNotPropagateMask?.let { state.updateWindowAttributes(windowId, doNotPropagateMask = it) }
@@ -2300,14 +2320,14 @@ internal class X11Connection(
         if (body.size != 4) return writeError(error = 16, opcode = 3, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
         val window = state.window(windowId) ?: return writeError(error = 3, opcode = 3, badValue = windowId)
-        val reply = reply(extra = 0, payloadUnits = 3)
+        val reply = reply(extra = window.backingStore, payloadUnits = 3)
         byteOrder.put32(reply, 8, window.visual)
         byteOrder.put16(reply, 12, window.windowClass)
-        reply[14] = 1
-        reply[15] = 1
-        byteOrder.put32(reply, 16, -1)
-        byteOrder.put32(reply, 20, 0)
-        reply[24] = 0
+        reply[14] = window.bitGravity.toByte()
+        reply[15] = window.winGravity.toByte()
+        byteOrder.put32(reply, 16, window.backingPlanes)
+        byteOrder.put32(reply, 20, window.backingPixel)
+        reply[24] = if (window.saveUnder) 1 else 0
         reply[25] = if (window.colormapId?.let { state.isColormapInstalled(it) } == true) 1 else 0
         reply[26] = if (window.mapped) 2 else 0
         reply[27] = if (window.overrideRedirect) 1 else 0
@@ -4964,7 +4984,14 @@ internal class X11Connection(
         var offset = valuesOffset
         var backgroundPixmapId: Int? = null
         var backgroundPixel: Int? = null
+        var bitGravity: Int? = null
+        var winGravity: Int? = null
+        var backingStore: Int? = null
+        var backingPlanes: Int? = null
+        var backingPixel: Int? = null
         var overrideRedirect: Boolean? = null
+        var saveUnder: Boolean? = null
+        var saveUnderRaw: Int? = null
         var eventMask: Int? = null
         var doNotPropagateMask: Int? = null
         var colormapId: Int? = null
@@ -4976,7 +5003,16 @@ internal class X11Connection(
             when (bit) {
                 0 -> backgroundPixmapId = value
                 1 -> backgroundPixel = value
+                4 -> bitGravity = value
+                5 -> winGravity = value
+                6 -> backingStore = value
+                7 -> backingPlanes = value
+                8 -> backingPixel = value
                 9 -> overrideRedirect = value != 0
+                10 -> {
+                    saveUnder = value != 0
+                    saveUnderRaw = value
+                }
                 11 -> eventMask = value
                 12 -> doNotPropagateMask = value
                 13 -> colormapId = value
@@ -4984,7 +5020,50 @@ internal class X11Connection(
             }
             offset += 4
         }
-        return WindowAttributeValues(backgroundPixmapId, backgroundPixel, overrideRedirect, eventMask, doNotPropagateMask, colormapId, cursorId)
+        return WindowAttributeValues(
+            backgroundPixmapId = backgroundPixmapId,
+            backgroundPixel = backgroundPixel,
+            bitGravity = bitGravity,
+            winGravity = winGravity,
+            backingStore = backingStore,
+            backingPlanes = backingPlanes,
+            backingPixel = backingPixel,
+            overrideRedirect = overrideRedirect,
+            saveUnder = saveUnder,
+            saveUnderRaw = saveUnderRaw,
+            eventMask = eventMask,
+            doNotPropagateMask = doNotPropagateMask,
+            colormapId = colormapId,
+            cursorId = cursorId,
+        )
+    }
+
+    private fun validateScalarWindowAttributes(attributes: WindowAttributeValues, opcode: Int): Boolean {
+        attributes.bitGravity?.let {
+            if (it !in XWindowGravity.Forget..XWindowGravity.Static) {
+                writeError(error = 2, opcode = opcode, badValue = it)
+                return false
+            }
+        }
+        attributes.winGravity?.let {
+            if (it !in XWindowGravity.Unmap..XWindowGravity.Static) {
+                writeError(error = 2, opcode = opcode, badValue = it)
+                return false
+            }
+        }
+        attributes.backingStore?.let {
+            if (it !in XBackingStore.NotUseful..XBackingStore.Always) {
+                writeError(error = 2, opcode = opcode, badValue = it)
+                return false
+            }
+        }
+        attributes.saveUnderRaw?.let {
+            if (it !in 0..1) {
+                writeError(error = 2, opcode = opcode, badValue = it)
+                return false
+            }
+        }
+        return true
     }
 
     private fun validateGcValueLength(mask: Int, body: ByteArray, valuesOffset: Int, opcode: Int): Boolean {
@@ -6448,12 +6527,32 @@ internal class X11Connection(
 private data class WindowAttributeValues(
     val backgroundPixmapId: Int? = null,
     val backgroundPixel: Int? = null,
+    val bitGravity: Int? = null,
+    val winGravity: Int? = null,
+    val backingStore: Int? = null,
+    val backingPlanes: Int? = null,
+    val backingPixel: Int? = null,
     val overrideRedirect: Boolean? = null,
+    val saveUnder: Boolean? = null,
+    val saveUnderRaw: Int? = null,
     val eventMask: Int? = null,
     val doNotPropagateMask: Int? = null,
     val colormapId: Int? = null,
     val cursorId: Int? = null,
 )
+
+internal object XWindowGravity {
+    const val Unmap = 0
+    const val Forget = 0
+    const val NorthWest = 1
+    const val SouthEast = 9
+    const val Static = 10
+}
+
+internal object XBackingStore {
+    const val NotUseful = 0
+    const val Always = 2
+}
 
 internal object XCloseDownMode {
     const val Destroy = 0
