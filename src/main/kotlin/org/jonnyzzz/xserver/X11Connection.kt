@@ -115,6 +115,10 @@ internal class X11Connection(
                 shm(minorOpcode, body, opcode)
                 return
             }
+            if (extension.name == "XKEYBOARD") {
+                xkb(minorOpcode, body, opcode)
+                return
+            }
         }
         when (opcode) {
             1 -> createWindow(minorOpcode, body)
@@ -366,6 +370,26 @@ internal class X11Connection(
 
     private fun shmBadImplementation(majorOpcode: Int, minorOpcode: Int) {
         state.recordUnsupportedRequest(majorOpcode, minorOpcode, "MIT-SHM.${XShm.operationName(minorOpcode)}")
+        writeError(error = 17, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = 0)
+    }
+
+    private fun xkb(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        when (minorOpcode) {
+            XXkb.UseExtension -> xkbUseExtension(body, majorOpcode)
+            else -> xkbBadImplementation(majorOpcode, minorOpcode)
+        }
+    }
+
+    private fun xkbUseExtension(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.UseExtension, badValue = 0)
+        val reply = reply(extra = 1, payloadUnits = 0)
+        byteOrder.put16(reply, 8, XXkb.MajorVersion)
+        byteOrder.put16(reply, 10, XXkb.MinorVersion)
+        write(reply)
+    }
+
+    private fun xkbBadImplementation(majorOpcode: Int, minorOpcode: Int) {
+        state.recordUnsupportedRequest(majorOpcode, minorOpcode, "XKEYBOARD.${XXkb.operationName(minorOpcode)}")
         writeError(error = 17, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = 0)
     }
 
@@ -4153,6 +4177,7 @@ internal class X11Connection(
             XBigRequests.MajorOpcode -> "BIG-REQUESTS.$minorOpcode"
             XRender.MajorOpcode -> "RENDER.${XRender.operationName(minorOpcode)}"
             XShm.MajorOpcode -> "MIT-SHM.${XShm.operationName(minorOpcode)}"
+            XXkb.MajorOpcode -> "XKEYBOARD.${XXkb.operationName(minorOpcode)}"
             1 -> "CreateWindow"
             2 -> "ChangeWindowAttributes"
             3 -> "GetWindowAttributes"

@@ -112,6 +112,13 @@ internal class X11State(
             firstEvent = XShm.FirstEvent,
             firstError = XShm.FirstError,
         ),
+        XExtension(
+            name = "XKEYBOARD",
+            majorOpcode = XXkb.MajorOpcode,
+            firstEvent = XXkb.FirstEvent,
+            firstError = XXkb.FirstError,
+            aliases = setOf("XKB"),
+        ),
     )
 
     init {

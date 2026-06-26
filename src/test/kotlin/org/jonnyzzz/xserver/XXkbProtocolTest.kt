@@ -1,0 +1,175 @@
+package org.jonnyzzz.xserver
+
+import java.io.InputStream
+import java.net.Socket
+import kotlin.concurrent.thread
+import kotlin.test.Test
+import kotlin.test.assertContains
+import kotlin.test.assertEquals
+
+class XXkbProtocolTest {
+    @Test
+    fun `XKEYBOARD exposes query-only UseExtension metadata`() {
+        withServer { socket, port ->
+            socket.getOutputStream().write(queryExtensionRequest("XKEYBOARD"))
+            socket.getOutputStream().write(useExtensionRequest())
+            socket.getOutputStream().flush()
+
+            val extension = readReply(socket.getInputStream())
+            assertEquals(1, extension[8].toInt())
+            assertEquals(XXkb.MajorOpcode, extension[9].toInt() and 0xff)
+            assertEquals(XXkb.FirstEvent, extension[10].toInt() and 0xff)
+            assertEquals(XXkb.FirstError, extension[11].toInt() and 0xff)
+
+            val version = readReply(socket.getInputStream())
+            assertEquals(1, version[1].toInt() and 0xff)
+            assertEquals(0, u32le(version, 4))
+            assertEquals(XXkb.MajorVersion, u16le(version, 8))
+            assertEquals(XXkb.MinorVersion, u16le(version, 10))
+
+            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD supported=true")
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD alias resolves through QueryExtension`() {
+        withServer { socket, _ ->
+            socket.getOutputStream().write(queryExtensionRequest("XKB"))
+            socket.getOutputStream().flush()
+
+            val extension = readReply(socket.getInputStream())
+            assertEquals(1, extension[8].toInt())
+            assertEquals(XXkb.MajorOpcode, extension[9].toInt() and 0xff)
+            assertEquals(XXkb.FirstEvent, extension[10].toInt() and 0xff)
+            assertEquals(XXkb.FirstError, extension[11].toInt() and 0xff)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD UseExtension validates request length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.UseExtension, ByteArray(0)))
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.UseExtension)
+            val version = readReply(socket.getInputStream())
+            assertEquals(1, version[1].toInt() and 0xff)
+            assertEquals(XXkb.MajorVersion, u16le(version, 8))
+            assertEquals(XXkb.MinorVersion, u16le(version, 10))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD unimplemented requests return BadImplementation and recover stream`() {
+        withServer { socket, port ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, 1, ByteArray(12)))
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 1)
+            val version = readReply(socket.getInputStream())
+            assertEquals(1, version[1].toInt() and 0xff)
+            assertEquals(XXkb.MajorVersion, u16le(version, 8))
+
+            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.SelectEvents:")
+        }
+    }
+
+    private fun withServer(block: (Socket, Int) -> Unit) {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                block(socket, server.localPort)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    private fun setup(socket: Socket) {
+        val out = socket.getOutputStream()
+        val input = socket.getInputStream()
+        out.write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        out.flush()
+        val prefix = input.readExactly(8)
+        assertEquals(1, prefix[0].toInt())
+        input.readExactly(u16le(prefix, 6) * 4)
+    }
+
+    private fun queryExtensionRequest(name: String): ByteArray {
+        val nameBytes = name.encodeToByteArray()
+        val body = ByteArray(4 + ((nameBytes.size + 3) and -4))
+        put16le(body, 0, nameBytes.size)
+        nameBytes.copyInto(body, 4)
+        return request(98, 0, body)
+    }
+
+    private fun useExtensionRequest(): ByteArray {
+        val body = ByteArray(4)
+        put16le(body, 0, XXkb.MajorVersion)
+        put16le(body, 2, XXkb.MinorVersion)
+        return request(XXkb.MajorOpcode, XXkb.UseExtension, body)
+    }
+
+    private fun request(opcode: Int, minorOpcode: Int, body: ByteArray): ByteArray {
+        val bytes = ByteArray(4 + body.size)
+        bytes[0] = opcode.toByte()
+        bytes[1] = minorOpcode.toByte()
+        put16le(bytes, 2, bytes.size / 4)
+        body.copyInto(bytes, 4)
+        return bytes
+    }
+
+    private fun assertError(input: InputStream, error: Int, opcode: Int, badValue: Int, sequence: Int, minorOpcode: Int) {
+        val reply = input.readExactly(32)
+        assertEquals(0, reply[0].toInt())
+        assertEquals(error, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(badValue, u32le(reply, 4))
+        assertEquals(minorOpcode, u16le(reply, 8))
+        assertEquals(opcode, reply[10].toInt() and 0xff)
+    }
+
+    private fun readReply(input: InputStream): ByteArray {
+        val header = input.readExactly(32)
+        val payload = input.readExactly(u32le(header, 4) * 4)
+        return header + payload
+    }
+
+    private fun httpGet(port: Int, path: String): String =
+        Socket("127.0.0.1", port).use { socket ->
+            socket.getOutputStream().write("GET $path HTTP/1.1\r\nHost: localhost\r\n\r\n".encodeToByteArray())
+            socket.getOutputStream().flush()
+            socket.getInputStream().readBytes().decodeToString().substringAfter("\r\n\r\n")
+        }
+
+    private fun InputStream.readExactly(size: Int): ByteArray {
+        val bytes = ByteArray(size)
+        var offset = 0
+        while (offset < size) {
+            val read = read(bytes, offset, size - offset)
+            check(read >= 0) { "unexpected end of stream" }
+            offset += read
+        }
+        return bytes
+    }
+
+    private fun put16le(bytes: ByteArray, offset: Int, value: Int) {
+        bytes[offset] = value.toByte()
+        bytes[offset + 1] = (value ushr 8).toByte()
+    }
+
+    private fun u16le(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xff) or ((bytes[offset + 1].toInt() and 0xff) shl 8)
+
+    private fun u32le(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xff) or
+            ((bytes[offset + 1].toInt() and 0xff) shl 8) or
+            ((bytes[offset + 2].toInt() and 0xff) shl 16) or
+            ((bytes[offset + 3].toInt() and 0xff) shl 24)
+}
