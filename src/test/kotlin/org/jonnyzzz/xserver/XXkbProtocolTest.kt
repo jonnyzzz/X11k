@@ -187,6 +187,68 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetMap reports key range with no map parts`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getMapRequest(full = -1, partial = -1))
+            out.flush()
+
+            val map = readReply(socket.getInputStream())
+            assertEquals(1, map[0].toInt())
+            assertEquals(0, map[1].toInt() and 0xff)
+            assertEquals(1, u16le(map, 2))
+            assertEquals(2, u32le(map, 4))
+            assertEquals(0, u16le(map, 8))
+            assertEquals(XKeyboard.MinKeycode, map[10].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, map[11].toInt() and 0xff)
+            assertEquals(0, u16le(map, 12))
+            assertEquals(0, map[14].toInt() and 0xff)
+            assertEquals(0, map[15].toInt() and 0xff)
+            assertEquals(0, map[16].toInt() and 0xff)
+            assertEquals(0, map[17].toInt() and 0xff)
+            assertEquals(0, u16le(map, 18))
+            assertEquals(0, map[20].toInt() and 0xff)
+            assertEquals(0, map[21].toInt() and 0xff)
+            assertEquals(0, u16le(map, 22))
+            assertEquals(0, map[24].toInt() and 0xff)
+            assertEquals(0, map[25].toInt() and 0xff)
+            assertEquals(0, map[26].toInt() and 0xff)
+            assertEquals(0, map[27].toInt() and 0xff)
+            assertEquals(0, map[28].toInt() and 0xff)
+            assertEquals(0, map[29].toInt() and 0xff)
+            assertEquals(0, map[30].toInt() and 0xff)
+            assertEquals(0, map[31].toInt() and 0xff)
+            assertEquals(0, map[32].toInt() and 0xff)
+            assertEquals(0, map[33].toInt() and 0xff)
+            assertEquals(0, map[34].toInt() and 0xff)
+            assertEquals(0, map[35].toInt() and 0xff)
+            assertEquals(0, map[36].toInt() and 0xff)
+            assertEquals(0, map[37].toInt() and 0xff)
+            assertEquals(0, u16le(map, 38))
+            assertEquals(40, map.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetMap validates request length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.GetMap, ByteArray(20)))
+            out.write(getMapRequest(full = 0, partial = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetMap)
+            val map = readReply(socket.getInputStream())
+            assertEquals(2, u16le(map, 2))
+            assertEquals(2, u32le(map, 4))
+            assertEquals(XKeyboard.MinKeycode, map[10].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, map[11].toInt() and 0xff)
+            assertEquals(0, u16le(map, 12))
+            assertEquals(40, map.size)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetCompatMap returns empty compatibility map`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -475,6 +537,29 @@ class XXkbProtocolTest {
         val body = ByteArray(4)
         put16le(body, 0, 0x0100)
         return request(XXkb.MajorOpcode, XXkb.GetControls, body)
+    }
+
+    private fun getMapRequest(full: Int, partial: Int): ByteArray {
+        val body = ByteArray(24)
+        put16le(body, 0, 0x0100)
+        put16le(body, 2, full)
+        put16le(body, 4, partial)
+        body[6] = 0
+        body[7] = 0xff.toByte()
+        body[8] = XKeyboard.MinKeycode.toByte()
+        body[9] = 0xff.toByte()
+        body[10] = XKeyboard.MinKeycode.toByte()
+        body[11] = 0xff.toByte()
+        body[12] = XKeyboard.MinKeycode.toByte()
+        body[13] = 0xff.toByte()
+        put16le(body, 14, 0xffff)
+        body[16] = XKeyboard.MinKeycode.toByte()
+        body[17] = 0xff.toByte()
+        body[18] = XKeyboard.MinKeycode.toByte()
+        body[19] = 0xff.toByte()
+        body[20] = XKeyboard.MinKeycode.toByte()
+        body[21] = 0xff.toByte()
+        return request(XXkb.MajorOpcode, XXkb.GetMap, body)
     }
 
     private fun getCompatMapRequest(groups: Int, getAllSI: Boolean, firstSI: Int, nSI: Int): ByteArray {
