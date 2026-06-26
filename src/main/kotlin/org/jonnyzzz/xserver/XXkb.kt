@@ -25,6 +25,7 @@ internal object XXkb {
     const val SetNamedIndicator = 16
     const val GetNames = 17
     const val SetNames = 18
+    const val GetGeometry = 19
     const val PerClientFlags = 21
     const val ListComponents = 22
     const val GetKbdByName = 23
@@ -85,6 +86,7 @@ internal object XXkb {
             SetNamedIndicator -> "SetNamedIndicator"
             GetNames -> "GetNames"
             SetNames -> "SetNames"
+            GetGeometry -> "GetGeometry"
             PerClientFlags -> "PerClientFlags"
             ListComponents -> "ListComponents"
             GetKbdByName -> "GetKbdByName"

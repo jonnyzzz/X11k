@@ -393,6 +393,7 @@ internal class X11Connection(
             XXkb.SetNamedIndicator -> xkbSetNamedIndicator(body, majorOpcode)
             XXkb.GetNames -> xkbGetNames(body, majorOpcode)
             XXkb.SetNames -> xkbSetNames(body, majorOpcode)
+            XXkb.GetGeometry -> xkbGetGeometry(body, majorOpcode)
             XXkb.PerClientFlags -> xkbPerClientFlags(body, majorOpcode)
             XXkb.ListComponents -> xkbListComponents(body, majorOpcode)
             XXkb.GetKbdByName -> xkbGetKbdByName(body, majorOpcode)
@@ -645,6 +646,14 @@ internal class X11Connection(
         if ((which and XXkb.NameDetailKeyAliases) != 0 && !require(nKeyAliases * 8)) return null
         if ((which and XXkb.NameDetailRgNames) != 0 && !require(nRadioGroups * 4)) return null
         return offset
+    }
+
+    private fun xkbGetGeometry(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetGeometry, badValue = 0)
+        val name = byteOrder.u32(body, 4)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, name)
+        write(reply)
     }
 
     private fun xkbPerClientFlags(body: ByteArray, majorOpcode: Int) {

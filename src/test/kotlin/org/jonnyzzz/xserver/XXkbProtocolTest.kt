@@ -777,6 +777,52 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetGeometry reports empty geometry`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getGeometryRequest(name = 0x1122_3344))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, reply[0].toInt())
+            assertEquals(0, reply[1].toInt() and 0xff)
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0x1122_3344, u32le(reply, 8))
+            assertEquals(0, reply[12].toInt() and 0xff)
+            assertEquals(0, reply[13].toInt() and 0xff)
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(0, u16le(reply, 16))
+            assertEquals(0, u16le(reply, 18))
+            assertEquals(0, u16le(reply, 20))
+            assertEquals(0, u16le(reply, 22))
+            assertEquals(0, u16le(reply, 24))
+            assertEquals(0, u16le(reply, 26))
+            assertEquals(0, reply[28].toInt() and 0xff)
+            assertEquals(0, reply[29].toInt() and 0xff)
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetGeometry validates request length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.GetGeometry, ByteArray(4)))
+            out.write(getGeometryRequest(name = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetGeometry)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u32le(reply, 8))
+            assertEquals(0, reply[12].toInt() and 0xff)
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD PerClientFlags reports no supported per-client flags`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -1469,6 +1515,13 @@ class XXkbProtocolTest {
 
     private fun setNamesBodySize(includeAllDetails: Boolean): Int =
         if (includeAllDetails) 124 else 24
+
+    private fun getGeometryRequest(name: Int): ByteArray {
+        val body = ByteArray(8)
+        put16le(body, 0, 0x0100)
+        put32le(body, 4, name)
+        return request(XXkb.MajorOpcode, XXkb.GetGeometry, body)
+    }
 
     private fun perClientFlagsRequest(change: Int, value: Int, ctrlsToChange: Int, autoCtrls: Int, autoCtrlsValues: Int): ByteArray {
         val body = ByteArray(24)
