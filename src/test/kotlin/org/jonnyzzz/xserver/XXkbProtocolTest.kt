@@ -181,6 +181,44 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD LatchLockState accepts fixed no-op and recovers stream`() {
+        withServer { socket, port ->
+            val out = socket.getOutputStream()
+            out.write(latchLockStateRequest(modLocks = 0x05, groupLock = 1, latchGroup = true, groupLatch = -1))
+            out.write(latchLockStateRequest(modLocks = 0, groupLock = 0, latchGroup = false, groupLatch = 0))
+            out.write(useExtensionRequest())
+            out.flush()
+
+            val version = readReply(socket.getInputStream())
+            assertEquals(3, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+            assertEquals(XXkb.MajorVersion, u16le(version, 8))
+            assertEquals(XXkb.MinorVersion, u16le(version, 10))
+
+            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.LatchLockState: 2")
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD LatchLockState validates fixed request length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.LatchLockState, ByteArray(8)))
+            out.write(request(XXkb.MajorOpcode, XXkb.LatchLockState, ByteArray(16)))
+            out.write(latchLockStateRequest(modLocks = 0, groupLock = 0, latchGroup = false, groupLatch = 0))
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.LatchLockState)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.LatchLockState)
+            val version = readReply(socket.getInputStream())
+            assertEquals(4, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+            assertEquals(XXkb.MajorVersion, u16le(version, 8))
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetControls returns core keyboard controls`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -721,16 +759,16 @@ class XXkbProtocolTest {
     fun `XKEYBOARD unimplemented requests return BadImplementation and recover stream`() {
         withServer { socket, port ->
             val out = socket.getOutputStream()
-            out.write(request(XXkb.MajorOpcode, 5, ByteArray(12)))
+            out.write(request(XXkb.MajorOpcode, 7, ByteArray(96)))
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 5)
+            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 7)
             val version = readReply(socket.getInputStream())
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
 
-            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.LatchLockState:")
+            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.SetControls:")
         }
     }
 
@@ -802,6 +840,20 @@ class XXkbProtocolTest {
         val body = ByteArray(4)
         put16le(body, 0, 0x0100)
         return request(XXkb.MajorOpcode, XXkb.GetState, body)
+    }
+
+    private fun latchLockStateRequest(modLocks: Int, groupLock: Int, latchGroup: Boolean, groupLatch: Int): ByteArray {
+        val body = ByteArray(12)
+        put16le(body, 0, 0x0100)
+        body[2] = 0xff.toByte()
+        body[3] = modLocks.toByte()
+        body[4] = 1
+        body[5] = groupLock.toByte()
+        body[6] = 0xff.toByte()
+        body[7] = 0
+        body[9] = if (latchGroup) 1 else 0
+        put16le(body, 10, groupLatch)
+        return request(XXkb.MajorOpcode, XXkb.LatchLockState, body)
     }
 
     private fun getControlsRequest(): ByteArray {

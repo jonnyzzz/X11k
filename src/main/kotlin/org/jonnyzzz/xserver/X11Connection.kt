@@ -379,6 +379,7 @@ internal class X11Connection(
             XXkb.SelectEvents -> xkbSelectEvents(body, majorOpcode)
             XXkb.Bell -> xkbBell(body, majorOpcode)
             XXkb.GetState -> xkbGetState(body, majorOpcode)
+            XXkb.LatchLockState -> xkbLatchLockState(body, majorOpcode)
             XXkb.GetControls -> xkbGetControls(body, majorOpcode)
             XXkb.GetMap -> xkbGetMap(body, majorOpcode)
             XXkb.GetCompatMap -> xkbGetCompatMap(body, majorOpcode)
@@ -418,6 +419,10 @@ internal class X11Connection(
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put16(reply, 24, state.pointerMask())
         write(reply)
+    }
+
+    private fun xkbLatchLockState(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.LatchLockState, badValue = 0)
     }
 
     private fun xkbGetControls(body: ByteArray, majorOpcode: Int) {
