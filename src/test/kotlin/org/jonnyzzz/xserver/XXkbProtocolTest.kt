@@ -523,6 +523,69 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetKbdByName reports key range with no loaded components`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getKbdByNameRequest(need = -1, want = -1, load = true))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, reply[0].toInt())
+            assertEquals(0, reply[1].toInt() and 0xff)
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(XKeyboard.MinKeycode, reply[8].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, reply[9].toInt() and 0xff)
+            assertEquals(0, reply[10].toInt() and 0xff)
+            assertEquals(0, reply[11].toInt() and 0xff)
+            assertEquals(0, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName accepts and ignores trailing component names`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val trailingNames = ByteArray(16)
+            put16le(trailingNames, 0, 4)
+            "base".encodeToByteArray().copyInto(trailingNames, 2)
+            out.write(getKbdByNameRequest(need = 0, want = 0, load = false, trailingNames = trailingNames))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, reply[0].toInt())
+            assertEquals(0, reply[1].toInt() and 0xff)
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(XKeyboard.MinKeycode, reply[8].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, reply[9].toInt() and 0xff)
+            assertEquals(0, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName validates fixed prefix length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.GetKbdByName, ByteArray(4)))
+            out.write(getKbdByNameRequest(need = 0, want = 0, load = false))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetKbdByName)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(XKeyboard.MinKeycode, reply[8].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, reply[9].toInt() and 0xff)
+            assertEquals(0, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetDeviceInfo reports unsupported XI features and pointer button count`() {
         withServer { socket, _ ->
             val wanted = XXkb.XiFeatureButtonActions or XXkb.XiFeatureIndicatorNames or XXkb.XiFeatureIndicatorMaps or XXkb.XiFeatureIndicatorState
@@ -770,6 +833,16 @@ class XXkbProtocolTest {
         put16le(body, 2, maxNames)
         trailingPatterns.copyInto(body, 4)
         return request(XXkb.MajorOpcode, XXkb.ListComponents, body)
+    }
+
+    private fun getKbdByNameRequest(need: Int, want: Int, load: Boolean, trailingNames: ByteArray = ByteArray(0)): ByteArray {
+        val body = ByteArray(8 + trailingNames.size)
+        put16le(body, 0, 0x0100)
+        put16le(body, 2, need)
+        put16le(body, 4, want)
+        body[6] = if (load) 1 else 0
+        trailingNames.copyInto(body, 8)
+        return request(XXkb.MajorOpcode, XXkb.GetKbdByName, body)
     }
 
     private fun getDeviceInfoRequest(

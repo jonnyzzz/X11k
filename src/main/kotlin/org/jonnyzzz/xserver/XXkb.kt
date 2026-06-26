@@ -19,6 +19,7 @@ internal object XXkb {
     const val GetNames = 17
     const val PerClientFlags = 21
     const val ListComponents = 22
+    const val GetKbdByName = 23
     const val GetDeviceInfo = 24
     const val SetDebuggingFlags = 101
 
@@ -54,7 +55,7 @@ internal object XXkb {
             18 -> "SetNames"
             PerClientFlags -> "PerClientFlags"
             ListComponents -> "ListComponents"
-            23 -> "GetKbdByName"
+            GetKbdByName -> "GetKbdByName"
             GetDeviceInfo -> "GetDeviceInfo"
             25 -> "SetDeviceInfo"
             SetDebuggingFlags -> "SetDebuggingFlags"
