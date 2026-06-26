@@ -383,6 +383,7 @@ internal class X11Connection(
             XXkb.GetControls -> xkbGetControls(body, majorOpcode)
             XXkb.SetControls -> xkbSetControls(body, majorOpcode)
             XXkb.GetMap -> xkbGetMap(body, majorOpcode)
+            XXkb.SetMap -> xkbSetMap(body, majorOpcode)
             XXkb.GetCompatMap -> xkbGetCompatMap(body, majorOpcode)
             XXkb.SetCompatMap -> xkbSetCompatMap(body, majorOpcode)
             XXkb.GetIndicatorState -> xkbGetIndicatorState(body, majorOpcode)
@@ -465,6 +466,80 @@ internal class X11Connection(
         reply[10] = XKeyboard.MinKeycode.toByte()
         reply[11] = XKeyboard.MaxKeycode.toByte()
         write(reply)
+    }
+
+    private fun xkbSetMap(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 32) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetMap, badValue = 0)
+        val expectedSize = xkbSetMapPayloadSize(body)
+        if (expectedSize == null || body.size != expectedSize) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetMap, badValue = 0)
+        }
+    }
+
+    private fun xkbSetMapPayloadSize(body: ByteArray): Int? {
+        val present = byteOrder.u16(body, 2)
+        val nTypes = body[9].toInt() and 0xff
+        val nKeySyms = body[11].toInt() and 0xff
+        val nKeyActions = body[15].toInt() and 0xff
+        val totalActions = byteOrder.u16(body, 16)
+        val totalKeyBehaviors = body[20].toInt() and 0xff
+        val totalKeyExplicit = body[23].toInt() and 0xff
+        val totalModMapKeys = body[26].toInt() and 0xff
+        val totalVModMapKeys = body[29].toInt() and 0xff
+        val virtualMods = byteOrder.u16(body, 30)
+
+        var offset = 32
+        fun require(bytes: Int): Boolean {
+            val next = offset + bytes
+            if (next < offset || next > body.size) return false
+            offset = next
+            return true
+        }
+
+        if ((present and XXkb.MapPartKeyTypes) != 0) {
+            repeat(nTypes) {
+                if (offset + 8 > body.size) return null
+                val nMapEntries = body[offset + 5].toInt() and 0xff
+                val preserve = body[offset + 6].toInt() != 0
+                val keyTypeSize = 8 + nMapEntries * 4 + if (preserve) nMapEntries * 4 else 0
+                if (!require(keyTypeSize)) return null
+            }
+        }
+        if ((present and XXkb.MapPartKeySyms) != 0) {
+            repeat(nKeySyms) {
+                if (offset + 8 > body.size) return null
+                val nSyms = byteOrder.u16(body, offset + 6)
+                if (!require(8 + nSyms * 4)) return null
+            }
+        }
+        if ((present and XXkb.MapPartKeyActions) != 0) {
+            if (!require(nKeyActions)) return null
+            offset = paddedLength(offset)
+            if (offset > body.size) return null
+            if (!require(totalActions * 8)) return null
+        }
+        if ((present and XXkb.MapPartKeyBehaviors) != 0) {
+            if (!require(totalKeyBehaviors * 4)) return null
+        }
+        if ((present and XXkb.MapPartVirtualMods) != 0) {
+            if (!require(Integer.bitCount(virtualMods))) return null
+            offset = paddedLength(offset)
+            if (offset > body.size) return null
+        }
+        if ((present and XXkb.MapPartExplicitComponents) != 0) {
+            if (!require(totalKeyExplicit * 2)) return null
+            offset = paddedLength(offset)
+            if (offset > body.size) return null
+        }
+        if ((present and XXkb.MapPartModifierMap) != 0) {
+            if (!require(totalModMapKeys * 2)) return null
+            offset = paddedLength(offset)
+            if (offset > body.size) return null
+        }
+        if ((present and XXkb.MapPartVirtualModMap) != 0) {
+            if (!require(totalVModMapKeys * 4)) return null
+        }
+        return offset
     }
 
     private fun xkbGetCompatMap(body: ByteArray, majorOpcode: Int) {

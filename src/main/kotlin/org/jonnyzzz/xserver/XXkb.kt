@@ -15,6 +15,7 @@ internal object XXkb {
     const val GetControls = 6
     const val SetControls = 7
     const val GetMap = 8
+    const val SetMap = 9
     const val GetCompatMap = 10
     const val SetCompatMap = 11
     const val GetIndicatorState = 12
@@ -30,6 +31,14 @@ internal object XXkb {
     const val SetDebuggingFlags = 101
 
     const val BoolCtrlRepeatKeys = 1 shl 0
+    const val MapPartKeyTypes = 1 shl 0
+    const val MapPartKeySyms = 1 shl 1
+    const val MapPartModifierMap = 1 shl 2
+    const val MapPartExplicitComponents = 1 shl 3
+    const val MapPartKeyActions = 1 shl 4
+    const val MapPartKeyBehaviors = 1 shl 5
+    const val MapPartVirtualMods = 1 shl 6
+    const val MapPartVirtualModMap = 1 shl 7
     const val XiFeatureButtonActions = 1 shl 1
     const val XiFeatureIndicatorNames = 1 shl 2
     const val XiFeatureIndicatorMaps = 1 shl 3
@@ -49,7 +58,7 @@ internal object XXkb {
             GetControls -> "GetControls"
             SetControls -> "SetControls"
             GetMap -> "GetMap"
-            9 -> "SetMap"
+            SetMap -> "SetMap"
             GetCompatMap -> "GetCompatMap"
             SetCompatMap -> "SetCompatMap"
             GetIndicatorState -> "GetIndicatorState"

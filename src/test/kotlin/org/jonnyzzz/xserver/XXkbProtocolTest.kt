@@ -371,6 +371,68 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD SetMap accepts full map payload without changing empty map`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(setMapRequest(includeAllParts = true))
+            out.write(getMapRequest(full = -1, partial = -1))
+            out.flush()
+
+            val map = readReply(socket.getInputStream())
+            assertEquals(2, u16le(map, 2))
+            assertEquals(2, u32le(map, 4))
+            assertEquals(0, u16le(map, 8))
+            assertEquals(XKeyboard.MinKeycode, map[10].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, map[11].toInt() and 0xff)
+            assertEquals(0, u16le(map, 12))
+            assertEquals(0, map[14].toInt() and 0xff)
+            assertEquals(0, map[15].toInt() and 0xff)
+            assertEquals(40, map.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetMap accepts odd explicit and modifier map counts with padding`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(setMapRequest(includeAllParts = true, oddExplicitAndModifierMapCounts = true))
+            out.write(getMapRequest(full = -1, partial = -1))
+            out.flush()
+
+            val map = readReply(socket.getInputStream())
+            assertEquals(2, u16le(map, 2))
+            assertEquals(2, u32le(map, 4))
+            assertEquals(0, u16le(map, 8))
+            assertEquals(0, u16le(map, 12))
+            assertEquals(40, map.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetMap validates variable payload length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.SetMap, ByteArray(28)))
+            out.write(setMapRequest(includeAllParts = true, bodySize = setMapBodySize(includeAllParts = true) - 4))
+            out.write(setMapRequest(includeAllParts = true, bodySize = setMapBodySize(includeAllParts = true) + 4))
+            out.write(setMapRequest(includeAllParts = false))
+            out.write(getMapRequest(full = 0, partial = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetMap)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetMap)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetMap)
+            val map = readReply(socket.getInputStream())
+            assertEquals(5, u16le(map, 2))
+            assertEquals(2, u32le(map, 4))
+            assertEquals(XKeyboard.MinKeycode, map[10].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, map[11].toInt() and 0xff)
+            assertEquals(0, u16le(map, 12))
+            assertEquals(40, map.size)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetCompatMap returns empty compatibility map`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -927,16 +989,16 @@ class XXkbProtocolTest {
     fun `XKEYBOARD unimplemented requests return BadImplementation and recover stream`() {
         withServer { socket, port ->
             val out = socket.getOutputStream()
-            out.write(request(XXkb.MajorOpcode, 9, ByteArray(32)))
+            out.write(request(XXkb.MajorOpcode, 18, ByteArray(24)))
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 9)
+            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 18)
             val version = readReply(socket.getInputStream())
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
 
-            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.SetMap:")
+            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.SetNames:")
         }
     }
 
@@ -1071,6 +1133,91 @@ class XXkbProtocolTest {
         body[21] = 0xff.toByte()
         return request(XXkb.MajorOpcode, XXkb.GetMap, body)
     }
+
+    private fun setMapRequest(
+        includeAllParts: Boolean,
+        oddExplicitAndModifierMapCounts: Boolean = false,
+        bodySize: Int = setMapBodySize(includeAllParts),
+    ): ByteArray {
+        val body = ByteArray(bodySize)
+        val present = if (includeAllParts) {
+            XXkb.MapPartKeyTypes or
+                XXkb.MapPartKeySyms or
+                XXkb.MapPartModifierMap or
+                XXkb.MapPartExplicitComponents or
+                XXkb.MapPartKeyActions or
+                XXkb.MapPartKeyBehaviors or
+                XXkb.MapPartVirtualMods or
+                XXkb.MapPartVirtualModMap
+        } else {
+            0
+        }
+        put16le(body, 0, 0x0100)
+        put16le(body, 2, present)
+        put16le(body, 4, 0)
+        body[6] = XKeyboard.MinKeycode.toByte()
+        body[7] = XKeyboard.MaxKeycode.toByte()
+        if (includeAllParts) {
+            val explicitCount = if (oddExplicitAndModifierMapCounts) 1 else 2
+            val modMapCount = if (oddExplicitAndModifierMapCounts) 1 else 2
+            body[8] = 0
+            body[9] = 2
+            body[10] = XKeyboard.MinKeycode.toByte()
+            body[11] = 2
+            put16le(body, 12, 3)
+            body[14] = XKeyboard.MinKeycode.toByte()
+            body[15] = 3
+            put16le(body, 16, 2)
+            body[18] = XKeyboard.MinKeycode.toByte()
+            body[19] = 2
+            body[20] = 2
+            body[21] = XKeyboard.MinKeycode.toByte()
+            body[22] = 2
+            body[23] = explicitCount.toByte()
+            body[24] = XKeyboard.MinKeycode.toByte()
+            body[25] = 2
+            body[26] = modMapCount.toByte()
+            body[27] = XKeyboard.MinKeycode.toByte()
+            body[28] = 2
+            body[29] = 2
+            put16le(body, 30, 0x0003)
+        }
+
+        var offset = 32
+        fun write(size: Int, block: (Int) -> Unit = {}) {
+            if (offset + size <= body.size) block(offset)
+            offset += size
+        }
+        fun align4() {
+            offset = (offset + 3) and -4
+        }
+        if (includeAllParts) {
+            write(24) {
+                body[it + 4] = 2
+                body[it + 5] = 2
+                body[it + 6] = 1
+            }
+            write(12) {
+                body[it + 4] = 1
+                body[it + 5] = 1
+            }
+            write(16) { put16le(body, it + 6, 2) }
+            write(12) { put16le(body, it + 6, 1) }
+            write(3)
+            align4()
+            write(16)
+            write(8)
+            write(if (oddExplicitAndModifierMapCounts) 1 * 2 else 2 * 2)
+            align4()
+            write(if (oddExplicitAndModifierMapCounts) 1 * 2 else 2 * 2)
+            align4()
+            write(8)
+        }
+        return request(XXkb.MajorOpcode, XXkb.SetMap, body)
+    }
+
+    private fun setMapBodySize(includeAllParts: Boolean): Int =
+        if (includeAllParts) 144 else 32
 
     private fun getCompatMapRequest(groups: Int, getAllSI: Boolean, firstSI: Int, nSI: Int): ByteArray {
         val body = ByteArray(8)
