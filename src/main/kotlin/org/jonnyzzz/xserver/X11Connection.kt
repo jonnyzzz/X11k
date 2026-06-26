@@ -379,6 +379,7 @@ internal class X11Connection(
             XXkb.SelectEvents -> xkbSelectEvents(body, majorOpcode)
             XXkb.GetState -> xkbGetState(body, majorOpcode)
             XXkb.GetControls -> xkbGetControls(body, majorOpcode)
+            XXkb.GetCompatMap -> xkbGetCompatMap(body, majorOpcode)
             XXkb.GetIndicatorState -> xkbGetIndicatorState(body, majorOpcode)
             XXkb.GetIndicatorMap -> xkbGetIndicatorMap(body, majorOpcode)
             XXkb.GetNamedIndicator -> xkbGetNamedIndicator(body, majorOpcode)
@@ -416,6 +417,12 @@ internal class X11Connection(
         byteOrder.put16(reply, 22, XXkb.DefaultRepeatInterval)
         byteOrder.put32(reply, 56, if (keyboardControl.globalAutoRepeat) XXkb.BoolCtrlRepeatKeys else 0)
         keyboardControl.autoRepeats.copyInto(reply, 60)
+        write(reply)
+    }
+
+    private fun xkbGetCompatMap(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetCompatMap, badValue = 0)
+        val reply = reply(extra = 0, payloadUnits = 0)
         write(reply)
     }
 

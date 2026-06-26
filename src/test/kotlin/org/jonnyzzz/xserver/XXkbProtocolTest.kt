@@ -187,6 +187,44 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetCompatMap returns empty compatibility map`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getCompatMapRequest(groups = -1, getAllSI = true, firstSI = 0, nSI = 0xffff))
+            out.flush()
+
+            val compatMap = readReply(socket.getInputStream())
+            assertEquals(1, compatMap[0].toInt())
+            assertEquals(0, compatMap[1].toInt() and 0xff)
+            assertEquals(1, u16le(compatMap, 2))
+            assertEquals(0, u32le(compatMap, 4))
+            assertEquals(0, compatMap[8].toInt() and 0xff)
+            assertEquals(0, u16le(compatMap, 10))
+            assertEquals(0, u16le(compatMap, 12))
+            assertEquals(0, u16le(compatMap, 14))
+            assertEquals(32, compatMap.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetCompatMap validates request length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.GetCompatMap, ByteArray(4)))
+            out.write(getCompatMapRequest(groups = 0, getAllSI = false, firstSI = 0, nSI = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetCompatMap)
+            val compatMap = readReply(socket.getInputStream())
+            assertEquals(2, u16le(compatMap, 2))
+            assertEquals(0, compatMap[1].toInt() and 0xff)
+            assertEquals(0, u16le(compatMap, 10))
+            assertEquals(0, u16le(compatMap, 12))
+            assertEquals(0, u16le(compatMap, 14))
+        }
+    }
+
+    @Test
     fun `XKEYBOARD indicator queries return empty state and map`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -392,6 +430,16 @@ class XXkbProtocolTest {
         val body = ByteArray(4)
         put16le(body, 0, 0x0100)
         return request(XXkb.MajorOpcode, XXkb.GetControls, body)
+    }
+
+    private fun getCompatMapRequest(groups: Int, getAllSI: Boolean, firstSI: Int, nSI: Int): ByteArray {
+        val body = ByteArray(8)
+        put16le(body, 0, 0x0100)
+        body[2] = groups.toByte()
+        body[3] = if (getAllSI) 1 else 0
+        put16le(body, 4, firstSI)
+        put16le(body, 6, nSI)
+        return request(XXkb.MajorOpcode, XXkb.GetCompatMap, body)
     }
 
     private fun getIndicatorStateRequest(): ByteArray {

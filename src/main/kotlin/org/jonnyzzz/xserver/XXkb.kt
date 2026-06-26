@@ -11,6 +11,7 @@ internal object XXkb {
     const val SelectEvents = 1
     const val GetState = 4
     const val GetControls = 6
+    const val GetCompatMap = 10
     const val GetIndicatorState = 12
     const val GetIndicatorMap = 13
     const val GetNamedIndicator = 15
@@ -33,7 +34,7 @@ internal object XXkb {
             7 -> "SetControls"
             8 -> "GetMap"
             9 -> "SetMap"
-            10 -> "GetCompatMap"
+            GetCompatMap -> "GetCompatMap"
             11 -> "SetCompatMap"
             GetIndicatorState -> "GetIndicatorState"
             GetIndicatorMap -> "GetIndicatorMap"
