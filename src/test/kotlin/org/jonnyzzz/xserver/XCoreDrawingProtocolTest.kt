@@ -2147,6 +2147,72 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ClearArea with ParentRelative background uses current parent background pixel`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val child = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent, width = 6, height = 5))
+                out.write(createWindowRequest(child, parent = parent, width = 3, height = 2, backgroundPixmap = XWindowBackground.ParentRelative))
+                out.write(createGcRequest(GcId, foreground = Red, drawable = child))
+                out.write(putImage24Request(child, width = 3, height = 2, pixel = 0x0012_3456))
+                out.write(changeWindowAttributesRawRequest(parent, 1 shl 1, Green))
+                out.write(clearAreaRequest(child, x = 0, y = 0, width = 0, height = 0))
+                out.write(getImageRequest(child, x = 0, y = 0, width = 3, height = 2))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 3, 0, 0))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 3, 2, 1))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ClearArea with ParentRelative background aligns to parent pixmap tile origin`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val child = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent, width = 6, height = 5))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2, drawable = parent))
+                out.write(createGcRequest(GcId, foreground = Red, drawable = parent))
+                out.write(
+                    putImage24PixelsRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 2,
+                        pixels = listOf(Red, Green, Blue, 0x0000_0000),
+                    ),
+                )
+                out.write(changeWindowBackgroundPixmapRequest(parent, PixmapId))
+                out.write(createWindowRequest(child, parent = parent, x = 1, y = 0, width = 2, height = 2, backgroundPixmap = XWindowBackground.ParentRelative))
+                out.write(clearAreaRequest(child, x = 0, y = 0, width = 0, height = 0))
+                out.write(getImageRequest(child, x = 0, y = 0, width = 2, height = 2))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 2, 0, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 2, 1, 0))
+                assertEquals(0xff00_0000.toInt(), pixelAt(image, 2, 0, 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 2, 1, 1))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `PolyLine PolySegment and PolyRectangle paint framebuffer pixels`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
