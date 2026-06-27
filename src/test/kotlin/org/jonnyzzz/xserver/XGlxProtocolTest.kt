@@ -284,6 +284,26 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX MakeCurrent requests reject missing old context tag and recover stream`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_010b
+            val missingOldTag = 0x0020_010c
+            val missingLegacyOldTag = 0x0020_010d
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeContextCurrent, u32(missingOldTag) + u32(X11Ids.RootWindow) + u32(X11Ids.RootWindow) + u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeCurrent, u32(X11Ids.RootWindow) + u32(0) + u32(missingLegacyOldTag))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeContextCurrent, u32(0) + u32(X11Ids.RootWindow) + u32(X11Ids.RootWindow) + u32(contextId))
+
+            assertGlxError(socket.getInputStream(), error = XGlx.BadContextTag, badValue = missingOldTag, minorOpcode = XGlx.MakeContextCurrent, sequence = 2)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadContextTag, badValue = missingLegacyOldTag, minorOpcode = XGlx.MakeCurrent, sequence = 3)
+            val current = readReply(socket.getInputStream())
+            assertEquals(4, u16le(current, 2))
+            assertEquals(contextId, u32le(current, 8))
+        }
+    }
+
+    @Test
     fun `GLX fixed size string and direct queries validate request length`() {
         withServer { socket ->
             socket.soTimeout = 2_000
