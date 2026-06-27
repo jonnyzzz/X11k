@@ -282,9 +282,9 @@ internal class X11Connection(
 
         when (minorOpcode) {
             XGlx.QueryVersion -> glxQueryVersion(body)
-            3 -> glxCreateContext(body)
-            4 -> glxDestroyContext(body)
-            5 -> glxMakeCurrent(body, isContextCurrent = false)
+            XGlx.CreateContext -> glxCreateContext(body)
+            XGlx.DestroyContext -> glxDestroyContext(body)
+            XGlx.MakeCurrent -> glxMakeCurrent(body, isContextCurrent = false)
             XGlx.IsDirect -> glxIsDirect(body)
             XGlx.WaitGL, XGlx.WaitX -> glxWait(body, minorOpcode)
             XGlx.CopyContext -> glxCopyContext(body)
@@ -2452,8 +2452,11 @@ internal class X11Connection(
     }
 
     private fun glxDestroyContext(body: ByteArray) {
-        if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = 4, badValue = 0)
+        if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyContext, badValue = 0)
         val context = byteOrder.u32(body, 0)
+        if (state.glxContext(context) == null) {
+            return writeError(error = XGlx.BadContext, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyContext, badValue = context)
+        }
         state.removeGlxContext(context)
         ownedResources.remove(context)
     }
@@ -2560,7 +2563,7 @@ internal class X11Connection(
     }
 
     private fun glxMakeCurrent(body: ByteArray, isContextCurrent: Boolean) {
-        val minorOpcode = if (isContextCurrent) XGlx.MakeContextCurrent else 5
+        val minorOpcode = if (isContextCurrent) XGlx.MakeContextCurrent else XGlx.MakeCurrent
         val oldTagOffset = if (isContextCurrent) 0 else 8
         val contextOffset = if (isContextCurrent) 12 else 4
         val expectedSize = if (isContextCurrent) 16 else 12

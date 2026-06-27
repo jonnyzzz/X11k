@@ -19,6 +19,9 @@ internal object XGlx {
 
     const val Render = 1
     const val RenderLarge = 2
+    const val CreateContext = 3
+    const val DestroyContext = 4
+    const val MakeCurrent = 5
     const val QueryVersion = 7
     const val IsDirect = 6
     const val WaitGL = 8
@@ -81,9 +84,9 @@ internal object XGlx {
         when (minorOpcode) {
             Render -> "Render"
             RenderLarge -> "RenderLarge"
-            3 -> "CreateContext"
-            4 -> "DestroyContext"
-            5 -> "MakeCurrent"
+            CreateContext -> "CreateContext"
+            DestroyContext -> "DestroyContext"
+            MakeCurrent -> "MakeCurrent"
             IsDirect -> "IsDirect"
             QueryVersion -> "QueryVersion"
             WaitGL -> "WaitGL"

@@ -228,7 +228,7 @@ class XGlxProtocolTest {
             val direct = readReply(socket.getInputStream())
             assertEquals(0, direct[8].toInt())
 
-            writeRequest(socket, XGlx.MajorOpcode, 4, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyContext, u32(contextId))
         }
     }
 
@@ -521,19 +521,52 @@ class XGlxProtocolTest {
             val contextId = 0x0020_0138
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = u32(12) + u32(1), requestNumber = 1, requestTotal = 2))
-            writeRequest(socket, XGlx.MajorOpcode, 4, ByteArray(0))
-            writeRequest(socket, XGlx.MajorOpcode, 4, u32(contextId) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyContext, ByteArray(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyContext, u32(contextId) + u32(0))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = byteArrayOf(1, 2, 3, 4), requestNumber = 2, requestTotal = 2))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = u32(12) + u32(1), requestNumber = 1, requestTotal = 2))
-            writeRequest(socket, XGlx.MajorOpcode, 4, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyContext, u32(contextId))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.Render, u32(contextId))
             writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
 
-            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = 4, sequence = 3)
-            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = 4, sequence = 4)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.DestroyContext, sequence = 3)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.DestroyContext, sequence = 4)
             val pointer = readReply(socket.getInputStream())
             assertEquals(10, u16le(pointer, 2))
+        }
+    }
+
+    @Test
+    fun `GLX DestroyContext rejects missing context and recovers stream`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val missingContext = 0x0020_013c
+            val contextId = 0x0020_013d
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyContext, u32(missingContext))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyContext, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyContext, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.IsDirect, u32(contextId))
+
+            assertGlxError(
+                socket.getInputStream(),
+                error = XGlx.BadContext,
+                badValue = missingContext,
+                minorOpcode = XGlx.DestroyContext,
+                sequence = 1,
+            )
+            assertGlxError(
+                socket.getInputStream(),
+                error = XGlx.BadContext,
+                badValue = contextId,
+                minorOpcode = XGlx.DestroyContext,
+                sequence = 4,
+            )
+            val direct = readReply(socket.getInputStream())
+            assertEquals(6, u16le(direct, 2))
+            assertEquals(0, direct[8].toInt())
         }
     }
 
