@@ -2677,8 +2677,8 @@ internal class X11State(
                 sourceFramebuffer.transformedPixelAt(x, y, source.repeat, source.transform, source.filterName)
             }
         }
-        return destinationFramebuffer.copyFrom(
-            source = sourceFramebuffer,
+        val sourceSnapshot = sourceFramebuffer.snapshot().takeIf { sourceDrawableId == destinationDrawableId }
+        return destinationFramebuffer.compositeGenerated(
             sourceX = sourceX,
             sourceY = sourceY,
             destinationX = destinationX,
@@ -2691,7 +2691,17 @@ internal class X11State(
             maskX = maskX,
             maskY = maskY,
             maskAlphaAt = maskAlphaAt,
-        )
+        ) { x, y ->
+            if (sourceSnapshot != null) {
+                if (x in 0 until sourceSnapshot.width && y in 0 until sourceSnapshot.height) {
+                    sourceSnapshot.pixels[y * sourceSnapshot.width + x]
+                } else {
+                    0
+                }
+            } else {
+                sourceFramebuffer.pixelAt(x, y) ?: 0
+            }
+        }
     }
 
     @Synchronized
