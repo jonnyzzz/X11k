@@ -2571,8 +2571,11 @@ internal class X11Connection(
         val oldTag = byteOrder.u32(body, oldTagOffset)
         if (oldTag != 0 && state.glxContext(oldTag) != null && glxRejectPendingLargeRender(oldTag, minorOpcode)) return
         val context = byteOrder.u32(body, contextOffset)
+        if (context != 0 && state.glxContext(context) == null) {
+            return writeError(error = XGlx.BadContext, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = context)
+        }
         val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put32(reply, 8, if (context == 0 || state.glxContext(context) != null) context else 0)
+        byteOrder.put32(reply, 8, context)
         write(reply)
     }
 

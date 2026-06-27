@@ -260,6 +260,30 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX MakeCurrent requests reject missing context and preserve unbind`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val missingContext = 0x0020_0108
+            val missingLegacyContext = 0x0020_0109
+            val contextId = 0x0020_010a
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeContextCurrent, u32(0) + u32(X11Ids.RootWindow) + u32(X11Ids.RootWindow) + u32(missingContext))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeCurrent, u32(X11Ids.RootWindow) + u32(missingLegacyContext) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeContextCurrent, u32(0) + u32(X11Ids.RootWindow) + u32(X11Ids.RootWindow) + u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeCurrent, u32(X11Ids.RootWindow) + u32(0) + u32(contextId))
+
+            assertGlxError(socket.getInputStream(), error = XGlx.BadContext, badValue = missingContext, minorOpcode = XGlx.MakeContextCurrent, sequence = 1)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadContext, badValue = missingLegacyContext, minorOpcode = XGlx.MakeCurrent, sequence = 2)
+            val current = readReply(socket.getInputStream())
+            assertEquals(4, u16le(current, 2))
+            assertEquals(contextId, u32le(current, 8))
+            val unbound = readReply(socket.getInputStream())
+            assertEquals(5, u16le(unbound, 2))
+            assertEquals(0, u32le(unbound, 8))
+        }
+    }
+
+    @Test
     fun `GLX fixed size string and direct queries validate request length`() {
         withServer { socket ->
             socket.soTimeout = 2_000
