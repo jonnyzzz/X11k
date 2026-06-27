@@ -3912,6 +3912,41 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `PutImage and GetImage use advertised image byte order for big endian clients`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket, byteOrderByte = 0x42)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequestBigEndian(WindowId))
+                out.write(createGcRequestBigEndian(GcId, WindowId))
+                out.write(
+                    putImage24PixelsRequestBigEndian(
+                        WindowId,
+                        width = 2,
+                        height = 1,
+                        pixels = listOf(0x0012_3456, 0x0000_00ff),
+                    ),
+                )
+                out.write(getImageRequestBigEndian(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream(), byteOrderByte = 0x42)
+                assertEquals(1, image[0].toInt())
+                assertEquals(24, image[1].toInt() and 0xff)
+                assertEquals(2, u32be(image, 4))
+                assertEquals(X11Ids.RootVisual, u32be(image, 8))
+                assertEquals(8, u32be(image, 12))
+                assertEquals(0xff12_3456.toInt(), pixelAt(image, 2, 0, 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 2, 1, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `FillPoly rejects invalid coordinate mode without drawing`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -14430,6 +14465,15 @@ class XCoreDrawingProtocolTest {
         return request(55, 0, body)
     }
 
+    private fun createGcRequestBigEndian(id: Int, drawable: Int, foreground: Int = 0): ByteArray {
+        val body = ByteArray(16)
+        put32be(body, 0, id)
+        put32be(body, 4, drawable)
+        put32be(body, 8, 0x0000_0004)
+        put32be(body, 12, foreground)
+        return requestBigEndian(55, 0, body)
+    }
+
     private fun createGcRasterRequest(id: Int, function: Int): ByteArray {
         return createGcRawRequest(id, mask = 0x0000_0001, values = listOf(function))
     }
@@ -14822,6 +14866,22 @@ class XCoreDrawingProtocolTest {
         return request(72, 2, body)
     }
 
+    private fun putImage24PixelsRequestBigEndian(drawable: Int, width: Int, height: Int, pixels: List<Int>, gc: Int = GcId): ByteArray {
+        require(pixels.size == width * height)
+        val data = ByteArray(width * height * 4)
+        for ((index, pixel) in pixels.withIndex()) {
+            put32le(data, index * 4, pixel)
+        }
+        val body = ByteArray(20 + data.size)
+        put32be(body, 0, drawable)
+        put32be(body, 4, gc)
+        put16be(body, 8, width)
+        put16be(body, 10, height)
+        body[17] = 24
+        data.copyInto(body, 20)
+        return requestBigEndian(72, 2, body)
+    }
+
     private fun putImageRawRequest(
         drawable: Int,
         gc: Int,
@@ -15183,6 +15243,25 @@ class XCoreDrawingProtocolTest {
         put16le(body, 10, height)
         put32le(body, 12, planeMask)
         return request(73, format, body)
+    }
+
+    private fun getImageRequestBigEndian(
+        drawable: Int,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        planeMask: Int = 0xffff_ffff.toInt(),
+        format: Int = 2,
+    ): ByteArray {
+        val body = ByteArray(16)
+        put32be(body, 0, drawable)
+        put16be(body, 4, x)
+        put16be(body, 6, y)
+        put16be(body, 8, width)
+        put16be(body, 10, height)
+        put32be(body, 12, planeMask)
+        return requestBigEndian(73, format, body)
     }
 
     private fun request(opcode: Int, minorOpcode: Int, body: ByteArray): ByteArray {

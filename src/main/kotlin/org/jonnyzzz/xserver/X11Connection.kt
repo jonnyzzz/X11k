@@ -4503,7 +4503,7 @@ internal class X11Connection(
     private fun encodeZPixmap(image: XImagePixels, planeMask: Int): ByteArray {
         val bytes = ByteArray(image.width * image.height * 4)
         image.pixels.forEachIndexed { index, pixel ->
-            byteOrder.put32(bytes, index * 4, pixel and planeMask)
+            ByteOrder.LsbFirst.put32(bytes, index * 4, pixel and planeMask)
         }
         return bytes
     }
@@ -6771,7 +6771,7 @@ internal class X11Connection(
         for (y in 0 until height) {
             val rowOffset = y * stride
             for (x in 0 until width) {
-                val pixel = byteOrder.u32(data, rowOffset + x * bytesPerPixel)
+                val pixel = ByteOrder.LsbFirst.u32(data, rowOffset + x * bytesPerPixel)
                 pixels[y * width + x] = imagePixelForDepth(pixel, depth)
             }
         }
