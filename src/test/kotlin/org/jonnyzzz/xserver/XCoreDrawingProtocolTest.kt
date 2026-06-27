@@ -8340,6 +8340,40 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ConfigureWindow keeps pointer grab when confine window is clipped by parent but inside root`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val confine = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent, x = 0, y = 0, width = 20, height = 20))
+                out.write(createWindowRequest(confine, parent = parent, x = 25, y = 5, width = 10, height = 10))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(confine))
+                out.write(grabPointerRequest(X11Ids.RootWindow, confineTo = confine))
+                out.flush()
+                assertMapAndExpose(socket.getInputStream(), parent)
+                assertMapAndExpose(socket.getInputStream(), confine)
+                assertEquals(0, readReply(socket.getInputStream())[1].toInt() and 0xff)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+
+                out.write(configureWindowRequest(parent, 0x0003, 10, 0))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ReparentWindow clears active keyboard grab for mapped grab window`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
