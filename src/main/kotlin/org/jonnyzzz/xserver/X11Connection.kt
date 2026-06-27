@@ -2305,6 +2305,8 @@ internal class X11Connection(
         val visual = byteOrder.u32(body, 4)
         val screen = byteOrder.u32(body, 8)
         if (state.hasResource(context)) return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = 3, badValue = context)
+        if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = 3, badValue = screen)
+        if (visual != X11Ids.RootVisual) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = 3, badValue = visual)
         state.putGlxContext(
             XGlxContext(
                 id = context,
@@ -2324,6 +2326,10 @@ internal class X11Connection(
         val screen = byteOrder.u32(body, 8)
         val renderType = byteOrder.u32(body, 12)
         if (state.hasResource(context)) return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateNewContext, badValue = context)
+        if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateNewContext, badValue = screen)
+        if (fbConfig != XGlx.RootFbConfigId) {
+            return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateNewContext, badValue = fbConfig)
+        }
         state.putGlxContext(
             XGlxContext(
                 id = context,
@@ -2349,6 +2355,10 @@ internal class X11Connection(
             return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = 0)
         }
         if (state.hasResource(context)) return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = context)
+        if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = screen)
+        if (fbConfig != XGlx.RootFbConfigId) {
+            return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = fbConfig)
+        }
         state.putGlxContext(
             XGlxContext(
                 id = context,

@@ -848,6 +848,37 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX context creation validates screen visual and fbconfig`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val legacyContext = 0x0020_0108
+            val fbConfigContext = 0x0020_0109
+            val attribsContext = 0x0020_010a
+            val validContext = 0x0020_010b
+            val badVisual = X11Ids.RootVisual + 1
+            val badFbConfig = XGlx.RootFbConfigId + 1
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContext, createContextBody(legacyContext, direct = false, screen = 1))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContext, createContextBody(legacyContext, direct = false, visual = badVisual))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(fbConfigContext, direct = false, screen = 1))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(fbConfigContext, direct = false, fbConfig = badFbConfig))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(attribsContext, direct = false, screen = 1))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(attribsContext, direct = false, fbConfig = badFbConfig))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(validContext, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryContext, u32(validContext))
+
+            assertGlxError(socket.getInputStream(), error = 2, badValue = 1, minorOpcode = XGlx.CreateContext, sequence = 1)
+            assertGlxError(socket.getInputStream(), error = 2, badValue = badVisual, minorOpcode = XGlx.CreateContext, sequence = 2)
+            assertGlxError(socket.getInputStream(), error = 2, badValue = 1, minorOpcode = XGlx.CreateNewContext, sequence = 3)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadFBConfig, badValue = badFbConfig, minorOpcode = XGlx.CreateNewContext, sequence = 4)
+            assertGlxError(socket.getInputStream(), error = 2, badValue = 1, minorOpcode = XGlx.CreateContextAttribsARB, sequence = 5)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadFBConfig, badValue = badFbConfig, minorOpcode = XGlx.CreateContextAttribsARB, sequence = 6)
+            val query = readReply(socket.getInputStream())
+            assertEquals(8, u16le(query, 2))
+            assertEquals(5, u32le(query, 8))
+        }
+    }
+
+    @Test
     fun `GLX CreateContextAttribs validates attributed request length before creating context`() {
         withServer { socket ->
             socket.soTimeout = 2_000
@@ -858,9 +889,9 @@ class XGlxProtocolTest {
             val hugeCountContext = 0x0020_0107
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(shortContext, direct = true).copyOf(20))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(overlongContext, direct = true) + u32(0))
-            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(mismatchedContext, direct = true, XGlx.RenderType to XGlx.RgbaType).copyOf(24))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(mismatchedContext, direct = true, attributes = listOf(XGlx.RenderType to XGlx.RgbaType)).copyOf(24))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(hugeCountContext, direct = true).copyOf(20) + u32(0x2000_0000))
-            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(validContext, direct = true, XGlx.RenderType to XGlx.RgbaType))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(validContext, direct = true, attributes = listOf(XGlx.RenderType to XGlx.RgbaType)))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.IsDirect, u32(validContext))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryContext, u32(overlongContext))
 
@@ -1522,29 +1553,42 @@ class XGlxProtocolTest {
         socket.getOutputStream().flush()
     }
 
-    private fun createNewContextBody(context: Int, direct: Boolean): ByteArray =
+    private fun createNewContextBody(
+        context: Int,
+        direct: Boolean,
+        fbConfig: Int = XGlx.RootFbConfigId,
+        screen: Int = 0,
+        renderType: Int = XGlx.RgbaType,
+    ): ByteArray =
         u32(context) +
-            u32(XGlx.RootFbConfigId) +
-            u32(0) +
-            u32(XGlx.RgbaType) +
+            u32(fbConfig) +
+            u32(screen) +
+            u32(renderType) +
             u32(0) +
             byteArrayOf(if (direct) 1 else 0, 0, 0, 0)
 
-    private fun createContextBody(context: Int, direct: Boolean): ByteArray =
+    private fun createContextBody(
+        context: Int,
+        direct: Boolean,
+        visual: Int = X11Ids.RootVisual,
+        screen: Int = 0,
+    ): ByteArray =
         u32(context) +
-            u32(X11Ids.RootVisual) +
-            u32(0) +
+            u32(visual) +
+            u32(screen) +
             u32(0) +
             byteArrayOf(if (direct) 1 else 0, 0, 0, 0)
 
     private fun createContextAttribsBody(
         context: Int,
         direct: Boolean,
-        vararg attributes: Pair<Int, Int>,
+        fbConfig: Int = XGlx.RootFbConfigId,
+        screen: Int = 0,
+        attributes: List<Pair<Int, Int>> = emptyList(),
     ): ByteArray =
         u32(context) +
-            u32(XGlx.RootFbConfigId) +
-            u32(0) +
+            u32(fbConfig) +
+            u32(screen) +
             u32(0) +
             byteArrayOf(if (direct) 1 else 0, 0, 0, 0) +
             u32(attributes.size) +
