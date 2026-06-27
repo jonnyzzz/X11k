@@ -3686,7 +3686,11 @@ internal class X11State(
         val destinationDrawableId = destination.drawableId ?: return false
         val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return false
         val glyphSet = glyphSets[glyphSetId] ?: return false
-        val sourcePixelAt = source.sourcePixelSampler() ?: return false
+        val sourcePixelAt = if (source.clipRectangles.isNotEmpty()) {
+            source.sourcePixelSamplerOptional()
+        } else {
+            source.sourcePixelSampler()?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
+        } ?: return false
         var painted = false
         for (placement in placements) {
             val glyph = glyphSet.glyphs[placement.glyphId] ?: continue

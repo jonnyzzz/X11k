@@ -462,12 +462,12 @@ internal class XFramebuffer(
         operation: Int,
         clipRectangles: List<XRectangleCommand>? = null,
         mask: XFramebuffer,
-        sourcePixelAt: (x: Int, y: Int) -> Int,
+        sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
-        return compositeBounds(bounds, clipRectangles) { x, y ->
+        return compositeBoundsOptional(bounds, clipRectangles) { x, y ->
             val maskAlpha = mask.alphaAt(x - destinationX, y - destinationY)
-            val sourcePixel = sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
+            val sourcePixel = sourcePixelAt(sourceX + x - originX, sourceY + y - originY) ?: return@compositeBoundsOptional null
             renderPixel(sourcePixel, pixels[y * this.width + x], operation, maskAlpha)
         }
     }
@@ -1051,6 +1051,25 @@ internal class XFramebuffer(
             for (column in bounds.destinationX until bounds.destinationX + bounds.width) {
                 if (!insideClip(column, row, clipRectangles)) continue
                 pixels[offset + column] = compose(column, row)
+                painted = true
+            }
+        }
+        if (painted) markPainted()
+        return painted
+    }
+
+    private fun compositeBoundsOptional(
+        bounds: CopyBounds,
+        clipRectangles: List<XRectangleCommand>?,
+        compose: (x: Int, y: Int) -> Int?,
+    ): Boolean {
+        var painted = false
+        for (row in bounds.destinationY until bounds.destinationY + bounds.height) {
+            val offset = row * this.width
+            for (column in bounds.destinationX until bounds.destinationX + bounds.width) {
+                if (!insideClip(column, row, clipRectangles)) continue
+                val pixel = compose(column, row) ?: continue
+                pixels[offset + column] = pixel
                 painted = true
             }
         }

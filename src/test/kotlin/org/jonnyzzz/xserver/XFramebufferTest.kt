@@ -82,6 +82,31 @@ class XFramebufferTest {
     }
 
     @Test
+    fun `source-over-mask with only missing source samples is an unpainted no-op`() {
+        val framebuffer = XFramebuffer(2, 1, backgroundPixel = 0x0000_00ff)
+        val mask = XFramebuffer(2, 1)
+        assertEquals(true, mask.fill(0, 0, 2, 1, 0x00ff_ffff))
+
+        val painted = framebuffer.compositeSourceOverMask(
+            sourceX = 0,
+            sourceY = 0,
+            originX = 0,
+            originY = 0,
+            destinationX = 0,
+            destinationY = 0,
+            width = 2,
+            height = 1,
+            operation = XRender.OpSrc,
+            mask = mask,
+        ) { _, _ -> null }
+
+        assertEquals(false, painted)
+        assertEquals(false, framebuffer.hasPaintedContent())
+        assertEquals(XFramebuffer.opaque(0x0000_00ff), framebuffer.pixelAt(0, 0))
+        assertEquals(XFramebuffer.opaque(0x0000_00ff), framebuffer.pixelAt(1, 0))
+    }
+
+    @Test
     fun `copy area clips source and destination while preserving pixel contents`() {
         val source = XFramebuffer(4, 3)
         val destination = XFramebuffer(3, 3)
