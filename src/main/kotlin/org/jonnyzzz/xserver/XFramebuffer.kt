@@ -858,6 +858,19 @@ internal class XFramebuffer(
         return painted
     }
 
+    fun compositeColoredTrapezoids(
+        operation: Int,
+        trapezoids: List<XColorTrapCommand>,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        var painted = false
+        for (trapezoid in trapezoids) {
+            painted = compositeColoredTrapezoid(operation, trapezoid, clipRectangles) || painted
+        }
+        if (painted) markPainted()
+        return painted
+    }
+
     fun compositeColoredTriangles(
         operation: Int,
         triangles: List<XColorTriangleCommand>,
@@ -1122,6 +1135,68 @@ internal class XFramebuffer(
             }
         }
         return covered
+    }
+
+    private fun compositeColoredTrapezoid(
+        operation: Int,
+        colorTrap: XColorTrapCommand,
+        clipRectangles: List<XRectangleCommand>?,
+    ): Boolean {
+        val trapezoid = colorTrap.toTrapezoid()
+        val top = trapezoid.top.fixedToDouble()
+        val bottom = trapezoid.bottom.fixedToDouble()
+        if (bottom <= top) return false
+        val startY = maxOf(0, floor(top).toInt())
+        val endY = minOf(height, ceil(bottom).toInt())
+        var painted = false
+        for (y in startY until endY) {
+            val sampleY = y + 0.5
+            if (sampleY < top || sampleY >= bottom) continue
+            val left = trapezoid.left.xAt(sampleY)
+            val right = trapezoid.right.xAt(sampleY)
+            val minX = minOf(left, right)
+            val maxX = maxOf(left, right)
+            val startX = maxOf(0, floor(minX).toInt())
+            val endX = minOf(width, ceil(maxX).toInt())
+            for (x in startX until endX) {
+                if (!insideClip(x, y, clipRectangles)) continue
+                val coverage = trapezoidCoverage(x, y, trapezoid, top, bottom)
+                if (coverage == 0) continue
+                val maskAlpha = maskAlpha(XRender.A8Format, coverage)
+                if (maskAlpha == 0) continue
+                val source = interpolatedColorTrapPixel(colorTrap, left, right, top, bottom, x + 0.5, sampleY)
+                val index = y * width + x
+                pixels[index] = renderPixel(source, pixels[index], operation, maskAlpha)
+                painted = true
+            }
+        }
+        return painted
+    }
+
+    private fun interpolatedColorTrapPixel(
+        trapezoid: XColorTrapCommand,
+        left: Double,
+        right: Double,
+        top: Double,
+        bottom: Double,
+        x: Double,
+        y: Double,
+    ): Int {
+        val vertical = ((y - top) / (bottom - top)).coerceIn(0.0, 1.0)
+        val horizontal = if (right == left) 0.0 else ((x - left) / (right - left)).coerceIn(0.0, 1.0)
+        fun channel(channel: (XRenderColor) -> Int): Int {
+            val topLeft = channel(trapezoid.top.leftColor) * (1.0 - vertical) * (1.0 - horizontal)
+            val bottomLeft = channel(trapezoid.bottom.leftColor) * vertical * (1.0 - horizontal)
+            val topRight = channel(trapezoid.top.rightColor) * (1.0 - vertical) * horizontal
+            val bottomRight = channel(trapezoid.bottom.rightColor) * vertical * horizontal
+            return (topLeft + bottomLeft + topRight + bottomRight).roundToInt().coerceIn(0, 0xffff)
+        }
+        return XRender.argb32Pixel(
+            red = channel { it.red },
+            green = channel { it.green },
+            blue = channel { it.blue },
+            alpha = channel { it.alpha },
+        )
     }
 
     private fun compositeTriangle(

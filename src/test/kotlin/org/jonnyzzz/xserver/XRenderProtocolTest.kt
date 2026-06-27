@@ -1828,6 +1828,130 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER ColorTrapezoids interpolates span colors into destination framebuffer`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 16, height = 16, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderColorTrapezoids(
+                        PictureId,
+                        left = 2,
+                        right = 10,
+                        top = 2,
+                        bottom = 10,
+                        topLeft = RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                        topRight = RenderColor(red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff),
+                        bottomLeftColor = RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                        bottomRightColor = RenderColor(red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff),
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 16, height = 16))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff91_5050.toInt(), pixelAt(image, imageWidth = 16, x = 4, y = 4))
+                assertEquals(0xff62_cf50.toInt(), pixelAt(image, imageWidth = 16, x = 8, y = 4))
+                assertEquals(0xff62_50cf.toInt(), pixelAt(image, imageWidth = 16, x = 4, y = 8))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 16, x = 11, y = 4))
+                assertContains(httpGet(server.localPort, "/text.txt"), "ColorTrapezoids")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER ColorTrapezoids validates request framing operator and destination picture`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missingDestination = PictureId + 0x200
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 12, height = 10, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderColorTrapezoidsRaw(colorTrapezoidsHeader(PictureId).copyOf(4)))
+                out.write(renderColorTrapezoidsRaw(colorTrapezoidsHeader(PictureId).copyOf(16)))
+                out.write(renderColorTrapezoidsRaw(colorTrapezoidsHeader(PictureId, operation = XRender.OpBlendMaximum + 1)))
+                out.write(renderColorTrapezoidsRaw(colorTrapezoidsHeader(missingDestination)))
+                out.write(
+                    renderColorTrapezoids(
+                        PictureId,
+                        left = 3,
+                        right = 8,
+                        top = 2,
+                        bottom = 7,
+                        topLeft = RenderColor(red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff),
+                        topRight = RenderColor(red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff),
+                        bottomLeftColor = RenderColor(red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff),
+                        bottomRightColor = RenderColor(red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff),
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 12, height = 10))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 4, minorOpcode = 14)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 5, minorOpcode = 14)
+                assertError(socket.getInputStream(), error = 2, badValue = XRender.OpBlendMaximum + 1, sequence = 6, minorOpcode = 14)
+                assertError(socket.getInputStream(), error = XRender.PictureError, badValue = missingDestination, sequence = 7, minorOpcode = 14)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 12, x = 4, y = 3))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 12, x = 2, y = 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER ColorTrapezoids honors independent top and bottom spans`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val green = RenderColor(red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff)
+                val white = RenderColor(red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff)
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 14, height = 12, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderColorTrapezoids(
+                        PictureId,
+                        left = 2,
+                        right = 10,
+                        top = 2,
+                        bottom = 10,
+                        bottomLeft = 4,
+                        bottomRight = 8,
+                        topLeft = green,
+                        topRight = green,
+                        bottomLeftColor = green,
+                        bottomRightColor = white,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 14, height = 12))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff26_ff26.toInt(), pixelAt(image, imageWidth = 14, x = 4, y = 8))
+                assertEquals(0xffa9_ffa9.toInt(), pixelAt(image, imageWidth = 14, x = 7, y = 8))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 14, x = 2, y = 8))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 14, x = 9, y = 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER triangles composite solid source into destination framebuffer`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2778,7 +2902,7 @@ class XRenderProtocolTest {
                 socket.soTimeout = 2_000
                 setup(socket)
                 val out = socket.getOutputStream()
-                val minorOpcodes = listOf(14, 16)
+                val minorOpcodes = listOf(16)
                 out.write(createWindowRequest(WindowId))
                 out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
                 out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
@@ -3435,6 +3559,64 @@ class XRenderProtocolTest {
 
     private fun renderTrianglesRaw(body: ByteArray): ByteArray =
         request(XRender.MajorOpcode, 11, body)
+
+    private fun renderColorTrapezoids(
+        destination: Int,
+        left: Int,
+        right: Int,
+        top: Int,
+        bottom: Int,
+        topLeft: RenderColor,
+        topRight: RenderColor,
+        bottomLeftColor: RenderColor,
+        bottomRightColor: RenderColor,
+        bottomLeft: Int = left,
+        bottomRight: Int = right,
+        operation: Int = XRender.OpSrc,
+    ): ByteArray {
+        val body = ByteArray(64)
+        body[0] = operation.toByte()
+        put32le(body, 4, destination)
+        putColorSpan(body, 8, left = left, right = right, y = top, leftColor = topLeft, rightColor = topRight)
+        putColorSpan(body, 36, left = bottomLeft, right = bottomRight, y = bottom, leftColor = bottomLeftColor, rightColor = bottomRightColor)
+        return renderColorTrapezoidsRaw(body)
+    }
+
+    private fun colorTrapezoidsHeader(
+        destination: Int,
+        operation: Int = XRender.OpSrc,
+    ): ByteArray {
+        val body = ByteArray(8)
+        body[0] = operation.toByte()
+        put32le(body, 4, destination)
+        return body
+    }
+
+    private fun putColorSpan(
+        body: ByteArray,
+        offset: Int,
+        left: Int,
+        right: Int,
+        y: Int,
+        leftColor: RenderColor,
+        rightColor: RenderColor,
+    ) {
+        putFixed(body, offset, left)
+        putFixed(body, offset + 4, right)
+        putFixed(body, offset + 8, y)
+        putRenderColor(body, offset + 12, leftColor)
+        putRenderColor(body, offset + 20, rightColor)
+    }
+
+    private fun putRenderColor(body: ByteArray, offset: Int, color: RenderColor) {
+        put16le(body, offset, color.red)
+        put16le(body, offset + 2, color.green)
+        put16le(body, offset + 4, color.blue)
+        put16le(body, offset + 6, color.alpha)
+    }
+
+    private fun renderColorTrapezoidsRaw(body: ByteArray): ByteArray =
+        request(XRender.MajorOpcode, 14, body)
 
     private fun renderColorTriangles(
         destination: Int,

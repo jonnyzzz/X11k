@@ -3447,6 +3447,21 @@ internal class X11State(
     }
 
     @Synchronized
+    fun renderColorTrapezoids(
+        operation: Int,
+        destination: XPicture,
+        trapezoids: List<XColorTrapCommand>,
+    ): Boolean {
+        val drawableId = destination.drawableId ?: return false
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        return framebuffer.compositeColoredTrapezoids(
+            operation = operation,
+            trapezoids = trapezoids,
+            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+        )
+    }
+
+    @Synchronized
     fun compositeGlyphs(
         operation: Int,
         source: XPicture,
@@ -4842,6 +4857,33 @@ internal data class XColorTriangleCommand(
     val p2: XColorPoint,
     val p3: XColorPoint,
 )
+
+internal data class XColorSpanFix(
+    val left: Int,
+    val right: Int,
+    val y: Int,
+    val leftColor: XRenderColor,
+    val rightColor: XRenderColor,
+)
+
+internal data class XColorTrapCommand(
+    val top: XColorSpanFix,
+    val bottom: XColorSpanFix,
+) {
+    fun toTrapezoid(): XTrapezoidCommand =
+        XTrapezoidCommand(
+            top = top.y,
+            bottom = bottom.y,
+            left = XFixedLine(
+                p1 = XFixedPoint(top.left, top.y),
+                p2 = XFixedPoint(bottom.left, bottom.y),
+            ),
+            right = XFixedLine(
+                p1 = XFixedPoint(top.right, top.y),
+                p2 = XFixedPoint(bottom.right, bottom.y),
+            ),
+        )
+}
 
 internal data class XProperty(
     val type: Int,

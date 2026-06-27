@@ -325,7 +325,7 @@ internal class X11Connection(
             11 -> renderTriangles(body)
             12 -> renderTriStrip(body)
             13 -> renderTriFan(body)
-            14 -> renderBadImplementation(minorOpcode)
+            14 -> renderColorTrapezoids(body)
             15 -> renderColorTriangles(body)
             16 -> renderBadImplementation(minorOpcode)
             17 -> renderCreateGlyphSet(body)
@@ -1193,6 +1193,44 @@ internal class X11Connection(
                         XPoint(trapezoid.right.p1.x.fixedToInt(), trapezoid.right.p1.y.fixedToInt()),
                         XPoint(trapezoid.right.p2.x.fixedToInt(), trapezoid.right.p2.y.fixedToInt()),
                         XPoint(trapezoid.left.p2.x.fixedToInt(), trapezoid.left.p2.y.fixedToInt()),
+                    )
+                },
+                framebufferBacked = true,
+            ),
+        )
+    }
+
+    private fun renderColorTrapezoids(body: ByteArray) {
+        if (body.size < 8 || (body.size - 8) % 56 != 0) {
+            return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 14, badValue = 0)
+        }
+        val operation = body[0].toInt() and 0xff
+        if (!XRender.isValidOperator(operation)) {
+            return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = 14, badValue = operation)
+        }
+        val destinationId = byteOrder.u32(body, 4)
+        val destination = state.picture(destinationId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 14, badValue = destinationId)
+        val destinationDrawableId = destination.drawableId ?: return
+        val trapezoids = colorTrapezoids(body, 8)
+        if (trapezoids.isEmpty()) return
+        val painted = state.renderColorTrapezoids(
+            operation = operation,
+            destination = destination,
+            trapezoids = trapezoids,
+        )
+        if (!painted) return
+        state.draw(
+            XDrawingCommand(
+                drawableId = destinationDrawableId,
+                kind = XDrawingKind.FillPoly,
+                foreground = trapezoids.firstOrNull()?.top?.leftColor?.toPixel() ?: 0,
+                points = trapezoids.flatMap { trapezoid ->
+                    listOf(
+                        XPoint(trapezoid.top.left.fixedToInt(), trapezoid.top.y.fixedToInt()),
+                        XPoint(trapezoid.top.right.fixedToInt(), trapezoid.top.y.fixedToInt()),
+                        XPoint(trapezoid.bottom.right.fixedToInt(), trapezoid.bottom.y.fixedToInt()),
+                        XPoint(trapezoid.bottom.left.fixedToInt(), trapezoid.bottom.y.fixedToInt()),
                     )
                 },
                 framebufferBacked = true,
@@ -2517,6 +2555,7 @@ internal class X11Connection(
             10 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} traps=${(body.size - 20).coerceAtLeast(0) / 40}"
             11 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} triangles=${(body.size - 20).coerceAtLeast(0) / 24}"
             12, 13 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} points=${(body.size - 20).coerceAtLeast(0) / 8}"
+            14 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} dst=${hex(4)} traps=${(body.size - 8).coerceAtLeast(0) / 56}"
             15 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} dst=${hex(4)} triangles=${(body.size - 8).coerceAtLeast(0) / 48}"
             17 -> "glyphSet=${hex(0)} format=${hex(4)}"
             18 -> "glyphSet=${hex(0)} existing=${hex(4)}"
@@ -6317,12 +6356,37 @@ internal class X11Connection(
     private fun colorPoint(body: ByteArray, offset: Int): XColorPoint =
         XColorPoint(
             point = XFixedPoint(byteOrder.u32(body, offset), byteOrder.u32(body, offset + 4)),
-            color = XRenderColor(
-                red = byteOrder.u16(body, offset + 8),
-                green = byteOrder.u16(body, offset + 10),
-                blue = byteOrder.u16(body, offset + 12),
-                alpha = byteOrder.u16(body, offset + 14),
-            ),
+            color = renderColor(body, offset + 8),
+        )
+
+    private fun colorTrapezoids(body: ByteArray, startOffset: Int): List<XColorTrapCommand> {
+        val trapezoids = mutableListOf<XColorTrapCommand>()
+        var offset = startOffset
+        while (offset + 56 <= body.size) {
+            trapezoids += XColorTrapCommand(
+                top = colorSpan(body, offset),
+                bottom = colorSpan(body, offset + 28),
+            )
+            offset += 56
+        }
+        return trapezoids
+    }
+
+    private fun colorSpan(body: ByteArray, offset: Int): XColorSpanFix =
+        XColorSpanFix(
+            left = byteOrder.u32(body, offset),
+            right = byteOrder.u32(body, offset + 4),
+            y = byteOrder.u32(body, offset + 8),
+            leftColor = renderColor(body, offset + 12),
+            rightColor = renderColor(body, offset + 20),
+        )
+
+    private fun renderColor(body: ByteArray, offset: Int): XRenderColor =
+        XRenderColor(
+            red = byteOrder.u16(body, offset),
+            green = byteOrder.u16(body, offset + 2),
+            blue = byteOrder.u16(body, offset + 4),
+            alpha = byteOrder.u16(body, offset + 6),
         )
 
     private fun fixedPoints(body: ByteArray, startOffset: Int): List<XFixedPoint> {
