@@ -64,6 +64,7 @@ internal class X11Connection(
                 height = state.height,
                 widthMillimeters = state.widthMillimeters,
                 heightMillimeters = state.heightMillimeters,
+                currentInputMasks = state.windowEventMask(X11Ids.RootWindow),
             )
             write(reply)
             state.registerEventSink(this)

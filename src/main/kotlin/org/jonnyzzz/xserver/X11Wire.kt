@@ -93,6 +93,7 @@ internal object SetupReply {
         height: Int,
         widthMillimeters: Int,
         heightMillimeters: Int,
+        currentInputMasks: Int,
     ): ByteArray {
         val vendor = "jonnyzzz/x".encodeToByteArray()
         val vendorPaddedLength = paddedLength(vendor.size)
@@ -136,7 +137,7 @@ internal object SetupReply {
         byteOrder.put32(reply, offset + 4, DefaultColormapId)
         byteOrder.put32(reply, offset + 8, WhitePixel)
         byteOrder.put32(reply, offset + 12, BlackPixel)
-        byteOrder.put32(reply, offset + 16, 0)
+        byteOrder.put32(reply, offset + 16, currentInputMasks)
         byteOrder.put16(reply, offset + 20, width)
         byteOrder.put16(reply, offset + 22, height)
         byteOrder.put16(reply, offset + 24, widthMillimeters)
