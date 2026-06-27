@@ -2827,8 +2827,10 @@ internal class X11Connection(
     private fun glxIsDirect(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.IsDirect, badValue = 0)
         val context = byteOrder.u32(body, 0)
+        val glxContext = state.glxContext(context)
+            ?: return writeError(error = XGlx.BadContext, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.IsDirect, badValue = context)
         val reply = reply(extra = 0, payloadUnits = 0)
-        reply[8] = if (state.glxContext(context)?.direct == true) 1 else 0
+        reply[8] = if (glxContext.direct) 1 else 0
         write(reply)
     }
 

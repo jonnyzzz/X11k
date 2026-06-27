@@ -336,6 +336,23 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX IsDirect rejects missing context and recovers stream`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val missingContext = 0x0020_0104
+            val contextId = 0x0020_0105
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.IsDirect, u32(missingContext))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = true))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.IsDirect, u32(contextId))
+
+            assertGlxError(socket.getInputStream(), error = XGlx.BadContext, badValue = missingContext, minorOpcode = XGlx.IsDirect, sequence = 1)
+            val direct = readReply(socket.getInputStream())
+            assertEquals(3, u16le(direct, 2))
+            assertEquals(1, direct[8].toInt())
+        }
+    }
+
+    @Test
     fun `GLX WaitGL WaitX and SwapBuffers accept valid modeled resources without replies`() {
         withServer { socket ->
             socket.soTimeout = 2_000
