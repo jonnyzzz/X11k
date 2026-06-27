@@ -386,6 +386,11 @@ internal class X11Connection(
             XShm.QueryVersion -> shmQueryVersion(body)
             XShm.Attach -> shmAttach(body, majorOpcode)
             XShm.Detach -> shmDetach(body, majorOpcode)
+            XShm.PutImage -> shmPutImage(body, majorOpcode)
+            XShm.GetImage -> shmGetImage(body, majorOpcode)
+            XShm.CreatePixmap -> shmCreatePixmap(body, majorOpcode)
+            XShm.AttachFd -> shmAttachFd(body, majorOpcode)
+            XShm.CreateSegment -> shmCreateSegment(body, majorOpcode)
             else -> shmBadImplementation(majorOpcode, minorOpcode)
         }
     }
@@ -413,6 +418,63 @@ internal class X11Connection(
     private fun shmDetach(body: ByteArray, majorOpcode: Int) {
         if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShm.Detach, badValue = 0)
         writeError(error = XShm.BadSeg, opcode = majorOpcode, minorOpcode = XShm.Detach, badValue = byteOrder.u32(body, 0))
+    }
+
+    private fun shmPutImage(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 36) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShm.PutImage, badValue = 0)
+        val format = body[25].toInt() and 0xff
+        if (format !in 0..2) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XShm.PutImage, badValue = format)
+        val sendEvent = body[26].toInt() and 0xff
+        if (sendEvent !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XShm.PutImage, badValue = sendEvent)
+        writeError(error = XShm.BadSeg, opcode = majorOpcode, minorOpcode = XShm.PutImage, badValue = byteOrder.u32(body, 28))
+    }
+
+    private fun shmGetImage(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 28) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShm.GetImage, badValue = 0)
+        val format = body[16].toInt() and 0xff
+        if (format !in 1..2) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XShm.GetImage, badValue = format)
+        writeError(error = XShm.BadSeg, opcode = majorOpcode, minorOpcode = XShm.GetImage, badValue = byteOrder.u32(body, 20))
+    }
+
+    private fun shmCreatePixmap(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShm.CreatePixmap, badValue = 0)
+        val pixmapId = byteOrder.u32(body, 0)
+        if (state.hasResource(pixmapId)) return writeError(error = 14, opcode = majorOpcode, minorOpcode = XShm.CreatePixmap, badValue = pixmapId)
+        val drawableId = byteOrder.u32(body, 4)
+        val window = state.window(drawableId)
+        if (window?.windowClass == XWindowClass.InputOnly) {
+            return writeError(error = 8, opcode = majorOpcode, minorOpcode = XShm.CreatePixmap, badValue = drawableId)
+        }
+        if (state.drawable(drawableId) == null) {
+            return writeError(error = 9, opcode = majorOpcode, minorOpcode = XShm.CreatePixmap, badValue = drawableId)
+        }
+        val width = byteOrder.u16(body, 8)
+        val height = byteOrder.u16(body, 10)
+        if (width == 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XShm.CreatePixmap, badValue = width)
+        if (height == 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XShm.CreatePixmap, badValue = height)
+        val depth = body[12].toInt() and 0xff
+        if (depth !in SupportedPixmapDepths) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XShm.CreatePixmap, badValue = depth)
+        writeError(error = XShm.BadSeg, opcode = majorOpcode, minorOpcode = XShm.CreatePixmap, badValue = byteOrder.u32(body, 16))
+    }
+
+    private fun shmAttachFd(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShm.AttachFd, badValue = 0)
+        val shmseg = byteOrder.u32(body, 0)
+        if (state.hasResource(shmseg)) return writeError(error = 14, opcode = majorOpcode, minorOpcode = XShm.AttachFd, badValue = shmseg)
+        val readOnly = body[4].toInt() and 0xff
+        if (readOnly !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XShm.AttachFd, badValue = readOnly)
+        writeError(error = 10, opcode = majorOpcode, minorOpcode = XShm.AttachFd, badValue = shmseg)
+    }
+
+    private fun shmCreateSegment(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShm.CreateSegment, badValue = 0)
+        val shmseg = byteOrder.u32(body, 0)
+        if (state.hasResource(shmseg)) return writeError(error = 14, opcode = majorOpcode, minorOpcode = XShm.CreateSegment, badValue = shmseg)
+        val size = byteOrder.u32(body, 4)
+        if (size == 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XShm.CreateSegment, badValue = size)
+        val readOnly = body[8].toInt() and 0xff
+        if (readOnly !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XShm.CreateSegment, badValue = readOnly)
+        shmBadImplementation(majorOpcode, XShm.CreateSegment)
     }
 
     private fun shmBadImplementation(majorOpcode: Int, minorOpcode: Int) {

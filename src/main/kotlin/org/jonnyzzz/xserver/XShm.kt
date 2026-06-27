@@ -11,6 +11,11 @@ internal object XShm {
     const val QueryVersion = 0
     const val Attach = 1
     const val Detach = 2
+    const val PutImage = 3
+    const val GetImage = 4
+    const val CreatePixmap = 5
+    const val AttachFd = 6
+    const val CreateSegment = 7
     const val BadSeg = FirstError
 
     fun operationName(minorOpcode: Int): String =
@@ -18,11 +23,11 @@ internal object XShm {
             QueryVersion -> "QueryVersion"
             Attach -> "Attach"
             Detach -> "Detach"
-            3 -> "PutImage"
-            4 -> "GetImage"
-            5 -> "CreatePixmap"
-            6 -> "AttachFd"
-            7 -> "CreateSegment"
+            PutImage -> "PutImage"
+            GetImage -> "GetImage"
+            CreatePixmap -> "CreatePixmap"
+            AttachFd -> "AttachFd"
+            CreateSegment -> "CreateSegment"
             else -> "Unknown"
         }
 }

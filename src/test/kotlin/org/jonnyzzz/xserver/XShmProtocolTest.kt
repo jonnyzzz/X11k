@@ -100,21 +100,92 @@ class XShmProtocolTest {
     }
 
     @Test
-    fun `MIT-SHM shared memory image requests remain BadImplementation and recover stream`() {
+    fun `MIT-SHM shared memory image requests validate framing and unknown segments`() {
         withServer { socket, port ->
+            val shmseg = 0x0020_0400
             val out = socket.getOutputStream()
-            out.write(request(XShm.MajorOpcode, 3, ByteArray(40)))
-            out.write(request(XShm.MajorOpcode, 4, ByteArray(24)))
+            out.write(request(XShm.MajorOpcode, XShm.PutImage, ByteArray(32)))
+            out.write(request(XShm.MajorOpcode, XShm.PutImage, shmPutImageBody(shmseg = shmseg, format = 3)))
+            out.write(request(XShm.MajorOpcode, XShm.PutImage, shmPutImageBody(shmseg = shmseg, sendEvent = 2)))
+            out.write(request(XShm.MajorOpcode, XShm.PutImage, shmPutImageBody(shmseg = shmseg)))
+            out.write(request(XShm.MajorOpcode, XShm.GetImage, ByteArray(24)))
+            out.write(request(XShm.MajorOpcode, XShm.GetImage, shmGetImageBody(shmseg = shmseg, format = 0)))
+            out.write(request(XShm.MajorOpcode, XShm.GetImage, shmGetImageBody(shmseg = shmseg)))
             out.write(request(XShm.MajorOpcode, XShm.QueryVersion, ByteArray(0)))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 17, opcode = XShm.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 3)
-            assertError(socket.getInputStream(), error = 17, opcode = XShm.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = 4)
+            assertError(socket.getInputStream(), error = 16, opcode = XShm.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XShm.PutImage)
+            assertError(socket.getInputStream(), error = 2, opcode = XShm.MajorOpcode, badValue = 3, sequence = 2, minorOpcode = XShm.PutImage)
+            assertError(socket.getInputStream(), error = 2, opcode = XShm.MajorOpcode, badValue = 2, sequence = 3, minorOpcode = XShm.PutImage)
+            assertError(socket.getInputStream(), error = XShm.BadSeg, opcode = XShm.MajorOpcode, badValue = shmseg, sequence = 4, minorOpcode = XShm.PutImage)
+            assertError(socket.getInputStream(), error = 16, opcode = XShm.MajorOpcode, badValue = 0, sequence = 5, minorOpcode = XShm.GetImage)
+            assertError(socket.getInputStream(), error = 2, opcode = XShm.MajorOpcode, badValue = 0, sequence = 6, minorOpcode = XShm.GetImage)
+            assertError(socket.getInputStream(), error = XShm.BadSeg, opcode = XShm.MajorOpcode, badValue = shmseg, sequence = 7, minorOpcode = XShm.GetImage)
             val version = readReply(socket.getInputStream())
-            assertEquals(3, u16le(version, 2))
+            assertEquals(8, u16le(version, 2))
             assertEquals(XShm.MajorVersion, u16le(version, 8))
-            assertContains(httpGet(port, "/text.txt"), "MIT-SHM.PutImage:")
-            assertContains(httpGet(port, "/text.txt"), "MIT-SHM.GetImage:")
+            val unsupportedSection = httpGet(port, "/text.txt").substringAfter("Unsupported requests:")
+            assertContains(unsupportedSection, "- None.")
+            assertFalse(unsupportedSection.contains("MIT-SHM.PutImage:"))
+            assertFalse(unsupportedSection.contains("MIT-SHM.GetImage:"))
+        }
+    }
+
+    @Test
+    fun `MIT-SHM pixmap and fd requests validate framing before refusing unavailable backing`() {
+        withServer { socket, _ ->
+            val shmseg = 0x0020_0400
+            val out = socket.getOutputStream()
+            out.write(request(XShm.MajorOpcode, XShm.CreatePixmap, ByteArray(20)))
+            out.write(request(XShm.MajorOpcode, XShm.CreatePixmap, shmCreatePixmapBody(pid = X11Ids.RootWindow, shmseg = shmseg)))
+            out.write(request(XShm.MajorOpcode, XShm.CreatePixmap, shmCreatePixmapBody(pid = 0x0020_0500, shmseg = shmseg, width = 0)))
+            out.write(request(XShm.MajorOpcode, XShm.CreatePixmap, shmCreatePixmapBody(pid = 0x0020_0501, shmseg = shmseg, depth = 7)))
+            out.write(request(XShm.MajorOpcode, XShm.CreatePixmap, shmCreatePixmapBody(pid = 0x0020_0502, shmseg = shmseg)))
+            out.write(request(XShm.MajorOpcode, XShm.CreatePixmap, shmCreatePixmapBody(pid = 0x0020_0503, shmseg = shmseg, depth = 1)))
+            out.write(request(XShm.MajorOpcode, XShm.AttachFd, ByteArray(4)))
+            out.write(request(XShm.MajorOpcode, XShm.AttachFd, shmAttachFdBody(X11Ids.RootWindow, readOnly = 0)))
+            out.write(request(XShm.MajorOpcode, XShm.AttachFd, shmAttachFdBody(0x0020_0401, readOnly = 2)))
+            out.write(request(XShm.MajorOpcode, XShm.AttachFd, shmAttachFdBody(0x0020_0402, readOnly = 1)))
+            out.write(request(XShm.MajorOpcode, XShm.QueryVersion, ByteArray(0)))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XShm.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XShm.CreatePixmap)
+            assertError(socket.getInputStream(), error = 14, opcode = XShm.MajorOpcode, badValue = X11Ids.RootWindow, sequence = 2, minorOpcode = XShm.CreatePixmap)
+            assertError(socket.getInputStream(), error = 2, opcode = XShm.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XShm.CreatePixmap)
+            assertError(socket.getInputStream(), error = 2, opcode = XShm.MajorOpcode, badValue = 7, sequence = 4, minorOpcode = XShm.CreatePixmap)
+            assertError(socket.getInputStream(), error = XShm.BadSeg, opcode = XShm.MajorOpcode, badValue = shmseg, sequence = 5, minorOpcode = XShm.CreatePixmap)
+            assertError(socket.getInputStream(), error = XShm.BadSeg, opcode = XShm.MajorOpcode, badValue = shmseg, sequence = 6, minorOpcode = XShm.CreatePixmap)
+            assertError(socket.getInputStream(), error = 16, opcode = XShm.MajorOpcode, badValue = 0, sequence = 7, minorOpcode = XShm.AttachFd)
+            assertError(socket.getInputStream(), error = 14, opcode = XShm.MajorOpcode, badValue = X11Ids.RootWindow, sequence = 8, minorOpcode = XShm.AttachFd)
+            assertError(socket.getInputStream(), error = 2, opcode = XShm.MajorOpcode, badValue = 2, sequence = 9, minorOpcode = XShm.AttachFd)
+            assertError(socket.getInputStream(), error = 10, opcode = XShm.MajorOpcode, badValue = 0x0020_0402, sequence = 10, minorOpcode = XShm.AttachFd)
+            val version = readReply(socket.getInputStream())
+            assertEquals(11, u16le(version, 2))
+            assertEquals(XShm.MajorVersion, u16le(version, 8))
+        }
+    }
+
+    @Test
+    fun `MIT-SHM CreateSegment validates request before reporting missing fd transport implementation`() {
+        withServer { socket, port ->
+            val out = socket.getOutputStream()
+            out.write(request(XShm.MajorOpcode, XShm.CreateSegment, ByteArray(8)))
+            out.write(request(XShm.MajorOpcode, XShm.CreateSegment, shmCreateSegmentBody(X11Ids.RootWindow, size = 4096, readOnly = 0)))
+            out.write(request(XShm.MajorOpcode, XShm.CreateSegment, shmCreateSegmentBody(0x0020_0400, size = 0, readOnly = 0)))
+            out.write(request(XShm.MajorOpcode, XShm.CreateSegment, shmCreateSegmentBody(0x0020_0401, size = 4096, readOnly = 2)))
+            out.write(request(XShm.MajorOpcode, XShm.CreateSegment, shmCreateSegmentBody(0x0020_0402, size = 4096, readOnly = 1)))
+            out.write(request(XShm.MajorOpcode, XShm.QueryVersion, ByteArray(0)))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XShm.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XShm.CreateSegment)
+            assertError(socket.getInputStream(), error = 14, opcode = XShm.MajorOpcode, badValue = X11Ids.RootWindow, sequence = 2, minorOpcode = XShm.CreateSegment)
+            assertError(socket.getInputStream(), error = 2, opcode = XShm.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XShm.CreateSegment)
+            assertError(socket.getInputStream(), error = 2, opcode = XShm.MajorOpcode, badValue = 2, sequence = 4, minorOpcode = XShm.CreateSegment)
+            assertError(socket.getInputStream(), error = 17, opcode = XShm.MajorOpcode, badValue = 0, sequence = 5, minorOpcode = XShm.CreateSegment)
+            val version = readReply(socket.getInputStream())
+            assertEquals(6, u16le(version, 2))
+            assertEquals(XShm.MajorVersion, u16le(version, 8))
+            assertContains(httpGet(port, "/text.txt"), "MIT-SHM.CreateSegment:")
         }
     }
 
@@ -162,6 +233,96 @@ class XShmProtocolTest {
         ByteArray(12).also {
             put32le(it, 0, shmseg)
             put32le(it, 4, shmid)
+            it[8] = readOnly.toByte()
+        }
+
+    private fun shmPutImageBody(
+        shmseg: Int,
+        drawable: Int = X11Ids.RootWindow,
+        gc: Int = 0x0020_0600,
+        totalWidth: Int = 1,
+        totalHeight: Int = 1,
+        srcX: Int = 0,
+        srcY: Int = 0,
+        srcWidth: Int = 1,
+        srcHeight: Int = 1,
+        dstX: Int = 0,
+        dstY: Int = 0,
+        depth: Int = 24,
+        format: Int = XShm.ZPixmap,
+        sendEvent: Int = 0,
+        offset: Int = 0,
+    ): ByteArray =
+        ByteArray(36).also {
+            put32le(it, 0, drawable)
+            put32le(it, 4, gc)
+            put16le(it, 8, totalWidth)
+            put16le(it, 10, totalHeight)
+            put16le(it, 12, srcX)
+            put16le(it, 14, srcY)
+            put16le(it, 16, srcWidth)
+            put16le(it, 18, srcHeight)
+            put16le(it, 20, dstX)
+            put16le(it, 22, dstY)
+            it[24] = depth.toByte()
+            it[25] = format.toByte()
+            it[26] = sendEvent.toByte()
+            put32le(it, 28, shmseg)
+            put32le(it, 32, offset)
+        }
+
+    private fun shmGetImageBody(
+        shmseg: Int,
+        drawable: Int = X11Ids.RootWindow,
+        x: Int = 0,
+        y: Int = 0,
+        width: Int = 1,
+        height: Int = 1,
+        planeMask: Int = -1,
+        format: Int = XShm.ZPixmap,
+        offset: Int = 0,
+    ): ByteArray =
+        ByteArray(28).also {
+            put32le(it, 0, drawable)
+            put16le(it, 4, x)
+            put16le(it, 6, y)
+            put16le(it, 8, width)
+            put16le(it, 10, height)
+            put32le(it, 12, planeMask)
+            it[16] = format.toByte()
+            put32le(it, 20, shmseg)
+            put32le(it, 24, offset)
+        }
+
+    private fun shmCreatePixmapBody(
+        pid: Int,
+        shmseg: Int,
+        drawable: Int = X11Ids.RootWindow,
+        width: Int = 1,
+        height: Int = 1,
+        depth: Int = 24,
+        offset: Int = 0,
+    ): ByteArray =
+        ByteArray(24).also {
+            put32le(it, 0, pid)
+            put32le(it, 4, drawable)
+            put16le(it, 8, width)
+            put16le(it, 10, height)
+            it[12] = depth.toByte()
+            put32le(it, 16, shmseg)
+            put32le(it, 20, offset)
+        }
+
+    private fun shmAttachFdBody(shmseg: Int, readOnly: Int): ByteArray =
+        ByteArray(8).also {
+            put32le(it, 0, shmseg)
+            it[4] = readOnly.toByte()
+        }
+
+    private fun shmCreateSegmentBody(shmseg: Int, size: Int, readOnly: Int): ByteArray =
+        ByteArray(12).also {
+            put32le(it, 0, shmseg)
+            put32le(it, 4, size)
             it[8] = readOnly.toByte()
         }
 
