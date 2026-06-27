@@ -2730,24 +2730,78 @@ internal class X11State(
         return pixelAt(sampleX, sampleY)
     }
 
+    private fun XFramebuffer.pixelAtCoordinate(x: Double, y: Double, repeat: Int, transform: List<Int>, filterName: String?): Int? {
+        val sample = transformedPoint(x, y, transform)
+        if (repeat == XRender.RepeatNone && (sample.first < 0.0 || sample.first >= width || sample.second < 0.0 || sample.second >= height)) {
+            return null
+        }
+        if (isBilinearFilter(filterName)) {
+            return bilinearPixelAt(sample.first, sample.second, repeat)
+        }
+        val sampleX = repeatedPixelCoordinate(sample.first, width, repeat) ?: return null
+        val sampleY = repeatedPixelCoordinate(sample.second, height, repeat) ?: return null
+        return pixelAt(sampleX, sampleY)
+    }
+
+    private fun XImagePixels.pixelAtCoordinate(x: Double, y: Double, repeat: Int, transform: List<Int>, filterName: String?): Int? {
+        fun snapshotPixelAt(px: Int, py: Int): Int? =
+            if (px in 0 until width && py in 0 until height) {
+                pixels[py * width + px]
+            } else {
+                null
+            }
+        val sample = transformedPoint(x, y, transform)
+        if (repeat == XRender.RepeatNone && (sample.first < 0.0 || sample.first >= width || sample.second < 0.0 || sample.second >= height)) {
+            return null
+        }
+        if (isBilinearFilter(filterName)) {
+            return bilinearPixelAt(sample.first, sample.second, repeat, width, height, ::snapshotPixelAt)
+        }
+        val sampleX = repeatedPixelCoordinate(sample.first, width, repeat) ?: return null
+        val sampleY = repeatedPixelCoordinate(sample.second, height, repeat) ?: return null
+        return snapshotPixelAt(sampleX, sampleY)
+    }
+
     private fun XFramebuffer.transformedAlphaAt(x: Int, y: Int, repeat: Int, transform: List<Int>, filterName: String?): Int =
         (transformedPixelAt(x, y, repeat, transform, filterName) ushr 24) and 0xff
 
     private fun XFramebuffer.bilinearPixelAt(x: Double, y: Double, repeat: Int): Int {
+        return bilinearPixelAt(x, y, repeat, width, height, ::pixelAt)
+    }
+
+    private fun bilinearPixelAt(
+        x: Double,
+        y: Double,
+        repeat: Int,
+        width: Int,
+        height: Int,
+        pixelAt: (Int, Int) -> Int?,
+    ): Int {
         val sourceX = x - 0.5
         val sourceY = y - 0.5
         val x0 = floor(sourceX).toInt()
         val y0 = floor(sourceY).toInt()
         val fx = sourceX - x0
         val fy = sourceY - y0
-        val p00 = repeatedPixelAt(x0, y0, repeat)
-        val p10 = repeatedPixelAt(x0 + 1, y0, repeat)
-        val p01 = repeatedPixelAt(x0, y0 + 1, repeat)
-        val p11 = repeatedPixelAt(x0 + 1, y0 + 1, repeat)
+        val p00 = repeatedPixelAt(x0, y0, repeat, width, height, pixelAt)
+        val p10 = repeatedPixelAt(x0 + 1, y0, repeat, width, height, pixelAt)
+        val p01 = repeatedPixelAt(x0, y0 + 1, repeat, width, height, pixelAt)
+        val p11 = repeatedPixelAt(x0 + 1, y0 + 1, repeat, width, height, pixelAt)
         return bilinearPixel(p00, p10, p01, p11, fx, fy)
     }
 
     private fun XFramebuffer.repeatedPixelAt(x: Int, y: Int, repeat: Int): Int {
+        return repeatedPixelAt(x, y, repeat, width, height, ::pixelAt)
+    }
+
+    private fun repeatedPixelAt(
+        x: Int,
+        y: Int,
+        repeat: Int,
+        width: Int,
+        height: Int,
+        pixelAt: (Int, Int) -> Int?,
+    ): Int {
         val sampleX = repeatedPixelIndex(x, width, repeat) ?: return 0
         val sampleY = repeatedPixelIndex(y, height, repeat) ?: return 0
         return pixelAt(sampleX, sampleY) ?: 0
@@ -2830,6 +2884,22 @@ internal class X11State(
         gradientSampler()?.let { return it }
         val framebuffer = drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer } ?: return null
         return { x, y -> framebuffer.transformedPixelAt(x, y, repeat, transform, filterName) }
+    }
+
+    private fun XPicture.sourcePixelSamplerAt(snapshotDrawableId: Int? = null, filterNameOverride: String? = null): ((x: Double, y: Double) -> Int?)? {
+        solidPixel?.let { pixel -> return { _, _ -> pixel } }
+        gradientSampler()?.let { sampler ->
+            return { x, y -> sampler(floor(x).toInt(), floor(y).toInt()) }
+        }
+        val sourceDrawableId = drawableId ?: return null
+        val framebuffer = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
+        val effectiveFilterName = filterNameOverride ?: filterName
+        val snapshot = framebuffer.snapshot().takeIf { sourceDrawableId == snapshotDrawableId }
+        return if (snapshot != null) {
+            { x, y -> snapshot.pixelAtCoordinate(x, y, repeat, transform, effectiveFilterName) }
+        } else {
+            { x, y -> framebuffer.pixelAtCoordinate(x, y, repeat, transform, effectiveFilterName) }
+        }
     }
 
     private fun XFixedLine.xAt(y: Double): Double {
@@ -3458,6 +3528,27 @@ internal class X11State(
             operation = operation,
             trapezoids = trapezoids,
             clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+        )
+    }
+
+    @Synchronized
+    fun renderTransform(
+        operation: Int,
+        source: XPicture,
+        destination: XPicture,
+        sourceQuad: XFixedQuad,
+        destinationQuad: XFixedQuad,
+        filterName: String,
+    ): Boolean {
+        val drawableId = destination.drawableId ?: return false
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val sourcePixelAt = source.sourcePixelSamplerAt(snapshotDrawableId = drawableId, filterNameOverride = filterName) ?: return false
+        return framebuffer.compositeTransformedQuad(
+            operation = operation,
+            sourceQuad = sourceQuad,
+            destinationQuad = destinationQuad,
+            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+            sourcePixelAt = sourcePixelAt,
         )
     }
 
@@ -4836,6 +4927,15 @@ internal data class XTriangleCommand(
     val p2: XFixedPoint,
     val p3: XFixedPoint,
 )
+
+internal data class XFixedQuad(
+    val p1: XFixedPoint,
+    val p2: XFixedPoint,
+    val p3: XFixedPoint,
+    val p4: XFixedPoint,
+) {
+    val points: List<XFixedPoint> get() = listOf(p1, p2, p3, p4)
+}
 
 internal data class XRenderColor(
     val red: Int,

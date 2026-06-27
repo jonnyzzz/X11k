@@ -327,7 +327,7 @@ internal class X11Connection(
             13 -> renderTriFan(body)
             14 -> renderColorTrapezoids(body)
             15 -> renderColorTriangles(body)
-            16 -> renderBadImplementation(minorOpcode)
+            16 -> renderTransform(body)
             17 -> renderCreateGlyphSet(body)
             18 -> renderReferenceGlyphSet(body)
             19 -> renderFreeGlyphSet(body)
@@ -1396,6 +1396,53 @@ internal class X11Connection(
         )
     }
 
+    private fun renderTransform(body: ByteArray) {
+        if (body.size != 80) {
+            return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 16, badValue = 0)
+        }
+        val operation = body[0].toInt() and 0xff
+        if (!XRender.isValidOperator(operation)) {
+            return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = 16, badValue = operation)
+        }
+        val sourceId = byteOrder.u32(body, 4)
+        val source = state.picture(sourceId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 16, badValue = sourceId)
+        val destinationId = byteOrder.u32(body, 8)
+        val destination = state.picture(destinationId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 16, badValue = destinationId)
+        val destinationDrawableId = destination.drawableId ?: return
+        val sourceQuad = fixedQuad(body, 12)
+        val destinationQuad = fixedQuad(body, 44)
+        val filter = byteOrder.u32(body, 76)
+        if (filter != XRender.LegacyTransformFilterNearest) {
+            return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = 16, badValue = filter)
+        }
+        if (!isSupportedTransformQuad(sourceQuad) || !isSupportedTransformQuad(destinationQuad)) {
+            return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = 16, badValue = 0)
+        }
+        val painted = state.renderTransform(
+            operation = operation,
+            source = source,
+            destination = destination,
+            sourceQuad = sourceQuad,
+            destinationQuad = destinationQuad,
+            filterName = XRender.FilterNearest,
+        )
+        if (!painted) return
+        state.draw(
+            XDrawingCommand(
+                drawableId = destinationDrawableId,
+                kind = XDrawingKind.CopyArea,
+                foreground = source.solidPixel ?: 0,
+                sourceDrawableId = source.drawableId,
+                points = destinationQuad.points.map { point ->
+                    XPoint(point.x.fixedToInt(), point.y.fixedToInt())
+                },
+                framebufferBacked = true,
+            ),
+        )
+    }
+
     private fun renderCreateGlyphSet(body: ByteArray) {
         if (body.size != 8) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 17, badValue = 0)
         val id = byteOrder.u32(body, 0)
@@ -1664,6 +1711,17 @@ internal class X11Connection(
         val i = fixed(8)
         val determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
         return determinant != BigInteger.ZERO
+    }
+
+    private fun isSupportedTransformQuad(quad: XFixedQuad): Boolean {
+        val parallelogram = quad.p1.x.toLong() + quad.p3.x.toLong() == quad.p2.x.toLong() + quad.p4.x.toLong() &&
+            quad.p1.y.toLong() + quad.p3.y.toLong() == quad.p2.y.toLong() + quad.p4.y.toLong()
+        if (!parallelogram) return false
+        val ux = quad.p2.x.toLong() - quad.p1.x.toLong()
+        val uy = quad.p2.y.toLong() - quad.p1.y.toLong()
+        val vx = quad.p4.x.toLong() - quad.p1.x.toLong()
+        val vy = quad.p4.y.toLong() - quad.p1.y.toLong()
+        return ux * vy - uy * vx != 0L
     }
 
     private fun renderQueryFilters(body: ByteArray) {
@@ -2557,6 +2615,7 @@ internal class X11Connection(
             12, 13 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} points=${(body.size - 20).coerceAtLeast(0) / 8}"
             14 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} dst=${hex(4)} traps=${(body.size - 8).coerceAtLeast(0) / 56}"
             15 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} dst=${hex(4)} triangles=${(body.size - 8).coerceAtLeast(0) / 48}"
+            16 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} filter=${u32(76)}"
             17 -> "glyphSet=${hex(0)} format=${hex(4)}"
             18 -> "glyphSet=${hex(0)} existing=${hex(4)}"
             19 -> "glyphSet=${hex(0)}"
@@ -6387,6 +6446,14 @@ internal class X11Connection(
             green = byteOrder.u16(body, offset + 2),
             blue = byteOrder.u16(body, offset + 4),
             alpha = byteOrder.u16(body, offset + 6),
+        )
+
+    private fun fixedQuad(body: ByteArray, offset: Int): XFixedQuad =
+        XFixedQuad(
+            p1 = XFixedPoint(byteOrder.u32(body, offset), byteOrder.u32(body, offset + 4)),
+            p2 = XFixedPoint(byteOrder.u32(body, offset + 8), byteOrder.u32(body, offset + 12)),
+            p3 = XFixedPoint(byteOrder.u32(body, offset + 16), byteOrder.u32(body, offset + 20)),
+            p4 = XFixedPoint(byteOrder.u32(body, offset + 24), byteOrder.u32(body, offset + 28)),
         )
 
     private fun fixedPoints(body: ByteArray, startOffset: Int): List<XFixedPoint> {

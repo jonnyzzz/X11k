@@ -871,6 +871,48 @@ internal class XFramebuffer(
         return painted
     }
 
+    fun compositeTransformedQuad(
+        operation: Int,
+        sourceQuad: XFixedQuad,
+        destinationQuad: XFixedQuad,
+        clipRectangles: List<XRectangleCommand>? = null,
+        sourcePixelAt: (x: Double, y: Double) -> Int?,
+    ): Boolean {
+        val destination = destinationQuad.toDoubleQuad()
+        val source = sourceQuad.toDoubleQuad()
+        val ux = destination.p2.x - destination.p1.x
+        val uy = destination.p2.y - destination.p1.y
+        val vx = destination.p4.x - destination.p1.x
+        val vy = destination.p4.y - destination.p1.y
+        val determinant = ux * vy - uy * vx
+        if (determinant == 0.0) return false
+        val startX = maxOf(0, floor(destination.points.minOf { it.x }).toInt())
+        val endX = minOf(width, ceil(destination.points.maxOf { it.x }).toInt())
+        val startY = maxOf(0, floor(destination.points.minOf { it.y }).toInt())
+        val endY = minOf(height, ceil(destination.points.maxOf { it.y }).toInt())
+        var painted = false
+        for (y in startY until endY) {
+            val sampleY = y + 0.5
+            for (x in startX until endX) {
+                if (!insideClip(x, y, clipRectangles)) continue
+                val sampleX = x + 0.5
+                val dx = sampleX - destination.p1.x
+                val dy = sampleY - destination.p1.y
+                val u = (dx * vy - dy * vx) / determinant
+                val v = (ux * dy - uy * dx) / determinant
+                if (u < 0.0 || u >= 1.0 || v < 0.0 || v >= 1.0) continue
+                val sourceX = bilinearCoordinate(source.p1.x, source.p2.x, source.p3.x, source.p4.x, u, v)
+                val sourceY = bilinearCoordinate(source.p1.y, source.p2.y, source.p3.y, source.p4.y, u, v)
+                val pixel = sourcePixelAt(sourceX, sourceY) ?: continue
+                val index = y * width + x
+                pixels[index] = renderPixel(pixel, pixels[index], operation, maskAlpha = 255)
+                painted = true
+            }
+        }
+        if (painted) markPainted()
+        return painted
+    }
+
     fun compositeColoredTriangles(
         operation: Int,
         triangles: List<XColorTriangleCommand>,
@@ -1199,6 +1241,12 @@ internal class XFramebuffer(
         )
     }
 
+    private fun bilinearCoordinate(p1: Double, p2: Double, p3: Double, p4: Double, u: Double, v: Double): Double =
+        p1 * (1.0 - u) * (1.0 - v) +
+            p2 * u * (1.0 - v) +
+            p3 * u * v +
+            p4 * (1.0 - u) * v
+
     private fun compositeTriangle(
         operation: Int,
         triangle: XTriangleCommand,
@@ -1487,6 +1535,17 @@ internal class XFramebuffer(
 
     private fun Int.fixedToDouble(): Double = this / FixedOne
 
+    private fun XFixedQuad.toDoubleQuad(): DoubleQuad =
+        DoubleQuad(
+            p1 = p1.toDoublePoint(),
+            p2 = p2.toDoublePoint(),
+            p3 = p3.toDoublePoint(),
+            p4 = p4.toDoublePoint(),
+        )
+
+    private fun XFixedPoint.toDoublePoint(): DoublePoint =
+        DoublePoint(x.fixedToDouble(), y.fixedToDouble())
+
     private fun XFixedLine.xAt(y: Double): Double {
         val y1 = p1.y.fixedToDouble()
         val y2 = p2.y.fixedToDouble()
@@ -1530,6 +1589,20 @@ internal class XFramebuffer(
         val width: Int,
         val height: Int,
     )
+
+    private data class DoublePoint(
+        val x: Double,
+        val y: Double,
+    )
+
+    private data class DoubleQuad(
+        val p1: DoublePoint,
+        val p2: DoublePoint,
+        val p3: DoublePoint,
+        val p4: DoublePoint,
+    ) {
+        val points: List<DoublePoint> get() = listOf(p1, p2, p3, p4)
+    }
 
     companion object {
         private const val MaxPixels = 16_777_216

@@ -37,6 +37,8 @@ internal object XRender {
     const val RepeatNormal = 1
     const val RepeatPad = 2
     const val RepeatReflect = 3
+    const val LegacyTransformFilterNearest = 0
+    const val FilterNearest = "nearest"
 
     fun operationName(minorOpcode: Int): String =
         when (minorOpcode) {
