@@ -1736,6 +1736,10 @@ internal class X11State(
     }
 
     @Synchronized
+    fun exposureSinks(windowId: Int): List<XEventSink> =
+        eventSelectionsForWindow(windowId, XEventMasks.Exposure)
+
+    @Synchronized
     fun recordInputOperation(
         kind: String,
         x: Int,

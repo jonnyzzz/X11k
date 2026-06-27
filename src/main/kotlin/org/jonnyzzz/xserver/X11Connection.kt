@@ -210,7 +210,7 @@ internal class X11Connection(
             58 -> setDashes(body)
             59 -> setClipRectangles(minorOpcode, body)
             60 -> closeResource(opcode = 60, body = body, error = 13, exists = state::hasGc)
-            61 -> clearArea(body)
+            61 -> clearArea(minorOpcode, body)
             62 -> copyArea(body)
             63 -> copyPlane(body)
             64 -> polyPoint(minorOpcode, body)
@@ -3878,8 +3878,9 @@ internal class X11Connection(
         )
     }
 
-    private fun clearArea(body: ByteArray) {
+    private fun clearArea(exposures: Int, body: ByteArray) {
         if (body.size != 12) return writeError(error = 16, opcode = 61, badValue = 0)
+        if (exposures !in 0..1) return writeError(error = 2, opcode = 61, badValue = exposures)
         val windowId = byteOrder.u32(body, 0)
         val window = state.window(windowId) ?: return writeError(error = 3, opcode = 61, badValue = windowId)
         if (window.windowClass == XWindowClass.InputOnly) return writeError(error = 8, opcode = 61, badValue = windowId)
@@ -3901,6 +3902,11 @@ internal class X11Connection(
                 framebufferBacked = true,
             ),
         )
+        if (exposures != 0 && state.windowIsViewable(windowId)) {
+            rectangle.intersect(0, 0, window.width, window.height)?.let { visibleRectangle ->
+                sendExpose(state.exposureSinks(windowId), windowId, visibleRectangle)
+            }
+        }
     }
 
     private fun copyArea(body: ByteArray) {
@@ -5407,16 +5413,20 @@ internal class X11Connection(
     private fun noOperation(body: ByteArray) = Unit
 
     private fun sendExpose(window: XWindow) {
-        val event = ByteArray(32)
-        event[0] = 12
-        byteOrder.put16(event, 2, sequence)
-        byteOrder.put32(event, 4, window.id)
-        byteOrder.put16(event, 8, 0)
-        byteOrder.put16(event, 10, 0)
-        byteOrder.put16(event, 12, window.width)
-        byteOrder.put16(event, 14, window.height)
-        byteOrder.put16(event, 16, 0)
-        write(event)
+        sendExposeEvent(XExposeEvent(window.id, 0, 0, window.width, window.height))
+    }
+
+    private fun sendExpose(sinks: List<XEventSink>, windowId: Int, rectangle: XRectangleCommand) {
+        val event = XExposeEvent(
+            windowId = windowId,
+            x = rectangle.x,
+            y = rectangle.y,
+            width = rectangle.width,
+            height = rectangle.height,
+        )
+        for (sink in sinks) {
+            runCatching { sink.sendExposeEvent(event) }
+        }
     }
 
     private fun sendNoExposure(drawableId: Int, majorOpcode: Int, minorOpcode: Int = 0) {
@@ -5612,6 +5622,19 @@ internal class X11Connection(
         byteOrder.put32(bytes, 8, event.atom)
         byteOrder.put32(bytes, 12, event.time)
         bytes[16] = event.state.toByte()
+        write(bytes)
+    }
+
+    override fun sendExposeEvent(event: XExposeEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 12
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.windowId)
+        byteOrder.put16(bytes, 8, event.x)
+        byteOrder.put16(bytes, 10, event.y)
+        byteOrder.put16(bytes, 12, event.width)
+        byteOrder.put16(bytes, 14, event.height)
+        byteOrder.put16(bytes, 16, event.count)
         write(bytes)
     }
 

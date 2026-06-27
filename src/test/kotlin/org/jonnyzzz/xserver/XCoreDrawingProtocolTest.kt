@@ -2208,6 +2208,66 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ClearArea validates exposures flag and emits selected exposure event`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 12, height = 10, eventMask = XEventMasks.Exposure))
+                out.write(mapWindowRequest(WindowId))
+                out.write(clearAreaRequest(WindowId, x = -1, y = -1, width = 3, height = 3, exposures = 1))
+                out.write(clearAreaRequest(WindowId, x = 20, y = 20, width = 3, height = 3, exposures = 1))
+                out.write(clearAreaRequest(WindowId, x = 0, y = 0, width = 1, height = 1, exposures = 2))
+                out.write(getInputFocusRequest())
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream(), WindowId)
+                assertExpose(
+                    socket.getInputStream().readExactly(32),
+                    windowId = WindowId,
+                    sequence = 3,
+                    x = 0,
+                    y = 0,
+                    width = 2,
+                    height = 2,
+                    count = 0,
+                )
+                assertError(socket.getInputStream(), error = 2, opcode = 61, badValue = 2, sequence = 5)
+
+                val focus = readReply(socket.getInputStream())
+                assertEquals(6, u16le(focus, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ClearArea exposure flag does not deliver to unselected clients`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 12, height = 10))
+                out.write(mapWindowRequest(WindowId))
+                out.write(clearAreaRequest(WindowId, x = 1, y = 1, width = 3, height = 3, exposures = 1))
+                out.write(getInputFocusRequest())
+                out.flush()
+
+                assertExpose(socket.getInputStream().readExactly(32), WindowId, sequence = 2)
+                val focus = readReply(socket.getInputStream())
+                assertEquals(4, u16le(focus, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ClearArea with ParentRelative background uses current parent background pixel`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -14205,14 +14265,14 @@ class XCoreDrawingProtocolTest {
         return request(2, 0, body)
     }
 
-    private fun clearAreaRequest(id: Int, x: Int, y: Int, width: Int, height: Int): ByteArray {
+    private fun clearAreaRequest(id: Int, x: Int, y: Int, width: Int, height: Int, exposures: Int = 0): ByteArray {
         val body = ByteArray(12)
         put32le(body, 0, id)
         put16le(body, 4, x)
         put16le(body, 6, y)
         put16le(body, 8, width)
         put16le(body, 10, height)
-        return request(61, 0, body)
+        return request(61, exposures, body)
     }
 
     private fun createGcRequest(id: Int, foreground: Int, background: Int? = null, drawable: Int = WindowId): ByteArray {
@@ -15275,9 +15335,24 @@ class XCoreDrawingProtocolTest {
         assertZeroBytes(event, 21, 32)
     }
 
-    private fun assertExpose(expose: ByteArray, windowId: Int) {
+    private fun assertExpose(
+        expose: ByteArray,
+        windowId: Int,
+        sequence: Int? = null,
+        x: Int? = null,
+        y: Int? = null,
+        width: Int? = null,
+        height: Int? = null,
+        count: Int? = null,
+    ) {
         assertEquals(12, expose[0].toInt() and 0xff)
+        sequence?.let { assertEquals(it, u16le(expose, 2)) }
         assertEquals(windowId, u32le(expose, 4))
+        x?.let { assertEquals(it, u16le(expose, 8)) }
+        y?.let { assertEquals(it, u16le(expose, 10)) }
+        width?.let { assertEquals(it, u16le(expose, 12)) }
+        height?.let { assertEquals(it, u16le(expose, 14)) }
+        count?.let { assertEquals(it, u16le(expose, 16)) }
     }
 
     private fun assertNoExposure(event: ByteArray, sequence: Int, drawable: Int, majorOpcode: Int, minorOpcode: Int = 0) {
