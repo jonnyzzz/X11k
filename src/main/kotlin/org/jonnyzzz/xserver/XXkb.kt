@@ -34,6 +34,32 @@ internal object XXkb {
     const val SetDeviceInfo = 25
     const val SetDebuggingFlags = 101
 
+    const val EventNewKeyboardNotify = 1 shl 0
+    const val EventMapNotify = 1 shl 1
+    const val EventStateNotify = 1 shl 2
+    const val EventControlsNotify = 1 shl 3
+    const val EventIndicatorStateNotify = 1 shl 4
+    const val EventIndicatorMapNotify = 1 shl 5
+    const val EventNamesNotify = 1 shl 6
+    const val EventCompatMapNotify = 1 shl 7
+    const val EventBellNotify = 1 shl 8
+    const val EventActionMessage = 1 shl 9
+    const val EventAccessXNotify = 1 shl 10
+    const val EventExtensionDeviceNotify = 1 shl 11
+    const val AllEventsMask =
+        EventNewKeyboardNotify or
+            EventMapNotify or
+            EventStateNotify or
+            EventControlsNotify or
+            EventIndicatorStateNotify or
+            EventIndicatorMapNotify or
+            EventNamesNotify or
+            EventCompatMapNotify or
+            EventBellNotify or
+            EventActionMessage or
+            EventAccessXNotify or
+            EventExtensionDeviceNotify
+
     const val BoolCtrlRepeatKeys = 1 shl 0
     const val MapPartKeyTypes = 1 shl 0
     const val MapPartKeySyms = 1 shl 1
@@ -43,6 +69,15 @@ internal object XXkb {
     const val MapPartKeyBehaviors = 1 shl 5
     const val MapPartVirtualMods = 1 shl 6
     const val MapPartVirtualModMap = 1 shl 7
+    const val AllMapParts =
+        MapPartKeyTypes or
+            MapPartKeySyms or
+            MapPartModifierMap or
+            MapPartExplicitComponents or
+            MapPartKeyActions or
+            MapPartKeyBehaviors or
+            MapPartVirtualMods or
+            MapPartVirtualModMap
     const val NameDetailKeycodes = 1 shl 0
     const val NameDetailGeometry = 1 shl 1
     const val NameDetailSymbols = 1 shl 2

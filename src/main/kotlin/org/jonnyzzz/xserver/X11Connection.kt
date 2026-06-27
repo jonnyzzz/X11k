@@ -524,6 +524,96 @@ internal class X11Connection(
 
     private fun xkbSelectEvents(body: ByteArray, majorOpcode: Int) {
         if (body.size < 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
+        val affectWhich = byteOrder.u16(body, 2)
+        val clear = byteOrder.u16(body, 4)
+        val selectAll = byteOrder.u16(body, 6)
+        val affectMap = byteOrder.u16(body, 8)
+        val map = byteOrder.u16(body, 10)
+        if (((affectWhich or clear or selectAll) and XXkb.AllEventsMask.inv()) != 0) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = affectWhich or clear or selectAll)
+        }
+        if (((affectMap or map) and XXkb.AllMapParts.inv()) != 0) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = affectMap or map)
+        }
+        if ((clear and selectAll) != 0 || ((clear or selectAll) and affectWhich.inv()) != 0 || (map and affectMap.inv()) != 0) {
+            return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
+        }
+        if (!validateXkbSelectEventDetails(body, affectWhich, clear, selectAll, majorOpcode)) return
+    }
+
+    private fun validateXkbSelectEventDetails(
+        body: ByteArray,
+        affectWhich: Int,
+        clear: Int,
+        selectAll: Int,
+        majorOpcode: Int,
+    ): Boolean {
+        val detailsMask = affectWhich and clear.inv() and selectAll.inv()
+        var offset = 12
+
+        fun require(bytes: Int): Boolean {
+            val next = offset + bytes
+            if (next < offset || next > body.size) {
+                writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
+                return false
+            }
+            offset = next
+            return true
+        }
+
+        fun details16(mask: Int): Boolean {
+            if ((detailsMask and mask) == 0) return true
+            if (!require(4)) return false
+            val affect = byteOrder.u16(body, offset - 4)
+            val selected = byteOrder.u16(body, offset - 2)
+            if ((selected and affect.inv()) != 0) {
+                writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
+                return false
+            }
+            return true
+        }
+
+        fun details32(mask: Int): Boolean {
+            if ((detailsMask and mask) == 0) return true
+            if (!require(8)) return false
+            val affect = byteOrder.u32(body, offset - 8)
+            val selected = byteOrder.u32(body, offset - 4)
+            if ((selected and affect.inv()) != 0) {
+                writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
+                return false
+            }
+            return true
+        }
+
+        fun details8(mask: Int): Boolean {
+            if ((detailsMask and mask) == 0) return true
+            if (!require(2)) return false
+            val affect = body[offset - 2].toInt() and 0xff
+            val selected = body[offset - 1].toInt() and 0xff
+            if ((selected and affect.inv()) != 0) {
+                writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
+                return false
+            }
+            return true
+        }
+
+        if (!details16(XXkb.EventNewKeyboardNotify)) return false
+        if (!details16(XXkb.EventStateNotify)) return false
+        if (!details32(XXkb.EventControlsNotify)) return false
+        if (!details32(XXkb.EventIndicatorStateNotify)) return false
+        if (!details32(XXkb.EventIndicatorMapNotify)) return false
+        if (!details16(XXkb.EventNamesNotify)) return false
+        if (!details8(XXkb.EventCompatMapNotify)) return false
+        if (!details8(XXkb.EventBellNotify)) return false
+        if (!details8(XXkb.EventActionMessage)) return false
+        if (!details16(XXkb.EventAccessXNotify)) return false
+        if (!details16(XXkb.EventExtensionDeviceNotify)) return false
+
+        if (paddedLength(offset) != body.size) {
+            writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
+            return false
+        }
+        return true
     }
 
     private fun xkbBell(body: ByteArray, majorOpcode: Int) {

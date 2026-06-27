@@ -96,6 +96,68 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD SelectEvents validates variable details and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(selectEventsRequest(details = ByteArray(4)))
+            out.write(
+                selectEventsRequest(
+                    affectWhich = 1 shl 12,
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventMapNotify,
+                    affectMap = 0,
+                    map = XXkb.MapPartKeyTypes,
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventStateNotify,
+                    details = selectEvents16Details(0x0001, 0x0002),
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventStateNotify,
+                    details = selectEvents16Details(0x0003, 0x0002),
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventBellNotify,
+                    details = selectEvents8Details(0x01, 0x01),
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventBellNotify or XXkb.EventAccessXNotify,
+                    details = selectEvents8Details(0x01, 0x01) + selectEvents16Details(0x0003, 0x0002),
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventBellNotify or XXkb.EventAccessXNotify,
+                    details = selectEvents8Details(0x01, 0x01) + selectEvents16Details(0x0001, 0x0002),
+                ),
+            )
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 1 shl 12, sequence = 2, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 8, minorOpcode = XXkb.SelectEvents)
+            val version = readReply(socket.getInputStream())
+            assertEquals(9, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+            assertEquals(XXkb.MajorVersion, u16le(version, 8))
+        }
+    }
+
+    @Test
     fun `XKEYBOARD Bell accepts valid signed percent and recovers stream`() {
         withServer { socket, port ->
             val out = socket.getOutputStream()
@@ -1278,16 +1340,33 @@ class XXkbProtocolTest {
         return request(XXkb.MajorOpcode, XXkb.UseExtension, body)
     }
 
-    private fun selectEventsRequest(): ByteArray {
-        val body = ByteArray(12)
+    private fun selectEventsRequest(
+        affectWhich: Int = 0,
+        clear: Int = 0,
+        selectAll: Int = 0,
+        affectMap: Int = 0,
+        map: Int = 0,
+        details: ByteArray = ByteArray(0),
+    ): ByteArray {
+        val body = ByteArray(paddedSize(12 + details.size))
         put16le(body, 0, 0x0100)
-        put16le(body, 2, 0)
-        put16le(body, 4, 0)
-        put16le(body, 6, 0)
-        put16le(body, 8, 0)
-        put16le(body, 10, 0)
+        put16le(body, 2, affectWhich)
+        put16le(body, 4, clear)
+        put16le(body, 6, selectAll)
+        put16le(body, 8, affectMap)
+        put16le(body, 10, map)
+        details.copyInto(body, 12)
         return request(XXkb.MajorOpcode, XXkb.SelectEvents, body)
     }
+
+    private fun selectEvents16Details(affect: Int, selected: Int): ByteArray =
+        ByteArray(4).also {
+            put16le(it, 0, affect)
+            put16le(it, 2, selected)
+        }
+
+    private fun selectEvents8Details(affect: Int, selected: Int): ByteArray =
+        byteArrayOf(affect.toByte(), selected.toByte())
 
     private fun xkbBellRequest(percent: Int): ByteArray {
         val body = ByteArray(24)
@@ -1854,6 +1933,8 @@ class XXkbProtocolTest {
         body.copyInto(bytes, 4)
         return bytes
     }
+
+    private fun paddedSize(size: Int): Int = (size + 3) and -4
 
     private fun assertError(input: InputStream, error: Int, opcode: Int, badValue: Int, sequence: Int, minorOpcode: Int) {
         val reply = input.readExactly(32)
