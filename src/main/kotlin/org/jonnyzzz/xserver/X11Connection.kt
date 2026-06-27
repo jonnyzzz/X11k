@@ -1122,7 +1122,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = destinationDrawableId,
-                kind = if (source.solidPixel != null || source.linearGradient != null) XDrawingKind.FillRectangle else XDrawingKind.CopyArea,
+                kind = if (source.isGeneratedSource()) XDrawingKind.FillRectangle else XDrawingKind.CopyArea,
                 foreground = source.solidPixel ?: 0,
                 rectangles = listOf(rectangle),
                 imageDataUri = XFramebuffer.imageDataUri(image),
@@ -1165,7 +1165,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = destinationDrawableId,
-                kind = if (source.solidPixel != null || source.linearGradient != null) XDrawingKind.FillRectangle else XDrawingKind.CopyArea,
+                kind = if (source.isGeneratedSource()) XDrawingKind.FillRectangle else XDrawingKind.CopyArea,
                 foreground = source.solidPixel ?: 0,
                 rectangles = listOf(rectangle),
                 imageDataUri = XFramebuffer.imageDataUri(image),
@@ -1174,6 +1174,12 @@ internal class X11Connection(
             ),
         )
     }
+
+    private fun XPicture.isGeneratedSource(): Boolean =
+        solidPixel != null ||
+            linearGradient != null ||
+            radialGradient != null ||
+            conicalGradient != null
 
     private fun renderTrapezoids(body: ByteArray) {
         if (body.size < 20 || (body.size - 20) % 40 != 0) {

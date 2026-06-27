@@ -155,7 +155,20 @@ internal object SvgScreenRenderer {
                 if (index > 0) append(',')
                 append("""{"id":"${pbuffer.idHex}","fbConfig":"${pbuffer.fbConfigIdHex}","screen":${pbuffer.screen},"width":${pbuffer.width},"height":${pbuffer.height},"eventMask":${pbuffer.eventMask}}""")
             }
-            append("""],"drawings":${snapshot.drawings.size},"renderOperations":${snapshot.renderOperations.size},"renderPictures":[""")
+            append("""],"drawings":${snapshot.drawings.size},"drawingCommands":[""")
+            snapshot.drawings.forEachIndexed { index, drawing ->
+                if (index > 0) append(',')
+                append('{')
+                append(""""drawable":"0x${drawing.drawableId.toUInt().toString(16)}","kind":"${drawing.kind.name}","framebufferBacked":${drawing.framebufferBacked},"sourceDrawable":""")
+                drawing.sourceDrawableId?.let { append("\"0x${it.toUInt().toString(16)}\"") } ?: append("null")
+                append(""","rectangles":[""")
+                drawing.rectangles.forEachIndexed { rectangleIndex, rectangle ->
+                    if (rectangleIndex > 0) append(',')
+                    append("""{"x":${rectangle.x},"y":${rectangle.y},"width":${rectangle.width},"height":${rectangle.height}}""")
+                }
+                append("""]}""")
+            }
+            append("""],"renderOperations":${snapshot.renderOperations.size},"renderPictures":[""")
             snapshot.renderPictures.forEachIndexed { index, picture ->
                 if (index > 0) append(',')
                 append('{')
