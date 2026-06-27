@@ -2108,6 +2108,76 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER Transform honors source picture clip rectangles`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 2, height = 2))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Rgb24Format))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 1, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 1, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 1, width = 1, height = 1, red = 0xffff, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 1, y = 1, width = 1, height = 1, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(renderSetPictureClipRectangles(PixmapPictureId, rectangles = listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 12, height = 10, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderTransform(
+                        PixmapPictureId,
+                        PictureId,
+                        sourceQuad = listOf(0 to 0, 2 to 0, 2 to 2, 0 to 2),
+                        destinationQuad = listOf(4 to 3, 8 to 3, 8 to 7, 4 to 7),
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 12, height = 10))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 12, x = 4, y = 3))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 12, x = 7, y = 3))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 12, x = 4, y = 6))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER Transform clips solid source pictures by source coordinates`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderSetPictureClipRectangles(SolidPictureId, rectangles = listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 8, height = 8, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderTransform(
+                        SolidPictureId,
+                        PictureId,
+                        sourceQuad = listOf(0 to 0, 2 to 0, 2 to 2, 0 to 2),
+                        destinationQuad = listOf(2 to 2, 6 to 2, 6 to 6, 2 to 6),
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 8))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 8, x = 2, y = 2))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 8, x = 5, y = 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER Transform snapshots self source before painting destination`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

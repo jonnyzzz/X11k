@@ -2980,6 +2980,9 @@ internal class X11State(
                 y < rectangle.y + rectangle.height
         }
 
+    private fun XPicture.insidePictureClip(x: Double, y: Double): Boolean =
+        insidePictureClip(floor(x).toInt(), floor(y).toInt())
+
     private fun glyphMaskFromPicture(
         format: Int,
         width: Int,
@@ -3006,18 +3009,24 @@ internal class X11State(
     }
 
     private fun XPicture.sourcePixelSamplerAt(snapshotDrawableId: Int? = null, filterNameOverride: String? = null): ((x: Double, y: Double) -> Int?)? {
-        solidPixel?.let { pixel -> return { _, _ -> pixel } }
+        solidPixel?.let { pixel -> return { x, y -> if (insidePictureClip(x, y)) pixel else null } }
         gradientSampler()?.let { sampler ->
-            return { x, y -> sampler(floor(x).toInt(), floor(y).toInt()) }
+            return { x, y ->
+                if (insidePictureClip(x, y)) {
+                    sampler(floor(x).toInt(), floor(y).toInt())
+                } else {
+                    null
+                }
+            }
         }
         val sourceDrawableId = drawableId ?: return null
         val framebuffer = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
         val effectiveFilterName = filterNameOverride ?: filterName
         val snapshot = framebuffer.snapshot().takeIf { sourceDrawableId == snapshotDrawableId }
         return if (snapshot != null) {
-            { x, y -> snapshot.pixelAtCoordinate(x, y, repeat, transform, effectiveFilterName) }
+            { x, y -> if (insidePictureClip(x, y)) snapshot.pixelAtCoordinate(x, y, repeat, transform, effectiveFilterName) else null }
         } else {
-            { x, y -> framebuffer.pixelAtCoordinate(x, y, repeat, transform, effectiveFilterName) }
+            { x, y -> if (insidePictureClip(x, y)) framebuffer.pixelAtCoordinate(x, y, repeat, transform, effectiveFilterName) else null }
         }
     }
 
