@@ -2921,9 +2921,7 @@ internal class X11Connection(
                 state.paintWindowBackground(mapped.id)
             }
             sendMapNotify(notifications)
-            if (mapped.windowClass == XWindowClass.InputOutput) {
-                sendExpose(mapped)
-            }
+            sendExposeForViewableMappedSubtree(mapped)
         }
     }
 
@@ -2945,9 +2943,7 @@ internal class X11Connection(
             state.paintWindowBackground(window.id)
         }
         sendMapNotify(notifications)
-        if (window.windowClass == XWindowClass.InputOutput) {
-            sendExpose(window)
-        }
+        sendExposeForViewableMappedSubtree(window)
     }
 
     private fun unmapWindow(body: ByteArray) {
@@ -2979,9 +2975,7 @@ internal class X11Connection(
                     state.paintWindowBackground(mapped.id)
                 }
                 sendMapNotify(notifications)
-                if (mapped.windowClass == XWindowClass.InputOutput) {
-                    sendExpose(mapped)
-                }
+                sendExposeForViewableMappedSubtree(mapped)
             }
         }
     }
@@ -3082,7 +3076,7 @@ internal class X11Connection(
         ) ?: return
         if (configured.changed) {
             sendConfigureNotify(state.configureNotifySinks(configured))
-            if (configured.window.mapped && configured.window.windowClass == XWindowClass.InputOutput && configured.sizeChanged) sendExpose(configured.window)
+            if (configured.sizeChanged) sendExposeIfViewable(configured.window)
         }
     }
 
@@ -5494,6 +5488,19 @@ internal class X11Connection(
 
     private fun sendExpose(window: XWindow) {
         sendExposeEvent(XExposeEvent(window.id, 0, 0, window.width, window.height))
+    }
+
+    private fun sendExposeIfViewable(window: XWindow) {
+        if (window.windowClass == XWindowClass.InputOutput && state.windowIsViewable(window.id)) {
+            sendExpose(window)
+        }
+    }
+
+    private fun sendExposeForViewableMappedSubtree(window: XWindow) {
+        sendExposeIfViewable(window)
+        for (child in state.childrenOf(window.id)) {
+            if (child.mapped) sendExposeForViewableMappedSubtree(child)
+        }
     }
 
     private fun sendExpose(sinks: List<XEventSink>, windowId: Int, rectangle: XRectangleCommand) {

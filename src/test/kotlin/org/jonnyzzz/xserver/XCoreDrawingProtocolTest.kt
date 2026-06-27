@@ -8354,9 +8354,9 @@ class XCoreDrawingProtocolTest {
                 out.write(queryPointerRequest())
                 out.flush()
 
-                assertSelectedMapAndExpose(input, middle)
-                assertSelectedMapAndExpose(input, top)
-                assertSelectedMapAndExpose(input, bottom)
+                assertMapNotify(input.readExactly(32), sequence = 5, eventWindow = middle, window = middle)
+                assertMapNotify(input.readExactly(32), sequence = 6, eventWindow = top, window = top)
+                assertMapNotify(input.readExactly(32), sequence = 6, eventWindow = bottom, window = bottom)
                 val pointer = readReply(input)
                 assertEquals(1, pointer[0].toInt())
                 assertEquals(7, u16le(pointer, 2))
@@ -8441,7 +8441,6 @@ class XCoreDrawingProtocolTest {
                     ownerOut.write(mapWindowRequest(alreadyMapped))
                     ownerOut.write(queryPointerRequest())
                     ownerOut.flush()
-                    assertExpose(ownerSocket.getInputStream().readExactly(32), alreadyMapped)
                     assertEquals(6, u16le(readReply(ownerSocket.getInputStream()), 2))
 
                     val observerOut = observerSocket.getOutputStream()
@@ -8457,7 +8456,6 @@ class XCoreDrawingProtocolTest {
                     ownerOut.write(queryPointerRequest())
                     ownerOut.flush()
 
-                    assertExpose(ownerSocket.getInputStream().readExactly(32), overrideChild)
                     val overrideAttributes = readReply(ownerSocket.getInputStream())
                     val redirectedAttributes = readReply(ownerSocket.getInputStream())
                     val alreadyMappedAttributes = readReply(ownerSocket.getInputStream())
@@ -8476,6 +8474,40 @@ class XCoreDrawingProtocolTest {
                     observerOut.flush()
                     assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
                 }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `MapWindow exposes already mapped inferiors when ancestor becomes viewable`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId + 435
+                val child = parent + 1
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent))
+                out.write(createWindowRequest(child, parent = parent))
+                out.write(mapWindowRequest(child))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val childUnviewablePointer = readReply(input)
+                assertEquals(4, u16le(childUnviewablePointer, 2))
+
+                out.write(mapWindowRequest(parent))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertExpose(input.readExactly(32), parent)
+                assertExpose(input.readExactly(32), child)
+                val parentViewablePointer = readReply(input)
+                assertEquals(6, u16le(parentViewablePointer, 2))
             }
             server.close()
             serverThread.join(1_000)
@@ -8787,9 +8819,9 @@ class XCoreDrawingProtocolTest {
                 assertCreateNotify(input.readExactly(32), sequence = 2, parent = parent, window = bottom)
                 assertCreateNotify(input.readExactly(32), sequence = 3, parent = parent, window = middle)
                 assertCreateNotify(input.readExactly(32), sequence = 4, parent = parent, window = top)
-                assertSelectedMapAndExpose(input, bottom, eventWindow = parent)
-                assertSelectedMapAndExpose(input, middle, eventWindow = parent)
-                assertSelectedMapAndExpose(input, top, eventWindow = parent)
+                assertMapNotify(input.readExactly(32), sequence = 5, eventWindow = parent, window = bottom)
+                assertMapNotify(input.readExactly(32), sequence = 6, eventWindow = parent, window = middle)
+                assertMapNotify(input.readExactly(32), sequence = 7, eventWindow = parent, window = top)
                 assertUnmapNotify(input.readExactly(32), sequence = 8, eventWindow = parent, window = middle)
                 assertUnmapNotify(input.readExactly(32), sequence = 9, eventWindow = parent, window = bottom)
                 assertUnmapNotify(input.readExactly(32), sequence = 9, eventWindow = parent, window = top)
@@ -10294,7 +10326,6 @@ class XCoreDrawingProtocolTest {
                 out.write(getInputFocusRequest())
                 out.flush()
 
-                assertMapAndExpose(socket.getInputStream(), childId)
                 val error = socket.getInputStream().readExactly(32)
                 assertEquals(0, error[0].toInt())
                 assertEquals(8, error[1].toInt() and 0xff)
