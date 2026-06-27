@@ -3116,12 +3116,16 @@ internal class X11Connection(
         byteOrder.put32(reply, 20, window.backingPixel)
         reply[24] = if (window.saveUnder) 1 else 0
         reply[25] = if (window.colormapId?.let { state.isColormapInstalled(it) } == true) 1 else 0
-        reply[26] = if (window.mapped) 2 else 0
+        reply[26] = when {
+            !window.mapped -> 0
+            state.windowIsViewable(window.id) -> 2
+            else -> 1
+        }
         reply[27] = if (window.overrideRedirect) 1 else 0
         byteOrder.put32(reply, 28, window.colormapId ?: 0)
-        byteOrder.put32(reply, 32, 0)
-        byteOrder.put32(reply, 36, 0)
-        byteOrder.put16(reply, 40, 0)
+        byteOrder.put32(reply, 32, state.windowEventMask(window.id))
+        byteOrder.put32(reply, 36, state.windowEventMaskForSink(this, window.id))
+        byteOrder.put16(reply, 40, window.doNotPropagateMask)
         write(reply)
     }
 

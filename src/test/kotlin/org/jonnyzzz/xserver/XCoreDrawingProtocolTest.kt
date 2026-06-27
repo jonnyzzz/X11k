@@ -8461,9 +8461,9 @@ class XCoreDrawingProtocolTest {
                     val overrideAttributes = readReply(ownerSocket.getInputStream())
                     val redirectedAttributes = readReply(ownerSocket.getInputStream())
                     val alreadyMappedAttributes = readReply(ownerSocket.getInputStream())
-                    assertEquals(2, overrideAttributes[26].toInt() and 0xff)
+                    assertEquals(1, overrideAttributes[26].toInt() and 0xff)
                     assertEquals(0, redirectedAttributes[26].toInt() and 0xff)
-                    assertEquals(2, alreadyMappedAttributes[26].toInt() and 0xff)
+                    assertEquals(1, alreadyMappedAttributes[26].toInt() and 0xff)
                     assertEquals(11, u16le(readReply(ownerSocket.getInputStream()), 2))
 
                     assertMapRequest(
@@ -8822,6 +8822,81 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 3, opcode = 3, badValue = missing, sequence = 3)
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(4, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GetWindowAttributes reports map state and selected event masks`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+                    val parent = WindowId + 406
+                    val child = parent + 1
+                    val ownerMask = XEventMasks.StructureNotify
+                    val observerMask = XEventMasks.PropertyChange
+                    val doNotPropagateMask = XEventMasks.KeyPress or XEventMasks.ButtonPress
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(parent))
+                    ownerOut.write(createWindowRequest(child, parent = parent, eventMask = ownerMask, doNotPropagateMask = doNotPropagateMask))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertEquals(3, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(child, observerMask))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    ownerOut.write(mapWindowRequest(parent))
+                    ownerOut.write(mapWindowRequest(child))
+                    ownerOut.write(unmapWindowRequest(parent))
+                    ownerOut.write(getWindowAttributesRequest(parent))
+                    ownerOut.write(getWindowAttributesRequest(child))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    assertMapAndExpose(ownerSocket.getInputStream(), parent)
+                    assertMapAndExpose(ownerSocket.getInputStream(), child)
+                    val parentAttributes = readReply(ownerSocket.getInputStream())
+                    val childAttributes = readReply(ownerSocket.getInputStream())
+                    assertEquals(0, parentAttributes[26].toInt() and 0xff)
+                    assertEquals(0, u32le(parentAttributes, 32))
+                    assertEquals(0, u32le(parentAttributes, 36))
+                    assertEquals(0, u16le(parentAttributes, 40))
+                    assertEquals(1, childAttributes[26].toInt() and 0xff)
+                    assertEquals(ownerMask or observerMask, u32le(childAttributes, 32))
+                    assertEquals(ownerMask, u32le(childAttributes, 36))
+                    assertEquals(doNotPropagateMask, u16le(childAttributes, 40))
+                    assertEquals(9, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                    observerOut.write(getWindowAttributesRequest(child))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+
+                    val observerAttributes = readReply(observerSocket.getInputStream())
+                    assertEquals(ownerMask or observerMask, u32le(observerAttributes, 32))
+                    assertEquals(observerMask, u32le(observerAttributes, 36))
+                    assertEquals(4, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    observerOut.write(changeWindowEventMaskRequest(child, 0))
+                    observerOut.write(getWindowAttributesRequest(child))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+
+                    val observerAttributesAfterClear = readReply(observerSocket.getInputStream())
+                    assertEquals(ownerMask, u32le(observerAttributesAfterClear, 32))
+                    assertEquals(0, u32le(observerAttributesAfterClear, 36))
+                    assertEquals(7, u16le(readReply(observerSocket.getInputStream()), 2))
+                }
             }
             server.close()
             serverThread.join(1_000)

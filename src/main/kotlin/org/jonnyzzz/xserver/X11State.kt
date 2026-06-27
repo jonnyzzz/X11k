@@ -332,6 +332,14 @@ internal class X11State(
     }
 
     @Synchronized
+    fun windowEventMask(id: Int): Int =
+        eventSinks.values.fold(0) { acc, selections -> acc or (selections[id] ?: 0) }
+
+    @Synchronized
+    fun windowEventMaskForSink(sink: XEventSink, id: Int): Int =
+        eventSinks[sink]?.get(id) ?: 0
+
+    @Synchronized
     fun childrenOf(id: Int): List<XWindow> = windows.values.filter { it.parentId == id }
 
     @Synchronized
