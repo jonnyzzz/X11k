@@ -3039,7 +3039,7 @@ internal class X11State(
         }
         val sourceDrawableId = drawableId ?: return null
         val framebuffer = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
-        val snapshot = framebuffer.snapshot().takeIf { sourceDrawableId == destinationDrawableId }
+        val snapshot = if (sourceDrawableId == destinationDrawableId) framebuffer.snapshot() else null
         if (snapshot != null) {
             return { x, y ->
                 if (insidePictureClip(x, y)) {
