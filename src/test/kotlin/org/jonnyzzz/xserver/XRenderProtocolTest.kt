@@ -1193,6 +1193,7 @@ class XRenderProtocolTest {
                 waitUntil {
                     httpGet(server.localPort, "/state.json").contains(""""componentAlpha":true""")
                 }
+                assertContains(httpGet(server.localPort, "/text.txt"), "componentAlpha=true")
             }
             server.close()
             serverThread.join(1_000)

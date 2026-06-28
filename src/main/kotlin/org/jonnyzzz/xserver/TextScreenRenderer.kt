@@ -309,6 +309,7 @@ internal object TextScreenRenderer {
                     append(picture.repeatName)
                     append(" clips=")
                     append(picture.clipRectangles)
+                    if (picture.componentAlpha) append(" componentAlpha=true")
                     append(" transform=")
                     append(picture.transformHex.joinToString(",", prefix = "[", postfix = "]"))
                     if (picture.filterName != null) {
