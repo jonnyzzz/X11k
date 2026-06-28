@@ -1160,6 +1160,7 @@ internal class X11Connection(
                 alphaYOrigin = attributes.alphaYOrigin ?: 0,
                 clipXOrigin = attributes.clipXOrigin ?: 0,
                 clipYOrigin = attributes.clipYOrigin ?: 0,
+                clipMask = attributes.clipMask ?: 0,
                 graphicsExposure = attributes.graphicsExposure?.toXBool() ?: false,
                 subwindowMode = attributes.subwindowMode ?: 0,
                 polyEdge = attributes.polyEdge ?: 0,
@@ -1190,12 +1191,12 @@ internal class X11Connection(
             alphaYOrigin = attributes.alphaYOrigin,
             clipXOrigin = attributes.clipXOrigin,
             clipYOrigin = attributes.clipYOrigin,
+            clipMask = attributes.clipMask,
             graphicsExposure = attributes.graphicsExposure?.toXBool(),
             subwindowMode = attributes.subwindowMode,
             polyEdge = attributes.polyEdge,
             polyMode = attributes.polyMode,
             dither = attributes.dither,
-            clearClip = attributes.clipMask == 0,
             componentAlpha = attributes.componentAlpha?.toXBool(),
         )
     }

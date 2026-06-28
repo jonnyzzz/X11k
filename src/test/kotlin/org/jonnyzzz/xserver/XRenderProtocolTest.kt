@@ -6,6 +6,7 @@ import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 
 class XRenderProtocolTest {
     @Test
@@ -1052,6 +1053,7 @@ class XRenderProtocolTest {
                         XRender.CPAlphaYOrigin to 3,
                         XRender.CPClipXOrigin to 4,
                         XRender.CPClipYOrigin to -5,
+                        XRender.CPClipMask to MaskPixmapId,
                         XRender.CPGraphicsExposure to 1,
                         XRender.CPSubwindowMode to 1,
                         XRender.CPPolyEdge to 1,
@@ -1075,6 +1077,7 @@ class XRenderProtocolTest {
                 assertContains(json, """"alphaMap":"0x${MaskPictureId.toString(16)}"""")
                 assertContains(json, """"alphaOrigin":[-2,3]""")
                 assertContains(json, """"clipOrigin":[-8,-5]""")
+                assertContains(json, """"clipMask":"0x${MaskPixmapId.toString(16)}"""")
                 assertContains(json, """"graphicsExposure":true""")
                 assertContains(json, """"subwindowMode":1""")
                 assertContains(json, """"polyEdge":1""")
@@ -1085,11 +1088,81 @@ class XRenderProtocolTest {
                 assertContains(text, "alphaMap=0x${MaskPictureId.toString(16)}")
                 assertContains(text, "alphaOrigin=-2,3")
                 assertContains(text, "clipOrigin=-8,-5")
+                assertContains(text, "clipMask=0x${MaskPixmapId.toString(16)}")
                 assertContains(text, "graphicsExposure=true")
                 assertContains(text, "subwindowMode=1")
                 assertContains(text, "polyEdge=1")
                 assertContains(text, "polyMode=1")
                 assertContains(text, "dither=0x12345678")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER clip mask attribute replaces rectangle clips and None clears it`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 4, height = 4))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(
+                    renderSetPictureClipRectangles(
+                        PictureId,
+                        rectangles = listOf(
+                            XRectangleCommand(0, 0, 1, 1),
+                            XRectangleCommand(2, 2, 1, 1),
+                        ),
+                    ),
+                )
+                out.write(renderChangePictureAttributes(PictureId, XRender.CPClipMask to MaskPixmapId))
+                out.flush()
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""clipMask":"0x${MaskPixmapId.toString(16)}"""")
+                }
+                var json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"clipMask":"0x${MaskPixmapId.toString(16)}"""")
+                assertContains(json, """"clipRectangles":0""")
+                var text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "clipMask=0x${MaskPixmapId.toString(16)}")
+                assertContains(text, "clips=0")
+
+                out.write(renderChangePictureAttributes(PictureId, XRender.CPClipMask to 0))
+                out.flush()
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""clipMask":"none"""")
+                }
+                json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"clipMask":"none"""")
+                assertContains(json, """"clipRectangles":0""")
+                text = httpGet(server.localPort, "/text.txt")
+                assertFalse(text.contains("clipMask=0x${MaskPixmapId.toString(16)}"))
+                assertContains(text, "clips=0")
+
+                out.write(renderChangePictureAttributes(PictureId, XRender.CPClipMask to MaskPixmapId))
+                out.write(
+                    renderSetPictureClipRectangles(
+                        PictureId,
+                        rectangles = listOf(XRectangleCommand(1, 1, 2, 2)),
+                    ),
+                )
+                out.flush()
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""clipRectangles":1""")
+                }
+                json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"clipMask":"none"""")
+                assertContains(json, """"clipRectangles":1""")
+                text = httpGet(server.localPort, "/text.txt")
+                assertFalse(text.contains("clipMask=0x${MaskPixmapId.toString(16)}"))
+                assertContains(text, "clips=1")
             }
             server.close()
             serverThread.join(1_000)

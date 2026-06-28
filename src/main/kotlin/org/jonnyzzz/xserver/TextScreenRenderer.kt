@@ -310,6 +310,7 @@ internal object TextScreenRenderer {
                     if (picture.alphaMap != 0) append(" alphaMap=").append(picture.alphaMapHex)
                     if (picture.alphaXOrigin != 0 || picture.alphaYOrigin != 0) append(" alphaOrigin=").append(picture.alphaXOrigin).append(',').append(picture.alphaYOrigin)
                     if (picture.clipXOrigin != 0 || picture.clipYOrigin != 0) append(" clipOrigin=").append(picture.clipXOrigin).append(',').append(picture.clipYOrigin)
+                    if (picture.clipMask != 0) append(" clipMask=").append(picture.clipMaskHex)
                     append(" clips=")
                     append(picture.clipRectangles)
                     if (picture.graphicsExposure) append(" graphicsExposure=true")

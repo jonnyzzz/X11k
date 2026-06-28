@@ -2151,6 +2151,7 @@ internal class X11State(
                     alphaYOrigin = picture.alphaYOrigin,
                     clipXOrigin = picture.clipXOrigin,
                     clipYOrigin = picture.clipYOrigin,
+                    clipMask = picture.clipMask,
                     clipRectangles = picture.clipRectangles?.size ?: 0,
                     graphicsExposure = picture.graphicsExposure,
                     subwindowMode = picture.subwindowMode,
@@ -2321,7 +2322,7 @@ internal class X11State(
         alphaYOrigin: Int? = null,
         clipXOrigin: Int? = null,
         clipYOrigin: Int? = null,
-        clearClip: Boolean = false,
+        clipMask: Int? = null,
         graphicsExposure: Boolean? = null,
         subwindowMode: Int? = null,
         polyEdge: Int? = null,
@@ -2336,7 +2337,10 @@ internal class X11State(
         alphaYOrigin?.let { pictures[id]?.alphaYOrigin = it }
         clipXOrigin?.let { pictures[id]?.clipXOrigin = it }
         clipYOrigin?.let { pictures[id]?.clipYOrigin = it }
-        if (clearClip) pictures[id]?.clipRectangles = null
+        clipMask?.let {
+            pictures[id]?.clipMask = it
+            pictures[id]?.clipRectangles = null
+        }
         graphicsExposure?.let { pictures[id]?.graphicsExposure = it }
         subwindowMode?.let { pictures[id]?.subwindowMode = it }
         polyEdge?.let { pictures[id]?.polyEdge = it }
@@ -2347,6 +2351,7 @@ internal class X11State(
 
     @Synchronized
     fun updatePictureClip(id: Int, rectangles: List<XRectangleCommand>) {
+        pictures[id]?.clipMask = 0
         pictures[id]?.clipRectangles = rectangles
     }
 
@@ -5085,6 +5090,7 @@ internal data class XPicture(
     var alphaYOrigin: Int = 0,
     var clipXOrigin: Int = 0,
     var clipYOrigin: Int = 0,
+    var clipMask: Int = 0,
     var clipRectangles: List<XRectangleCommand>? = null,
     var graphicsExposure: Boolean = false,
     var subwindowMode: Int = 0,
@@ -5732,6 +5738,7 @@ internal data class XRenderPictureSnapshot(
     val alphaYOrigin: Int,
     val clipXOrigin: Int,
     val clipYOrigin: Int,
+    val clipMask: Int,
     val clipRectangles: Int,
     val graphicsExposure: Boolean,
     val subwindowMode: Int,
@@ -5747,6 +5754,7 @@ internal data class XRenderPictureSnapshot(
     val drawableIdHex: String get() = drawableId?.let { "0x${it.toUInt().toString(16)}" } ?: "none"
     val repeatName: String get() = XRender.repeatName(repeat)
     val alphaMapHex: String get() = if (alphaMap == 0) "none" else "0x${alphaMap.toUInt().toString(16)}"
+    val clipMaskHex: String get() = if (clipMask == 0) "none" else "0x${clipMask.toUInt().toString(16)}"
     val ditherHex: String get() = if (dither == 0) "none" else "0x${dither.toUInt().toString(16)}"
     val transformHex: List<String> get() = transform.map { "0x${it.toUInt().toString(16)}" }
     val filterValueHex: List<String> get() = filterValues.map { "0x${it.toUInt().toString(16)}" }
