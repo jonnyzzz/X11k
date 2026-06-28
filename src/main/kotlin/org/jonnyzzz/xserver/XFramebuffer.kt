@@ -489,6 +489,27 @@ internal class XFramebuffer(
         }
     }
 
+    fun blendSolidConjointOver(
+        pixel: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        clipMask: XClipMask? = null,
+        mask: XFramebuffer? = null,
+        maskX: Int = 0,
+        maskY: Int = 0,
+        maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
+    ): Boolean {
+        val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
+        return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
+            val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
+                ?: return@compositeBoundsOptional null
+            conjointOverOperator(pixel, pixels[y * this.width + x], maskAlpha)
+        }
+    }
+
     fun blendSolidDisjointIn(
         pixel: Int,
         destinationX: Int,
@@ -1816,6 +1837,7 @@ internal class XFramebuffer(
             XRender.OpDst, XRender.OpDisjointDst, XRender.OpConjointDst -> destination
             XRender.OpOver -> over(source, destination, maskAlpha)
             XRender.OpDisjointOver -> disjointOverOperator(source, destination, maskAlpha)
+            XRender.OpConjointOver -> conjointOverOperator(source, destination, maskAlpha)
             XRender.OpOverReverse -> overReverseOperator(source, destination, maskAlpha)
             XRender.OpIn -> inOperator(source, destination, maskAlpha)
             XRender.OpDisjointIn -> disjointInOperator(source, destination, maskAlpha)
@@ -1843,6 +1865,7 @@ internal class XFramebuffer(
             XRender.OpDst, XRender.OpDisjointDst, XRender.OpConjointDst -> destination
             XRender.OpOver -> overComponentMask(source, destination, mask)
             XRender.OpDisjointOver -> disjointOverComponentMask(source, destination, mask)
+            XRender.OpConjointOver -> conjointOverComponentMask(source, destination, mask)
             XRender.OpOverReverse -> overReverseComponentMask(source, destination, mask)
             XRender.OpIn -> inComponentMask(source, destination, mask)
             XRender.OpDisjointIn -> disjointInComponentMask(source, destination, mask)
@@ -1925,6 +1948,29 @@ internal class XFramebuffer(
             val sourceAlphaMasked = (sourceAlpha * maskAlpha + 127) / 255
             val destinationFactor = disjointOverDestinationFactor(sourceAlphaMasked, destinationAlpha)
             return (sourceAlphaMasked + (destinationAlpha * destinationFactor + 127) / 255).coerceAtMost(255)
+        }
+        return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
+    }
+
+    private fun conjointOverComponentMask(source: Int, destination: Int, mask: Int): Int {
+        val sourceAlpha = (source ushr 24) and 0xff
+        val destinationAlpha = (destination ushr 24) and 0xff
+        fun colorChannel(shift: Int): Int {
+            val maskChannel = (mask ushr shift) and 0xff
+            val sourceAlphaChannel = (sourceAlpha * maskChannel + 127) / 255
+            val destinationContributionAlpha = conjointOverDestinationContributionAlpha(sourceAlphaChannel, destinationAlpha)
+            val sourceChannel = (source ushr shift) and 0xff
+            val destinationChannel = (destination ushr shift) and 0xff
+            return (
+                (sourceChannel * sourceAlphaChannel + 127) / 255 +
+                    (destinationChannel * destinationContributionAlpha + 127) / 255
+                ).coerceAtMost(255)
+        }
+        fun alphaChannel(): Int {
+            val maskAlpha = (mask ushr 24) and 0xff
+            val sourceAlphaMasked = (sourceAlpha * maskAlpha + 127) / 255
+            val destinationContributionAlpha = conjointOverDestinationContributionAlpha(sourceAlphaMasked, destinationAlpha)
+            return (sourceAlphaMasked + destinationContributionAlpha).coerceAtMost(255)
         }
         return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
     }
@@ -2430,6 +2476,29 @@ internal class XFramebuffer(
         return ((remainingAlpha * 255 + destinationAlpha / 2) / destinationAlpha).coerceIn(0, 255)
     }
 
+    private fun conjointOverOperator(source: Int, destination: Int, maskAlpha: Int): Int {
+        val sourceAlphaMasked = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
+        val destinationAlpha = (destination ushr 24) and 0xff
+        val destinationContributionAlpha = conjointOverDestinationContributionAlpha(sourceAlphaMasked, destinationAlpha)
+        fun channel(shift: Int): Int {
+            val sourceContribution = if (shift == 24) {
+                sourceAlphaMasked
+            } else {
+                (((source ushr shift) and 0xff) * sourceAlphaMasked + 127) / 255
+            }
+            val destinationContribution = if (shift == 24) {
+                destinationContributionAlpha
+            } else {
+                (((destination ushr shift) and 0xff) * destinationContributionAlpha + 127) / 255
+            }
+            return (sourceContribution + destinationContribution).coerceAtMost(255)
+        }
+        return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
+    private fun conjointOverDestinationContributionAlpha(sourceAlphaMasked: Int, destinationAlpha: Int): Int =
+        (destinationAlpha - sourceAlphaMasked).coerceAtLeast(0)
+
     private fun inReverseOperator(source: Int, destination: Int, maskAlpha: Int): Int {
         val destinationAlpha = (destination ushr 24) and 0xff
         if (maskAlpha <= 0 || destinationAlpha <= 0) return 0
@@ -2684,6 +2753,7 @@ internal class XFramebuffer(
             this == XRender.OpDisjointDst ||
             this == XRender.OpConjointDst ||
             this == XRender.OpDisjointOver ||
+            this == XRender.OpConjointOver ||
             this == XRender.OpOverReverse ||
             this == XRender.OpInReverse ||
             this == XRender.OpDisjointInReverse ||
