@@ -468,6 +468,27 @@ internal class XFramebuffer(
         }
     }
 
+    fun blendSolidSaturate(
+        pixel: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        clipMask: XClipMask? = null,
+        mask: XFramebuffer? = null,
+        maskX: Int = 0,
+        maskY: Int = 0,
+        maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
+    ): Boolean {
+        val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
+        return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
+            val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
+                ?: return@compositeBoundsOptional null
+            saturate(pixel, pixels[y * this.width + x], maskAlpha)
+        }
+    }
+
     fun blendSolidIn(
         pixel: Int,
         destinationX: Int,
@@ -1612,6 +1633,7 @@ internal class XFramebuffer(
             XRender.OpAtopReverse -> atopReverseOperator(source, destination, maskAlpha)
             XRender.OpXor -> xorOperator(source, destination, maskAlpha)
             XRender.OpAdd -> add(source, destination, maskAlpha)
+            XRender.OpSaturate -> saturate(source, destination, maskAlpha)
             else -> over(source, destination, maskAlpha)
         }
 
@@ -1628,6 +1650,7 @@ internal class XFramebuffer(
             XRender.OpAtopReverse -> atopReverseComponentMask(source, destination, mask)
             XRender.OpXor -> xorComponentMask(source, destination, mask)
             XRender.OpAdd -> addComponentMask(source, destination, mask)
+            XRender.OpSaturate -> saturateComponentMask(source, destination, mask)
             else -> overComponentMask(source, destination, mask)
         }
 
@@ -1689,6 +1712,33 @@ internal class XFramebuffer(
             val destinationAlpha = (destination ushr 24) and 0xff
             return (destinationAlpha + sourceAlphaMasked).coerceAtMost(255)
         }
+        return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
+    }
+
+    private fun saturateComponentMask(source: Int, destination: Int, mask: Int): Int {
+        val sourceAlpha = (source ushr 24) and 0xff
+        val destinationAlpha = (destination ushr 24) and 0xff
+        val remainingAlpha = 255 - destinationAlpha
+        if (sourceAlpha <= 0 || remainingAlpha <= 0) return destination
+        fun sourceAlphaFor(maskChannel: Int): Int = (sourceAlpha * maskChannel + 127) / 255
+        val sourceAlphaMasked = sourceAlphaFor((mask ushr 24) and 0xff)
+        val sourceAlphaRed = sourceAlphaFor((mask ushr 16) and 0xff)
+        val sourceAlphaGreen = sourceAlphaFor((mask ushr 8) and 0xff)
+        val sourceAlphaBlue = sourceAlphaFor(mask and 0xff)
+        if (sourceAlphaMasked <= 0 && sourceAlphaRed <= 0 && sourceAlphaGreen <= 0 && sourceAlphaBlue <= 0) {
+            return destination
+        }
+        fun colorChannel(shift: Int): Int {
+            val sourceAlphaChannel = when (shift) {
+                16 -> sourceAlphaRed
+                8 -> sourceAlphaGreen
+                else -> sourceAlphaBlue
+            }
+            val contributionAlpha = minOf(sourceAlphaChannel, remainingAlpha)
+            val sourceChannel = ((source ushr shift) and 0xff) * contributionAlpha
+            return (((destination ushr shift) and 0xff) + (sourceChannel + 127) / 255).coerceAtMost(255)
+        }
+        fun alphaChannel(): Int = destinationAlpha + minOf(sourceAlphaMasked, remainingAlpha)
         return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
     }
 
@@ -2033,6 +2083,23 @@ internal class XFramebuffer(
         return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
     }
 
+    private fun saturate(source: Int, destination: Int, maskAlpha: Int): Int {
+        val sourceAlpha = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
+        if (sourceAlpha <= 0) return destination
+        val destinationAlpha = (destination ushr 24) and 0xff
+        val contributionAlpha = minOf(sourceAlpha, 255 - destinationAlpha)
+        if (contributionAlpha <= 0) return destination
+        fun channel(shift: Int): Int {
+            val sourceChannel = if (shift == 24) {
+                contributionAlpha
+            } else {
+                (((source ushr shift) and 0xff) * contributionAlpha + 127) / 255
+            }
+            return (((destination ushr shift) and 0xff) + sourceChannel).coerceAtMost(255)
+        }
+        return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
     private fun sampledMaskAlpha(
         mask: XFramebuffer?,
         maskAlphaAt: ((x: Int, y: Int) -> Int?)?,
@@ -2048,7 +2115,8 @@ internal class XFramebuffer(
             this == XRender.OpOutReverse ||
             this == XRender.OpAtop ||
             this == XRender.OpAtopReverse ||
-            this == XRender.OpXor
+            this == XRender.OpXor ||
+            this == XRender.OpSaturate
 
     private fun edge(x1: Double, y1: Double, x2: Double, y2: Double, x: Double, y: Double): Double =
         (x - x1) * (y2 - y1) - (y - y1) * (x2 - x1)
