@@ -495,6 +495,7 @@ internal class X11Connection(
             XFixes.SelectCursorInput -> xfixesSelectCursorInput(body, majorOpcode)
             XFixes.GetCursorImage -> xfixesGetCursorImage(body, majorOpcode)
             XFixes.CreateRegion -> xfixesCreateRegion(body, majorOpcode)
+            XFixes.CreateRegionFromBitmap -> xfixesCreateRegionFromBitmap(body, majorOpcode)
             XFixes.CreateRegionFromGC -> xfixesCreateRegionFromGc(body, majorOpcode)
             XFixes.CreateRegionFromPicture -> xfixesCreateRegionFromPicture(body, majorOpcode)
             XFixes.DestroyRegion -> xfixesDestroyRegion(body, majorOpcode)
@@ -608,6 +609,20 @@ internal class X11Connection(
             return writeError(error = 14, opcode = majorOpcode, minorOpcode = XFixes.CreateRegion, badValue = region)
         }
         state.putXFixesRegion(XFixesRegion(region, normalizedRegion(rectangles(body, 4))))
+        own(region)
+    }
+
+    private fun xfixesCreateRegionFromBitmap(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromBitmap, badValue = 0)
+        val region = byteOrder.u32(body, 0)
+        if (region == 0 || state.hasResource(region)) {
+            return writeError(error = 14, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromBitmap, badValue = region)
+        }
+        val bitmapId = byteOrder.u32(body, 4)
+        val bitmap = state.pixmap(bitmapId)
+            ?: return writeError(error = 4, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromBitmap, badValue = bitmapId)
+        if (bitmap.depth != 1) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromBitmap, badValue = bitmapId)
+        state.putXFixesRegion(XFixesRegion(region, bitmapMaskRectangles(bitmap.framebuffer.snapshot())))
         own(region)
     }
 
@@ -938,13 +953,24 @@ internal class X11Connection(
         return XRectangleCommand(minX, minY, maxX - minX, maxY - minY)
     }
 
-    private fun imageMaskRectangles(image: XImagePixels, originX: Int, originY: Int): List<XRectangleCommand> {
+    private fun bitmapMaskRectangles(image: XImagePixels): List<XRectangleCommand> =
+        maskRectangles(image, originX = 0, originY = 0) { pixel -> (pixel and 1) != 0 }
+
+    private fun imageMaskRectangles(image: XImagePixels, originX: Int, originY: Int): List<XRectangleCommand> =
+        maskRectangles(image, originX, originY) { pixel -> imageMaskPixelSet(pixel) }
+
+    private fun maskRectangles(
+        image: XImagePixels,
+        originX: Int,
+        originY: Int,
+        pixelSet: (Int) -> Boolean,
+    ): List<XRectangleCommand> {
         val rectangles = mutableListOf<XRectangleCommand>()
         for (y in 0 until image.height) {
             var runStart: Int? = null
             for (x in 0 until image.width) {
-                val alpha = (image.pixels[y * image.width + x] ushr 24) and 0xff
-                if (alpha != 0) {
+                val pixel = image.pixels[y * image.width + x]
+                if (pixelSet(pixel)) {
                     if (runStart == null) runStart = x
                 } else {
                     runStart?.let { start ->
@@ -959,6 +985,9 @@ internal class X11Connection(
         }
         return normalizedRegion(rectangles)
     }
+
+    private fun imageMaskPixelSet(pixel: Int): Boolean =
+        ((pixel ushr 24) and 0xff) != 0 || pixel == 1
 
     private fun xfixesBadImplementation(majorOpcode: Int, minorOpcode: Int) {
         state.recordUnsupportedRequest(majorOpcode, minorOpcode, "XFIXES.${XFixes.operationName(minorOpcode)}")

@@ -321,6 +321,104 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `XFIXES CreateRegionFromBitmap validates resources`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val missingPixmap = MaskPixmapId + 100
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 1, height = 1))
+                out.write(xfixesCreateRegionFromBitmapRaw(ByteArray(4).also { put32le(it, 0, RegionBId) }))
+                out.write(xfixesCreateRegionFromBitmap(0, PixmapId))
+                out.write(xfixesCreateRegionFromBitmap(RegionBId, missingPixmap))
+                out.write(xfixesCreateRegionFromBitmap(RegionBId, PixmapId))
+                out.write(xfixesCreateRegion(RegionId, emptyList()))
+                out.write(xfixesCreateRegionFromBitmap(RegionId, missingPixmap))
+                out.flush()
+
+                assertExtensionError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XFixes.CreateRegionFromBitmap)
+                assertExtensionError(socket.getInputStream(), error = 14, opcode = XFixes.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XFixes.CreateRegionFromBitmap)
+                assertExtensionError(socket.getInputStream(), error = 4, opcode = XFixes.MajorOpcode, badValue = missingPixmap, sequence = 5, minorOpcode = XFixes.CreateRegionFromBitmap)
+                assertExtensionError(socket.getInputStream(), error = 8, opcode = XFixes.MajorOpcode, badValue = PixmapId, sequence = 6, minorOpcode = XFixes.CreateRegionFromBitmap)
+                assertExtensionError(socket.getInputStream(), error = 14, opcode = XFixes.MajorOpcode, badValue = RegionId, sequence = 8, minorOpcode = XFixes.CreateRegionFromBitmap)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES CreateRegionFromBitmap treats default bitmap pixels as unset`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 1, width = 3, height = 2))
+                out.write(xfixesCreateRegionFromBitmap(RegionId, MaskPixmapId))
+                out.write(xfixesFetchRegion(RegionId))
+                out.flush()
+
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 0, 0), emptyList())
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES CreateRegionFromBitmap snapshots bitmap pixels`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 1, width = 4, height = 2))
+                out.write(createGcRequest(PutImageGcId, MaskPixmapId))
+                out.write(
+                    putImage1OnlyRequest(
+                        MaskPixmapId,
+                        width = 4,
+                        height = 2,
+                        bits = listOf(
+                            true,
+                            true,
+                            false,
+                            false,
+                            false,
+                            true,
+                            true,
+                            true,
+                        ),
+                    ),
+                )
+                out.write(xfixesCreateRegionFromBitmap(RegionId, MaskPixmapId))
+                out.write(putImage1OnlyRequest(MaskPixmapId, width = 4, height = 2, bits = List(8) { false }))
+                out.write(xfixesFetchRegion(RegionId))
+                out.flush()
+
+                assertRegionReply(
+                    socket.getInputStream(),
+                    XRectangleCommand(0, 0, 4, 2),
+                    listOf(
+                        XRectangleCommand(0, 0, 2, 1),
+                        XRectangleCommand(1, 1, 3, 1),
+                    ),
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XFIXES CreateRegionFromGC and Picture snapshot clip rectangles`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -11857,6 +11955,16 @@ class XRenderProtocolTest {
     private fun xfixesCreateRegionRaw(body: ByteArray): ByteArray =
         request(XFixes.MajorOpcode, XFixes.CreateRegion, body)
 
+    private fun xfixesCreateRegionFromBitmap(region: Int, bitmap: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, region)
+        put32le(body, 4, bitmap)
+        return xfixesCreateRegionFromBitmapRaw(body)
+    }
+
+    private fun xfixesCreateRegionFromBitmapRaw(body: ByteArray): ByteArray =
+        request(XFixes.MajorOpcode, XFixes.CreateRegionFromBitmap, body)
+
     private fun xfixesCreateRegionFromGc(region: Int, gc: Int): ByteArray {
         val body = ByteArray(8)
         put32le(body, 0, region)
@@ -12601,6 +12709,28 @@ class XRenderProtocolTest {
         body[17] = 8
         data.copyInto(body, 20)
         return request(72, 2, body)
+    }
+
+    private fun putImage1OnlyRequest(drawable: Int, width: Int, height: Int, bits: List<Boolean>): ByteArray {
+        require(bits.size == width * height)
+        val stride = ((width + 7) / 8 + 3) and -4
+        val data = ByteArray(stride * height)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                if (bits[y * width + x]) {
+                    val offset = y * stride + x / 8
+                    data[offset] = (data[offset].toInt() or (1 shl (x % 8))).toByte()
+                }
+            }
+        }
+        val body = ByteArray(20 + data.size)
+        put32le(body, 0, drawable)
+        put32le(body, 4, PutImageGcId)
+        put16le(body, 8, width)
+        put16le(body, 10, height)
+        body[17] = 1
+        data.copyInto(body, 20)
+        return request(72, 1, body)
     }
 
     private fun freePixmapRequest(id: Int): ByteArray {
