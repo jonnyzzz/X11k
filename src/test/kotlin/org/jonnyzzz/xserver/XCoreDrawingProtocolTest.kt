@@ -1140,6 +1140,59 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `XFIXES cursor notify fires when grabbed cursor owner disconnects`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { observer ->
+                Socket("127.0.0.1", server.localPort).use { owner ->
+                    observer.soTimeout = 2_000
+                    owner.soTimeout = 2_000
+                    setup(observer)
+                    setup(owner)
+
+                    val observerOut = observer.getOutputStream()
+                    observerOut.write(xfixesSelectCursorInputRequest(X11Ids.RootWindow))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observer.getInputStream()), 2))
+
+                    val cursor = PixmapId + 100
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                    ownerOut.write(createCursorRequest(cursor, source = PixmapId, mask = 0))
+                    ownerOut.write(grabPointerRequest(X11Ids.RootWindow, cursor = cursor))
+                    ownerOut.flush()
+                    assertEquals(1, readReply(owner.getInputStream())[0].toInt())
+                    assertXFixesCursorNotify(
+                        observer.getInputStream().readExactly(32),
+                        sequence = 2,
+                        window = X11Ids.RootWindow,
+                        cursorSerial = 2,
+                        timestamp = 1,
+                    )
+
+                    owner.close()
+                    assertXFixesCursorNotify(
+                        observer.getInputStream().readExactly(32),
+                        sequence = 2,
+                        window = X11Ids.RootWindow,
+                        cursorSerial = 3,
+                        timestamp = 1,
+                    )
+
+                    observerOut.write(xfixesGetCursorImageRequest())
+                    observerOut.flush()
+                    val image = readReply(observer.getInputStream())
+                    assertEquals(3, u32le(image, 20))
+                    assertEquals(0x0000_0000, u32le(image, 32))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XFIXES cursor notify tracks window cursor changes recolor and GetCursorImage serial`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1161,7 +1214,15 @@ class XCoreDrawingProtocolTest {
                     ownerOut.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
                     ownerOut.write(createCursorRequest(cursor, source = PixmapId, mask = 0))
                     ownerOut.write(changeWindowAttributesRawRequest(X11Ids.RootWindow, 1 shl 14, cursor))
-                    ownerOut.write(recolorCursorRequest(cursor, foregroundGreen = 0xffff))
+                    ownerOut.write(
+                        recolorCursorRequest(
+                            cursor,
+                            foregroundRed = 0,
+                            foregroundBlue = 0xffff,
+                            backgroundRed = 0,
+                            backgroundGreen = 0xffff,
+                        ),
+                    )
                     ownerOut.write(xfixesGetCursorImageRequest())
                     ownerOut.flush()
 
@@ -1181,7 +1242,182 @@ class XCoreDrawingProtocolTest {
                     )
                     val cursorImage = readReply(owner.getInputStream())
                     assertEquals(3, u32le(cursorImage, 20))
+                    assertEquals(0xff00_ff00.toInt(), u32le(cursorImage, 32))
                 }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES GetCursorImage returns displayed pixmap cursor pixels`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+
+                val source = PixmapId + 91
+                val mask = PixmapId + 92
+                val cursor = PixmapId + 93
+                val out = socket.getOutputStream()
+                out.write(createPixmapRequest(source, width = 2, height = 2, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createPixmapRequest(mask, width = 2, height = 2, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createGcRequest(GcId, foreground = 1, background = 0, drawable = source))
+                out.write(putImageBitmapRequest(source, GcId, width = 2, height = 2, bits = listOf(true, false, false, true)))
+                out.write(putImageBitmapRequest(mask, GcId, width = 2, height = 2, bits = listOf(true, true, false, true)))
+                out.write(
+                    createCursorRequest(
+                        cursor,
+                        source = source,
+                        mask = mask,
+                        x = 1,
+                        y = 0,
+                        foregroundRed = 0xffff,
+                        foregroundGreen = 0,
+                        foregroundBlue = 0,
+                        backgroundRed = 0,
+                        backgroundGreen = 0xffff,
+                        backgroundBlue = 0,
+                    ),
+                )
+                out.write(putImageBitmapRequest(source, GcId, width = 2, height = 2, bits = listOf(false, true, true, false)))
+                out.write(putImageBitmapRequest(mask, GcId, width = 2, height = 2, bits = listOf(false, false, true, false)))
+                out.write(freePixmapRequest(source))
+                out.write(freePixmapRequest(mask))
+                out.write(changeWindowAttributesRawRequest(X11Ids.RootWindow, 1 shl 14, cursor))
+                out.write(xfixesGetCursorImageRequest())
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(4, u32le(image, 4))
+                assertEquals(2, u16le(image, 12))
+                assertEquals(2, u16le(image, 14))
+                assertEquals(1, u16le(image, 16))
+                assertEquals(0, u16le(image, 18))
+                assertEquals(2, u32le(image, 20))
+                assertEquals(0xffff_0000.toInt(), u32le(image, 32))
+                assertEquals(0xff00_ff00.toInt(), u32le(image, 36))
+                assertEquals(0x0000_0000, u32le(image, 40))
+                assertEquals(0xffff_0000.toInt(), u32le(image, 44))
+
+                out.write(freeCursorRequest(cursor))
+                out.write(xfixesGetCursorImageRequest())
+                out.flush()
+
+                val retainedImage = readReply(socket.getInputStream())
+                assertEquals(4, u32le(retainedImage, 4))
+                assertEquals(2, u16le(retainedImage, 12))
+                assertEquals(2, u16le(retainedImage, 14))
+                assertEquals(2, u32le(retainedImage, 20))
+                assertEquals(0xffff_0000.toInt(), u32le(retainedImage, 32))
+                assertEquals(0xff00_ff00.toInt(), u32le(retainedImage, 36))
+                assertEquals(0x0000_0000, u32le(retainedImage, 40))
+                assertEquals(0xffff_0000.toInt(), u32le(retainedImage, 44))
+
+                val replacementSource = PixmapId + 94
+                out.write(createPixmapRequest(replacementSource, width = 2, height = 2, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(putImageBitmapRequest(replacementSource, GcId, width = 2, height = 2, bits = listOf(true, true, true, true)))
+                out.write(
+                    createCursorRequest(
+                        cursor,
+                        source = replacementSource,
+                        mask = 0,
+                        foregroundRed = 0,
+                        foregroundGreen = 0,
+                        foregroundBlue = 0xffff,
+                    ),
+                )
+                out.write(
+                    recolorCursorRequest(
+                        cursor,
+                        foregroundRed = 0xffff,
+                        foregroundGreen = 0xffff,
+                        foregroundBlue = 0xffff,
+                        backgroundRed = 0,
+                        backgroundGreen = 0,
+                        backgroundBlue = 0,
+                    ),
+                )
+                out.write(xfixesGetCursorImageRequest())
+                out.flush()
+
+                val retainedAfterReusedId = readReply(socket.getInputStream())
+                assertEquals(4, u32le(retainedAfterReusedId, 4))
+                assertEquals(2, u16le(retainedAfterReusedId, 12))
+                assertEquals(2, u16le(retainedAfterReusedId, 14))
+                assertEquals(2, u32le(retainedAfterReusedId, 20))
+                assertEquals(0xffff_0000.toInt(), u32le(retainedAfterReusedId, 32))
+                assertEquals(0xff00_ff00.toInt(), u32le(retainedAfterReusedId, 36))
+                assertEquals(0x0000_0000, u32le(retainedAfterReusedId, 40))
+                assertEquals(0xffff_0000.toInt(), u32le(retainedAfterReusedId, 44))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES GetCursorImage stops at displayed child cursor without cached pixels`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+
+                val source = PixmapId + 96
+                val rootCursor = PixmapId + 97
+                val font = PixmapId + 98
+                val childCursor = PixmapId + 99
+                val child = WindowId + 11
+                val out = socket.getOutputStream()
+                out.write(createPixmapRequest(source, width = 2, height = 2, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createGcRequest(GcId, foreground = 1, background = 0, drawable = source))
+                out.write(putImageBitmapRequest(source, GcId, width = 2, height = 2, bits = listOf(true, true, true, true)))
+                out.write(createCursorRequest(rootCursor, source = source, mask = 0))
+                out.write(openFontRequest(font))
+                out.write(createGlyphCursorRequest(childCursor, sourceFont = font, maskFont = 0))
+                out.write(changeWindowAttributesRawRequest(X11Ids.RootWindow, 1 shl 14, rootCursor))
+                out.write(createWindowRequest(child, x = 0, y = 0, width = 20, height = 20, cursor = childCursor))
+                out.write(mapWindowRequest(child))
+                out.write(xfixesGetCursorImageRequest())
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream(), child)
+                val image = readReply(socket.getInputStream())
+                assertEquals(1, u32le(image, 4))
+                assertEquals(1, u16le(image, 12))
+                assertEquals(1, u16le(image, 14))
+                assertEquals(0, u16le(image, 16))
+                assertEquals(0, u16le(image, 18))
+                assertEquals(0x0000_0000, u32le(image, 32))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CreateCursor rejects oversized cursor image snapshots and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+
+                val source = PixmapId + 94
+                val cursor = PixmapId + 95
+                val out = socket.getOutputStream()
+                out.write(createPixmapRequest(source, width = 65535, height = 65535, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createCursorRequest(cursor, source = source, mask = 0))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 11, opcode = 93, badValue = 0, sequence = 2)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt() and 0xff)
+                assertEquals(3, u16le(pointer, 2))
             }
             server.close()
             serverThread.join(1_000)

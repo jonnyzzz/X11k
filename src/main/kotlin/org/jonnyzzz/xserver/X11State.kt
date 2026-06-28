@@ -26,6 +26,11 @@ internal data class XEventSinkRemoval(
     val xfixesCursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
 )
 
+internal data class XCursorIdentity(
+    val id: Int,
+    val generation: Long,
+)
+
 internal class X11State(
     val width: Int,
     val height: Int,
@@ -38,6 +43,7 @@ internal class X11State(
     private val gcs = linkedMapOf<Int, XGraphicsContext>()
     private val fonts = linkedSetOf<Int>()
     private val cursors = linkedMapOf<Int, XCursor>()
+    private var nextCursorGeneration: Long = 1
     private val colormaps = linkedSetOf(X11Ids.DefaultColormap)
     private val installedColormaps = linkedSetOf(X11Ids.DefaultColormap)
     private val pictures = linkedMapOf<Int, XPicture>()
@@ -196,7 +202,7 @@ internal class X11State(
         val initialRemoved = windowSubtreeIds(id)
         val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
         xfixesCursorNotifyDispatches += processRetainedSaveSetsForWindowSubtree(initialRemoved)
-        val previousCursor = displayedCursorId()
+        val previousCursor = displayedCursorIdentity()
         val removed = windowSubtreeIds(id)
         if (removed.isEmpty()) return XWindowRemoval(removedResources = emptySet(), destroyNotifyDispatches = emptyList())
         val destroyNotifyDispatches = if (sendDestroyNotify) {
@@ -279,6 +285,7 @@ internal class X11State(
             }
         }
         val ids = resourceIds - removedWindows
+        val previousCursor = displayedCursorIdentity()
         for (id in ids) {
             pixmaps.remove(id)
             gcs.remove(id)
@@ -296,7 +303,6 @@ internal class X11State(
             pictures.remove(id)
             glyphSets.remove(id)
         }
-        val previousCursor = displayedCursorId()
         releaseInputGrabsForResources(resourceIds)
         xfixesCursorNotifyDispatches += xfixesCursorNotifyDispatchesIfChanged(previousCursor)
         discardRetainedResourceIds(resourceIds)
@@ -415,10 +421,25 @@ internal class X11State(
     fun cursorSerial(): Int = cursorSerial
 
     @Synchronized
-    fun displayedCursorSnapshot(): Int? = displayedCursorId()
+    fun cursorImage(id: Int): XCursorImage? =
+        cursors[id]?.image
 
     @Synchronized
-    fun cursorNotifyDispatchesIfDisplayChanged(previousCursor: Int?): List<XXFixesCursorNotifyDispatch> =
+    fun cursorGeneration(id: Int): Long? =
+        cursors[id]?.generation
+
+    @Synchronized
+    fun displayedCursorImage(): XCursorImage? {
+        activePointerGrab?.cursor?.let { return cursors[it]?.image }
+        val pointerWindow = windowAt(pointerX, pointerY) ?: windows[X11Ids.RootWindow] ?: return null
+        return windowPathToRoot(pointerWindow.id).firstOrNull { it.cursorId != null }?.cursorImage
+    }
+
+    @Synchronized
+    fun displayedCursorSnapshot(): XCursorIdentity? = displayedCursorIdentity()
+
+    @Synchronized
+    fun cursorNotifyDispatchesIfDisplayChanged(previousCursor: XCursorIdentity?): List<XXFixesCursorNotifyDispatch> =
         xfixesCursorNotifyDispatchesIfChanged(previousCursor)
 
     @Synchronized
@@ -889,7 +910,7 @@ internal class X11State(
         if (activePointerGrab?.owner != null && activePointerGrab?.owner != grab.owner) {
             return XPointerGrabResult(status = XGrabStatus.AlreadyGrabbed, cursorNotifyDispatches = emptyList())
         }
-        val previousCursor = displayedCursorId()
+        val previousCursor = displayedCursorIdentity()
         val effectiveTime = if (grab.time == 0) serverTime else grab.time
         lastPointerGrabTime = effectiveTime
         activePointerGrab = grab.copy(time = effectiveTime)
@@ -903,7 +924,7 @@ internal class X11State(
     fun ungrabPointer(owner: XEventSink, time: Int): List<XXFixesCursorNotifyDispatch> {
         val grab = activePointerGrab
         if (grab?.owner == owner && validUngrabTime(time, grab.time)) {
-            val previousCursor = displayedCursorId()
+            val previousCursor = displayedCursorIdentity()
             activePointerGrab = null
             return xfixesCursorNotifyDispatchesIfChanged(previousCursor)
         }
@@ -914,7 +935,7 @@ internal class X11State(
     fun changeActivePointerGrab(owner: XEventSink, eventMask: Int, cursor: Int?, time: Int): List<XXFixesCursorNotifyDispatch> {
         val grab = activePointerGrab
         if (grab?.owner == owner && validChangeActivePointerGrabTime(time, grab.time)) {
-            val previousCursor = displayedCursorId()
+            val previousCursor = displayedCursorIdentity()
             activePointerGrab = grab.copy(eventMask = eventMask, cursor = cursor)
             return xfixesCursorNotifyDispatchesIfChanged(previousCursor)
         }
@@ -1055,7 +1076,7 @@ internal class X11State(
 
     @Synchronized
     fun releaseInputGrabs(owner: XEventSink): List<XXFixesCursorNotifyDispatch> {
-        val previousCursor = displayedCursorId()
+        val previousCursor = displayedCursorIdentity()
         if (activePointerGrab?.owner == owner) activePointerGrab = null
         if (activeKeyboardGrab?.owner == owner) activeKeyboardGrab = null
         passiveButtonGrabs.removeIf { it.owner == owner }
@@ -1496,7 +1517,7 @@ internal class X11State(
         val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
         val targetId: Int?
         synchronized(this) {
-            val previousCursor = displayedCursorId()
+            val previousCursor = displayedCursorIdentity()
             val previousX = pointerX
             val previousY = pointerY
             pointerX = x.coerceIn(0, width - 1)
@@ -1725,7 +1746,7 @@ internal class X11State(
         val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
         val targetId: Int?
         synchronized(this) {
-            val previousCursor = displayedCursorId()
+            val previousCursor = displayedCursorIdentity()
             val sourceWindow = sourceWindowId.takeIf { it != 0 }?.let { windows[it] }
             if (sourceWindow != null && !sourceWindowContainsPointer(sourceWindow, sourceX, sourceY, sourceWidth, sourceHeight)) {
                 return XPointerDispatch(targetWindowId = windowAt(pointerX, pointerY)?.id, deliveredEvents = 0)
@@ -2028,6 +2049,8 @@ internal class X11State(
         colormapId: Int? = null,
         colormapIdChanged: Boolean = false,
         cursorId: Int? = null,
+        cursorImage: XCursorImage? = null,
+        cursorGeneration: Long? = null,
         cursorIdChanged: Boolean = false,
     ): XWindow? {
         val window = windows[id] ?: return null
@@ -2073,6 +2096,8 @@ internal class X11State(
         }
         if (cursorIdChanged) {
             window.cursorId = cursorId
+            window.cursorImage = cursorImage
+            window.cursorGeneration = cursorGeneration
         }
         return window
     }
@@ -2080,8 +2105,11 @@ internal class X11State(
     @Synchronized
     fun updateWindowCursor(id: Int, cursorId: Int?): List<XXFixesCursorNotifyDispatch> {
         val window = windows[id] ?: return emptyList()
-        val previousCursor = displayedCursorId()
+        val previousCursor = displayedCursorIdentity()
+        val cursor = cursorId?.let { cursors[it] }
         window.cursorId = cursorId
+        window.cursorImage = cursor?.image
+        window.cursorGeneration = cursor?.generation
         return xfixesCursorNotifyDispatchesIfChanged(previousCursor)
     }
 
@@ -5353,7 +5381,7 @@ internal class X11State(
 
     @Synchronized
     fun putCursor(cursor: XCursor) {
-        cursors[cursor.id] = cursor
+        cursors[cursor.id] = cursor.copy(generation = nextCursorGeneration++)
     }
 
     @Synchronized
@@ -5369,8 +5397,9 @@ internal class X11State(
         backgroundGreen: Int,
         backgroundBlue: Int,
     ): List<XXFixesCursorNotifyDispatch> {
+        var recoloredIdentity: XCursorIdentity? = null
         cursors[id]?.let {
-            cursors[id] = it.copy(
+            val recoloredImage = it.image?.recolored(
                 foregroundRed = foregroundRed,
                 foregroundGreen = foregroundGreen,
                 foregroundBlue = foregroundBlue,
@@ -5378,8 +5407,24 @@ internal class X11State(
                 backgroundGreen = backgroundGreen,
                 backgroundBlue = backgroundBlue,
             )
+            val recoloredCursor = it.copy(
+                image = recoloredImage,
+                foregroundRed = foregroundRed,
+                foregroundGreen = foregroundGreen,
+                foregroundBlue = foregroundBlue,
+                backgroundRed = backgroundRed,
+                backgroundGreen = backgroundGreen,
+                backgroundBlue = backgroundBlue,
+            )
+            cursors[id] = recoloredCursor
+            recoloredIdentity = XCursorIdentity(id = id, generation = recoloredCursor.generation)
+            for (window in windows.values) {
+                if (window.cursorId == id && window.cursorGeneration == recoloredCursor.generation) {
+                    window.cursorImage = recoloredImage
+                }
+            }
         }
-        return if (displayedCursorId() == id) {
+        return if (displayedCursorIdentity() == recoloredIdentity) {
             cursorSerial += 1
             xfixesCursorNotifyDispatches(cursorSerial = cursorSerial, timestamp = currentServerTime(inputTime))
         } else {
@@ -5416,7 +5461,7 @@ internal class X11State(
 
     @Synchronized
     fun removeResource(id: Int): List<XXFixesCursorNotifyDispatch> {
-        val previousCursor = displayedCursorId()
+        val previousCursor = displayedCursorIdentity()
         pixmaps.remove(id)
         gcs.remove(id)
         fonts.remove(id)
@@ -5650,7 +5695,7 @@ internal class X11State(
 
     private fun processSaveSet(saveSet: List<XSaveSetEntry>, resourceIds: Set<Int>): List<XXFixesCursorNotifyDispatch> {
         if (saveSet.isEmpty()) return emptyList()
-        val previousCursor = displayedCursorId()
+        val previousCursor = displayedCursorIdentity()
         val ownedWindows = resourceIds.filterTo(linkedSetOf()) { it != X11Ids.RootWindow && windows.containsKey(it) }
         for (entry in saveSet) {
             val windowId = entry.windowId
@@ -5940,11 +5985,23 @@ internal class X11State(
         return windowPathToRoot(pointerWindow.id).firstNotNullOfOrNull { it.cursorId }
     }
 
+    private fun displayedCursorIdentity(): XCursorIdentity? {
+        activePointerGrab?.cursor?.let { id ->
+            return cursors[id]?.let { XCursorIdentity(id = id, generation = it.generation) }
+        }
+        val pointerWindow = windowAt(pointerX, pointerY) ?: windows[X11Ids.RootWindow] ?: return null
+        return windowPathToRoot(pointerWindow.id).firstNotNullOfOrNull { window ->
+            val id = window.cursorId ?: return@firstNotNullOfOrNull null
+            val generation = window.cursorGeneration ?: return@firstNotNullOfOrNull null
+            XCursorIdentity(id = id, generation = generation)
+        }
+    }
+
     private fun xfixesCursorNotifyDispatchesIfChanged(
-        previousCursor: Int?,
+        previousCursor: XCursorIdentity?,
         timestamp: Int = currentServerTime(inputTime),
     ): List<XXFixesCursorNotifyDispatch> {
-        if (displayedCursorId() == previousCursor) return emptyList()
+        if (displayedCursorIdentity() == previousCursor) return emptyList()
         cursorSerial += 1
         return xfixesCursorNotifyDispatches(cursorSerial = cursorSerial, timestamp = timestamp)
     }
@@ -6407,6 +6464,8 @@ internal data class XWindow(
     var doNotPropagateMask: Int = 0,
     var colormapId: Int? = X11Ids.DefaultColormap,
     var cursorId: Int? = null,
+    var cursorImage: XCursorImage? = null,
+    var cursorGeneration: Long? = null,
     val properties: MutableMap<Int, XProperty> = linkedMapOf(),
     val framebuffer: XFramebuffer = XFramebuffer(width, height, backgroundPixel),
 )
@@ -7290,6 +7349,7 @@ internal data class XPixmapSnapshot(
 
 internal data class XCursor(
     val id: Int,
+    val generation: Long = 0,
     val kind: String,
     val sourcePixmapId: Int? = null,
     val maskPixmapId: Int? = null,
@@ -7299,6 +7359,7 @@ internal data class XCursor(
     val maskChar: Int? = null,
     val sourcePictureId: Int? = null,
     val animationElements: List<XAnimatedCursorElement> = emptyList(),
+    val image: XCursorImage? = null,
     val hotspotX: Int? = null,
     val hotspotY: Int? = null,
     val foregroundRed: Int = 0,
@@ -7329,6 +7390,103 @@ internal data class XCursor(
             backgroundGreen = backgroundGreen,
             backgroundBlue = backgroundBlue,
         )
+}
+
+internal data class XCursorImage(
+    val width: Int,
+    val height: Int,
+    val hotspotX: Int,
+    val hotspotY: Int,
+    val sourceBits: BooleanArray,
+    val maskBits: BooleanArray,
+    val pixels: IntArray,
+) {
+    fun recolored(
+        foregroundRed: Int,
+        foregroundGreen: Int,
+        foregroundBlue: Int,
+        backgroundRed: Int,
+        backgroundGreen: Int,
+        backgroundBlue: Int,
+    ): XCursorImage =
+        copy(
+            pixels = pixelsFor(
+                sourceBits = sourceBits,
+                maskBits = maskBits,
+                foregroundRed = foregroundRed,
+                foregroundGreen = foregroundGreen,
+                foregroundBlue = foregroundBlue,
+                backgroundRed = backgroundRed,
+                backgroundGreen = backgroundGreen,
+                backgroundBlue = backgroundBlue,
+            ),
+        )
+
+    companion object {
+        fun fromBits(
+            width: Int,
+            height: Int,
+            hotspotX: Int,
+            hotspotY: Int,
+            sourceBits: BooleanArray,
+            maskBits: BooleanArray,
+            foregroundRed: Int,
+            foregroundGreen: Int,
+            foregroundBlue: Int,
+            backgroundRed: Int,
+            backgroundGreen: Int,
+            backgroundBlue: Int,
+        ): XCursorImage =
+            XCursorImage(
+                width = width,
+                height = height,
+                hotspotX = hotspotX,
+                hotspotY = hotspotY,
+                sourceBits = sourceBits.copyOf(),
+                maskBits = maskBits.copyOf(),
+                pixels = pixelsFor(
+                    sourceBits = sourceBits,
+                    maskBits = maskBits,
+                    foregroundRed = foregroundRed,
+                    foregroundGreen = foregroundGreen,
+                    foregroundBlue = foregroundBlue,
+                    backgroundRed = backgroundRed,
+                    backgroundGreen = backgroundGreen,
+                    backgroundBlue = backgroundBlue,
+                ),
+            )
+
+        private fun pixelsFor(
+            sourceBits: BooleanArray,
+            maskBits: BooleanArray,
+            foregroundRed: Int,
+            foregroundGreen: Int,
+            foregroundBlue: Int,
+            backgroundRed: Int,
+            backgroundGreen: Int,
+            backgroundBlue: Int,
+        ): IntArray {
+            val foreground = XRender.argb32Pixel(
+                red = foregroundRed,
+                green = foregroundGreen,
+                blue = foregroundBlue,
+                alpha = 0xffff,
+            )
+            val background = XRender.argb32Pixel(
+                red = backgroundRed,
+                green = backgroundGreen,
+                blue = backgroundBlue,
+                alpha = 0xffff,
+            )
+            return IntArray(sourceBits.size) { index ->
+                when {
+                    !maskBits[index] -> 0
+                    sourceBits[index] -> foreground
+                    else -> background
+                }
+            }
+        }
+    }
 }
 
 internal data class XCursorSnapshot(

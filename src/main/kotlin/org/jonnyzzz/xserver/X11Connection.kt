@@ -568,15 +568,19 @@ internal class X11Connection(
     private fun xfixesGetCursorImage(body: ByteArray, majorOpcode: Int) {
         if (body.isNotEmpty()) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.GetCursorImage, badValue = 0)
         val pointer = state.queryPointer(X11Ids.RootWindow) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XFixes.GetCursorImage, badValue = X11Ids.RootWindow)
-        val reply = reply(extra = 0, payloadUnits = 1)
+        val cursorImage = state.displayedCursorImage()
+        val pixels = cursorImage?.pixels ?: intArrayOf(0)
+        val reply = reply(extra = 0, payloadUnits = pixels.size)
         byteOrder.put16(reply, 8, pointer.rootX)
         byteOrder.put16(reply, 10, pointer.rootY)
-        byteOrder.put16(reply, 12, 1)
-        byteOrder.put16(reply, 14, 1)
-        byteOrder.put16(reply, 16, 0)
-        byteOrder.put16(reply, 18, 0)
+        byteOrder.put16(reply, 12, cursorImage?.width ?: 1)
+        byteOrder.put16(reply, 14, cursorImage?.height ?: 1)
+        byteOrder.put16(reply, 16, cursorImage?.hotspotX ?: 0)
+        byteOrder.put16(reply, 18, cursorImage?.hotspotY ?: 0)
         byteOrder.put32(reply, 20, state.cursorSerial())
-        byteOrder.put32(reply, 32, 0)
+        pixels.forEachIndexed { index, pixel ->
+            byteOrder.put32(reply, 32 + index * 4, pixel)
+        }
         write(reply)
     }
 
@@ -3249,6 +3253,8 @@ internal class X11Connection(
             doNotPropagateMask = attributes.doNotPropagateMask ?: 0,
             colormapId = colormapId,
             cursorId = attributes.cursorId?.takeIf { it != 0 },
+            cursorImage = attributes.cursorId?.takeIf { it != 0 }?.let { state.cursorImage(it) },
+            cursorGeneration = attributes.cursorId?.takeIf { it != 0 }?.let { state.cursorGeneration(it) },
         )
         state.putWindow(window, this)
         own(id)
@@ -5442,29 +5448,92 @@ internal class X11Connection(
         if (maskPixmap != null && (maskPixmap.width != sourcePixmap.width || maskPixmap.height != sourcePixmap.height)) {
             return writeError(error = 8, opcode = 93, badValue = 0)
         }
+        val pixelCount = sourcePixmap.width.toLong() * sourcePixmap.height.toLong()
+        if (pixelCount > MaxCursorImagePixels) {
+            return writeError(error = 11, opcode = 93, badValue = 0)
+        }
         val hotspotX = byteOrder.u16(body, 24)
         val hotspotY = byteOrder.u16(body, 26)
         if (hotspotX >= sourcePixmap.width || hotspotY >= sourcePixmap.height) {
             return writeError(error = 8, opcode = 93, badValue = 0)
         }
+        val foregroundRed = byteOrder.u16(body, 12)
+        val foregroundGreen = byteOrder.u16(body, 14)
+        val foregroundBlue = byteOrder.u16(body, 16)
+        val backgroundRed = byteOrder.u16(body, 18)
+        val backgroundGreen = byteOrder.u16(body, 20)
+        val backgroundBlue = byteOrder.u16(body, 22)
+        val image = cursorImage(
+            sourcePixmap = sourcePixmap,
+            maskPixmap = maskPixmap,
+            hotspotX = hotspotX,
+            hotspotY = hotspotY,
+            foregroundRed = foregroundRed,
+            foregroundGreen = foregroundGreen,
+            foregroundBlue = foregroundBlue,
+            backgroundRed = backgroundRed,
+            backgroundGreen = backgroundGreen,
+            backgroundBlue = backgroundBlue,
+        )
         state.putCursor(
             XCursor(
                 id = id,
                 kind = "pixmap",
                 sourcePixmapId = source,
                 maskPixmapId = mask.takeIf { it != 0 },
+                image = image,
                 hotspotX = hotspotX,
                 hotspotY = hotspotY,
-                foregroundRed = byteOrder.u16(body, 12),
-                foregroundGreen = byteOrder.u16(body, 14),
-                foregroundBlue = byteOrder.u16(body, 16),
-                backgroundRed = byteOrder.u16(body, 18),
-                backgroundGreen = byteOrder.u16(body, 20),
-                backgroundBlue = byteOrder.u16(body, 22),
+                foregroundRed = foregroundRed,
+                foregroundGreen = foregroundGreen,
+                foregroundBlue = foregroundBlue,
+                backgroundRed = backgroundRed,
+                backgroundGreen = backgroundGreen,
+                backgroundBlue = backgroundBlue,
             ),
         )
         own(id)
     }
+
+    private fun cursorImage(
+        sourcePixmap: XPixmap,
+        maskPixmap: XPixmap?,
+        hotspotX: Int,
+        hotspotY: Int,
+        foregroundRed: Int,
+        foregroundGreen: Int,
+        foregroundBlue: Int,
+        backgroundRed: Int,
+        backgroundGreen: Int,
+        backgroundBlue: Int,
+    ): XCursorImage {
+        val sourceBits = BooleanArray(sourcePixmap.width * sourcePixmap.height)
+        val maskBits = BooleanArray(sourcePixmap.width * sourcePixmap.height)
+        for (y in 0 until sourcePixmap.height) {
+            for (x in 0 until sourcePixmap.width) {
+                val index = y * sourcePixmap.width + x
+                sourceBits[index] = cursorPixmapBit(sourcePixmap.framebuffer.pixelAt(x, y))
+                maskBits[index] = maskPixmap?.framebuffer?.pixelAt(x, y)?.let { cursorPixmapBit(it) } ?: true
+            }
+        }
+        return XCursorImage.fromBits(
+            width = sourcePixmap.width,
+            height = sourcePixmap.height,
+            hotspotX = hotspotX,
+            hotspotY = hotspotY,
+            sourceBits = sourceBits,
+            maskBits = maskBits,
+            foregroundRed = foregroundRed,
+            foregroundGreen = foregroundGreen,
+            foregroundBlue = foregroundBlue,
+            backgroundRed = backgroundRed,
+            backgroundGreen = backgroundGreen,
+            backgroundBlue = backgroundBlue,
+        )
+    }
+
+    private fun cursorPixmapBit(pixel: Int?): Boolean =
+        pixel?.let { (it and 1) != 0 } ?: false
 
     private fun createGlyphCursor(body: ByteArray) {
         if (body.size != 28) return writeError(error = 16, opcode = 94, badValue = 0)
@@ -7695,6 +7764,7 @@ internal class X11Connection(
         const val QueryBestSizeCursor = 0
         const val QueryBestSizeTile = 1
         const val QueryBestSizeStipple = 2
+        const val MaxCursorImagePixels = 16_777_216
         const val MaxGlyphMaskPixels = 16_777_216
         const val XColorFlagMask = 0x07
         const val D65_X = 0.95047
