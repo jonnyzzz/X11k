@@ -149,6 +149,10 @@ internal class X11Connection(
                 xfixes(minorOpcode, body, opcode)
                 return
             }
+            if (extension.name == "SHAPE") {
+                shape(minorOpcode, body, opcode)
+                return
+            }
             if (extension.name == "XKEYBOARD") {
                 xkb(minorOpcode, body, opcode)
                 return
@@ -850,12 +854,15 @@ internal class X11Connection(
         }
         val xOffset = byteOrder.i16(body, 8)
         val yOffset = byteOrder.i16(body, 10)
-        state.setWindowShapeRegion(
-            window,
-            kind,
-            rectangles?.map { rectangle ->
-                rectangle.copy(x = rectangle.x + xOffset, y = rectangle.y + yOffset)
-            },
+        sendShapeNotify(
+            state.setWindowShapeRegion(
+                window,
+                kind,
+                rectangles?.map { rectangle ->
+                    rectangle.copy(x = rectangle.x + xOffset, y = rectangle.y + yOffset)
+                },
+                notifyWhenUnchanged = true,
+            ),
         )
     }
 
@@ -1046,6 +1053,252 @@ internal class X11Connection(
     private fun xfixesBadImplementation(majorOpcode: Int, minorOpcode: Int) {
         state.recordUnsupportedRequest(majorOpcode, minorOpcode, "XFIXES.${XFixes.operationName(minorOpcode)}")
         writeError(error = 17, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = 0)
+    }
+
+    private fun shape(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        when (minorOpcode) {
+            XShape.QueryVersion -> shapeQueryVersion(body, majorOpcode)
+            XShape.Rectangles -> shapeRectangles(body, majorOpcode)
+            XShape.Mask -> shapeMask(body, majorOpcode)
+            XShape.Combine -> shapeCombine(body, majorOpcode)
+            XShape.Offset -> shapeOffset(body, majorOpcode)
+            XShape.QueryExtents -> shapeQueryExtents(body, majorOpcode)
+            XShape.SelectInput -> shapeSelectInput(body, majorOpcode)
+            XShape.InputSelected -> shapeInputSelected(body, majorOpcode)
+            XShape.GetRectangles -> shapeGetRectangles(body, majorOpcode)
+            else -> unsupportedRequest(majorOpcode, minorOpcode, "SHAPE.${XShape.operationName(minorOpcode)}")
+        }
+    }
+
+    private fun shapeQueryVersion(body: ByteArray, majorOpcode: Int) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShape.QueryVersion, badValue = 0)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put16(reply, 8, XShape.MajorVersion)
+        byteOrder.put16(reply, 10, XShape.MinorVersion)
+        write(reply)
+    }
+
+    private fun shapeRectangles(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 12 || (body.size - 12) % 8 != 0) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShape.Rectangles, badValue = 0)
+        }
+        val operation = body[0].toInt() and 0xff
+        if (!shapeOperationValid(operation, majorOpcode, XShape.Rectangles)) return
+        val kind = body[1].toInt() and 0xff
+        if (!shapeKindValid(kind, majorOpcode, XShape.Rectangles)) return
+        val ordering = body[2].toInt() and 0xff
+        if (ordering !in XShape.OrderingUnsorted..XShape.OrderingYXBanded) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XShape.Rectangles, badValue = ordering)
+        }
+        val window = byteOrder.u32(body, 4)
+        shapeWindow(window, kind, majorOpcode, XShape.Rectangles) ?: return
+        val xOffset = byteOrder.i16(body, 8)
+        val yOffset = byteOrder.i16(body, 10)
+        val rawRectangles = rectangles(body, 12)
+        if (!shapeRectanglesOrderingValid(rawRectangles, ordering)) {
+            return writeError(error = 8, opcode = majorOpcode, minorOpcode = XShape.Rectangles, badValue = 0)
+        }
+        val source = normalizedRegion(
+            rawRectangles.map { rectangle ->
+                rectangle.copy(x = rectangle.x + xOffset, y = rectangle.y + yOffset)
+            },
+        )
+        shapeApply(window, kind, operation, source)
+    }
+
+    private fun shapeMask(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 16) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShape.Mask, badValue = 0)
+        val operation = body[0].toInt() and 0xff
+        if (!shapeOperationValid(operation, majorOpcode, XShape.Mask)) return
+        val kind = body[1].toInt() and 0xff
+        if (!shapeKindValid(kind, majorOpcode, XShape.Mask)) return
+        val window = byteOrder.u32(body, 4)
+        shapeWindow(window, kind, majorOpcode, XShape.Mask) ?: return
+        val bitmapId = byteOrder.u32(body, 12)
+        if (bitmapId == 0) {
+            if (window == X11Ids.RootWindow) return
+            sendShapeNotify(state.setWindowShapeRegion(window, kind, null))
+            return
+        }
+        val bitmap = state.pixmap(bitmapId)
+            ?: return writeError(error = 4, opcode = majorOpcode, minorOpcode = XShape.Mask, badValue = bitmapId)
+        if (bitmap.depth != 1) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XShape.Mask, badValue = bitmapId)
+        val xOffset = byteOrder.i16(body, 8)
+        val yOffset = byteOrder.i16(body, 10)
+        val source = bitmapMaskRectangles(bitmap.framebuffer.snapshot()).map { rectangle ->
+            rectangle.copy(x = rectangle.x + xOffset, y = rectangle.y + yOffset)
+        }
+        shapeApply(window, kind, operation, normalizedRegion(source))
+    }
+
+    private fun shapeCombine(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 16) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShape.Combine, badValue = 0)
+        val operation = body[0].toInt() and 0xff
+        if (!shapeOperationValid(operation, majorOpcode, XShape.Combine)) return
+        val destinationKind = body[1].toInt() and 0xff
+        if (!shapeKindValid(destinationKind, majorOpcode, XShape.Combine)) return
+        val sourceKind = body[2].toInt() and 0xff
+        if (!shapeKindValid(sourceKind, majorOpcode, XShape.Combine)) return
+        val destinationWindow = byteOrder.u32(body, 4)
+        shapeWindow(destinationWindow, destinationKind, majorOpcode, XShape.Combine) ?: return
+        val sourceWindow = byteOrder.u32(body, 12)
+        shapeWindow(sourceWindow, sourceKind, majorOpcode, XShape.Combine) ?: return
+        val xOffset = byteOrder.i16(body, 8)
+        val yOffset = byteOrder.i16(body, 10)
+        val source = normalizedRegion(
+            state.windowShapeRegion(sourceWindow, sourceKind).map { rectangle ->
+                rectangle.copy(x = rectangle.x + xOffset, y = rectangle.y + yOffset)
+            },
+        )
+        shapeApply(destinationWindow, destinationKind, operation, source)
+    }
+
+    private fun shapeOffset(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShape.Offset, badValue = 0)
+        val kind = body[0].toInt() and 0xff
+        if (!shapeKindValid(kind, majorOpcode, XShape.Offset)) return
+        val window = byteOrder.u32(body, 4)
+        shapeWindow(window, kind, majorOpcode, XShape.Offset) ?: return
+        sendShapeNotify(state.offsetWindowShapeRegion(window, kind, dx = byteOrder.i16(body, 8), dy = byteOrder.i16(body, 10)))
+    }
+
+    private fun shapeQueryExtents(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShape.QueryExtents, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        state.window(window) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XShape.QueryExtents, badValue = window)
+        val bounding = regionExtents(state.windowShapeRegion(window, XFixes.ShapeBounding))
+        val clip = regionExtents(state.windowShapeRegion(window, XFixes.ShapeClip))
+        val reply = reply(extra = 0, payloadUnits = 0)
+        reply[8] = if (state.windowShapeIsSet(window, XFixes.ShapeBounding)) 1 else 0
+        reply[9] = if (state.windowShapeIsSet(window, XFixes.ShapeClip)) 1 else 0
+        putShapeExtents(reply, 12, bounding)
+        putShapeExtents(reply, 20, clip)
+        write(reply)
+    }
+
+    private fun shapeSelectInput(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShape.SelectInput, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        state.window(window) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XShape.SelectInput, badValue = window)
+        val enable = body[4].toInt() and 0xff
+        if (enable !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XShape.SelectInput, badValue = enable)
+        state.selectShapeInput(this, window, enabled = enable != 0)
+    }
+
+    private fun shapeInputSelected(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShape.InputSelected, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        state.window(window) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XShape.InputSelected, badValue = window)
+        val reply = reply(extra = if (state.shapeInputSelected(this, window)) 1 else 0, payloadUnits = 0)
+        write(reply)
+    }
+
+    private fun shapeGetRectangles(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShape.GetRectangles, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        val kind = body[4].toInt() and 0xff
+        if (!shapeKindValid(kind, majorOpcode, XShape.GetRectangles)) return
+        shapeWindow(window, kind, majorOpcode, XShape.GetRectangles) ?: return
+        val rectangles = normalizedRegion(state.windowShapeRegion(window, kind))
+        val reply = reply(extra = XShape.OrderingYXBanded, payloadUnits = rectangles.size * 2)
+        byteOrder.put32(reply, 8, rectangles.size)
+        rectangles.forEachIndexed { index, rectangle ->
+            val offset = 32 + index * 8
+            byteOrder.put16(reply, offset, rectangle.x)
+            byteOrder.put16(reply, offset + 2, rectangle.y)
+            byteOrder.put16(reply, offset + 4, rectangle.width)
+            byteOrder.put16(reply, offset + 6, rectangle.height)
+        }
+        write(reply)
+    }
+
+    private fun shapeApply(window: Int, kind: Int, operation: Int, source: List<XRectangleCommand>) {
+        if (window == X11Ids.RootWindow) return
+        val destination = state.windowClientShapeRegion(window, kind)?.let { normalizedRegion(it) }
+        val result = when (operation) {
+            XShape.OpSet -> source
+            XShape.OpUnion -> {
+                if (destination == null) {
+                    sendShapeNotify(state.windowShapeNotifyDispatches(window, kind))
+                    return
+                }
+                combineRegions(destination, source) { inDestination, inSource -> inDestination || inSource }
+            }
+            XShape.OpIntersect -> if (destination == null) {
+                source
+            } else {
+                combineRegions(destination, source) { inDestination, inSource -> inDestination && inSource }
+            }
+            XShape.OpSubtract -> {
+                val subtractDestination = destination ?: normalizedRegion(state.windowShapeRegion(window, kind))
+                combineRegions(subtractDestination, source) { inDestination, inSource -> inDestination && !inSource }
+            }
+            XShape.OpInvert -> if (destination == null) {
+                emptyList()
+            } else {
+                combineRegions(source, destination) { inSource, inDestination -> inSource && !inDestination }
+            }
+            else -> source
+        }
+        sendShapeNotify(state.setWindowShapeRegion(window, kind, result))
+    }
+
+    private fun shapeRectanglesOrderingValid(rectangles: List<XRectangleCommand>, ordering: Int): Boolean {
+        if (ordering == XShape.OrderingUnsorted || rectangles.size < 2) return true
+        var currentBandY = rectangles.first().y
+        var currentBandHeight = rectangles.first().height
+        var currentBandBottom = currentBandY + currentBandHeight
+        var previous = rectangles.first()
+        for (rectangle in rectangles.drop(1)) {
+            if (rectangle.y < previous.y) return false
+            if (ordering >= XShape.OrderingYXSorted && rectangle.y == previous.y && rectangle.x < previous.x) return false
+            if (ordering == XShape.OrderingYXBanded) {
+                if (rectangle.y == currentBandY) {
+                    if (rectangle.height != currentBandHeight) return false
+                    if (rectangle.x < previous.x + previous.width) return false
+                } else {
+                    if (rectangle.y < currentBandBottom) return false
+                    currentBandY = rectangle.y
+                    currentBandHeight = rectangle.height
+                    currentBandBottom = currentBandY + currentBandHeight
+                }
+            }
+            previous = rectangle
+        }
+        return true
+    }
+
+    private fun shapeOperationValid(operation: Int, majorOpcode: Int, minorOpcode: Int): Boolean {
+        if (operation in XShape.OpSet..XShape.OpInvert) return true
+        writeError(error = 2, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = operation)
+        return false
+    }
+
+    private fun shapeKindValid(kind: Int, majorOpcode: Int, minorOpcode: Int): Boolean {
+        if (kind in XFixes.ShapeBounding..XFixes.ShapeInput) return true
+        writeError(error = 2, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = kind)
+        return false
+    }
+
+    private fun shapeWindow(windowId: Int, kind: Int, majorOpcode: Int, minorOpcode: Int): XWindow? {
+        val window = state.window(windowId)
+            ?: run {
+                writeError(error = 3, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = windowId)
+                return null
+            }
+        if (kind == XFixes.ShapeClip && window.windowClass == XWindowClass.InputOnly) {
+            writeError(error = 8, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = windowId)
+            return null
+        }
+        return window
+    }
+
+    private fun putShapeExtents(reply: ByteArray, offset: Int, extents: XRectangleCommand?) {
+        val rectangle = extents ?: XRectangleCommand(0, 0, 0, 0)
+        byteOrder.put16(reply, offset, rectangle.x)
+        byteOrder.put16(reply, offset + 2, rectangle.y)
+        byteOrder.put16(reply, offset + 4, rectangle.width)
+        byteOrder.put16(reply, offset + 6, rectangle.height)
     }
 
     private fun xkb(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
@@ -6089,6 +6342,7 @@ internal class X11Connection(
             XRender.MajorOpcode -> "RENDER.${XRender.operationName(minorOpcode)}"
             XShm.MajorOpcode -> "MIT-SHM.${XShm.operationName(minorOpcode)}"
             XFixes.MajorOpcode -> "XFIXES.${XFixes.operationName(minorOpcode)}"
+            XShape.MajorOpcode -> "SHAPE.${XShape.operationName(minorOpcode)}"
             XXkb.MajorOpcode -> "XKEYBOARD.${XXkb.operationName(minorOpcode)}"
             1 -> "CreateWindow"
             2 -> "ChangeWindowAttributes"
@@ -6979,6 +7233,21 @@ internal class X11Connection(
         byteOrder.put32(bytes, 8, event.cursorSerial)
         byteOrder.put32(bytes, 12, event.timestamp)
         byteOrder.put32(bytes, 16, event.name)
+        write(bytes)
+    }
+
+    override fun sendShapeNotifyEvent(event: XShapeNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = (XShape.FirstEvent + XShape.Notify).toByte()
+        bytes[1] = event.kind.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.windowId)
+        byteOrder.put16(bytes, 8, event.x)
+        byteOrder.put16(bytes, 10, event.y)
+        byteOrder.put16(bytes, 12, event.width)
+        byteOrder.put16(bytes, 14, event.height)
+        byteOrder.put32(bytes, 16, event.timestamp)
+        bytes[20] = if (event.shaped) 1 else 0
         write(bytes)
     }
 
@@ -8110,6 +8379,12 @@ internal class X11Connection(
     private fun sendXFixesCursorNotify(notifications: List<XXFixesCursorNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendXFixesCursorNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendShapeNotify(notifications: List<XShapeNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendShapeNotifyEvent(notification.event) }
         }
     }
 

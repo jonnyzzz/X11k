@@ -55,6 +55,7 @@ internal class X11State(
     private val selectionLastChangeTimes = linkedMapOf<Int, Int>()
     private val xfixesSelectionInputs = linkedMapOf<XEventSink, LinkedHashMap<XXFixesSelectionInputKey, Int>>()
     private val xfixesCursorInputs = linkedMapOf<XEventSink, LinkedHashMap<Int, Int>>()
+    private val shapeInputs = linkedMapOf<XEventSink, LinkedHashSet<Int>>()
     private val windowOwners = linkedMapOf<Int, XEventSink>()
     private val resourceOwners = linkedMapOf<Int, XEventSink>()
     private val eventSinks = linkedMapOf<XEventSink, MutableMap<Int, Int>>()
@@ -142,6 +143,12 @@ internal class X11State(
             majorOpcode = XFixes.MajorOpcode,
             firstEvent = XFixes.FirstEvent,
             firstError = XFixes.FirstError,
+        ),
+        XExtension(
+            name = "SHAPE",
+            majorOpcode = XShape.MajorOpcode,
+            firstEvent = XShape.FirstEvent,
+            firstError = XShape.FirstError,
         ),
         XExtension(
             name = "XKEYBOARD",
@@ -238,6 +245,8 @@ internal class X11State(
         xfixesSelectionInputs.entries.removeIf { it.value.isEmpty() }
         xfixesCursorInputs.values.forEach { windows -> windows.keys.removeIf { it in removed } }
         xfixesCursorInputs.entries.removeIf { it.value.isEmpty() }
+        shapeInputs.values.forEach { windows -> windows.removeAll(removed) }
+        shapeInputs.entries.removeIf { it.value.isEmpty() }
         saveSets.values.forEach { saveSet -> removed.forEach { saveSet.remove(it) } }
         saveSets.entries.removeIf { it.value.isEmpty() }
         removeEventSelections(removed)
@@ -1483,6 +1492,7 @@ internal class X11State(
         selectionOwners.entries.removeIf { it.value.sink == sink }
         xfixesSelectionInputs.remove(sink)
         xfixesCursorInputs.remove(sink)
+        shapeInputs.remove(sink)
         windowOwners.entries.removeIf { it.value == sink }
         saveSets.remove(sink)
         val xfixesCursorNotifyDispatches = releaseInputGrabs(sink)
@@ -2601,14 +2611,23 @@ internal class X11State(
     }
 
     @Synchronized
-    fun setWindowShapeRegion(windowId: Int, kind: Int, rectangles: List<XRectangleCommand>?) {
-        val window = windows[windowId] ?: return
+    fun setWindowShapeRegion(
+        windowId: Int,
+        kind: Int,
+        rectangles: List<XRectangleCommand>?,
+        notifyWhenUnchanged: Boolean = false,
+    ): List<XShapeNotifyDispatch> {
+        val window = windows[windowId] ?: return emptyList()
+        val previous = windowClientShapeRegion(window, kind)
+        if (previous == null && rectangles == null && !notifyWhenUnchanged) return emptyList()
         val copy = rectangles?.map { it.copy() }
         when (kind) {
             XFixes.ShapeBounding -> window.boundingShape = copy
             XFixes.ShapeClip -> window.clipShape = copy
             XFixes.ShapeInput -> window.inputShape = copy
+            else -> return emptyList()
         }
+        return shapeNotifyDispatches(windowId, kind)
     }
 
     @Synchronized
@@ -2620,7 +2639,124 @@ internal class X11State(
             XFixes.ShapeInput -> window.inputShape
             else -> null
         }
-        return (shape ?: listOf(XRectangleCommand(0, 0, window.width, window.height))).map { it.copy() }
+        return (shape ?: defaultWindowShapeRegion(window, kind)).map { it.copy() }
+    }
+
+    @Synchronized
+    fun windowClientShapeRegion(windowId: Int, kind: Int): List<XRectangleCommand>? {
+        val window = windows[windowId] ?: return null
+        return windowClientShapeRegion(window, kind)?.map { it.copy() }
+    }
+
+    @Synchronized
+    fun windowShapeNotifyDispatches(windowId: Int, kind: Int): List<XShapeNotifyDispatch> =
+        shapeNotifyDispatches(windowId, kind)
+
+    @Synchronized
+    fun windowShapeIsSet(windowId: Int, kind: Int): Boolean {
+        val window = windows[windowId] ?: return false
+        return when (kind) {
+            XFixes.ShapeBounding -> window.boundingShape != null
+            XFixes.ShapeClip -> window.clipShape != null
+            XFixes.ShapeInput -> window.inputShape != null
+            else -> false
+        }
+    }
+
+    @Synchronized
+    fun offsetWindowShapeRegion(windowId: Int, kind: Int, dx: Int, dy: Int): List<XShapeNotifyDispatch> {
+        val window = windows[windowId] ?: return emptyList()
+        val shape = when (kind) {
+            XFixes.ShapeBounding -> window.boundingShape
+            XFixes.ShapeClip -> window.clipShape
+            XFixes.ShapeInput -> window.inputShape
+            else -> return emptyList()
+        } ?: return shapeNotifyDispatches(windowId, kind)
+        val translated = shape.map { rectangle -> rectangle.copy(x = rectangle.x + dx, y = rectangle.y + dy) }
+        when (kind) {
+            XFixes.ShapeBounding -> window.boundingShape = translated
+            XFixes.ShapeClip -> window.clipShape = translated
+            XFixes.ShapeInput -> window.inputShape = translated
+            else -> return emptyList()
+        }
+        return shapeNotifyDispatches(windowId, kind)
+    }
+
+    @Synchronized
+    fun selectShapeInput(sink: XEventSink, windowId: Int, enabled: Boolean) {
+        if (!windows.containsKey(windowId)) return
+        if (!enabled) {
+            shapeInputs[sink]?.remove(windowId)
+            if (shapeInputs[sink]?.isEmpty() == true) shapeInputs.remove(sink)
+            return
+        }
+        shapeInputs.getOrPut(sink) { linkedSetOf() } += windowId
+    }
+
+    @Synchronized
+    fun shapeInputSelected(sink: XEventSink, windowId: Int): Boolean =
+        shapeInputs[sink]?.contains(windowId) == true
+
+    private fun defaultWindowShapeRegion(window: XWindow, kind: Int): List<XRectangleCommand> =
+        when (kind) {
+            XFixes.ShapeBounding, XFixes.ShapeInput -> {
+                val borderWidth = window.borderWidth
+                listOf(
+                    XRectangleCommand(
+                        x = -borderWidth,
+                        y = -borderWidth,
+                        width = window.width + borderWidth * 2,
+                        height = window.height + borderWidth * 2,
+                    ),
+                )
+            }
+            XFixes.ShapeClip -> listOf(XRectangleCommand(0, 0, window.width, window.height))
+            else -> emptyList()
+        }
+
+    private fun windowClientShapeRegion(window: XWindow, kind: Int): List<XRectangleCommand>? =
+        when (kind) {
+            XFixes.ShapeBounding -> window.boundingShape
+            XFixes.ShapeClip -> window.clipShape
+            XFixes.ShapeInput -> window.inputShape
+            else -> null
+        }
+
+    private fun shapeNotifyDispatches(windowId: Int, kind: Int): List<XShapeNotifyDispatch> {
+        val extents = windowShapeExtents(windowId, kind) ?: XRectangleCommand(0, 0, 0, 0)
+        val shaped = windowShapeIsSet(windowId, kind)
+        val timestamp = currentServerTime(inputTime)
+        return shapeInputs.flatMap { (sink, windows) ->
+            if (windowId !in windows) return@flatMap emptyList()
+            listOf(
+                XShapeNotifyDispatch(
+                    sink = sink,
+                    event = XShapeNotifyEvent(
+                        kind = kind,
+                        windowId = windowId,
+                        x = extents.x,
+                        y = extents.y,
+                        width = extents.width,
+                        height = extents.height,
+                        timestamp = timestamp,
+                        shaped = shaped,
+                    ),
+                ),
+            )
+        }
+    }
+
+    private fun windowShapeExtents(windowId: Int, kind: Int): XRectangleCommand? =
+        regionExtents(windowShapeRegion(windowId, kind))
+
+    private fun regionExtents(rectangles: List<XRectangleCommand>): XRectangleCommand? {
+        val nonEmpty = rectangles.filter { it.width > 0 && it.height > 0 }
+        if (nonEmpty.isEmpty()) return null
+        val minX = nonEmpty.minOf { it.x }
+        val minY = nonEmpty.minOf { it.y }
+        val maxX = nonEmpty.maxOf { it.x + it.width }
+        val maxY = nonEmpty.maxOf { it.y + it.height }
+        return XRectangleCommand(minX, minY, maxX - minX, maxY - minY)
     }
 
     @Synchronized

@@ -906,6 +906,7 @@ class XCoreDrawingProtocolTest {
                 out.write(queryExtensionRequest("NOT-PRESENT"))
                 out.write(queryExtensionRequest("GLX"))
                 out.write(queryExtensionRequest("XFIXES"))
+                out.write(queryExtensionRequest("SHAPE"))
                 out.flush()
 
                 assertError(socket.getInputStream(), error = 16, opcode = 98, badValue = 0, sequence = 1)
@@ -929,6 +930,13 @@ class XCoreDrawingProtocolTest {
                 assertEquals(XFixes.MajorOpcode, xfixes[9].toInt() and 0xff)
                 assertEquals(XFixes.FirstEvent, xfixes[10].toInt() and 0xff)
                 assertEquals(XFixes.FirstError, xfixes[11].toInt() and 0xff)
+
+                val shape = readReply(socket.getInputStream())
+                assertEquals(7, u16le(shape, 2))
+                assertEquals(1, shape[8].toInt())
+                assertEquals(XShape.MajorOpcode, shape[9].toInt() and 0xff)
+                assertEquals(XShape.FirstEvent, shape[10].toInt() and 0xff)
+                assertEquals(XShape.FirstError, shape[11].toInt() and 0xff)
             }
             server.close()
             serverThread.join(1_000)
@@ -950,9 +958,9 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 16, opcode = 99, badValue = 0, sequence = 1)
 
                 val reply = readReply(socket.getInputStream())
-                assertEquals(6, reply[1].toInt() and 0xff)
+                assertEquals(7, reply[1].toInt() and 0xff)
                 assertEquals(2, u16le(reply, 2))
-                assertEquals(13, u32le(reply, 4))
+                assertEquals(14, u32le(reply, 4))
                 var offset = 32
                 val names = mutableListOf<String>()
                 repeat(reply[1].toInt() and 0xff) {
@@ -960,7 +968,7 @@ class XCoreDrawingProtocolTest {
                     names += reply.copyOfRange(offset, offset + length).decodeToString()
                     offset += length
                 }
-                assertEquals(listOf("GLX", "BIG-REQUESTS", "RENDER", "MIT-SHM", "XFIXES", "XKEYBOARD"), names)
+                assertEquals(listOf("GLX", "BIG-REQUESTS", "RENDER", "MIT-SHM", "XFIXES", "SHAPE", "XKEYBOARD"), names)
             }
             server.close()
             serverThread.join(1_000)

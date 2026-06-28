@@ -176,6 +176,7 @@ internal interface XEventSink {
     fun sendSelectionRequestEvent(event: XSelectionRequestEvent)
     fun sendXFixesSelectionNotifyEvent(event: XXFixesSelectionNotifyEvent)
     fun sendXFixesCursorNotifyEvent(event: XXFixesCursorNotifyEvent)
+    fun sendShapeNotifyEvent(event: XShapeNotifyEvent)
     fun sendSyntheticEvent(event: XSyntheticEvent)
 }
 
@@ -453,6 +454,22 @@ internal data class XXFixesCursorNotifyEvent(
 internal data class XXFixesCursorNotifyDispatch(
     val sink: XEventSink,
     val event: XXFixesCursorNotifyEvent,
+)
+
+internal data class XShapeNotifyEvent(
+    val kind: Int,
+    val windowId: Int,
+    val x: Int,
+    val y: Int,
+    val width: Int,
+    val height: Int,
+    val timestamp: Int,
+    val shaped: Boolean,
+)
+
+internal data class XShapeNotifyDispatch(
+    val sink: XEventSink,
+    val event: XShapeNotifyEvent,
 )
 
 internal data class XSyntheticEvent(

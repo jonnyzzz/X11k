@@ -317,7 +317,7 @@ class XRenderProtocolTest {
                 assertExtensionError(socket.getInputStream(), error = 2, opcode = XFixes.MajorOpcode, badValue = 3, sequence = 6, minorOpcode = XFixes.CreateRegionFromWindow)
                 assertExtensionError(socket.getInputStream(), error = 8, opcode = XFixes.MajorOpcode, badValue = inputOnly, sequence = 7, minorOpcode = XFixes.CreateRegionFromWindow)
                 assertExtensionError(socket.getInputStream(), error = 14, opcode = XFixes.MajorOpcode, badValue = RegionBId, sequence = 9, minorOpcode = XFixes.CreateRegionFromWindow)
-                assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 100, 80), listOf(XRectangleCommand(0, 0, 100, 80)))
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(-1, -1, 102, 82), listOf(XRectangleCommand(-1, -1, 102, 82)))
             }
             server.close()
             serverThread.join(1_000)
@@ -348,7 +348,7 @@ class XRenderProtocolTest {
 
                 assertRegionReply(socket.getInputStream(), XRectangleCommand(2, 2, 2, 1), listOf(XRectangleCommand(2, 2, 2, 1)))
                 assertRegionReply(socket.getInputStream(), XRectangleCommand(4, 4, 2, 1), listOf(XRectangleCommand(4, 4, 2, 1)))
-                assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 100, 80), listOf(XRectangleCommand(0, 0, 100, 80)))
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(-1, -1, 102, 82), listOf(XRectangleCommand(-1, -1, 102, 82)))
             }
             server.close()
             serverThread.join(1_000)
