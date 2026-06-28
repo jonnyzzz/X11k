@@ -4,14 +4,18 @@ internal object XFixes {
     const val MajorOpcode = 133
     const val FirstEvent = 68
     const val FirstError = 172
-    const val MajorVersion = 1
+    const val MajorVersion = 2
     const val MinorVersion = 0
+    const val BadRegion = FirstError
 
     const val QueryVersion = 0
     const val ChangeSaveSet = 1
     const val SelectSelectionInput = 2
     const val SelectCursorInput = 3
     const val GetCursorImage = 4
+    const val CreateRegion = 5
+    const val DestroyRegion = 10
+    const val SetPictureClipRegion = 22
 
     const val SaveSetNearest = 0
     const val SaveSetRoot = 1
@@ -39,6 +43,9 @@ internal object XFixes {
             SelectSelectionInput -> "SelectSelectionInput"
             SelectCursorInput -> "SelectCursorInput"
             GetCursorImage -> "GetCursorImage"
+            CreateRegion -> "CreateRegion"
+            DestroyRegion -> "DestroyRegion"
+            SetPictureClipRegion -> "SetPictureClipRegion"
             else -> "Unknown"
         }
 }

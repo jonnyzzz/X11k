@@ -494,6 +494,9 @@ internal class X11Connection(
             XFixes.SelectSelectionInput -> xfixesSelectSelectionInput(body, majorOpcode)
             XFixes.SelectCursorInput -> xfixesSelectCursorInput(body, majorOpcode)
             XFixes.GetCursorImage -> xfixesGetCursorImage(body, majorOpcode)
+            XFixes.CreateRegion -> xfixesCreateRegion(body, majorOpcode)
+            XFixes.DestroyRegion -> xfixesDestroyRegion(body, majorOpcode)
+            XFixes.SetPictureClipRegion -> xfixesSetPictureClipRegion(body, majorOpcode)
             else -> xfixesBadImplementation(majorOpcode, minorOpcode)
         }
     }
@@ -582,6 +585,58 @@ internal class X11Connection(
             byteOrder.put32(reply, 32 + index * 4, pixel)
         }
         write(reply)
+    }
+
+    private fun xfixesCreateRegion(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 4 || (body.size - 4) % 8 != 0) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.CreateRegion, badValue = 0)
+        }
+        val region = byteOrder.u32(body, 0)
+        if (region == 0 || state.hasResource(region)) {
+            return writeError(error = 14, opcode = majorOpcode, minorOpcode = XFixes.CreateRegion, badValue = region)
+        }
+        state.putXFixesRegion(XFixesRegion(region, rectangles(body, 4)))
+        own(region)
+    }
+
+    private fun xfixesDestroyRegion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.DestroyRegion, badValue = 0)
+        val region = byteOrder.u32(body, 0)
+        if (state.xfixesRegion(region) == null) {
+            return writeError(error = XFixes.BadRegion, opcode = majorOpcode, minorOpcode = XFixes.DestroyRegion, badValue = region)
+        }
+        state.removeXFixesRegion(region)
+        ownedResources.remove(region)
+    }
+
+    private fun xfixesSetPictureClipRegion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.SetPictureClipRegion, badValue = 0)
+        val picture = byteOrder.u32(body, 0)
+        if (state.picture(picture) == null) {
+            return writeError(error = XRender.PictureError, opcode = majorOpcode, minorOpcode = XFixes.SetPictureClipRegion, badValue = picture)
+        }
+        val region = byteOrder.u32(body, 4)
+        val originX = byteOrder.i16(body, 8)
+        val originY = byteOrder.i16(body, 10)
+        val rectangles = if (region == 0) {
+            null
+        } else {
+            state.xfixesRegion(region)?.rectangles
+                ?: return writeError(error = XFixes.BadRegion, opcode = majorOpcode, minorOpcode = XFixes.SetPictureClipRegion, badValue = region)
+        }
+        state.setPictureClipRegion(
+            picture,
+            originX,
+            originY,
+            rectangles?.map { rectangle ->
+                XRectangleCommand(
+                    x = originX + rectangle.x,
+                    y = originY + rectangle.y,
+                    width = rectangle.width,
+                    height = rectangle.height,
+                )
+            },
+        )
     }
 
     private fun xfixesBadImplementation(majorOpcode: Int, minorOpcode: Int) {

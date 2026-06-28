@@ -48,6 +48,7 @@ internal class X11State(
     private val installedColormaps = linkedSetOf(X11Ids.DefaultColormap)
     private val pictures = linkedMapOf<Int, XPicture>()
     private val glyphSets = linkedMapOf<Int, XGlyphSet>()
+    private val xfixesRegions = linkedMapOf<Int, XFixesRegion>()
     private val atomIds = linkedMapOf<String, Int>()
     private val atomNames = linkedMapOf<Int, String>()
     private val selectionOwners = linkedMapOf<Int, XSelectionOwner>()
@@ -302,6 +303,7 @@ internal class X11State(
             glxPbuffers.remove(id)
             pictures.remove(id)
             glyphSets.remove(id)
+            xfixesRegions.remove(id)
         }
         releaseInputGrabsForResources(resourceIds)
         xfixesCursorNotifyDispatches += xfixesCursorNotifyDispatchesIfChanged(previousCursor)
@@ -2542,6 +2544,15 @@ internal class X11State(
     }
 
     @Synchronized
+    fun setPictureClipRegion(id: Int, originX: Int, originY: Int, rectangles: List<XRectangleCommand>?) {
+        pictures[id]?.clipXOrigin = originX
+        pictures[id]?.clipYOrigin = originY
+        pictures[id]?.clipMask = 0
+        pictures[id]?.clipMaskImage = null
+        pictures[id]?.clipRectangles = rectangles
+    }
+
+    @Synchronized
     fun updatePictureTransform(id: Int, transform: List<Int>) {
         pictures[id]?.transform = transform
     }
@@ -2560,6 +2571,20 @@ internal class X11State(
 
     @Synchronized
     fun picture(id: Int): XPicture? = pictures[id]
+
+    @Synchronized
+    fun putXFixesRegion(region: XFixesRegion) {
+        xfixesRegions[region.id] = region
+    }
+
+    @Synchronized
+    fun xfixesRegion(id: Int): XFixesRegion? = xfixesRegions[id]
+
+    @Synchronized
+    fun removeXFixesRegion(id: Int) {
+        xfixesRegions.remove(id)
+        discardRetainedResourceIds(setOf(id))
+    }
 
     @Synchronized
     fun putGlyphSet(glyphSet: XGlyphSet) {
@@ -5288,6 +5313,7 @@ internal class X11State(
             colormaps.contains(id) ||
             pictures.containsKey(id) ||
             glyphSets.containsKey(id) ||
+            xfixesRegions.containsKey(id) ||
             glxContexts.containsKey(id) ||
             glxPixmaps.containsKey(id) ||
             glxWindows.containsKey(id) ||
@@ -5474,6 +5500,7 @@ internal class X11State(
         glxPixmaps.remove(id)
         pictures.remove(id)
         glyphSets.remove(id)
+        xfixesRegions.remove(id)
         discardRetainedResourceIds(setOf(id))
         releaseInputGrabsForResources(setOf(id))
         ensureDefaultColormapInstalled()
@@ -6623,6 +6650,11 @@ internal data class XPicture(
     var transform: List<Int> = IdentityTransform,
     var filterName: String? = null,
     var filterValues: List<Int> = emptyList(),
+)
+
+internal data class XFixesRegion(
+    val id: Int,
+    val rectangles: List<XRectangleCommand>,
 )
 
 internal data class XLinearGradient(

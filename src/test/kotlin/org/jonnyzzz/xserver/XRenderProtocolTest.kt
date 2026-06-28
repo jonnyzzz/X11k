@@ -110,6 +110,128 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `XFIXES SetPictureClipRegion clips and clears RENDER picture drawing`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(xfixesQueryVersionRequest(2, 0))
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 4, height = 1))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 4, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    xfixesCreateRegion(
+                        RegionId,
+                        listOf(
+                            XRectangleCommand(0, 0, 1, 1),
+                            XRectangleCommand(2, 0, 1, 1),
+                        ),
+                    ),
+                )
+                out.write(xfixesSetPictureClipRegion(PixmapPictureId, RegionId, originX = 1, originY = 0))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 4, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 4, height = 1))
+                out.write(xfixesCreateRegion(EmptyRegionId, emptyList()))
+                out.write(xfixesSetPictureClipRegion(PixmapPictureId, EmptyRegionId, originX = 0, originY = 0))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 4, height = 1, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 4, height = 1))
+                out.write(xfixesSetPictureClipRegion(PixmapPictureId, region = 0, originX = 0, originY = 0))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 4, height = 1))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(xfixesCreateRegion(SourceClipRegionId, listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(xfixesSetPictureClipRegion(SolidPictureId, SourceClipRegionId, originX = 0, originY = 0))
+                out.write(
+                    renderComposite(
+                        source = SolidPictureId,
+                        destination = PixmapPictureId,
+                        width = 2,
+                        height = 1,
+                        operation = XRender.OpSrc,
+                        sourceX = 0,
+                        sourceY = 0,
+                        destinationX = 0,
+                        destinationY = 0,
+                    ),
+                )
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 4, height = 1))
+                out.flush()
+
+                val version = readReply(socket.getInputStream())
+                assertEquals(2, u32le(version, 8))
+                assertEquals(0, u32le(version, 12))
+
+                val clipped = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(clipped, imageWidth = 4, x = 0, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(clipped, imageWidth = 4, x = 1, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(clipped, imageWidth = 4, x = 2, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(clipped, imageWidth = 4, x = 3, y = 0))
+
+                val emptyClipped = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(emptyClipped, imageWidth = 4, x = 0, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(emptyClipped, imageWidth = 4, x = 1, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(emptyClipped, imageWidth = 4, x = 2, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(emptyClipped, imageWidth = 4, x = 3, y = 0))
+
+                val cleared = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(cleared, imageWidth = 4, x = 0, y = 0))
+
+                val sourceClipped = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(sourceClipped, imageWidth = 4, x = 0, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(sourceClipped, imageWidth = 4, x = 1, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES regions validate resources and recover stream`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val missingRegion = RegionId + 1
+                val missingPicture = PixmapPictureId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 1, height = 1))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Rgb24Format))
+                out.write(xfixesCreateRegion(0, emptyList()))
+                out.write(xfixesCreateRegionRaw(ByteArray(8).also { put32le(it, 0, RegionId + 2) }))
+                out.write(xfixesSetPictureClipRegionRaw(ByteArray(8).also { put32le(it, 0, PixmapPictureId) }))
+                out.write(xfixesDestroyRegionRaw(ByteArray(8).also { put32le(it, 0, RegionId) }))
+                out.write(xfixesCreateRegion(RegionId, listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(xfixesCreateRegion(RegionId, emptyList()))
+                out.write(xfixesSetPictureClipRegion(PixmapPictureId, missingRegion))
+                out.write(xfixesDestroyRegion(RegionId))
+                out.write(xfixesDestroyRegion(RegionId))
+                out.write(xfixesSetPictureClipRegion(missingPicture, region = 0))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 1, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                assertExtensionError(socket.getInputStream(), error = 14, opcode = XFixes.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XFixes.CreateRegion)
+                assertExtensionError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, badValue = 0, sequence = 5, minorOpcode = XFixes.CreateRegion)
+                assertExtensionError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, badValue = 0, sequence = 6, minorOpcode = XFixes.SetPictureClipRegion)
+                assertExtensionError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, badValue = 0, sequence = 7, minorOpcode = XFixes.DestroyRegion)
+                assertExtensionError(socket.getInputStream(), error = 14, opcode = XFixes.MajorOpcode, badValue = RegionId, sequence = 9, minorOpcode = XFixes.CreateRegion)
+                assertExtensionError(socket.getInputStream(), error = XFixes.BadRegion, opcode = XFixes.MajorOpcode, badValue = missingRegion, sequence = 10, minorOpcode = XFixes.SetPictureClipRegion)
+                assertExtensionError(socket.getInputStream(), error = XFixes.BadRegion, opcode = XFixes.MajorOpcode, badValue = RegionId, sequence = 12, minorOpcode = XFixes.DestroyRegion)
+                assertExtensionError(socket.getInputStream(), error = XRender.PictureError, opcode = XFixes.MajorOpcode, badValue = missingPicture, sequence = 13, minorOpcode = XFixes.SetPictureClipRegion)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER CreatePicture rejects duplicate resource id without replacing existing picture`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -11116,6 +11238,13 @@ class XRenderProtocolTest {
         return body
     }
 
+    private fun xfixesQueryVersionRequest(major: Int, minor: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, major)
+        put32le(body, 4, minor)
+        return request(XFixes.MajorOpcode, XFixes.QueryVersion, body)
+    }
+
     private fun createWindowRequest(id: Int): ByteArray {
         val body = ByteArray(28)
         put32le(body, 0, id)
@@ -11427,6 +11556,48 @@ class XRenderProtocolTest {
         }
         return request(XRender.MajorOpcode, 6, body)
     }
+
+    private fun xfixesCreateRegion(region: Int, rectangles: List<XRectangleCommand>): ByteArray {
+        val body = ByteArray(4 + rectangles.size * 8)
+        put32le(body, 0, region)
+        rectangles.forEachIndexed { index, rectangle ->
+            val offset = 4 + index * 8
+            put16le(body, offset, rectangle.x)
+            put16le(body, offset + 2, rectangle.y)
+            put16le(body, offset + 4, rectangle.width)
+            put16le(body, offset + 6, rectangle.height)
+        }
+        return xfixesCreateRegionRaw(body)
+    }
+
+    private fun xfixesCreateRegionRaw(body: ByteArray): ByteArray =
+        request(XFixes.MajorOpcode, XFixes.CreateRegion, body)
+
+    private fun xfixesDestroyRegion(region: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, region)
+        return xfixesDestroyRegionRaw(body)
+    }
+
+    private fun xfixesDestroyRegionRaw(body: ByteArray): ByteArray =
+        request(XFixes.MajorOpcode, XFixes.DestroyRegion, body)
+
+    private fun xfixesSetPictureClipRegion(
+        picture: Int,
+        region: Int,
+        originX: Int = 0,
+        originY: Int = 0,
+    ): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, picture)
+        put32le(body, 4, region)
+        put16le(body, 8, originX)
+        put16le(body, 10, originY)
+        return xfixesSetPictureClipRegionRaw(body)
+    }
+
+    private fun xfixesSetPictureClipRegionRaw(body: ByteArray): ByteArray =
+        request(XFixes.MajorOpcode, XFixes.SetPictureClipRegion, body)
 
     private fun renderQueryFilters(drawable: Int): ByteArray {
         val body = ByteArray(4)
@@ -12073,13 +12244,17 @@ class XRenderProtocolTest {
     }
 
     private fun assertError(input: InputStream, error: Int, badValue: Int, sequence: Int, minorOpcode: Int) {
+        assertExtensionError(input, error = error, opcode = XRender.MajorOpcode, badValue = badValue, sequence = sequence, minorOpcode = minorOpcode)
+    }
+
+    private fun assertExtensionError(input: InputStream, error: Int, opcode: Int, badValue: Int, sequence: Int, minorOpcode: Int) {
         val reply = input.readExactly(32)
         assertEquals(0, reply[0].toInt())
         assertEquals(error, reply[1].toInt() and 0xff)
         assertEquals(sequence, u16le(reply, 2))
         assertEquals(badValue, u32le(reply, 4))
         assertEquals(minorOpcode, u16le(reply, 8))
-        assertEquals(XRender.MajorOpcode, reply[10].toInt() and 0xff)
+        assertEquals(opcode, reply[10].toInt() and 0xff)
         assertEquals(0, reply[11].toInt() and 0xff)
         for (index in 12 until 32) {
             assertEquals(0, reply[index].toInt() and 0xff, "byte $index")
@@ -12177,6 +12352,9 @@ class XRenderProtocolTest {
         const val ComponentMaskPictureId = 0x0020_2004
         const val PixmapId = 0x0020_0100
         const val PixmapPictureId = 0x0020_0101
+        const val RegionId = 0x0020_5001
+        const val EmptyRegionId = 0x0020_5002
+        const val SourceClipRegionId = 0x0020_5003
         const val GlyphSetId = 0x0020_3001
         const val GlyphId = 0x0000_0041
         const val PutImageGcId = 0x0020_4001
