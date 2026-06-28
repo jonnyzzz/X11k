@@ -1032,6 +1032,71 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER picture attributes are retained in semantic snapshot`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 1, height = 1))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
+                out.write(
+                    renderCreatePictureWithAttributes(
+                        PictureId,
+                        WindowId,
+                        XRender.Rgb24Format,
+                        XRender.CPRepeat to XRender.RepeatNormal,
+                        XRender.CPAlphaMap to MaskPictureId,
+                        XRender.CPAlphaXOrigin to -2,
+                        XRender.CPAlphaYOrigin to 3,
+                        XRender.CPClipXOrigin to 4,
+                        XRender.CPClipYOrigin to -5,
+                        XRender.CPGraphicsExposure to 1,
+                        XRender.CPSubwindowMode to 1,
+                        XRender.CPPolyEdge to 1,
+                        XRender.CPPolyMode to 1,
+                        XRender.CPDither to 0x1234_5678,
+                    ),
+                )
+                out.write(
+                    renderChangePictureAttributes(
+                        PictureId,
+                        XRender.CPClipXOrigin to -8,
+                        XRender.CPPolyMode to 2,
+                    ),
+                )
+                out.flush()
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""clipOrigin":[-8,-5]""")
+                }
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"alphaMap":"0x${MaskPictureId.toString(16)}"""")
+                assertContains(json, """"alphaOrigin":[-2,3]""")
+                assertContains(json, """"clipOrigin":[-8,-5]""")
+                assertContains(json, """"graphicsExposure":true""")
+                assertContains(json, """"subwindowMode":1""")
+                assertContains(json, """"polyEdge":1""")
+                assertContains(json, """"polyMode":2""")
+                assertContains(json, """"dither":"0x12345678"""")
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "alphaMap=0x${MaskPictureId.toString(16)}")
+                assertContains(text, "alphaOrigin=-2,3")
+                assertContains(text, "clipOrigin=-8,-5")
+                assertContains(text, "graphicsExposure=true")
+                assertContains(text, "subwindowMode=1")
+                assertContains(text, "polyEdge=1")
+                assertContains(text, "polyMode=2")
+                assertContains(text, "dither=0x12345678")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER QueryFilters advertises required filters and aliases`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3892,6 +3957,20 @@ class XRenderProtocolTest {
         return request(XRender.MajorOpcode, 4, body)
     }
 
+    private fun renderCreatePictureWithAttributes(picture: Int, drawable: Int, format: Int, vararg attributes: Pair<Int, Int>): ByteArray {
+        val sortedAttributes = attributes.sortedBy { it.first.countTrailingZeroBits() }
+        val valueMask = sortedAttributes.fold(0) { mask, attribute -> mask or attribute.first }
+        val body = ByteArray(16 + sortedAttributes.size * 4)
+        put32le(body, 0, picture)
+        put32le(body, 4, drawable)
+        put32le(body, 8, format)
+        put32le(body, 12, valueMask)
+        sortedAttributes.forEachIndexed { index, attribute ->
+            put32le(body, 16 + index * 4, attribute.second)
+        }
+        return request(XRender.MajorOpcode, 4, body)
+    }
+
     private fun renderFillRectangles(
         picture: Int,
         x: Int = 2,
@@ -4083,6 +4162,18 @@ class XRenderProtocolTest {
         put32le(body, 0, picture)
         put32le(body, 4, XRender.CPRepeat)
         put32le(body, 8, repeat)
+        return request(XRender.MajorOpcode, 5, body)
+    }
+
+    private fun renderChangePictureAttributes(picture: Int, vararg attributes: Pair<Int, Int>): ByteArray {
+        val sortedAttributes = attributes.sortedBy { it.first.countTrailingZeroBits() }
+        val valueMask = sortedAttributes.fold(0) { mask, attribute -> mask or attribute.first }
+        val body = ByteArray(8 + sortedAttributes.size * 4)
+        put32le(body, 0, picture)
+        put32le(body, 4, valueMask)
+        sortedAttributes.forEachIndexed { index, attribute ->
+            put32le(body, 8 + index * 4, attribute.second)
+        }
         return request(XRender.MajorOpcode, 5, body)
     }
 

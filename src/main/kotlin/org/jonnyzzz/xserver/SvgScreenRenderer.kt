@@ -172,7 +172,7 @@ internal object SvgScreenRenderer {
             snapshot.renderPictures.forEachIndexed { index, picture ->
                 if (index > 0) append(',')
                 append('{')
-                append(""""id":"${picture.idHex}","drawable":"${picture.drawableIdHex}","kind":"${escapeJson(picture.drawableKind)}","format":${picture.format},"repeat":"${picture.repeatName}","clipRectangles":${picture.clipRectangles},"componentAlpha":${picture.componentAlpha},"transform":[""")
+                append(""""id":"${picture.idHex}","drawable":"${picture.drawableIdHex}","kind":"${escapeJson(picture.drawableKind)}","format":${picture.format},"repeat":"${picture.repeatName}","alphaMap":"${picture.alphaMapHex}","alphaOrigin":[${picture.alphaXOrigin},${picture.alphaYOrigin}],"clipOrigin":[${picture.clipXOrigin},${picture.clipYOrigin}],"clipRectangles":${picture.clipRectangles},"graphicsExposure":${picture.graphicsExposure},"subwindowMode":${picture.subwindowMode},"polyEdge":${picture.polyEdge},"polyMode":${picture.polyMode},"dither":"${picture.ditherHex}","componentAlpha":${picture.componentAlpha},"transform":[""")
                 picture.transformHex.forEachIndexed { transformIndex, value ->
                     if (transformIndex > 0) append(',')
                     append('"').append(value).append('"')

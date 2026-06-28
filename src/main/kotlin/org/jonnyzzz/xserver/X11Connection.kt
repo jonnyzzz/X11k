@@ -1154,6 +1154,16 @@ internal class X11Connection(
                 format = format,
                 valueMask = valueMask,
                 repeat = attributes.repeat ?: XRender.RepeatNone,
+                alphaMap = attributes.alphaMap ?: 0,
+                alphaXOrigin = attributes.alphaXOrigin ?: 0,
+                alphaYOrigin = attributes.alphaYOrigin ?: 0,
+                clipXOrigin = attributes.clipXOrigin ?: 0,
+                clipYOrigin = attributes.clipYOrigin ?: 0,
+                graphicsExposure = attributes.graphicsExposure ?: false,
+                subwindowMode = attributes.subwindowMode ?: 0,
+                polyEdge = attributes.polyEdge ?: 0,
+                polyMode = attributes.polyMode ?: 0,
+                dither = attributes.dither ?: 0,
                 componentAlpha = attributes.componentAlpha ?: false,
             ),
         )
@@ -1173,6 +1183,16 @@ internal class X11Connection(
             picture,
             valueMask,
             repeat = attributes.repeat,
+            alphaMap = attributes.alphaMap,
+            alphaXOrigin = attributes.alphaXOrigin,
+            alphaYOrigin = attributes.alphaYOrigin,
+            clipXOrigin = attributes.clipXOrigin,
+            clipYOrigin = attributes.clipYOrigin,
+            graphicsExposure = attributes.graphicsExposure,
+            subwindowMode = attributes.subwindowMode,
+            polyEdge = attributes.polyEdge,
+            polyMode = attributes.polyMode,
+            dither = attributes.dither,
             clearClip = attributes.clipMask == 0,
             componentAlpha = attributes.componentAlpha,
         )
@@ -1193,7 +1213,17 @@ internal class X11Connection(
     private fun renderPictureAttributes(valueMask: Int, body: ByteArray, valuesOffset: Int): XRenderPictureAttributes {
         var offset = valuesOffset
         var repeat: Int? = null
+        var alphaMap: Int? = null
+        var alphaXOrigin: Int? = null
+        var alphaYOrigin: Int? = null
+        var clipXOrigin: Int? = null
+        var clipYOrigin: Int? = null
         var clipMask: Int? = null
+        var graphicsExposure: Boolean? = null
+        var subwindowMode: Int? = null
+        var polyEdge: Int? = null
+        var polyMode: Int? = null
+        var dither: Int? = null
         var componentAlpha: Boolean? = null
         for (bit in 0..12) {
             val mask = 1 shl bit
@@ -1201,11 +1231,35 @@ internal class X11Connection(
             if (offset + 4 > body.size) break
             val value = byteOrder.u32(body, offset)
             if (mask == XRender.CPRepeat) repeat = value
+            if (mask == XRender.CPAlphaMap) alphaMap = value
+            if (mask == XRender.CPAlphaXOrigin) alphaXOrigin = value.toShort().toInt()
+            if (mask == XRender.CPAlphaYOrigin) alphaYOrigin = value.toShort().toInt()
+            if (mask == XRender.CPClipXOrigin) clipXOrigin = value.toShort().toInt()
+            if (mask == XRender.CPClipYOrigin) clipYOrigin = value.toShort().toInt()
             if (mask == XRender.CPClipMask) clipMask = value
+            if (mask == XRender.CPGraphicsExposure) graphicsExposure = value != 0
+            if (mask == XRender.CPSubwindowMode) subwindowMode = value
+            if (mask == XRender.CPPolyEdge) polyEdge = value
+            if (mask == XRender.CPPolyMode) polyMode = value
+            if (mask == XRender.CPDither) dither = value
             if (mask == XRender.CPComponentAlpha) componentAlpha = value != 0
             offset += 4
         }
-        return XRenderPictureAttributes(repeat = repeat, clipMask = clipMask, componentAlpha = componentAlpha)
+        return XRenderPictureAttributes(
+            repeat = repeat,
+            alphaMap = alphaMap,
+            alphaXOrigin = alphaXOrigin,
+            alphaYOrigin = alphaYOrigin,
+            clipXOrigin = clipXOrigin,
+            clipYOrigin = clipYOrigin,
+            clipMask = clipMask,
+            graphicsExposure = graphicsExposure,
+            subwindowMode = subwindowMode,
+            polyEdge = polyEdge,
+            polyMode = polyMode,
+            dither = dither,
+            componentAlpha = componentAlpha,
+        )
     }
 
     private fun renderSetPictureClipRectangles(body: ByteArray) {
@@ -8147,7 +8201,17 @@ private object XPropertyType {
 
 private data class XRenderPictureAttributes(
     val repeat: Int? = null,
+    val alphaMap: Int? = null,
+    val alphaXOrigin: Int? = null,
+    val alphaYOrigin: Int? = null,
+    val clipXOrigin: Int? = null,
+    val clipYOrigin: Int? = null,
     val clipMask: Int? = null,
+    val graphicsExposure: Boolean? = null,
+    val subwindowMode: Int? = null,
+    val polyEdge: Int? = null,
+    val polyMode: Int? = null,
+    val dither: Int? = null,
     val componentAlpha: Boolean? = null,
 )
 

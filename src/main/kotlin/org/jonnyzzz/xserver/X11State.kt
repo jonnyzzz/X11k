@@ -2146,7 +2146,17 @@ internal class X11State(
                         )
                     },
                     repeat = picture.repeat,
+                    alphaMap = picture.alphaMap,
+                    alphaXOrigin = picture.alphaXOrigin,
+                    alphaYOrigin = picture.alphaYOrigin,
+                    clipXOrigin = picture.clipXOrigin,
+                    clipYOrigin = picture.clipYOrigin,
                     clipRectangles = picture.clipRectangles?.size ?: 0,
+                    graphicsExposure = picture.graphicsExposure,
+                    subwindowMode = picture.subwindowMode,
+                    polyEdge = picture.polyEdge,
+                    polyMode = picture.polyMode,
+                    dither = picture.dither,
                     componentAlpha = picture.componentAlpha,
                     transform = picture.transform,
                     filterName = picture.filterName,
@@ -2306,12 +2316,32 @@ internal class X11State(
         id: Int,
         valueMask: Int,
         repeat: Int? = null,
+        alphaMap: Int? = null,
+        alphaXOrigin: Int? = null,
+        alphaYOrigin: Int? = null,
+        clipXOrigin: Int? = null,
+        clipYOrigin: Int? = null,
         clearClip: Boolean = false,
+        graphicsExposure: Boolean? = null,
+        subwindowMode: Int? = null,
+        polyEdge: Int? = null,
+        polyMode: Int? = null,
+        dither: Int? = null,
         componentAlpha: Boolean? = null,
     ) {
         pictures[id]?.valueMask = valueMask
         repeat?.let { pictures[id]?.repeat = it }
+        alphaMap?.let { pictures[id]?.alphaMap = it }
+        alphaXOrigin?.let { pictures[id]?.alphaXOrigin = it }
+        alphaYOrigin?.let { pictures[id]?.alphaYOrigin = it }
+        clipXOrigin?.let { pictures[id]?.clipXOrigin = it }
+        clipYOrigin?.let { pictures[id]?.clipYOrigin = it }
         if (clearClip) pictures[id]?.clipRectangles = null
+        graphicsExposure?.let { pictures[id]?.graphicsExposure = it }
+        subwindowMode?.let { pictures[id]?.subwindowMode = it }
+        polyEdge?.let { pictures[id]?.polyEdge = it }
+        polyMode?.let { pictures[id]?.polyMode = it }
+        dither?.let { pictures[id]?.dither = it }
         componentAlpha?.let { pictures[id]?.componentAlpha = it }
     }
 
@@ -5050,7 +5080,17 @@ internal data class XPicture(
     val radialGradient: XRadialGradient? = null,
     val conicalGradient: XConicalGradient? = null,
     var repeat: Int = XRender.RepeatNone,
+    var alphaMap: Int = 0,
+    var alphaXOrigin: Int = 0,
+    var alphaYOrigin: Int = 0,
+    var clipXOrigin: Int = 0,
+    var clipYOrigin: Int = 0,
     var clipRectangles: List<XRectangleCommand>? = null,
+    var graphicsExposure: Boolean = false,
+    var subwindowMode: Int = 0,
+    var polyEdge: Int = 0,
+    var polyMode: Int = 0,
+    var dither: Int = 0,
     var componentAlpha: Boolean = false,
     var transform: List<Int> = IdentityTransform,
     var filterName: String? = null,
@@ -5687,7 +5727,17 @@ internal data class XRenderPictureSnapshot(
     val radialGradient: XRadialGradientSnapshot?,
     val conicalGradient: XConicalGradientSnapshot?,
     val repeat: Int,
+    val alphaMap: Int,
+    val alphaXOrigin: Int,
+    val alphaYOrigin: Int,
+    val clipXOrigin: Int,
+    val clipYOrigin: Int,
     val clipRectangles: Int,
+    val graphicsExposure: Boolean,
+    val subwindowMode: Int,
+    val polyEdge: Int,
+    val polyMode: Int,
+    val dither: Int,
     val componentAlpha: Boolean,
     val transform: List<Int>,
     val filterName: String?,
@@ -5696,6 +5746,8 @@ internal data class XRenderPictureSnapshot(
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val drawableIdHex: String get() = drawableId?.let { "0x${it.toUInt().toString(16)}" } ?: "none"
     val repeatName: String get() = XRender.repeatName(repeat)
+    val alphaMapHex: String get() = if (alphaMap == 0) "none" else "0x${alphaMap.toUInt().toString(16)}"
+    val ditherHex: String get() = if (dither == 0) "none" else "0x${dither.toUInt().toString(16)}"
     val transformHex: List<String> get() = transform.map { "0x${it.toUInt().toString(16)}" }
     val filterValueHex: List<String> get() = filterValues.map { "0x${it.toUInt().toString(16)}" }
 }

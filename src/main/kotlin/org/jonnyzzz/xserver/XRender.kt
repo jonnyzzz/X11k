@@ -31,7 +31,17 @@ internal object XRender {
     const val OpBlendMaximum = 0x3e
 
     const val CPRepeat = 1 shl 0
+    const val CPAlphaMap = 1 shl 1
+    const val CPAlphaXOrigin = 1 shl 2
+    const val CPAlphaYOrigin = 1 shl 3
+    const val CPClipXOrigin = 1 shl 4
+    const val CPClipYOrigin = 1 shl 5
     const val CPClipMask = 1 shl 6
+    const val CPGraphicsExposure = 1 shl 7
+    const val CPSubwindowMode = 1 shl 8
+    const val CPPolyEdge = 1 shl 9
+    const val CPPolyMode = 1 shl 10
+    const val CPDither = 1 shl 11
     const val CPComponentAlpha = 1 shl 12
     const val PictureAttributeMask = 0x0000_1fff
 
