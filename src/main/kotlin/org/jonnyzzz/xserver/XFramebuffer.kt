@@ -489,6 +489,27 @@ internal class XFramebuffer(
         }
     }
 
+    fun blendSolidDisjointIn(
+        pixel: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        clipMask: XClipMask? = null,
+        mask: XFramebuffer? = null,
+        maskX: Int = 0,
+        maskY: Int = 0,
+        maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
+    ): Boolean {
+        val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
+        return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
+            val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
+                ?: return@compositeBoundsOptional null
+            disjointInOperator(pixel, pixels[y * this.width + x], maskAlpha)
+        }
+    }
+
     fun blendSolidAdd(
         pixel: Int,
         destinationX: Int,
@@ -1671,6 +1692,7 @@ internal class XFramebuffer(
             XRender.OpDisjointOver -> disjointOverOperator(source, destination, maskAlpha)
             XRender.OpOverReverse -> overReverseOperator(source, destination, maskAlpha)
             XRender.OpIn -> inOperator(source, destination, maskAlpha)
+            XRender.OpDisjointIn -> disjointInOperator(source, destination, maskAlpha)
             XRender.OpInReverse -> inReverseOperator(source, destination, maskAlpha)
             XRender.OpOut -> outOperator(source, destination, maskAlpha)
             XRender.OpOutReverse -> outReverseOperator(source, destination, maskAlpha)
@@ -1691,6 +1713,7 @@ internal class XFramebuffer(
             XRender.OpDisjointOver -> disjointOverComponentMask(source, destination, mask)
             XRender.OpOverReverse -> overReverseComponentMask(source, destination, mask)
             XRender.OpIn -> inComponentMask(source, destination, mask)
+            XRender.OpDisjointIn -> disjointInComponentMask(source, destination, mask)
             XRender.OpInReverse -> inReverseComponentMask(source, destination, mask)
             XRender.OpOut -> outComponentMask(source, destination, mask)
             XRender.OpOutReverse -> outReverseComponentMask(source, destination, mask)
@@ -1850,6 +1873,22 @@ internal class XFramebuffer(
             val sourceAlphaMasked = (sourceAlpha * maskAlpha + 127) / 255
             return (sourceAlphaMasked * destinationAlpha + 127) / 255
         }
+        return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
+    }
+
+    private fun disjointInComponentMask(source: Int, destination: Int, mask: Int): Int {
+        val sourceAlpha = (source ushr 24) and 0xff
+        val destinationAlpha = (destination ushr 24) and 0xff
+        fun contributionFor(maskChannel: Int): Int {
+            val sourceAlphaMasked = (sourceAlpha * maskChannel + 127) / 255
+            return disjointInContributionAlpha(sourceAlphaMasked, destinationAlpha)
+        }
+        fun colorChannel(shift: Int): Int {
+            val contributionAlpha = contributionFor((mask ushr shift) and 0xff)
+            val sourceChannel = (source ushr shift) and 0xff
+            return (sourceChannel * contributionAlpha + 127) / 255
+        }
+        fun alphaChannel(): Int = contributionFor((mask ushr 24) and 0xff)
         return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
     }
 
@@ -2023,6 +2062,26 @@ internal class XFramebuffer(
             }
         }
         return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
+    private fun disjointInOperator(source: Int, destination: Int, maskAlpha: Int): Int {
+        if (maskAlpha <= 0) return 0
+        val sourceAlphaMasked = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
+        val destinationAlpha = (destination ushr 24) and 0xff
+        val contributionAlpha = disjointInContributionAlpha(sourceAlphaMasked, destinationAlpha)
+        if (contributionAlpha <= 0) return 0
+        fun channel(shift: Int): Int =
+            if (shift == 24) {
+                contributionAlpha
+            } else {
+                (((source ushr shift) and 0xff) * contributionAlpha + 127) / 255
+            }
+        return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
+    private fun disjointInContributionAlpha(sourceAlphaMasked: Int, destinationAlpha: Int): Int {
+        if (sourceAlphaMasked <= 0 || destinationAlpha <= 0) return 0
+        return (sourceAlphaMasked + destinationAlpha - 255).coerceIn(0, sourceAlphaMasked)
     }
 
     private fun outOperator(source: Int, destination: Int, maskAlpha: Int): Int {
