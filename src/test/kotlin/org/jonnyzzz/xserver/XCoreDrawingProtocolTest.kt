@@ -8024,6 +8024,32 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `DestroyWindow on root is a no-op and keeps children queryable`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(destroyWindowRequest(X11Ids.RootWindow))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val tree = readReply(socket.getInputStream())
+                assertEquals(3, u16le(tree, 2))
+                assertEquals(listOf(WindowId), treeChildren(tree))
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(4, u16le(pointer, 2))
+                assertEquals(X11Ids.RootWindow, u32le(pointer, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `DestroySubwindows destroys direct children and descendants but keeps parent`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

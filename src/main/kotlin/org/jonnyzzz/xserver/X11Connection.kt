@@ -4041,6 +4041,7 @@ internal class X11Connection(
     private fun destroyWindow(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = 4, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
+        if (windowId == X11Ids.RootWindow) return
         state.window(windowId) ?: return writeError(error = 3, opcode = 4, badValue = windowId)
         val removal = state.removeWindowWithDestroyNotify(windowId)
         ownedResources.removeAll(removal.removedResources)
