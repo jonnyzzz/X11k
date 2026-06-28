@@ -478,6 +478,27 @@ internal class XFramebuffer(
         }
     }
 
+    fun blendSolidOut(
+        pixel: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        clipMask: XClipMask? = null,
+        mask: XFramebuffer? = null,
+        maskX: Int = 0,
+        maskY: Int = 0,
+        maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
+    ): Boolean {
+        val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
+        return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
+            val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
+                ?: return@compositeBoundsOptional null
+            outOperator(pixel, pixels[y * this.width + x], maskAlpha)
+        }
+    }
+
     fun compositeSourceOverMask(
         sourceX: Int,
         sourceY: Int,
@@ -1460,6 +1481,7 @@ internal class XFramebuffer(
             XRender.OpSrc -> if (maskAlpha >= 255) source else withMask(source, maskAlpha)
             XRender.OpOver -> over(source, destination, maskAlpha)
             XRender.OpIn -> inOperator(source, destination, maskAlpha)
+            XRender.OpOut -> outOperator(source, destination, maskAlpha)
             XRender.OpAdd -> add(source, destination, maskAlpha)
             else -> over(source, destination, maskAlpha)
         }
@@ -1470,6 +1492,7 @@ internal class XFramebuffer(
             XRender.OpSrc -> withComponentMask(source, mask)
             XRender.OpOver -> overComponentMask(source, destination, mask)
             XRender.OpIn -> inComponentMask(source, destination, mask)
+            XRender.OpOut -> outComponentMask(source, destination, mask)
             XRender.OpAdd -> addComponentMask(source, destination, mask)
             else -> overComponentMask(source, destination, mask)
         }
@@ -1552,6 +1575,23 @@ internal class XFramebuffer(
         return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
     }
 
+    private fun outComponentMask(source: Int, destination: Int, mask: Int): Int {
+        val sourceAlpha = (source ushr 24) and 0xff
+        val inverseDestinationAlpha = 255 - ((destination ushr 24) and 0xff)
+        fun colorChannel(shift: Int): Int {
+            val maskChannel = (mask ushr shift) and 0xff
+            val sourceAlphaChannel = (sourceAlpha * maskChannel + 127) / 255
+            val sourceChannel = (source ushr shift) and 0xff
+            return (sourceChannel * sourceAlphaChannel * inverseDestinationAlpha + 32_512) / 65_025
+        }
+        fun alphaChannel(): Int {
+            val maskAlpha = (mask ushr 24) and 0xff
+            val sourceAlphaMasked = (sourceAlpha * maskAlpha + 127) / 255
+            return (sourceAlphaMasked * inverseDestinationAlpha + 127) / 255
+        }
+        return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
+    }
+
     private fun clearWithMask(destination: Int, maskAlpha: Int): Int {
         if (maskAlpha >= 255) return 0
         val inverse = 255 - maskAlpha
@@ -1573,6 +1613,25 @@ internal class XFramebuffer(
                 (sourceChannel * destinationAlpha + 127) / 255
             } else {
                 (sourceChannel * destinationAlpha + 32_512) / 65_025
+            }
+        }
+        return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
+    private fun outOperator(source: Int, destination: Int, maskAlpha: Int): Int {
+        val inverseDestinationAlpha = 255 - ((destination ushr 24) and 0xff)
+        if (maskAlpha <= 0 || inverseDestinationAlpha <= 0) return 0
+        val sourceAlphaMasked = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
+        fun channel(shift: Int): Int {
+            val sourceChannel = if (shift == 24) {
+                sourceAlphaMasked
+            } else {
+                ((source ushr shift) and 0xff) * sourceAlphaMasked
+            }
+            return if (shift == 24) {
+                (sourceChannel * inverseDestinationAlpha + 127) / 255
+            } else {
+                (sourceChannel * inverseDestinationAlpha + 32_512) / 65_025
             }
         }
         return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)

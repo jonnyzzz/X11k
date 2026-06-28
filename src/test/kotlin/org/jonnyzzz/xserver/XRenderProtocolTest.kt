@@ -2433,6 +2433,47 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER OpOut multiplies source by inverse destination alpha`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 4, height = 1))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 4, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0x8000, operation = XRender.OpSrc))
+
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderComposite(SolidPictureId, PixmapPictureId, operation = XRender.OpOut, destinationX = 0, destinationY = 0, width = 1, height = 1))
+
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 1, height = 1))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
+                out.write(putImage8Request(MaskPixmapId, width = 1, height = 1, alphas = byteArrayOf(0x80.toByte())))
+                out.write(renderComposite(SolidPictureId, PixmapPictureId, mask = MaskPictureId, operation = XRender.OpOut, destinationX = 1, destinationY = 0, width = 1, height = 1))
+
+                out.write(renderFillRectangles(PixmapPictureId, x = 2, y = 0, width = 1, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff, operation = XRender.OpOut))
+
+                out.write(createPixmapRequest(ComponentMaskPixmapId, depth = 32, width = 1, height = 1))
+                out.write(renderCreatePicture(ComponentMaskPictureId, ComponentMaskPixmapId, XRender.Argb32Format))
+                out.write(renderFillRectangles(ComponentMaskPictureId, x = 0, y = 0, width = 1, height = 1, red = 0x8000, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderChangePictureComponentAlpha(ComponentMaskPictureId, componentAlpha = true))
+                out.write(renderComposite(SolidPictureId, PixmapPictureId, mask = ComponentMaskPictureId, operation = XRender.OpOut, destinationX = 3, destinationY = 0, width = 1, height = 1))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 4, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0x7f7f_0000, pixelAt(image, imageWidth = 4, x = 0, y = 0))
+                assertEquals(0x4040_0000, pixelAt(image, imageWidth = 4, x = 1, y = 0))
+                assertEquals(0x7f7f_0000, pixelAt(image, imageWidth = 4, x = 2, y = 0))
+                assertEquals(0x7f40_0000, pixelAt(image, imageWidth = 4, x = 3, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER transformed pixmap source samples source picture coordinates`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
