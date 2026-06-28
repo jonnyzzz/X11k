@@ -2831,6 +2831,22 @@ internal class X11State(
                     )
                     destinationFramebuffer.snapshotRegion(destinationX, destinationY, width, height)
                 }
+                XRender.OpBlendLighten -> {
+                    destinationFramebuffer.blendSolidLighten(
+                        pixel = solid,
+                        destinationX = destinationX,
+                        destinationY = destinationY,
+                        width = width,
+                        height = height,
+                        clipRectangles = destination.clipRectangles,
+                        clipMask = destinationClipMask,
+                        mask = maskFramebuffer,
+                        maskX = maskX,
+                        maskY = maskY,
+                        maskAlphaAt = maskAlphaAt,
+                    )
+                    destinationFramebuffer.snapshotRegion(destinationX, destinationY, width, height)
+                }
                 XRender.OpSaturate, XRender.OpDisjointOverReverse -> {
                     destinationFramebuffer.blendSolidSaturate(
                         pixel = solid,
@@ -4323,6 +4339,15 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendDarken -> framebuffer.blendSolidDarken(
+                    pixel = pixel,
+                    destinationX = rectangle.x,
+                    destinationY = rectangle.y,
+                    width = rectangle.width,
+                    height = rectangle.height,
+                    clipRectangles = destination.clipRectangles,
+                    clipMask = destinationClipMask,
+                )
+                XRender.OpBlendLighten -> framebuffer.blendSolidLighten(
                     pixel = pixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
