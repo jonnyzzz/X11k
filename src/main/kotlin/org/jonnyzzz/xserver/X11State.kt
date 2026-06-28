@@ -2338,8 +2338,11 @@ internal class X11State(
         clipXOrigin?.let { pictures[id]?.clipXOrigin = it }
         clipYOrigin?.let { pictures[id]?.clipYOrigin = it }
         clipMask?.let {
-            pictures[id]?.clipMask = it
-            pictures[id]?.clipRectangles = null
+            pictures[id]?.let { picture ->
+                picture.clipMask = it
+                picture.clipMaskImage = if (it == 0) null else pixmaps[it]?.framebuffer?.snapshot()
+                picture.clipRectangles = null
+            }
         }
         graphicsExposure?.let { pictures[id]?.graphicsExposure = it }
         subwindowMode?.let { pictures[id]?.subwindowMode = it }
@@ -2352,6 +2355,7 @@ internal class X11State(
     @Synchronized
     fun updatePictureClip(id: Int, rectangles: List<XRectangleCommand>) {
         pictures[id]?.clipMask = 0
+        pictures[id]?.clipMaskImage = null
         pictures[id]?.clipRectangles = rectangles
     }
 
@@ -3143,11 +3147,18 @@ internal class X11State(
     private fun XPicture.clipMaskPredicate(): XClipMask? {
         val maskId = clipMask
         if (maskId == 0) return null
-        val maskFramebuffer = pixmaps[maskId]?.framebuffer ?: return null
+        val maskImage = clipMaskImage ?: return { _, _ -> false }
         val originX = clipXOrigin
         val originY = clipYOrigin
-        return { x, y -> maskFramebuffer.alphaAt(x - originX, y - originY) != 0 }
+        return { x, y -> maskImage.alphaAt(x - originX, y - originY) != 0 }
     }
+
+    private fun XImagePixels.alphaAt(x: Int, y: Int): Int =
+        if (x in 0 until width && y in 0 until height) {
+            (pixels[y * width + x] ushr 24) and 0xff
+        } else {
+            0
+        }
 
     private fun glyphMaskFromPicture(
         format: Int,
@@ -5149,6 +5160,7 @@ internal data class XPicture(
     var clipXOrigin: Int = 0,
     var clipYOrigin: Int = 0,
     var clipMask: Int = 0,
+    var clipMaskImage: XImagePixels? = null,
     var clipRectangles: List<XRectangleCommand>? = null,
     var graphicsExposure: Boolean = false,
     var subwindowMode: Int = 0,

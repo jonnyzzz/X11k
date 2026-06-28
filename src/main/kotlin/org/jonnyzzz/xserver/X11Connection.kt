@@ -1161,6 +1161,9 @@ internal class X11Connection(
                 clipXOrigin = attributes.clipXOrigin ?: 0,
                 clipYOrigin = attributes.clipYOrigin ?: 0,
                 clipMask = attributes.clipMask ?: 0,
+                clipMaskImage = attributes.clipMask
+                    ?.takeIf { it != 0 }
+                    ?.let { state.pixmap(it)?.framebuffer?.snapshot() },
                 graphicsExposure = attributes.graphicsExposure?.toXBool() ?: false,
                 subwindowMode = attributes.subwindowMode ?: 0,
                 polyEdge = attributes.polyEdge ?: 0,
