@@ -2146,7 +2146,7 @@ internal class X11State(
                         )
                     },
                     repeat = picture.repeat,
-                    clipRectangles = picture.clipRectangles.size,
+                    clipRectangles = picture.clipRectangles?.size ?: 0,
                     transform = picture.transform,
                     filterName = picture.filterName,
                     filterValues = picture.filterValues,
@@ -2540,7 +2540,7 @@ internal class X11State(
         val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
         val maskFramebuffer = mask?.drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer }
         val maskAlphaAt = mask?.maskAlphaSampler()
-        if (source.clipRectangles.isNotEmpty()) {
+        if (source.clipRectangles != null) {
             val sourcePixelAt = source.sourcePixelSamplerOptional() ?: return null
             return destinationFramebuffer.compositeGeneratedOptional(
                 sourceX = sourceX,
@@ -2550,7 +2550,7 @@ internal class X11State(
                 width = width,
                 height = height,
                 operation = operation,
-                clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                clipRectangles = destination.clipRectangles,
                 mask = maskFramebuffer,
                 maskX = maskX,
                 maskY = maskY,
@@ -2569,7 +2569,7 @@ internal class X11State(
                 width = width,
                 height = height,
                 operation = operation,
-                clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                clipRectangles = destination.clipRectangles,
                 mask = maskFramebuffer,
                 maskX = maskX,
                 maskY = maskY,
@@ -2582,7 +2582,7 @@ internal class X11State(
         if (solid != null) {
             return when (operation) {
                 XRender.OpClear -> {
-                    if (maskFramebuffer == null && maskAlphaAt == null && destination.clipRectangles.isEmpty()) {
+                    if (maskFramebuffer == null && maskAlphaAt == null && destination.clipRectangles == null) {
                         destinationFramebuffer.fill(destinationX, destinationY, width, height, 0, preserveAlpha = true)
                     } else {
                         destinationFramebuffer.copyFrom(
@@ -2594,7 +2594,7 @@ internal class X11State(
                             width = width,
                             height = height,
                             operation = XRender.OpClear,
-                            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                            clipRectangles = destination.clipRectangles,
                             mask = maskFramebuffer,
                             maskX = maskX,
                             maskY = maskY,
@@ -2604,7 +2604,7 @@ internal class X11State(
                     XImagePixels(width, height, IntArray(width * height))
                 }
                 XRender.OpSrc -> {
-                    if (maskFramebuffer == null && maskAlphaAt == null && destination.clipRectangles.isEmpty()) {
+                    if (maskFramebuffer == null && maskAlphaAt == null && destination.clipRectangles == null) {
                         destinationFramebuffer.fill(destinationX, destinationY, width, height, solid, preserveAlpha = true)
                     } else {
                         destinationFramebuffer.copyFrom(
@@ -2616,7 +2616,7 @@ internal class X11State(
                             width = width,
                             height = height,
                             operation = XRender.OpSrc,
-                            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                            clipRectangles = destination.clipRectangles,
                             mask = maskFramebuffer,
                             maskX = maskX,
                             maskY = maskY,
@@ -2632,7 +2632,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                        clipRectangles = destination.clipRectangles,
                         mask = maskFramebuffer,
                         maskX = maskX,
                         maskY = maskY,
@@ -2647,7 +2647,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                        clipRectangles = destination.clipRectangles,
                         mask = maskFramebuffer,
                         maskX = maskX,
                         maskY = maskY,
@@ -2668,7 +2668,7 @@ internal class X11State(
                 width = width,
                 height = height,
                 operation = operation,
-                clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                clipRectangles = destination.clipRectangles,
                 mask = maskFramebuffer,
                 maskX = maskX,
                 maskY = maskY,
@@ -2686,7 +2686,7 @@ internal class X11State(
             width = width,
             height = height,
             operation = operation,
-            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+            clipRectangles = destination.clipRectangles,
             mask = maskFramebuffer,
             maskX = maskX,
             maskY = maskY,
@@ -2728,7 +2728,7 @@ internal class X11State(
             width = width,
             height = height,
             operation = XRender.OpSrc,
-            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+            clipRectangles = destination.clipRectangles,
         ) { x, y ->
             sourcePixelAt(x, y)
         }
@@ -2737,22 +2737,38 @@ internal class X11State(
     private fun scaledSourcePixelAt(source: XPicture, colorScale: Int, alphaScale: Int): ((x: Int, y: Int) -> Int?)? {
         val gradientSampler = source.gradientSampler()
         if (gradientSampler != null) {
-            return { x, y -> scaledPixel(gradientSampler(x, y), colorScale, alphaScale) }
+            return { x, y ->
+                if (source.insidePictureClip(x, y)) {
+                    scaledPixel(gradientSampler(x, y), colorScale, alphaScale)
+                } else {
+                    null
+                }
+            }
         }
         val solid = source.solidPixel
         if (solid != null) {
             val scaled = scaledPixel(solid, colorScale, alphaScale)
-            return { _, _ -> scaled }
+            return { x, y -> if (source.insidePictureClip(x, y)) scaled else null }
         }
         val sourceDrawableId = source.drawableId ?: return null
         val sourceFramebuffer = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
         if (source.transform != IdentityTransform || source.repeat != XRender.RepeatNone) {
             return { x, y ->
-                sourceFramebuffer.transformedPixelAtOrNull(x, y, source.repeat, source.transform, source.filterName)
-                    ?.let { scaledPixel(it, colorScale, alphaScale) }
+                if (source.insidePictureClip(x, y)) {
+                    sourceFramebuffer.transformedPixelAtOrNull(x, y, source.repeat, source.transform, source.filterName)
+                        ?.let { scaledPixel(it, colorScale, alphaScale) }
+                } else {
+                    null
+                }
             }
         }
-        return { x, y -> sourceFramebuffer.pixelAt(x, y)?.let { scaledPixel(it, colorScale, alphaScale) } }
+        return { x, y ->
+            if (source.insidePictureClip(x, y)) {
+                sourceFramebuffer.pixelAt(x, y)?.let { scaledPixel(it, colorScale, alphaScale) }
+            } else {
+                null
+            }
+        }
     }
 
     private fun scaledPixel(pixel: Int, colorScale: Int, alphaScale: Int): Int {
@@ -2776,7 +2792,7 @@ internal class X11State(
         gradientSampler()?.let { sampler ->
             return { x, y -> if (insidePictureClip(x, y)) (sampler(x, y) ushr 24) and 0xff else 0 }
         }
-        if (transform == IdentityTransform && repeat == XRender.RepeatNone && clipRectangles.isEmpty()) return null
+        if (transform == IdentityTransform && repeat == XRender.RepeatNone && clipRectangles == null) return null
         val framebuffer = drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer } ?: return null
         return { x, y -> if (insidePictureClip(x, y)) framebuffer.transformedAlphaAt(x, y, repeat, transform, filterName) else 0 }
     }
@@ -2979,13 +2995,15 @@ internal class X11State(
         }
     }
 
-    private fun XPicture.insidePictureClip(x: Int, y: Int): Boolean =
-        clipRectangles.isEmpty() || clipRectangles.any { rectangle ->
+    private fun XPicture.insidePictureClip(x: Int, y: Int): Boolean {
+        val rectangles = clipRectangles ?: return true
+        return rectangles.any { rectangle ->
             x >= rectangle.x &&
                 y >= rectangle.y &&
                 x < rectangle.x + rectangle.width &&
                 y < rectangle.y + rectangle.height
         }
+    }
 
     private fun XPicture.insidePictureClip(x: Double, y: Double): Boolean =
         insidePictureClip(floor(x).toInt(), floor(y).toInt())
@@ -3541,15 +3559,31 @@ internal class X11State(
         var painted = false
         for (rectangle in rectangles) {
             painted = when (operation) {
-                XRender.OpClear -> framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, 0, preserveAlpha = true)
-                XRender.OpSrc -> framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, preserveAlpha = true)
+                XRender.OpClear -> framebuffer.fill(
+                    rectangle.x,
+                    rectangle.y,
+                    rectangle.width,
+                    rectangle.height,
+                    0,
+                    preserveAlpha = true,
+                    clipRectangles = destination.clipRectangles,
+                )
+                XRender.OpSrc -> framebuffer.fill(
+                    rectangle.x,
+                    rectangle.y,
+                    rectangle.width,
+                    rectangle.height,
+                    pixel,
+                    preserveAlpha = true,
+                    clipRectangles = destination.clipRectangles,
+                )
                 XRender.OpOver -> framebuffer.blendSolidOver(
                     pixel = pixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                    clipRectangles = destination.clipRectangles,
                 )
                 XRender.OpAdd -> framebuffer.blendSolidAdd(
                     pixel = pixel,
@@ -3557,7 +3591,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                    clipRectangles = destination.clipRectangles,
                 )
                 else -> framebuffer.blendSolidOver(
                     pixel = pixel,
@@ -3565,7 +3599,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                    clipRectangles = destination.clipRectangles,
                 )
             } || painted
         }
@@ -3584,7 +3618,7 @@ internal class X11State(
     ): Boolean {
         val drawableId = destination.drawableId ?: return false
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        val sourcePixelAt = if (source.clipRectangles.isNotEmpty()) {
+        val sourcePixelAt = if (source.clipRectangles != null) {
             source.sourcePixelSamplerOptional()
         } else {
             source.sourcePixelSampler()?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
@@ -3596,7 +3630,7 @@ internal class X11State(
             operation = operation,
             trapezoids = trapezoids,
             maskFormat = maskFormat,
-            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+            clipRectangles = destination.clipRectangles,
         ) { x, y ->
             sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
         }
@@ -3610,7 +3644,7 @@ internal class X11State(
         return framebuffer.addTrapezoids(
             trapezoids = trapezoids,
             maskFormat = destination.format,
-            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+            clipRectangles = destination.clipRectangles,
         )
     }
 
@@ -3626,7 +3660,7 @@ internal class X11State(
     ): Boolean {
         val drawableId = destination.drawableId ?: return false
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        val sourcePixelAt = if (source.clipRectangles.isNotEmpty()) {
+        val sourcePixelAt = if (source.clipRectangles != null) {
             source.sourcePixelSamplerOptional()
         } else {
             source.sourcePixelSampler()?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
@@ -3638,7 +3672,7 @@ internal class X11State(
             operation = operation,
             triangles = triangles,
             maskFormat = maskFormat,
-            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+            clipRectangles = destination.clipRectangles,
         ) { x, y ->
             sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
         }
@@ -3655,7 +3689,7 @@ internal class X11State(
         return framebuffer.compositeColoredTriangles(
             operation = operation,
             triangles = triangles,
-            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+            clipRectangles = destination.clipRectangles,
         )
     }
 
@@ -3670,7 +3704,7 @@ internal class X11State(
         return framebuffer.compositeColoredTrapezoids(
             operation = operation,
             trapezoids = trapezoids,
-            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+            clipRectangles = destination.clipRectangles,
         )
     }
 
@@ -3690,7 +3724,7 @@ internal class X11State(
             operation = operation,
             sourceQuad = sourceQuad,
             destinationQuad = destinationQuad,
-            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+            clipRectangles = destination.clipRectangles,
             sourcePixelAt = sourcePixelAt,
         )
     }
@@ -3710,7 +3744,7 @@ internal class X11State(
         val destinationDrawableId = destination.drawableId ?: return false
         val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return false
         val glyphSet = glyphSets[glyphSetId] ?: return false
-        val sourcePixelAt = if (source.clipRectangles.isNotEmpty()) {
+        val sourcePixelAt = if (source.clipRectangles != null) {
             source.sourcePixelSamplerOptional()
         } else {
             source.sourcePixelSampler()?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
@@ -3731,7 +3765,7 @@ internal class X11State(
                 width = glyph.width,
                 height = glyph.height,
                 operation = operation,
-                clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                clipRectangles = destination.clipRectangles,
                 mask = mask,
                 sourcePixelAt = sourcePixelAt,
             ) || painted
@@ -4954,7 +4988,7 @@ internal data class XPicture(
     val radialGradient: XRadialGradient? = null,
     val conicalGradient: XConicalGradient? = null,
     var repeat: Int = XRender.RepeatNone,
-    var clipRectangles: List<XRectangleCommand> = emptyList(),
+    var clipRectangles: List<XRectangleCommand>? = null,
     var transform: List<Int> = IdentityTransform,
     var filterName: String? = null,
     var filterValues: List<Int> = emptyList(),
