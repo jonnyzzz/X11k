@@ -1678,7 +1678,7 @@ internal class XFramebuffer(
             XRender.OpAtopReverse -> atopReverseOperator(source, destination, maskAlpha)
             XRender.OpXor -> xorOperator(source, destination, maskAlpha)
             XRender.OpAdd -> add(source, destination, maskAlpha)
-            XRender.OpSaturate -> saturate(source, destination, maskAlpha)
+            XRender.OpSaturate, XRender.OpDisjointOverReverse -> saturate(source, destination, maskAlpha)
             else -> over(source, destination, maskAlpha)
         }
 
@@ -1698,7 +1698,7 @@ internal class XFramebuffer(
             XRender.OpAtopReverse -> atopReverseComponentMask(source, destination, mask)
             XRender.OpXor -> xorComponentMask(source, destination, mask)
             XRender.OpAdd -> addComponentMask(source, destination, mask)
-            XRender.OpSaturate -> saturateComponentMask(source, destination, mask)
+            XRender.OpSaturate, XRender.OpDisjointOverReverse -> saturateComponentMask(source, destination, mask)
             else -> overComponentMask(source, destination, mask)
         }
 
@@ -2263,7 +2263,8 @@ internal class XFramebuffer(
             this == XRender.OpAtop ||
             this == XRender.OpAtopReverse ||
             this == XRender.OpXor ||
-            this == XRender.OpSaturate
+            this == XRender.OpSaturate ||
+            this == XRender.OpDisjointOverReverse
 
     private fun edge(x1: Double, y1: Double, x2: Double, y2: Double, x: Double, y: Double): Double =
         (x - x1) * (y2 - y1) - (y - y1) * (x2 - x1)

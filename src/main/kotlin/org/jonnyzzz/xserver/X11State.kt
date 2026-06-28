@@ -2767,7 +2767,7 @@ internal class X11State(
                     )
                     XImagePixels(width, height, IntArray(width * height) { solid })
                 }
-                XRender.OpSaturate -> {
+                XRender.OpSaturate, XRender.OpDisjointOverReverse -> {
                     destinationFramebuffer.blendSolidSaturate(
                         pixel = solid,
                         destinationX = destinationX,
@@ -3975,7 +3975,7 @@ internal class X11State(
                     clipRectangles = destination.clipRectangles,
                     clipMask = destinationClipMask,
                 )
-                XRender.OpSaturate -> framebuffer.blendSolidSaturate(
+                XRender.OpSaturate, XRender.OpDisjointOverReverse -> framebuffer.blendSolidSaturate(
                     pixel = pixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
