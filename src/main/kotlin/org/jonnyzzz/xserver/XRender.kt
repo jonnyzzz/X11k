@@ -72,6 +72,7 @@ internal object XRender {
     const val OpBlendExclusion = 0x3a
     const val OpBlendHSLHue = 0x3b
     const val OpBlendHSLSaturation = 0x3c
+    const val OpBlendHSLColor = 0x3d
     const val OpBlendMaximum = 0x3e
 
     const val CPRepeat = 1 shl 0
