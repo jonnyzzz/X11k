@@ -36,7 +36,7 @@ internal class X11State(
     private val windowOwners = linkedMapOf<Int, XEventSink>()
     private val resourceOwners = linkedMapOf<Int, XEventSink>()
     private val eventSinks = linkedMapOf<XEventSink, MutableMap<Int, Int>>()
-    private val saveSets = linkedMapOf<XEventSink, LinkedHashSet<Int>>()
+    private val saveSets = linkedMapOf<XEventSink, LinkedHashMap<Int, XSaveSetEntry>>()
     private val retainedClients = linkedMapOf<Int, XRetainedClientResources>()
     private var nextRetainedClientId = 1
     private var nextAtomId = 69
@@ -201,7 +201,7 @@ internal class X11State(
         }
         releaseInputGrabsForResources(removed)
         selectionOwners.entries.removeIf { it.value.windowId in removed }
-        saveSets.values.forEach { it.removeAll(removed) }
+        saveSets.values.forEach { saveSet -> removed.forEach { saveSet.remove(it) } }
         saveSets.entries.removeIf { it.value.isEmpty() }
         removeEventSelections(removed)
         if (focusWindowId in removed) focusWindowId = X11Ids.RootWindow
@@ -269,7 +269,7 @@ internal class X11State(
         retainedClients[nextRetainedClientId++] = XRetainedClientResources(
             closeDownMode = closeDownMode,
             resourceIds = currentResourceIds,
-            saveSet = saveSets[owner]?.toList().orEmpty(),
+            saveSet = saveSets[owner]?.values?.toList().orEmpty(),
         )
     }
 
@@ -313,8 +313,19 @@ internal class X11State(
 
     @Synchronized
     fun changeSaveSet(owner: XEventSink, windowId: Int, insert: Boolean) {
+        changeSaveSet(
+            owner = owner,
+            windowId = windowId,
+            insert = insert,
+            target = XSaveSetTarget.Nearest,
+            map = XSaveSetMap.Map,
+        )
+    }
+
+    @Synchronized
+    fun changeSaveSet(owner: XEventSink, windowId: Int, insert: Boolean, target: Int, map: Int) {
         if (insert) {
-            saveSets.getOrPut(owner) { linkedSetOf() } += windowId
+            saveSets.getOrPut(owner) { linkedMapOf() }[windowId] = XSaveSetEntry(windowId, target, map)
         } else {
             saveSets[owner]?.remove(windowId)
             if (saveSets[owner]?.isEmpty() == true) saveSets.remove(owner)
@@ -5477,25 +5488,32 @@ internal class X11State(
     }
 
     private fun processSaveSet(owner: XEventSink, resourceIds: Set<Int>) {
-        val saveSet = saveSets[owner]?.toList().orEmpty()
+        val saveSet = saveSets[owner]?.values?.toList().orEmpty()
         processSaveSet(saveSet, resourceIds)
     }
 
-    private fun processSaveSet(saveSet: List<Int>, resourceIds: Set<Int>) {
+    private fun processSaveSet(saveSet: List<XSaveSetEntry>, resourceIds: Set<Int>) {
         if (saveSet.isEmpty()) return
         val ownedWindows = resourceIds.filterTo(linkedSetOf()) { it != X11Ids.RootWindow && windows.containsKey(it) }
-        for (windowId in saveSet) {
+        for (entry in saveSet) {
+            val windowId = entry.windowId
             val window = windows[windowId] ?: continue
             val absolute = absolutePosition(window)
             if (isInferiorOfAny(windowId, ownedWindows)) {
-                val parentId = closestNonOwnedAncestor(window.parentId, ownedWindows)
+                val parentId = if (entry.target == XSaveSetTarget.Root) {
+                    X11Ids.RootWindow
+                } else {
+                    closestNonOwnedAncestor(window.parentId, ownedWindows)
+                }
                 val parentAbsolute = windows[parentId]?.let { absolutePosition(it) } ?: (0 to 0)
                 window.parentId = parentId
                 window.x = absolute.first - parentAbsolute.first
                 window.y = absolute.second - parentAbsolute.second
             }
-            if (!window.mapped) {
+            if (entry.map == XSaveSetMap.Map && !window.mapped) {
                 mapWindow(windowId)
+            } else if (entry.map == XSaveSetMap.Unmap && window.mapped) {
+                unmapWindow(windowId)
             }
         }
     }
@@ -5525,7 +5543,7 @@ internal class X11State(
         val emptyRetainedClients = mutableListOf<Int>()
         for ((id, retained) in retainedClients) {
             retained.resourceIds.removeAll(resourceIds)
-            retained.saveSet = retained.saveSet.filter { it !in resourceIds }
+            retained.saveSet = retained.saveSet.filter { it.windowId !in resourceIds }
             if (retained.resourceIds.isEmpty()) {
                 emptyRetainedClients += id
             }
@@ -5910,8 +5928,24 @@ private data class XSelectionOwner(
 private data class XRetainedClientResources(
     val closeDownMode: Int,
     val resourceIds: LinkedHashSet<Int>,
-    var saveSet: List<Int>,
+    var saveSet: List<XSaveSetEntry>,
 )
+
+private data class XSaveSetEntry(
+    val windowId: Int,
+    val target: Int,
+    val map: Int,
+)
+
+private object XSaveSetTarget {
+    const val Nearest = 0
+    const val Root = 1
+}
+
+private object XSaveSetMap {
+    const val Map = 0
+    const val Unmap = 1
+}
 
 internal data class XScreenSaverSettings(
     val timeout: Int = DefaultTimeout,

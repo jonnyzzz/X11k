@@ -528,14 +528,17 @@ internal class X11Connection(
         if (map !in XFixes.SaveSetMap..XFixes.SaveSetUnmap) {
             return writeError(error = 2, opcode = majorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = map)
         }
-        if (target != XFixes.SaveSetNearest || map != XFixes.SaveSetMap) {
-            return xfixesBadImplementation(majorOpcode, XFixes.ChangeSaveSet)
-        }
         val windowId = byteOrder.u32(body, 4)
         state.window(windowId) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = windowId)
         val owner = state.windowOwner(windowId)
         if (owner == null || owner == this) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = 0)
-        state.changeSaveSet(this, windowId, insert = mode == XSaveSetMode.Insert)
+        state.changeSaveSet(
+            owner = this,
+            windowId = windowId,
+            insert = mode == XSaveSetMode.Insert,
+            target = target,
+            map = map,
+        )
     }
 
     private fun xfixesSelectSelectionInput(body: ByteArray, majorOpcode: Int) {

@@ -1052,8 +1052,6 @@ class XCoreDrawingProtocolTest {
                     managerOut.write(xfixesChangeSaveSetRequest(mode = 0, target = 2, map = XFixes.SaveSetMap, window = child))
                     managerOut.write(xfixesChangeSaveSetRequest(mode = 0, target = XFixes.SaveSetNearest, map = 2, window = child))
                     managerOut.write(xfixesChangeSaveSetRequest(mode = 0, target = XFixes.SaveSetNearest, map = XFixes.SaveSetMap, window = WindowId + 99))
-                    managerOut.write(xfixesChangeSaveSetRequest(mode = 0, target = XFixes.SaveSetRoot, map = XFixes.SaveSetMap, window = child))
-                    managerOut.write(xfixesChangeSaveSetRequest(mode = 0, target = XFixes.SaveSetNearest, map = XFixes.SaveSetUnmap, window = child))
                     managerOut.write(createWindowRequest(frame, x = 10, y = 10, width = 50, height = 40))
                     managerOut.write(reparentWindowRequest(child, frame, x = 7, y = 8))
                     managerOut.write(xfixesChangeSaveSetRequest(mode = 0, target = XFixes.SaveSetNearest, map = XFixes.SaveSetMap, window = child))
@@ -1065,11 +1063,9 @@ class XCoreDrawingProtocolTest {
                     assertError(managerSocket.getInputStream(), error = 2, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = 2, sequence = 3)
                     assertError(managerSocket.getInputStream(), error = 2, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = 2, sequence = 4)
                     assertError(managerSocket.getInputStream(), error = 3, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = WindowId + 99, sequence = 5)
-                    assertError(managerSocket.getInputStream(), error = 17, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = 0, sequence = 6)
-                    assertError(managerSocket.getInputStream(), error = 17, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = 0, sequence = 7)
 
                     val pointer = readReply(managerSocket.getInputStream())
-                    assertEquals(11, u16le(pointer, 2))
+                    assertEquals(9, u16le(pointer, 2))
                     closeClientAndWait(managerSocket)
                     assertEquals(listOf(child), waitForRootChildren(server.localPort) { it == listOf(child) })
                     val json = httpGet(server.localPort, "/state.json")
@@ -11744,6 +11740,62 @@ class XCoreDrawingProtocolTest {
                     observerOut.write(queryPointerRequest())
                     observerOut.flush()
                     assertEquals(4, u16le(readReply(observerSocket.getInputStream()), 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES ChangeSaveSet supports root target and unmap processing`() {
+        XServer(ServerOptions(port = 0, width = 160, height = 120)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { appSocket ->
+                Socket("127.0.0.1", server.localPort).use { frameSocket ->
+                    appSocket.soTimeout = 2_000
+                    frameSocket.soTimeout = 2_000
+                    setup(appSocket)
+                    setup(frameSocket)
+
+                    val middle = WindowId + 90
+                    val appWindow = WindowId + 91
+                    val appOut = appSocket.getOutputStream()
+                    appOut.write(createWindowRequest(middle, x = 5, y = 6, width = 70, height = 55))
+                    appOut.write(createWindowRequest(appWindow, parent = middle, x = 7, y = 8, width = 20, height = 15))
+                    appOut.write(mapWindowRequest(middle))
+                    appOut.write(mapWindowRequest(appWindow))
+                    appOut.flush()
+                    val appInput = appSocket.getInputStream()
+                    assertMapAndExpose(appInput, middle)
+                    assertMapAndExpose(appInput, appWindow)
+
+                    val frame = WindowId + 92
+                    val frameOut = frameSocket.getOutputStream()
+                    frameOut.write(createWindowRequest(frame, x = 10, y = 10, width = 90, height = 70))
+                    frameOut.write(reparentWindowRequest(middle, frame, x = 5, y = 6))
+                    frameOut.write(
+                        xfixesChangeSaveSetRequest(
+                            mode = 0,
+                            target = XFixes.SaveSetRoot,
+                            map = XFixes.SaveSetUnmap,
+                            window = appWindow,
+                        ),
+                    )
+                    frameOut.write(queryPointerRequest())
+                    frameOut.flush()
+                    assertEquals(4, u16le(readReply(frameSocket.getInputStream()), 2))
+                    closeClientAndWait(frameSocket)
+
+                    assertEquals(listOf(appWindow), waitForRootChildren(server.localPort) { it == listOf(appWindow) })
+                    val json = httpGet(server.localPort, "/state.json")
+                    val windowJson = json.substringAfter(windowJsonId(appWindow)).substringBefore("}")
+                    assertContains(
+                        json,
+                        windowJsonId(appWindow) + ""","parent":"${X11Ids.RootWindow.toJsonHex()}","x":22,"y":24,"localX":22,"localY":24,"width":20,"height":15""",
+                    )
+                    assertContains(windowJson, """"mapped":false""")
+                    assertFalse(json.contains(windowJsonId(middle)))
                 }
             }
             server.close()
