@@ -2863,6 +2863,22 @@ internal class X11State(
                     )
                     XImagePixels(width, height, IntArray(width * height) { solid })
                 }
+                XRender.OpConjointIn -> {
+                    destinationFramebuffer.blendSolidConjointIn(
+                        pixel = solid,
+                        destinationX = destinationX,
+                        destinationY = destinationY,
+                        width = width,
+                        height = height,
+                        clipRectangles = destination.clipRectangles,
+                        clipMask = destinationClipMask,
+                        mask = maskFramebuffer,
+                        maskX = maskX,
+                        maskY = maskY,
+                        maskAlphaAt = maskAlphaAt,
+                    )
+                    XImagePixels(width, height, IntArray(width * height) { solid })
+                }
                 XRender.OpIn -> {
                     destinationFramebuffer.blendSolidIn(
                         pixel = solid,
@@ -4165,6 +4181,15 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointIn -> framebuffer.blendSolidDisjointIn(
+                    pixel = pixel,
+                    destinationX = rectangle.x,
+                    destinationY = rectangle.y,
+                    width = rectangle.width,
+                    height = rectangle.height,
+                    clipRectangles = destination.clipRectangles,
+                    clipMask = destinationClipMask,
+                )
+                XRender.OpConjointIn -> framebuffer.blendSolidConjointIn(
                     pixel = pixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
