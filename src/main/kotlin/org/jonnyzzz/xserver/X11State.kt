@@ -2879,6 +2879,22 @@ internal class X11State(
                     )
                     destinationFramebuffer.snapshotRegion(destinationX, destinationY, width, height)
                 }
+                XRender.OpDisjointInReverse -> {
+                    destinationFramebuffer.blendSolidDisjointInReverse(
+                        pixel = solid,
+                        destinationX = destinationX,
+                        destinationY = destinationY,
+                        width = width,
+                        height = height,
+                        clipRectangles = destination.clipRectangles,
+                        clipMask = destinationClipMask,
+                        mask = maskFramebuffer,
+                        maskX = maskX,
+                        maskY = maskY,
+                        maskAlphaAt = maskAlphaAt,
+                    )
+                    destinationFramebuffer.snapshotRegion(destinationX, destinationY, width, height)
+                }
                 XRender.OpOutReverse -> {
                     destinationFramebuffer.blendSolidOutReverse(
                         pixel = solid,
@@ -4046,6 +4062,15 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpInReverse -> framebuffer.blendSolidInReverse(
+                    pixel = pixel,
+                    destinationX = rectangle.x,
+                    destinationY = rectangle.y,
+                    width = rectangle.width,
+                    height = rectangle.height,
+                    clipRectangles = destination.clipRectangles,
+                    clipMask = destinationClipMask,
+                )
+                XRender.OpDisjointInReverse -> framebuffer.blendSolidDisjointInReverse(
                     pixel = pixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,

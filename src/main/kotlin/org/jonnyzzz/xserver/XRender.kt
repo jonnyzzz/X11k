@@ -39,6 +39,7 @@ internal object XRender {
     const val OpDisjointOver = 0x13
     const val OpDisjointOverReverse = 0x14
     const val OpDisjointIn = 0x15
+    const val OpDisjointInReverse = 0x16
     const val OpDisjointMaximum = 0x1b
     const val OpConjointClear = 0x20
     const val OpConjointMaximum = 0x2b
