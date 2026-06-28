@@ -531,6 +531,27 @@ internal class XFramebuffer(
         }
     }
 
+    fun blendSolidOutReverse(
+        pixel: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        clipMask: XClipMask? = null,
+        mask: XFramebuffer? = null,
+        maskX: Int = 0,
+        maskY: Int = 0,
+        maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
+    ): Boolean {
+        val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
+        return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
+            val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
+                ?: return@compositeBoundsOptional null
+            outReverseOperator(pixel, pixels[y * this.width + x], maskAlpha)
+        }
+    }
+
     fun compositeSourceOverMask(
         sourceX: Int,
         sourceY: Int,
@@ -1523,6 +1544,7 @@ internal class XFramebuffer(
             XRender.OpIn -> inOperator(source, destination, maskAlpha)
             XRender.OpInReverse -> inReverseOperator(source, destination, maskAlpha)
             XRender.OpOut -> outOperator(source, destination, maskAlpha)
+            XRender.OpOutReverse -> outReverseOperator(source, destination, maskAlpha)
             XRender.OpAdd -> add(source, destination, maskAlpha)
             else -> over(source, destination, maskAlpha)
         }
@@ -1535,6 +1557,7 @@ internal class XFramebuffer(
             XRender.OpIn -> inComponentMask(source, destination, mask)
             XRender.OpInReverse -> inReverseComponentMask(source, destination, mask)
             XRender.OpOut -> outComponentMask(source, destination, mask)
+            XRender.OpOutReverse -> outReverseComponentMask(source, destination, mask)
             XRender.OpAdd -> addComponentMask(source, destination, mask)
             else -> overComponentMask(source, destination, mask)
         }
@@ -1651,6 +1674,25 @@ internal class XFramebuffer(
         return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
     }
 
+    private fun outReverseComponentMask(source: Int, destination: Int, mask: Int): Int {
+        val sourceAlpha = (source ushr 24) and 0xff
+        val destinationAlpha = (destination ushr 24) and 0xff
+        fun colorChannel(shift: Int): Int {
+            val maskChannel = (mask ushr shift) and 0xff
+            val sourceAlphaChannel = (sourceAlpha * maskChannel + 127) / 255
+            val inverseSourceAlphaChannel = 255 - sourceAlphaChannel
+            val destinationChannel = (destination ushr shift) and 0xff
+            return (destinationChannel * inverseSourceAlphaChannel * destinationAlpha + 32_512) / 65_025
+        }
+        fun alphaChannel(): Int {
+            val maskAlpha = (mask ushr 24) and 0xff
+            val sourceAlphaMasked = (sourceAlpha * maskAlpha + 127) / 255
+            val inverseSourceAlphaMasked = 255 - sourceAlphaMasked
+            return (destinationAlpha * inverseSourceAlphaMasked + 127) / 255
+        }
+        return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
+    }
+
     private fun clearWithMask(destination: Int, maskAlpha: Int): Int {
         if (maskAlpha >= 255) return 0
         val inverse = 255 - maskAlpha
@@ -1715,6 +1757,28 @@ internal class XFramebuffer(
         return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
     }
 
+    private fun outReverseOperator(source: Int, destination: Int, maskAlpha: Int): Int {
+        val destinationAlpha = (destination ushr 24) and 0xff
+        if (maskAlpha <= 0) return destination
+        if (destinationAlpha <= 0) return 0
+        val sourceAlphaMasked = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
+        val inverseSourceAlphaMasked = 255 - sourceAlphaMasked
+        if (inverseSourceAlphaMasked <= 0) return 0
+        fun channel(shift: Int): Int {
+            val destinationChannel = if (shift == 24) {
+                destinationAlpha
+            } else {
+                ((destination ushr shift) and 0xff) * destinationAlpha
+            }
+            return if (shift == 24) {
+                (destinationChannel * inverseSourceAlphaMasked + 127) / 255
+            } else {
+                (destinationChannel * inverseSourceAlphaMasked + 32_512) / 65_025
+            }
+        }
+        return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
     private fun add(source: Int, destination: Int, maskAlpha: Int): Int {
         val sourceAlpha = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
         if (sourceAlpha <= 0) return destination
@@ -1740,7 +1804,7 @@ internal class XFramebuffer(
     }
 
     private fun Int.returnsDestinationResultImage(): Boolean =
-        this == XRender.OpInReverse
+        this == XRender.OpInReverse || this == XRender.OpOutReverse
 
     private fun edge(x1: Double, y1: Double, x2: Double, y2: Double, x: Double, y: Double): Double =
         (x - x1) * (y2 - y1) - (y - y1) * (x2 - x1)
