@@ -27,6 +27,7 @@ internal object XRender {
     const val OpOutReverse = 8
     const val OpAtop = 9
     const val OpAtopReverse = 10
+    const val OpXor = 11
     const val OpAdd = 12
     const val OpMaximum = 13
     const val OpDisjointClear = 0x10

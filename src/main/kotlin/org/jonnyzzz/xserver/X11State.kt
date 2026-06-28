@@ -2860,6 +2860,22 @@ internal class X11State(
                     )
                     destinationFramebuffer.snapshotRegion(destinationX, destinationY, width, height)
                 }
+                XRender.OpXor -> {
+                    destinationFramebuffer.blendSolidXor(
+                        pixel = solid,
+                        destinationX = destinationX,
+                        destinationY = destinationY,
+                        width = width,
+                        height = height,
+                        clipRectangles = destination.clipRectangles,
+                        clipMask = destinationClipMask,
+                        mask = maskFramebuffer,
+                        maskX = maskX,
+                        maskY = maskY,
+                        maskAlphaAt = maskAlphaAt,
+                    )
+                    destinationFramebuffer.snapshotRegion(destinationX, destinationY, width, height)
+                }
                 else -> {
                     destinationFramebuffer.blendSolidOver(
                         pixel = solid,
@@ -3953,6 +3969,15 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpAtopReverse -> framebuffer.blendSolidAtopReverse(
+                    pixel = pixel,
+                    destinationX = rectangle.x,
+                    destinationY = rectangle.y,
+                    width = rectangle.width,
+                    height = rectangle.height,
+                    clipRectangles = destination.clipRectangles,
+                    clipMask = destinationClipMask,
+                )
+                XRender.OpXor -> framebuffer.blendSolidXor(
                     pixel = pixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
