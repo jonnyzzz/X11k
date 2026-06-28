@@ -1280,7 +1280,7 @@ class XXkbProtocolTest {
     fun `XKEYBOARD SetDebuggingFlags reports no supported debugging flags`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
-            out.write(setDebuggingFlagsRequest(message = "trace", affectFlags = -1, flags = -1, affectCtrls = -1, ctrls = -1, extraBytes = 4))
+            out.write(setDebuggingFlagsRequest(message = "trace", affectFlags = -1, flags = -1, affectCtrls = -1, ctrls = -1))
             out.flush()
 
             val reply = readReply(socket.getInputStream())
@@ -1302,13 +1302,17 @@ class XXkbProtocolTest {
             val out = socket.getOutputStream()
             val malformed = ByteArray(24)
             put16le(malformed, 0, 5)
+            out.write(request(XXkb.MajorOpcode, XXkb.SetDebuggingFlags, ByteArray(16)))
             out.write(request(XXkb.MajorOpcode, XXkb.SetDebuggingFlags, malformed))
+            out.write(setDebuggingFlagsRequest(message = "trace", affectFlags = -1, flags = -1, affectCtrls = -1, ctrls = -1, extraBytes = 4))
             out.write(setDebuggingFlagsRequest(message = "", affectFlags = 1, flags = 1, affectCtrls = 1, ctrls = 1))
             out.flush()
 
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetDebuggingFlags)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetDebuggingFlags)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetDebuggingFlags)
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals(0, u32le(reply, 8))
             assertEquals(0, u32le(reply, 12))
             assertEquals(0, u32le(reply, 16))
