@@ -29,6 +29,7 @@ internal object XRandr {
     const val GetCrtcInfo = 20
     const val GetCrtcGammaSize = 22
     const val GetCrtcGamma = 23
+    const val SetCrtcGamma = 24
     const val GetScreenResourcesCurrent = 25
     const val SetOutputPrimary = 30
     const val GetOutputPrimary = 31
@@ -67,6 +68,7 @@ internal object XRandr {
     const val CrtcId = 0x0000_0201
     const val OutputId = 0x0000_0202
 
+    const val GammaRampSize = 0
     const val RefreshRate = 60
     const val OutputName = "screen-0"
 
@@ -88,6 +90,7 @@ internal object XRandr {
             GetCrtcInfo -> "GetCrtcInfo"
             GetCrtcGammaSize -> "GetCrtcGammaSize"
             GetCrtcGamma -> "GetCrtcGamma"
+            SetCrtcGamma -> "SetCrtcGamma"
             GetScreenResourcesCurrent -> "GetScreenResourcesCurrent"
             SetOutputPrimary -> "SetOutputPrimary"
             GetOutputPrimary -> "GetOutputPrimary"

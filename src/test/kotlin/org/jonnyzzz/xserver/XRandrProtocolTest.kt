@@ -151,11 +151,12 @@ class XRandrProtocolTest {
                 val gammaSize = readReply(socket.getInputStream())
                 assertEquals(20, u16le(gammaSize, 2))
                 assertEquals(0, u32le(gammaSize, 4))
-                assertEquals(0, u16le(gammaSize, 8))
+                assertEquals(XRandr.GammaRampSize, u16le(gammaSize, 8))
 
                 val gamma = readReply(socket.getInputStream())
                 assertEquals(21, u16le(gamma, 2))
                 assertEquals(0, u32le(gamma, 4))
+                assertEquals(XRandr.GammaRampSize, u16le(gamma, 8))
 
                 val primary = readReply(socket.getInputStream())
                 assertEquals(22, u16le(primary, 2))
@@ -226,6 +227,43 @@ class XRandrProtocolTest {
 
                 val recovered = readReply(socket.getInputStream())
                 assertEquals(10, u16le(recovered, 2))
+                assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
+                assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RANDR SetCrtcGamma validates fixed zero gamma ramp and recovers`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(request(XRandr.MajorOpcode, XRandr.SetCrtcGamma, ByteArray(4)))
+                out.write(malformedSetCrtcGammaRequest(XRandr.CrtcId, 1))
+                out.write(setCrtcGammaRequest(0x0102_0304, 0))
+                out.write(setCrtcGammaRequest(XRandr.CrtcId, 1))
+                out.write(setCrtcGammaRequest(XRandr.CrtcId, 0))
+                out.write(u32Request(XRandr.GetCrtcGammaSize, XRandr.CrtcId))
+                out.write(randrQueryVersionRequest(1, 6))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 1, minorOpcode = XRandr.SetCrtcGamma)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 2, minorOpcode = XRandr.SetCrtcGamma)
+                assertError(socket.getInputStream(), error = XRandr.BadCrtc, badValue = 0x0102_0304, sequence = 3, minorOpcode = XRandr.SetCrtcGamma)
+                assertError(socket.getInputStream(), error = 2, badValue = 1, sequence = 4, minorOpcode = XRandr.SetCrtcGamma)
+
+                val gammaSize = readReply(socket.getInputStream())
+                assertEquals(6, u16le(gammaSize, 2))
+                assertEquals(0, u32le(gammaSize, 4))
+                assertEquals(XRandr.GammaRampSize, u16le(gammaSize, 8))
+
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(7, u16le(recovered, 2))
                 assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
                 assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
             }
@@ -831,6 +869,20 @@ class XRandrProtocolTest {
         put32le(body, 8, widthMm)
         put32le(body, 12, heightMm)
         return request(XRandr.MajorOpcode, XRandr.SetScreenSize, body)
+    }
+
+    private fun setCrtcGammaRequest(crtc: Int, size: Int): ByteArray {
+        val body = ByteArray(8 + ((size * 6 + 3) and -4))
+        put32le(body, 0, crtc)
+        put16le(body, 4, size)
+        return request(XRandr.MajorOpcode, XRandr.SetCrtcGamma, body)
+    }
+
+    private fun malformedSetCrtcGammaRequest(crtc: Int, size: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, crtc)
+        put16le(body, 4, size)
+        return request(XRandr.MajorOpcode, XRandr.SetCrtcGamma, body)
     }
 
     private fun createWindowRequest(id: Int): ByteArray {

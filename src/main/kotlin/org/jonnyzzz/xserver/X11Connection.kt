@@ -6835,6 +6835,7 @@ internal class X11Connection(
             XRandr.GetCrtcInfo -> randrGetCrtcInfo(body, majorOpcode)
             XRandr.GetCrtcGammaSize -> randrGetCrtcGammaSize(body, majorOpcode)
             XRandr.GetCrtcGamma -> randrGetCrtcGamma(body, majorOpcode)
+            XRandr.SetCrtcGamma -> randrSetCrtcGamma(body, majorOpcode)
             XRandr.SetOutputPrimary -> randrSetOutputPrimary(body, majorOpcode)
             XRandr.GetOutputPrimary -> randrGetOutputPrimary(body, majorOpcode)
             XRandr.GetProviders -> randrGetProviders(body, majorOpcode)
@@ -7173,7 +7174,9 @@ internal class X11Connection(
         if (crtc != XRandr.CrtcId) {
             return writeError(error = XRandr.BadCrtc, opcode = majorOpcode, minorOpcode = XRandr.GetCrtcGammaSize, badValue = crtc)
         }
-        write(reply(extra = XRandr.Success, payloadUnits = 0))
+        val reply = reply(extra = XRandr.Success, payloadUnits = 0)
+        byteOrder.put16(reply, 8, XRandr.GammaRampSize)
+        write(reply)
     }
 
     private fun randrGetCrtcGamma(body: ByteArray, majorOpcode: Int) {
@@ -7182,7 +7185,22 @@ internal class X11Connection(
         if (crtc != XRandr.CrtcId) {
             return writeError(error = XRandr.BadCrtc, opcode = majorOpcode, minorOpcode = XRandr.GetCrtcGamma, badValue = crtc)
         }
-        write(reply(extra = XRandr.Success, payloadUnits = 0))
+        val reply = reply(extra = XRandr.Success, payloadUnits = 0)
+        byteOrder.put16(reply, 8, XRandr.GammaRampSize)
+        write(reply)
+    }
+
+    private fun randrSetCrtcGamma(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcGamma, badValue = 0)
+        val size = byteOrder.u16(body, 4)
+        val rampBytes = size * 6
+        val expectedSize = 8 + paddedLength(rampBytes)
+        if (body.size != expectedSize) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcGamma, badValue = 0)
+        val crtc = byteOrder.u32(body, 0)
+        if (crtc != XRandr.CrtcId) {
+            return writeError(error = XRandr.BadCrtc, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcGamma, badValue = crtc)
+        }
+        if (size != XRandr.GammaRampSize) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcGamma, badValue = size)
     }
 
     private fun randrGetOutputPrimary(body: ByteArray, majorOpcode: Int) {
