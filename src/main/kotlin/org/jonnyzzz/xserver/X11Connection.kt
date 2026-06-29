@@ -157,6 +157,10 @@ internal class X11Connection(
                 xkb(minorOpcode, body, opcode)
                 return
             }
+            if (extension.name == "XINERAMA") {
+                xinerama(minorOpcode, body, opcode)
+                return
+            }
         }
         when (opcode) {
             1 -> createWindow(minorOpcode, body)
@@ -6349,6 +6353,7 @@ internal class X11Connection(
             XFixes.MajorOpcode -> "XFIXES.${XFixes.operationName(minorOpcode)}"
             XShape.MajorOpcode -> "SHAPE.${XShape.operationName(minorOpcode)}"
             XXkb.MajorOpcode -> "XKEYBOARD.${XXkb.operationName(minorOpcode)}"
+            XXinerama.MajorOpcode -> "XINERAMA.${XXinerama.operationName(minorOpcode)}"
             1 -> "CreateWindow"
             2 -> "ChangeWindowAttributes"
             3 -> "GetWindowAttributes"
@@ -6483,6 +6488,41 @@ internal class X11Connection(
             name.copyInto(reply, offset)
             offset += name.size
         }
+        write(reply)
+    }
+
+    private fun xinerama(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        when (minorOpcode) {
+            XXinerama.QueryVersion -> xineramaQueryVersion(body, majorOpcode)
+            XXinerama.IsActive -> xineramaIsActive(body, majorOpcode)
+            XXinerama.QueryScreens -> xineramaQueryScreens(body, majorOpcode)
+            else -> unsupportedRequest(majorOpcode, minorOpcode, "XINERAMA.${XXinerama.operationName(minorOpcode)}")
+        }
+    }
+
+    private fun xineramaQueryVersion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXinerama.QueryVersion, badValue = 0)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put16(reply, 8, XXinerama.MajorVersion)
+        byteOrder.put16(reply, 10, XXinerama.MinorVersion)
+        write(reply)
+    }
+
+    private fun xineramaIsActive(body: ByteArray, majorOpcode: Int) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXinerama.IsActive, badValue = 0)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, 1)
+        write(reply)
+    }
+
+    private fun xineramaQueryScreens(body: ByteArray, majorOpcode: Int) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXinerama.QueryScreens, badValue = 0)
+        val reply = reply(extra = 0, payloadUnits = 2)
+        byteOrder.put32(reply, 8, 1)
+        byteOrder.put16(reply, 32, 0)
+        byteOrder.put16(reply, 34, 0)
+        byteOrder.put16(reply, 36, state.width)
+        byteOrder.put16(reply, 38, state.height)
         write(reply)
     }
 

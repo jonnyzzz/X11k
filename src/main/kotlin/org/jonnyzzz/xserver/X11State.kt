@@ -158,6 +158,12 @@ internal class X11State(
             firstError = XXkb.FirstError,
             aliases = setOf("XKB"),
         ),
+        XExtension(
+            name = "XINERAMA",
+            majorOpcode = XXinerama.MajorOpcode,
+            firstEvent = XXinerama.FirstEvent,
+            firstError = XXinerama.FirstError,
+        ),
     )
 
     init {
