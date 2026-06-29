@@ -11231,6 +11231,84 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `SetInputFocus emits FocusIn and FocusOut to FocusChange selections`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val first = WindowId
+                val second = WindowId + 1
+                out.write(createWindowRequest(first))
+                out.write(createWindowRequest(second))
+                out.write(mapWindowRequest(first))
+                out.write(mapWindowRequest(second))
+                out.write(setInputFocusRequest(0, revertTo = 2))
+                out.write(changeWindowEventMaskRequest(first, XEventMasks.FocusChange))
+                out.write(changeWindowEventMaskRequest(second, XEventMasks.FocusChange))
+                out.write(setInputFocusRequest(first, revertTo = 2))
+                out.write(setInputFocusRequest(second, revertTo = 2))
+                out.flush()
+
+                assertMapAndExpose(input, first)
+                assertMapAndExpose(input, second)
+                assertFocusEvent(input.readExactly(32), type = 9, sequence = 8, window = first)
+                assertFocusEvent(input.readExactly(32), type = 10, sequence = 9, window = first)
+                assertFocusEvent(input.readExactly(32), type = 9, sequence = 9, window = second)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SetInputFocus ignored by timestamp does not emit FocusChange events`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                server.input.pointerDown(1, 1)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(mapWindowRequest(WindowId))
+                out.write(setInputFocusRequest(X11Ids.RootWindow, revertTo = 2))
+                out.write(changeWindowEventMaskRequest(WindowId, XEventMasks.FocusChange))
+                out.write(setInputFocusRequest(WindowId, revertTo = 2, time = Int.MAX_VALUE))
+                out.write(getInputFocusRequest())
+                out.write(setInputFocusRequest(WindowId, revertTo = 2, time = 2))
+                out.write(getInputFocusRequest())
+                out.write(setInputFocusRequest(0, revertTo = 2, time = 1))
+                out.write(getInputFocusRequest())
+                out.flush()
+
+                assertMapAndExpose(input, WindowId)
+
+                val futureIgnored = input.readExactly(32)
+                assertEquals(1, futureIgnored[0].toInt() and 0xff)
+                assertEquals(6, u16le(futureIgnored, 2))
+                assertEquals(X11Ids.RootWindow, u32le(futureIgnored, 8))
+
+                assertFocusEvent(input.readExactly(32), type = 9, sequence = 7, window = WindowId)
+                val validFocus = input.readExactly(32)
+                assertEquals(1, validFocus[0].toInt() and 0xff)
+                assertEquals(8, u16le(validFocus, 2))
+                assertEquals(WindowId, u32le(validFocus, 8))
+
+                val staleIgnored = input.readExactly(32)
+                assertEquals(1, staleIgnored[0].toInt() and 0xff)
+                assertEquals(10, u16le(staleIgnored, 2))
+                assertEquals(WindowId, u32le(staleIgnored, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SetInputFocus rejects unmapped window without changing focus`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -11298,7 +11376,7 @@ class XCoreDrawingProtocolTest {
                 setup(socket)
                 server.input.pointerDown(1, 1)
                 val out = socket.getOutputStream()
-                out.write(setInputFocusRequest(1, revertTo = 2, time = 3))
+                out.write(setInputFocusRequest(1, revertTo = 2, time = Int.MAX_VALUE))
                 out.write(getInputFocusRequest())
                 out.write(setInputFocusRequest(1, revertTo = 2, time = 2))
                 out.write(getInputFocusRequest())
@@ -17282,6 +17360,15 @@ class XCoreDrawingProtocolTest {
     private fun assertButtonEvent(event: ByteArray, type: Int, detail: Int) {
         assertEquals(type, event[0].toInt() and 0xff)
         assertEquals(detail, event[1].toInt() and 0xff)
+    }
+
+    private fun assertFocusEvent(event: ByteArray, type: Int, sequence: Int, window: Int, detail: Int = 3, mode: Int = 0) {
+        assertEquals(type, event[0].toInt() and 0xff)
+        assertEquals(detail, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(window, u32le(event, 4))
+        assertEquals(mode, event[8].toInt() and 0xff)
+        assertZeroBytes(event, 9, 32)
     }
 
     private fun assertKeyEvent(

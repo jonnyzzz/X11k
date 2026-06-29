@@ -162,6 +162,7 @@ internal interface XEventSink {
     fun sendExposeEvent(event: XExposeEvent)
     fun sendMapNotifyEvent(event: XMapNotifyEvent)
     fun sendMapRequestEvent(event: XMapRequestEvent)
+    fun sendFocusEvent(event: XFocusEvent)
     fun sendResizeRequestEvent(event: XResizeRequestEvent)
     fun sendConfigureRequestEvent(event: XConfigureRequestEvent)
     fun sendCreateNotifyEvent(event: XCreateNotifyEvent)
@@ -283,6 +284,23 @@ internal data class XMapRequestEvent(
 internal data class XMapRequestDispatch(
     val sink: XEventSink,
     val event: XMapRequestEvent,
+)
+
+internal data class XFocusEvent(
+    val type: XFocusEventType,
+    val windowId: Int,
+    val mode: Int = 0,
+    val detail: Int = 3,
+)
+
+internal enum class XFocusEventType(val code: Int) {
+    FocusIn(9),
+    FocusOut(10),
+}
+
+internal data class XFocusDispatch(
+    val sink: XEventSink,
+    val event: XFocusEvent,
 )
 
 internal data class XResizeRequestEvent(
@@ -491,6 +509,7 @@ internal object XEventMasks {
     const val ResizeRedirect = 1 shl 18
     const val SubstructureNotify = 1 shl 19
     const val SubstructureRedirect = 1 shl 20
+    const val FocusChange = 1 shl 21
     const val PropertyChange = 1 shl 22
 
     fun forPointerType(type: XPointerEventType): Int =

@@ -4912,7 +4912,7 @@ internal class X11Connection(
             val window = state.window(focusWindowId) ?: return writeError(error = 3, opcode = 42, badValue = focusWindowId)
             if (!state.windowIsViewable(window.id)) return writeError(error = 8, opcode = 42, badValue = focusWindowId)
         }
-        state.setInputFocus(focusWindowId, revertTo, byteOrder.u32(body, 4))
+        sendFocusEvents(state.setInputFocus(focusWindowId, revertTo, byteOrder.u32(body, 4)))
     }
 
     private fun queryKeymap(body: ByteArray) {
@@ -7085,6 +7085,16 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendFocusEvent(event: XFocusEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = event.type.code.toByte()
+        bytes[1] = event.detail.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.windowId)
+        bytes[8] = event.mode.toByte()
+        write(bytes)
+    }
+
     override fun sendCreateNotifyEvent(event: XCreateNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = 16
@@ -8362,6 +8372,12 @@ internal class X11Connection(
     private fun sendMapRequest(notifications: List<XMapRequestDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendMapRequestEvent(notification.event) }
+        }
+    }
+
+    private fun sendFocusEvents(notifications: List<XFocusDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendFocusEvent(notification.event) }
         }
     }
 

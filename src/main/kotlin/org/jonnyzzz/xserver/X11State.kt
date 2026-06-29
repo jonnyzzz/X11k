@@ -543,7 +543,7 @@ internal class X11State(
     }
 
     @Synchronized
-    fun setInputFocus(focusWindowId: Int, revertTo: Int, time: Int) {
+    fun setInputFocus(focusWindowId: Int, revertTo: Int, time: Int): List<XFocusDispatch> {
         val serverTime = currentServerTime(lastInputFocusChangeTime)
         if (time != 0 &&
             (
@@ -551,11 +551,25 @@ internal class X11State(
                     Integer.compareUnsigned(time, serverTime) > 0
                 )
         ) {
-            return
+            return emptyList()
         }
+        val previousFocusWindowId = this.focusWindowId
         lastInputFocusChangeTime = if (time == 0) serverTime else time
         this.focusWindowId = focusWindowId
         this.focusRevertTo = revertTo
+        if (previousFocusWindowId == focusWindowId) return emptyList()
+        return focusChangeDispatches(previousFocusWindowId, XFocusEventType.FocusOut) +
+            focusChangeDispatches(focusWindowId, XFocusEventType.FocusIn)
+    }
+
+    private fun focusChangeDispatches(windowId: Int, type: XFocusEventType): List<XFocusDispatch> {
+        if (windowId !in windows || windowId == X11Ids.RootWindow) return emptyList()
+        return eventSelectionsForWindow(windowId, XEventMasks.FocusChange).map { sink ->
+            XFocusDispatch(
+                sink = sink,
+                event = XFocusEvent(type = type, windowId = windowId),
+            )
+        }
     }
 
     @Synchronized
