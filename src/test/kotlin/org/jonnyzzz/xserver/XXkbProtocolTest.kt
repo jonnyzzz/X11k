@@ -817,10 +817,10 @@ class XXkbProtocolTest {
     }
 
     @Test
-    fun `XKEYBOARD GetNames reports key range with no named atoms`() {
+    fun `XKEYBOARD GetNames reports key range with no requested named atoms`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
-            out.write(getNamesRequest(which = -1))
+            out.write(getNamesRequest(which = 0))
             out.flush()
 
             val reply = readReply(socket.getInputStream())
@@ -841,6 +841,117 @@ class XXkbProtocolTest {
             assertEquals(0, reply[25].toInt() and 0xff)
             assertEquals(0, u16le(reply, 26))
             assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetNames reports component name atoms`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val requested = XXkb.ComponentNameDetails
+            out.write(getNamesRequest(which = requested))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, reply[0].toInt())
+            assertEquals(0, reply[1].toInt() and 0xff)
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(6, u32le(reply, 4))
+            assertEquals(requested, u32le(reply, 8))
+            assertEquals(XKeyboard.MinKeycode, reply[12].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, reply[13].toInt() and 0xff)
+            assertEquals(0, reply[14].toInt() and 0xff)
+            assertEquals(0, reply[15].toInt() and 0xff)
+            assertEquals(0, u16le(reply, 16))
+            assertEquals(0, reply[18].toInt() and 0xff)
+            assertEquals(0, reply[19].toInt() and 0xff)
+            assertEquals(0, u32le(reply, 20))
+            assertEquals(0, reply[24].toInt() and 0xff)
+            assertEquals(0, reply[25].toInt() and 0xff)
+            assertEquals(0, u16le(reply, 26))
+            assertEquals(56, reply.size)
+
+            val atoms = List(6) { index -> u32le(reply, 32 + index * 4) }
+            assertEquals(listOf("evdev", "pc(pc105)", "us", "us", "complete", "complete"), atoms.map { atomName(socket, it) })
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetNames all bits only reports implemented component name atoms`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getNamesRequest(which = -1))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, reply[0].toInt())
+            assertEquals(0, reply[1].toInt() and 0xff)
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(6, u32le(reply, 4))
+            assertEquals(XXkb.ComponentNameDetails, u32le(reply, 8))
+            assertEquals(0, reply[14].toInt() and 0xff)
+            assertEquals(0, reply[15].toInt() and 0xff)
+            assertEquals(0, u16le(reply, 16))
+            assertEquals(0, reply[18].toInt() and 0xff)
+            assertEquals(0, reply[19].toInt() and 0xff)
+            assertEquals(0, u32le(reply, 20))
+            assertEquals(0, reply[24].toInt() and 0xff)
+            assertEquals(0, reply[25].toInt() and 0xff)
+            assertEquals(0, u16le(reply, 26))
+            assertEquals(56, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetNames reports component atoms in wire order for sparse mask`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val requested = XXkb.NameDetailSymbols or XXkb.NameDetailTypes
+            out.write(getNamesRequest(which = requested))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, reply[0].toInt())
+            assertEquals(0, reply[1].toInt() and 0xff)
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u32le(reply, 4))
+            assertEquals(requested, u32le(reply, 8))
+            assertEquals(XKeyboard.MinKeycode, reply[12].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, reply[13].toInt() and 0xff)
+            assertEquals(40, reply.size)
+
+            val atoms = List(2) { index -> u32le(reply, 32 + index * 4) }
+            assertEquals(listOf("us", "complete"), atoms.map { atomName(socket, it) })
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetNames swaps component atoms for big endian clients`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setupBigEndian(socket)
+
+                val body = ByteArray(8)
+                put16be(body, 0, 0x0100)
+                put32be(body, 4, XXkb.NameDetailSymbols or XXkb.NameDetailTypes)
+                socket.getOutputStream().write(requestBigEndian(XXkb.MajorOpcode, XXkb.GetNames, body))
+                socket.getOutputStream().flush()
+
+                val reply = readReplyBigEndian(socket.getInputStream())
+                assertEquals(1, reply[0].toInt())
+                assertEquals(0, reply[1].toInt() and 0xff)
+                assertEquals(1, u16be(reply, 2))
+                assertEquals(2, u32be(reply, 4))
+                assertEquals(XXkb.NameDetailSymbols or XXkb.NameDetailTypes, u32be(reply, 8))
+                assertEquals(XKeyboard.MinKeycode, reply[12].toInt() and 0xff)
+                assertEquals(XKeyboard.MaxKeycode, reply[13].toInt() and 0xff)
+                assertEquals(40, reply.size)
+                assertEquals(listOf("us", "complete"), listOf(u32be(reply, 32), u32be(reply, 36)).map { atomNameBigEndian(socket, it) })
+            }
+            server.close()
+            serverThread.join(1_000)
         }
     }
 
@@ -866,7 +977,7 @@ class XXkbProtocolTest {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
             out.write(setNamesRequest(includeAllDetails = true))
-            out.write(getNamesRequest(which = -1))
+            out.write(getNamesRequest(which = 0))
             out.flush()
 
             val reply = readReply(socket.getInputStream())
@@ -1499,6 +1610,19 @@ class XXkbProtocolTest {
         input.readExactly(u16le(prefix, 6) * 4)
     }
 
+    private fun setupBigEndian(socket: Socket) {
+        val out = socket.getOutputStream()
+        val input = socket.getInputStream()
+        val setup = ByteArray(12)
+        setup[0] = 0x42
+        put16be(setup, 2, 11)
+        out.write(setup)
+        out.flush()
+        val prefix = input.readExactly(8)
+        assertEquals(1, prefix[0].toInt())
+        input.readExactly(u16be(prefix, 6) * 4)
+    }
+
     private fun queryExtensionRequest(name: String): ByteArray {
         val nameBytes = name.encodeToByteArray()
         val body = ByteArray(4 + ((nameBytes.size + 3) and -4))
@@ -1815,6 +1939,26 @@ class XXkbProtocolTest {
         put16le(body, 0, 0x0100)
         put32le(body, 4, which)
         return request(XXkb.MajorOpcode, XXkb.GetNames, body)
+    }
+
+    private fun atomName(socket: Socket, atom: Int): String {
+        val body = ByteArray(4)
+        put32le(body, 0, atom)
+        socket.getOutputStream().write(request(17, 0, body))
+        socket.getOutputStream().flush()
+        val reply = readReply(socket.getInputStream())
+        val length = u16le(reply, 8)
+        return reply.copyOfRange(32, 32 + length).decodeToString()
+    }
+
+    private fun atomNameBigEndian(socket: Socket, atom: Int): String {
+        val body = ByteArray(4)
+        put32be(body, 0, atom)
+        socket.getOutputStream().write(requestBigEndian(17, 0, body))
+        socket.getOutputStream().flush()
+        val reply = readReplyBigEndian(socket.getInputStream())
+        val length = u16be(reply, 8)
+        return reply.copyOfRange(32, 32 + length).decodeToString()
     }
 
     private fun setNamesRequest(includeAllDetails: Boolean, bodySize: Int = setNamesBodySize(includeAllDetails)): ByteArray {
@@ -2145,6 +2289,15 @@ class XXkbProtocolTest {
         return bytes
     }
 
+    private fun requestBigEndian(opcode: Int, minorOpcode: Int, body: ByteArray): ByteArray {
+        val bytes = ByteArray(4 + body.size)
+        bytes[0] = opcode.toByte()
+        bytes[1] = minorOpcode.toByte()
+        put16be(bytes, 2, bytes.size / 4)
+        body.copyInto(bytes, 4)
+        return bytes
+    }
+
     private fun paddedSize(size: Int): Int = (size + 3) and -4
 
     private fun assertError(input: InputStream, error: Int, opcode: Int, badValue: Int, sequence: Int, minorOpcode: Int) {
@@ -2198,6 +2351,12 @@ class XXkbProtocolTest {
         return header + payload
     }
 
+    private fun readReplyBigEndian(input: InputStream): ByteArray {
+        val header = input.readExactly(32)
+        val payload = input.readExactly(u32be(header, 4) * 4)
+        return header + payload
+    }
+
     private fun httpGet(port: Int, path: String): String =
         Socket("127.0.0.1", port).use { socket ->
             socket.getOutputStream().write("GET $path HTTP/1.1\r\nHost: localhost\r\n\r\n".encodeToByteArray())
@@ -2228,6 +2387,18 @@ class XXkbProtocolTest {
         bytes[offset + 3] = (value ushr 24).toByte()
     }
 
+    private fun put16be(bytes: ByteArray, offset: Int, value: Int) {
+        bytes[offset] = (value ushr 8).toByte()
+        bytes[offset + 1] = value.toByte()
+    }
+
+    private fun put32be(bytes: ByteArray, offset: Int, value: Int) {
+        bytes[offset] = (value ushr 24).toByte()
+        bytes[offset + 1] = (value ushr 16).toByte()
+        bytes[offset + 2] = (value ushr 8).toByte()
+        bytes[offset + 3] = value.toByte()
+    }
+
     private fun u16le(bytes: ByteArray, offset: Int): Int =
         (bytes[offset].toInt() and 0xff) or ((bytes[offset + 1].toInt() and 0xff) shl 8)
 
@@ -2236,4 +2407,13 @@ class XXkbProtocolTest {
             ((bytes[offset + 1].toInt() and 0xff) shl 8) or
             ((bytes[offset + 2].toInt() and 0xff) shl 16) or
             ((bytes[offset + 3].toInt() and 0xff) shl 24)
+
+    private fun u16be(bytes: ByteArray, offset: Int): Int =
+        ((bytes[offset].toInt() and 0xff) shl 8) or (bytes[offset + 1].toInt() and 0xff)
+
+    private fun u32be(bytes: ByteArray, offset: Int): Int =
+        ((bytes[offset].toInt() and 0xff) shl 24) or
+            ((bytes[offset + 1].toInt() and 0xff) shl 16) or
+            ((bytes[offset + 2].toInt() and 0xff) shl 8) or
+            (bytes[offset + 3].toInt() and 0xff)
 }

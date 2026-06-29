@@ -1777,10 +1777,34 @@ internal class X11Connection(
 
     private fun xkbGetNames(body: ByteArray, majorOpcode: Int) {
         if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetNames, badValue = 0)
-        val reply = reply(extra = 0, payloadUnits = 0)
+        val present = byteOrder.u32(body, 4) and XXkb.ComponentNameDetails
+        val payload = xkbGetNamesComponentPayload(present)
+        val reply = reply(extra = 0, payloadUnits = payload.size / 4)
+        byteOrder.put32(reply, 8, present)
         reply[12] = XKeyboard.MinKeycode.toByte()
         reply[13] = XKeyboard.MaxKeycode.toByte()
+        payload.copyInto(reply, 32)
         write(reply)
+    }
+
+    private fun xkbGetNamesComponentPayload(present: Int): ByteArray {
+        val names = listOf(
+            XXkb.NameDetailKeycodes to "evdev",
+            XXkb.NameDetailGeometry to "pc(pc105)",
+            XXkb.NameDetailSymbols to "us",
+            XXkb.NameDetailPhysSymbols to "us",
+            XXkb.NameDetailTypes to "complete",
+            XXkb.NameDetailCompat to "complete",
+        )
+        val payload = ByteArray(names.count { (mask, _) -> (present and mask) != 0 } * 4)
+        var offset = 0
+        names.forEach { (mask, name) ->
+            if ((present and mask) != 0) {
+                byteOrder.put32(payload, offset, state.internAtom(name, onlyIfExists = false))
+                offset += 4
+            }
+        }
+        return payload
     }
 
     private fun xkbSetNames(body: ByteArray, majorOpcode: Int) {
