@@ -8,12 +8,18 @@ internal object XXinerama {
     const val MinorVersion = 1
 
     const val QueryVersion = 0
+    const val GetState = 1
+    const val GetScreenCount = 2
+    const val GetScreenSize = 3
     const val IsActive = 4
     const val QueryScreens = 5
 
     fun operationName(minorOpcode: Int): String =
         when (minorOpcode) {
             QueryVersion -> "QueryVersion"
+            GetState -> "GetState"
+            GetScreenCount -> "GetScreenCount"
+            GetScreenSize -> "GetScreenSize"
             IsActive -> "IsActive"
             QueryScreens -> "QueryScreens"
             else -> "Unknown"

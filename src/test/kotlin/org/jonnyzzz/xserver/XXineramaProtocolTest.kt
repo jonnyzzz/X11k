@@ -67,6 +67,62 @@ class XXineramaProtocolTest {
         }
     }
 
+    @Test
+    fun `legacy XINERAMA requests report single screen metadata and recover stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(request(XXinerama.MajorOpcode, XXinerama.GetState, ByteArray(0)))
+                out.write(request(XXinerama.MajorOpcode, XXinerama.GetState, u32(X11Ids.RootWindow)))
+                out.write(request(XXinerama.MajorOpcode, XXinerama.GetScreenCount, ByteArray(0)))
+                out.write(request(XXinerama.MajorOpcode, XXinerama.GetScreenCount, u32(X11Ids.RootWindow)))
+                out.write(request(XXinerama.MajorOpcode, XXinerama.GetScreenSize, u32(X11Ids.RootWindow)))
+                out.write(request(XXinerama.MajorOpcode, XXinerama.GetScreenSize, windowAndScreen(X11Ids.RootWindow, 0)))
+                out.write(request(XXinerama.MajorOpcode, XXinerama.GetScreenSize, windowAndScreen(X11Ids.RootWindow, 7)))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, sequence = 1, minorOpcode = XXinerama.GetState)
+
+                val state = readReply(socket.getInputStream())
+                assertEquals(1, state[1].toInt() and 0xff)
+                assertEquals(2, u16le(state, 2))
+                assertEquals(X11Ids.RootWindow, u32le(state, 8))
+
+                assertError(socket.getInputStream(), error = 16, sequence = 3, minorOpcode = XXinerama.GetScreenCount)
+
+                val count = readReply(socket.getInputStream())
+                assertEquals(1, count[1].toInt() and 0xff)
+                assertEquals(4, u16le(count, 2))
+                assertEquals(X11Ids.RootWindow, u32le(count, 8))
+
+                assertError(socket.getInputStream(), error = 16, sequence = 5, minorOpcode = XXinerama.GetScreenSize)
+
+                val screen0 = readReply(socket.getInputStream())
+                assertEquals(6, u16le(screen0, 2))
+                assertEquals(120, u32le(screen0, 8))
+                assertEquals(90, u32le(screen0, 12))
+                assertEquals(X11Ids.RootWindow, u32le(screen0, 16))
+                assertEquals(0, u32le(screen0, 20))
+
+                val screen7 = readReply(socket.getInputStream())
+                assertEquals(7, u16le(screen7, 2))
+                assertEquals(0, u32le(screen7, 8))
+                assertEquals(0, u32le(screen7, 12))
+                assertEquals(X11Ids.RootWindow, u32le(screen7, 16))
+                assertEquals(7, u32le(screen7, 20))
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(8, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
     private fun setup(socket: Socket) {
         socket.getOutputStream().write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
         socket.getOutputStream().flush()
@@ -145,6 +201,13 @@ class XXineramaProtocolTest {
     private fun u32(value: Int): ByteArray {
         val bytes = ByteArray(4)
         put32le(bytes, 0, value)
+        return bytes
+    }
+
+    private fun windowAndScreen(window: Int, screen: Int): ByteArray {
+        val bytes = ByteArray(8)
+        put32le(bytes, 0, window)
+        put32le(bytes, 4, screen)
         return bytes
     }
 

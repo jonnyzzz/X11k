@@ -6494,6 +6494,9 @@ internal class X11Connection(
     private fun xinerama(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
         when (minorOpcode) {
             XXinerama.QueryVersion -> xineramaQueryVersion(body, majorOpcode)
+            XXinerama.GetState -> xineramaGetState(body, majorOpcode)
+            XXinerama.GetScreenCount -> xineramaGetScreenCount(body, majorOpcode)
+            XXinerama.GetScreenSize -> xineramaGetScreenSize(body, majorOpcode)
             XXinerama.IsActive -> xineramaIsActive(body, majorOpcode)
             XXinerama.QueryScreens -> xineramaQueryScreens(body, majorOpcode)
             else -> unsupportedRequest(majorOpcode, minorOpcode, "XINERAMA.${XXinerama.operationName(minorOpcode)}")
@@ -6505,6 +6508,34 @@ internal class X11Connection(
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put16(reply, 8, XXinerama.MajorVersion)
         byteOrder.put16(reply, 10, XXinerama.MinorVersion)
+        write(reply)
+    }
+
+    private fun xineramaGetState(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXinerama.GetState, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        val reply = reply(extra = 1, payloadUnits = 0)
+        byteOrder.put32(reply, 8, window)
+        write(reply)
+    }
+
+    private fun xineramaGetScreenCount(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXinerama.GetScreenCount, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        val reply = reply(extra = 1, payloadUnits = 0)
+        byteOrder.put32(reply, 8, window)
+        write(reply)
+    }
+
+    private fun xineramaGetScreenSize(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXinerama.GetScreenSize, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        val screen = byteOrder.u32(body, 4)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, if (screen == 0) state.width else 0)
+        byteOrder.put32(reply, 12, if (screen == 0) state.height else 0)
+        byteOrder.put32(reply, 16, window)
+        byteOrder.put32(reply, 20, screen)
         write(reply)
     }
 
