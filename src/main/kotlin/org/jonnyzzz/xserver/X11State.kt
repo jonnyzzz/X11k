@@ -104,6 +104,10 @@ internal class X11State(
     private var screenSaver = XScreenSaverSettings()
     private var screenSaverAttributes: XScreenSaverAttributes? = null
     private val screenSaverSuspensions = linkedMapOf<XEventSink, Int>()
+    private val syncCounters = linkedMapOf<Int, XSyncCounter>()
+    private val syncAlarms = linkedMapOf<Int, XSyncAlarm>()
+    private val syncFences = linkedMapOf<Int, XSyncFence>()
+    private val syncPriorities = linkedMapOf<XEventSink, Int>()
     private var fontPath: List<String> = emptyList()
     private var pointerControl = XPointerControlSettings()
     private var pointerMapping = XPointerMapping.Default
@@ -123,6 +127,7 @@ internal class X11State(
     private val accessHosts = linkedSetOf<XAccessHost>()
     private var nextClientResourceOffset = 0
     private val clientResourceReservations = linkedMapOf<Int, XEventSink>()
+    private val serverStartMillis = System.currentTimeMillis()
 
     val extensions = listOf(
         XExtension(
@@ -200,6 +205,12 @@ internal class X11State(
             firstEvent = XScreenSaver.FirstEvent,
             firstError = XScreenSaver.FirstError,
             aliases = setOf("SCREEN-SAVER"),
+        ),
+        XExtension(
+            name = "SYNC",
+            majorOpcode = XSync.MajorOpcode,
+            firstEvent = XSync.FirstEvent,
+            firstError = XSync.FirstError,
         ),
     )
 
@@ -357,7 +368,11 @@ internal class X11State(
             pictures.remove(id)
             glyphSets.remove(id)
             xfixesRegions.remove(id)
+            removeSyncCounter(id)
+            removeSyncAlarm(id)
+            removeSyncFence(id)
         }
+        notifySyncWaiters()
         releaseInputGrabsForResources(resourceIds)
         xfixesCursorNotifyDispatches += xfixesCursorNotifyDispatchesIfChanged(previousCursor)
         discardRetainedResourceIds(resourceIds)
@@ -1545,6 +1560,9 @@ internal class X11State(
             serverGrabImperviousClients -= owner
             serverGrabReleased.signalAll()
         }
+        synchronized(this) {
+            notifySyncWaiters()
+        }
     }
 
     fun serverGrabbed(): Boolean =
@@ -1612,6 +1630,7 @@ internal class X11State(
         screenSaverInputs.remove(sink)
         if (screenSaverAttributes?.owner == sink) screenSaverAttributes = null
         screenSaverSuspensions.remove(sink)
+        syncPriorities.remove(sink)
         windowOwners.entries.removeIf { it.value == sink }
         saveSets.remove(sink)
         val xfixesCursorNotifyDispatches = releaseInputGrabs(sink)
@@ -2867,6 +2886,166 @@ internal class X11State(
 
     @Synchronized
     fun screenSaverSuspensionCount(): Int = screenSaverSuspensions.values.sum()
+
+    @Synchronized
+    fun putSyncCounter(counter: XSyncCounter) {
+        syncCounters[counter.id] = counter
+        notifySyncWaiters()
+    }
+
+    @Synchronized
+    fun syncCounter(id: Int): XSyncCounter? =
+        if (id == XSync.ServerTimeCounter) {
+            XSyncCounter(id = id, value = serverTimeCounterValue(), system = true)
+        } else {
+            syncCounters[id]
+        }
+
+    @Synchronized
+    fun setSyncCounterValue(id: Int, value: Long): Boolean {
+        val counter = syncCounters[id] ?: return false
+        syncCounters[id] = counter.copy(value = value)
+        updateSyncAlarmsForCounter(id)
+        notifySyncWaiters()
+        return true
+    }
+
+    @Synchronized
+    fun changeSyncCounterValue(id: Int, delta: Long): XSyncCounterChangeResult {
+        val counter = syncCounters[id] ?: return XSyncCounterChangeResult.Missing
+        val value = try {
+            Math.addExact(counter.value, delta)
+        } catch (_: ArithmeticException) {
+            return XSyncCounterChangeResult.Overflow
+        }
+        syncCounters[id] = counter.copy(value = value)
+        updateSyncAlarmsForCounter(id)
+        notifySyncWaiters()
+        return XSyncCounterChangeResult.Changed
+    }
+
+    @Synchronized
+    fun removeSyncCounter(id: Int): Boolean {
+        val removed = syncCounters.remove(id) != null
+        if (removed) {
+            syncAlarms.replaceAll { _, alarm ->
+                if (alarm.counterId == id) alarm.copy(counterId = 0, state = XSync.AlarmInactive) else alarm
+            }
+            notifySyncWaiters()
+        }
+        return removed
+    }
+
+    @Synchronized
+    fun putSyncAlarm(alarm: XSyncAlarm) {
+        syncAlarms[alarm.id] = alarm
+        notifySyncWaiters()
+    }
+
+    @Synchronized
+    fun syncAlarm(id: Int): XSyncAlarm? = syncAlarms[id]
+
+    @Synchronized
+    fun removeSyncAlarm(id: Int): Boolean {
+        val removed = syncAlarms.remove(id) != null
+        if (removed) notifySyncWaiters()
+        return removed
+    }
+
+    @Synchronized
+    fun putSyncFence(fence: XSyncFence) {
+        syncFences[fence.id] = fence
+        notifySyncWaiters()
+    }
+
+    @Synchronized
+    fun syncFence(id: Int): XSyncFence? = syncFences[id]
+
+    @Synchronized
+    fun setSyncFenceTriggered(id: Int, triggered: Boolean): Boolean {
+        val fence = syncFences[id] ?: return false
+        syncFences[id] = fence.copy(triggered = triggered)
+        notifySyncWaiters()
+        return true
+    }
+
+    @Synchronized
+    fun removeSyncFence(id: Int): Boolean {
+        val removed = syncFences.remove(id) != null
+        if (removed) notifySyncWaiters()
+        return removed
+    }
+
+    @Synchronized
+    fun syncPriorityClient(requester: XEventSink, id: Int): XEventSink? =
+        if (id == 0) requester else resourceOwners[id]?.takeIf { hasResource(id) && it in eventSinks && !it.isKilled() }
+
+    @Synchronized
+    fun setSyncPriority(sink: XEventSink, priority: Int) {
+        syncPriorities[sink] = priority
+    }
+
+    @Synchronized
+    fun syncPriority(sink: XEventSink): Int = syncPriorities[sink] ?: 0
+
+    @Synchronized
+    fun syncCounterAwaitSatisfied(conditions: List<XSyncWaitCondition>): Boolean =
+        conditions.any { condition -> syncCounterTriggerSatisfied(condition) }
+
+    @Synchronized
+    fun awaitSyncCounters(sink: XEventSink, conditions: List<XSyncWaitCondition>) {
+        while (!sink.isKilled() && !syncCounterAwaitSatisfied(conditions)) {
+            waitForSyncChange()
+        }
+    }
+
+    @Synchronized
+    fun syncFenceAwaitSatisfied(fenceIds: List<Int>): Boolean =
+        fenceIds.any { id -> syncFences[id]?.triggered ?: true }
+
+    @Synchronized
+    fun awaitSyncFences(sink: XEventSink, fenceIds: List<Int>) {
+        while (!sink.isKilled() && !syncFenceAwaitSatisfied(fenceIds)) {
+            waitForSyncChange()
+        }
+    }
+
+    private fun syncCounterTriggerSatisfied(condition: XSyncWaitCondition): Boolean {
+        if (condition.counterId == 0) return true
+        val value = syncCounter(condition.counterId)?.value ?: return true
+        return syncTriggerSatisfied(value, condition.testValue, condition.testType)
+    }
+
+    private fun serverTimeCounterValue(): Long =
+        (System.currentTimeMillis() - serverStartMillis).coerceAtLeast(0L)
+
+    private fun updateSyncAlarmsForCounter(counterId: Int) {
+        val counter = syncCounter(counterId) ?: return
+        syncAlarms.replaceAll { _, alarm ->
+            if (alarm.counterId == counterId && alarm.state == XSync.AlarmActive && syncTriggerSatisfied(counter.value, alarm.testValue, alarm.testType)) {
+                alarm.copy(state = XSync.AlarmInactive)
+            } else {
+                alarm
+            }
+        }
+    }
+
+    private fun syncTriggerSatisfied(counterValue: Long, testValue: Long, testType: Int): Boolean =
+        when (testType) {
+            XSync.PositiveTransition, XSync.PositiveComparison -> counterValue >= testValue
+            XSync.NegativeTransition, XSync.NegativeComparison -> counterValue <= testValue
+            else -> false
+        }
+
+    @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
+    private fun waitForSyncChange() {
+        (this as java.lang.Object).wait(50)
+    }
+
+    @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
+    private fun notifySyncWaiters() {
+        (this as java.lang.Object).notifyAll()
+    }
 
     private fun defaultWindowShapeRegion(window: XWindow, kind: Int): List<XRectangleCommand> =
         when (kind) {
@@ -5703,6 +5882,9 @@ internal class X11State(
             pictures.containsKey(id) ||
             glyphSets.containsKey(id) ||
             xfixesRegions.containsKey(id) ||
+            syncCounters.containsKey(id) ||
+            syncAlarms.containsKey(id) ||
+            syncFences.containsKey(id) ||
             glxContexts.containsKey(id) ||
             glxPixmaps.containsKey(id) ||
             glxWindows.containsKey(id) ||
@@ -6760,6 +6942,46 @@ internal data class XScreenSaverAttributes(
     val visual: Int,
     val valueMask: Int,
     val valueList: List<Int>,
+)
+
+internal data class XSyncCounter(
+    val id: Int,
+    val value: Long,
+    val system: Boolean = false,
+)
+
+internal enum class XSyncCounterChangeResult {
+    Missing,
+    Overflow,
+    Changed,
+}
+
+internal data class XSyncWaitCondition(
+    val counterId: Int,
+    val valueType: Int,
+    val waitValue: Long,
+    val testType: Int,
+    val testValue: Long,
+    val eventThreshold: Long = 0,
+)
+
+internal data class XSyncAlarm(
+    val id: Int,
+    val owner: XEventSink,
+    val counterId: Int = 0,
+    val valueType: Int = XSync.Absolute,
+    val waitValue: Long = 0,
+    val testType: Int = XSync.PositiveComparison,
+    val testValue: Long = 0,
+    val delta: Long = 1,
+    val events: Boolean = true,
+    val state: Int = XSync.AlarmInactive,
+)
+
+internal data class XSyncFence(
+    val id: Int,
+    val drawableId: Int,
+    val triggered: Boolean,
 )
 
 internal data class XPointerControlSettings(

@@ -28,6 +28,8 @@ internal class X11Connection(
     private var killed = false
     @Volatile
     private var closeDownHandled = false
+    private var pendingSyncCounterAwait: List<XSyncWaitCondition>? = null
+    private var pendingSyncFenceAwait: List<Int>? = null
 
     fun run() {
         try {
@@ -107,9 +109,21 @@ internal class X11Connection(
                     state.recordRequest(requestName(opcode, minorOpcode))
                     dispatch(opcode, minorOpcode, body, units)
                 }
+                drainPendingSyncWaits()
             }
         } finally {
             closeDownClient()
+        }
+    }
+
+    private fun drainPendingSyncWaits() {
+        pendingSyncCounterAwait?.let { conditions ->
+            pendingSyncCounterAwait = null
+            state.awaitSyncCounters(this, conditions)
+        }
+        pendingSyncFenceAwait?.let { fenceIds ->
+            pendingSyncFenceAwait = null
+            state.awaitSyncFences(this, fenceIds)
         }
     }
 
@@ -182,6 +196,10 @@ internal class X11Connection(
             }
             if (extension.name == "MIT-SCREEN-SAVER") {
                 screenSaver(minorOpcode, body, opcode)
+                return
+            }
+            if (extension.name == "SYNC") {
+                sync(minorOpcode, body, opcode)
                 return
             }
         }
@@ -6386,6 +6404,7 @@ internal class X11Connection(
             XXCMisc.MajorOpcode -> "XC-MISC.${XXCMisc.operationName(minorOpcode)}"
             XXMitMisc.MajorOpcode -> "MIT-SUNDRY-NONSTANDARD.${XXMitMisc.operationName(minorOpcode)}"
             XScreenSaver.MajorOpcode -> "MIT-SCREEN-SAVER.${XScreenSaver.operationName(minorOpcode)}"
+            XSync.MajorOpcode -> "SYNC.${XSync.operationName(minorOpcode)}"
             1 -> "CreateWindow"
             2 -> "ChangeWindowAttributes"
             3 -> "GetWindowAttributes"
@@ -6985,6 +7004,401 @@ internal class X11Connection(
     private fun screenSaverSuspend(body: ByteArray, majorOpcode: Int) {
         if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XScreenSaver.Suspend, badValue = 0)
         state.suspendScreenSaver(this, suspend = byteOrder.u32(body, 0) != 0)
+    }
+
+    private fun sync(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        when (minorOpcode) {
+            XSync.Initialize -> syncInitialize(body, majorOpcode)
+            XSync.ListSystemCounters -> syncListSystemCounters(body, majorOpcode)
+            XSync.CreateCounter -> syncCreateCounter(body, majorOpcode)
+            XSync.SetCounter -> syncSetCounter(body, majorOpcode)
+            XSync.ChangeCounter -> syncChangeCounter(body, majorOpcode)
+            XSync.QueryCounter -> syncQueryCounter(body, majorOpcode)
+            XSync.DestroyCounter -> syncDestroyCounter(body, majorOpcode)
+            XSync.Await -> syncAwait(body, majorOpcode)
+            XSync.CreateAlarm -> syncCreateAlarm(body, majorOpcode)
+            XSync.ChangeAlarm -> syncChangeAlarm(body, majorOpcode)
+            XSync.QueryAlarm -> syncQueryAlarm(body, majorOpcode)
+            XSync.DestroyAlarm -> syncDestroyAlarm(body, majorOpcode)
+            XSync.SetPriority -> syncSetPriority(body, majorOpcode)
+            XSync.GetPriority -> syncGetPriority(body, majorOpcode)
+            XSync.CreateFence -> syncCreateFence(body, majorOpcode)
+            XSync.TriggerFence -> syncSetFenceTriggered(body, majorOpcode, XSync.TriggerFence, triggered = true)
+            XSync.ResetFence -> syncResetFence(body, majorOpcode)
+            XSync.DestroyFence -> syncDestroyFence(body, majorOpcode)
+            XSync.QueryFence -> syncQueryFence(body, majorOpcode)
+            XSync.AwaitFence -> syncAwaitFence(body, majorOpcode)
+            else -> unsupportedRequest(majorOpcode, minorOpcode, "SYNC.${XSync.operationName(minorOpcode)}")
+        }
+    }
+
+    private fun syncInitialize(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.Initialize, badValue = 0)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        reply[8] = XSync.MajorVersion.toByte()
+        reply[9] = XSync.MinorVersion.toByte()
+        write(reply)
+    }
+
+    private fun syncListSystemCounters(body: ByteArray, majorOpcode: Int) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.ListSystemCounters, badValue = 0)
+        val name = XSync.ServerTimeName.encodeToByteArray()
+        val payloadSize = paddedLength(14 + name.size)
+        val reply = reply(extra = 0, payloadUnits = payloadSize / 4)
+        byteOrder.put32(reply, 8, 1)
+        byteOrder.put32(reply, 32, XSync.ServerTimeCounter)
+        byteOrder.put32(reply, 36, 0)
+        byteOrder.put32(reply, 40, 1)
+        byteOrder.put16(reply, 44, name.size)
+        name.copyInto(reply, 46)
+        write(reply)
+    }
+
+    private fun syncCreateCounter(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.CreateCounter, badValue = 0)
+        val counter = byteOrder.u32(body, 0)
+        if (counter == 0) return writeError(error = 14, opcode = majorOpcode, minorOpcode = XSync.CreateCounter, badValue = counter)
+        if (!resourceIdAvailable(counter, majorOpcode, XSync.CreateCounter)) return
+        state.putSyncCounter(XSyncCounter(id = counter, value = syncValue(body, 4)))
+        own(counter)
+    }
+
+    private fun syncSetCounter(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.SetCounter, badValue = 0)
+        val counter = byteOrder.u32(body, 0)
+        val current = state.syncCounter(counter)
+            ?: return writeError(error = XSync.BadCounter, opcode = majorOpcode, minorOpcode = XSync.SetCounter, badValue = counter)
+        if (current.system) return writeError(error = 10, opcode = majorOpcode, minorOpcode = XSync.SetCounter, badValue = counter)
+        state.setSyncCounterValue(counter, syncValue(body, 4))
+    }
+
+    private fun syncChangeCounter(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.ChangeCounter, badValue = 0)
+        val counter = byteOrder.u32(body, 0)
+        val current = state.syncCounter(counter)
+            ?: return writeError(error = XSync.BadCounter, opcode = majorOpcode, minorOpcode = XSync.ChangeCounter, badValue = counter)
+        if (current.system) return writeError(error = 10, opcode = majorOpcode, minorOpcode = XSync.ChangeCounter, badValue = counter)
+        when (state.changeSyncCounterValue(counter, syncValue(body, 4))) {
+            XSyncCounterChangeResult.Missing ->
+                return writeError(error = XSync.BadCounter, opcode = majorOpcode, minorOpcode = XSync.ChangeCounter, badValue = counter)
+            XSyncCounterChangeResult.Overflow ->
+                return writeError(error = 2, opcode = majorOpcode, minorOpcode = XSync.ChangeCounter, badValue = counter)
+            XSyncCounterChangeResult.Changed -> Unit
+        }
+    }
+
+    private fun syncQueryCounter(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.QueryCounter, badValue = 0)
+        val counter = byteOrder.u32(body, 0)
+        val value = state.syncCounter(counter)?.value
+            ?: return writeError(error = XSync.BadCounter, opcode = majorOpcode, minorOpcode = XSync.QueryCounter, badValue = counter)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        putSyncValue(reply, 8, value)
+        write(reply)
+    }
+
+    private fun syncDestroyCounter(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.DestroyCounter, badValue = 0)
+        val counter = byteOrder.u32(body, 0)
+        val current = state.syncCounter(counter)
+            ?: return writeError(error = XSync.BadCounter, opcode = majorOpcode, minorOpcode = XSync.DestroyCounter, badValue = counter)
+        if (current.system) return writeError(error = 10, opcode = majorOpcode, minorOpcode = XSync.DestroyCounter, badValue = counter)
+        state.removeSyncCounter(counter)
+        ownedResources.remove(counter)
+    }
+
+    private fun syncAwait(body: ByteArray, majorOpcode: Int) {
+        if (body.isEmpty() || body.size % 28 != 0) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XSync.Await, badValue = 0)
+        }
+        val conditions = mutableListOf<XSyncWaitCondition>()
+        for (offset in body.indices step 28) {
+            conditions += parseSyncWaitCondition(body, offset, majorOpcode, XSync.Await) ?: return
+        }
+        if (!state.syncCounterAwaitSatisfied(conditions)) {
+            pendingSyncCounterAwait = conditions
+        }
+    }
+
+    private fun syncCreateAlarm(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.CreateAlarm, badValue = 0)
+        val alarm = byteOrder.u32(body, 0)
+        val valueMask = byteOrder.u32(body, 4)
+        if (alarm == 0) return writeError(error = 14, opcode = majorOpcode, minorOpcode = XSync.CreateAlarm, badValue = alarm)
+        if (!resourceIdAvailable(alarm, majorOpcode, XSync.CreateAlarm)) return
+        val attributes = parseSyncAlarmAttributes(body, valueMask, valuesOffset = 8, majorOpcode, XSync.CreateAlarm, XSyncAlarm(id = alarm, owner = this)) ?: return
+        state.putSyncAlarm(attributes)
+        own(alarm)
+    }
+
+    private fun syncChangeAlarm(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.ChangeAlarm, badValue = 0)
+        val alarm = byteOrder.u32(body, 0)
+        val current = state.syncAlarm(alarm)
+            ?: return writeError(error = XSync.BadAlarm, opcode = majorOpcode, minorOpcode = XSync.ChangeAlarm, badValue = alarm)
+        val valueMask = byteOrder.u32(body, 4)
+        val updated = parseSyncAlarmAttributes(body, valueMask, valuesOffset = 8, majorOpcode, XSync.ChangeAlarm, current) ?: return
+        state.putSyncAlarm(updated)
+    }
+
+    private fun syncQueryAlarm(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.QueryAlarm, badValue = 0)
+        val alarm = byteOrder.u32(body, 0)
+        val current = state.syncAlarm(alarm)
+            ?: return writeError(error = XSync.BadAlarm, opcode = majorOpcode, minorOpcode = XSync.QueryAlarm, badValue = alarm)
+        val reply = reply(extra = 0, payloadUnits = 2)
+        byteOrder.put32(reply, 8, current.counterId)
+        byteOrder.put32(reply, 12, current.valueType)
+        putSyncValue(reply, 16, current.waitValue)
+        byteOrder.put32(reply, 24, current.testType)
+        putSyncValue(reply, 28, current.delta)
+        reply[36] = if (current.events) 1 else 0
+        reply[37] = current.state.toByte()
+        write(reply)
+    }
+
+    private fun syncDestroyAlarm(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.DestroyAlarm, badValue = 0)
+        val alarm = byteOrder.u32(body, 0)
+        if (!state.removeSyncAlarm(alarm)) {
+            return writeError(error = XSync.BadAlarm, opcode = majorOpcode, minorOpcode = XSync.DestroyAlarm, badValue = alarm)
+        }
+        ownedResources.remove(alarm)
+    }
+
+    private fun syncSetPriority(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.SetPriority, badValue = 0)
+        val id = byteOrder.u32(body, 0)
+        val target = state.syncPriorityClient(this, id)
+            ?: return writeError(error = 8, opcode = majorOpcode, minorOpcode = XSync.SetPriority, badValue = id)
+        state.setSyncPriority(target, byteOrder.u32(body, 4))
+    }
+
+    private fun syncGetPriority(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.GetPriority, badValue = 0)
+        val id = byteOrder.u32(body, 0)
+        val target = state.syncPriorityClient(this, id)
+            ?: return writeError(error = 8, opcode = majorOpcode, minorOpcode = XSync.GetPriority, badValue = id)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, state.syncPriority(target))
+        write(reply)
+    }
+
+    private fun syncCreateFence(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.CreateFence, badValue = 0)
+        val drawable = byteOrder.u32(body, 0)
+        val fence = byteOrder.u32(body, 4)
+        val initiallyTriggered = body[8].toInt() and 0xff
+        if (state.drawable(drawable) == null) return writeError(error = 9, opcode = majorOpcode, minorOpcode = XSync.CreateFence, badValue = drawable)
+        if (fence == 0) return writeError(error = 14, opcode = majorOpcode, minorOpcode = XSync.CreateFence, badValue = fence)
+        if (!resourceIdAvailable(fence, majorOpcode, XSync.CreateFence)) return
+        if (initiallyTriggered !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XSync.CreateFence, badValue = initiallyTriggered)
+        state.putSyncFence(XSyncFence(id = fence, drawableId = drawable, triggered = initiallyTriggered != 0))
+        own(fence)
+    }
+
+    private fun syncSetFenceTriggered(body: ByteArray, majorOpcode: Int, minorOpcode: Int, triggered: Boolean) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = 0)
+        val fence = byteOrder.u32(body, 0)
+        if (!state.setSyncFenceTriggered(fence, triggered)) {
+            return writeError(error = XSync.BadFence, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = fence)
+        }
+    }
+
+    private fun syncResetFence(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.ResetFence, badValue = 0)
+        val fence = byteOrder.u32(body, 0)
+        val current = state.syncFence(fence)
+            ?: return writeError(error = XSync.BadFence, opcode = majorOpcode, minorOpcode = XSync.ResetFence, badValue = fence)
+        if (!current.triggered) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XSync.ResetFence, badValue = fence)
+        state.setSyncFenceTriggered(fence, false)
+    }
+
+    private fun syncDestroyFence(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.DestroyFence, badValue = 0)
+        val fence = byteOrder.u32(body, 0)
+        if (!state.removeSyncFence(fence)) {
+            return writeError(error = XSync.BadFence, opcode = majorOpcode, minorOpcode = XSync.DestroyFence, badValue = fence)
+        }
+        ownedResources.remove(fence)
+    }
+
+    private fun syncQueryFence(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.QueryFence, badValue = 0)
+        val fence = byteOrder.u32(body, 0)
+        val current = state.syncFence(fence)
+            ?: return writeError(error = XSync.BadFence, opcode = majorOpcode, minorOpcode = XSync.QueryFence, badValue = fence)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        reply[8] = if (current.triggered) 1 else 0
+        write(reply)
+    }
+
+    private fun syncAwaitFence(body: ByteArray, majorOpcode: Int) {
+        if (body.isEmpty()) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XSync.AwaitFence, badValue = 0)
+        }
+        if (body.size % 4 != 0) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.AwaitFence, badValue = 0)
+        }
+        val fenceIds = mutableListOf<Int>()
+        for (offset in body.indices step 4) {
+            val fence = byteOrder.u32(body, offset)
+            if (state.syncFence(fence) == null) {
+                return writeError(error = XSync.BadFence, opcode = majorOpcode, minorOpcode = XSync.AwaitFence, badValue = fence)
+            }
+            fenceIds += fence
+        }
+        if (!state.syncFenceAwaitSatisfied(fenceIds)) {
+            pendingSyncFenceAwait = fenceIds
+        }
+    }
+
+    private fun parseSyncWaitCondition(body: ByteArray, offset: Int, majorOpcode: Int, minorOpcode: Int): XSyncWaitCondition? {
+        val counter = byteOrder.u32(body, offset)
+        val valueType = byteOrder.u32(body, offset + 4)
+        val waitValue = syncValue(body, offset + 8)
+        val testType = byteOrder.u32(body, offset + 16)
+        val eventThreshold = syncValue(body, offset + 20)
+        return syncWaitCondition(counter, valueType, waitValue, testType, eventThreshold, majorOpcode, minorOpcode)
+    }
+
+    private fun syncWaitCondition(
+        counter: Int,
+        valueType: Int,
+        waitValue: Long,
+        testType: Int,
+        eventThreshold: Long,
+        majorOpcode: Int,
+        minorOpcode: Int,
+    ): XSyncWaitCondition? {
+        if (valueType !in XSync.Absolute..XSync.Relative) {
+            writeError(error = 2, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = valueType)
+            return null
+        }
+        if (testType !in XSync.PositiveTransition..XSync.NegativeComparison) {
+            writeError(error = 2, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = testType)
+            return null
+        }
+        val current = if (counter == 0) null else state.syncCounter(counter)
+        if (counter != 0 && current == null) {
+            writeError(error = XSync.BadCounter, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = counter)
+            return null
+        }
+        if (counter == 0 && valueType == XSync.Relative) {
+            writeError(error = 8, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = counter)
+            return null
+        }
+        val testValue = if (valueType == XSync.Absolute) {
+            waitValue
+        } else {
+            try {
+                Math.addExact(current?.value ?: 0, waitValue)
+            } catch (_: ArithmeticException) {
+                writeError(error = 2, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = counter)
+                return null
+            }
+        }
+        return XSyncWaitCondition(
+            counterId = counter,
+            valueType = valueType,
+            waitValue = waitValue,
+            testType = testType,
+            testValue = testValue,
+            eventThreshold = eventThreshold,
+        )
+    }
+
+    private fun parseSyncAlarmAttributes(
+        body: ByteArray,
+        valueMask: Int,
+        valuesOffset: Int,
+        majorOpcode: Int,
+        minorOpcode: Int,
+        base: XSyncAlarm,
+    ): XSyncAlarm? {
+        if ((valueMask and XSync.AlarmAttributeMask.inv()) != 0) {
+            writeError(error = 2, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = valueMask)
+            return null
+        }
+        val expectedSize = valuesOffset + syncAlarmAttributeValueSize(valueMask)
+        if (body.size != expectedSize) {
+            writeError(error = 16, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = 0)
+            return null
+        }
+        var offset = valuesOffset
+        var counterId = base.counterId
+        var valueType = base.valueType
+        var waitValue = base.waitValue
+        var testType = base.testType
+        var delta = base.delta
+        var events = base.events
+        if ((valueMask and XSync.CACounter) != 0) {
+            counterId = byteOrder.u32(body, offset)
+            offset += 4
+        }
+        if ((valueMask and XSync.CAValueType) != 0) {
+            valueType = byteOrder.u32(body, offset)
+            offset += 4
+        }
+        if ((valueMask and XSync.CAValue) != 0) {
+            waitValue = syncValue(body, offset)
+            offset += 8
+        }
+        if ((valueMask and XSync.CATestType) != 0) {
+            testType = byteOrder.u32(body, offset)
+            offset += 4
+        }
+        if ((valueMask and XSync.CADelta) != 0) {
+            delta = syncValue(body, offset)
+            offset += 8
+        }
+        if ((valueMask and XSync.CAEvents) != 0) {
+            val eventValue = byteOrder.u32(body, offset)
+            if (eventValue !in 0..1) {
+                writeError(error = 2, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = eventValue)
+                return null
+            }
+            events = eventValue != 0
+        }
+        val condition = syncWaitCondition(counterId, valueType, waitValue, testType, eventThreshold = 0, majorOpcode, minorOpcode) ?: return null
+        if ((testType == XSync.PositiveComparison || testType == XSync.PositiveTransition) && delta < 0) {
+            writeError(error = 8, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = 0)
+            return null
+        }
+        if ((testType == XSync.NegativeComparison || testType == XSync.NegativeTransition) && delta > 0) {
+            writeError(error = 8, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = 0)
+            return null
+        }
+        val state = if (counterId == 0) XSync.AlarmInactive else XSync.AlarmActive
+        return base.copy(
+            counterId = counterId,
+            valueType = valueType,
+            waitValue = waitValue,
+            testType = testType,
+            testValue = condition.testValue,
+            delta = delta,
+            events = events,
+            state = state,
+        )
+    }
+
+    private fun syncAlarmAttributeValueSize(valueMask: Int): Int {
+        var size = 0
+        if ((valueMask and XSync.CACounter) != 0) size += 4
+        if ((valueMask and XSync.CAValueType) != 0) size += 4
+        if ((valueMask and XSync.CAValue) != 0) size += 8
+        if ((valueMask and XSync.CATestType) != 0) size += 4
+        if ((valueMask and XSync.CADelta) != 0) size += 8
+        if ((valueMask and XSync.CAEvents) != 0) size += 4
+        return size
+    }
+
+    private fun syncValue(body: ByteArray, offset: Int): Long =
+        (byteOrder.u32(body, offset).toLong() shl 32) or (byteOrder.u32(body, offset + 4).toLong() and 0xffff_ffffL)
+
+    private fun putSyncValue(bytes: ByteArray, offset: Int, value: Long) {
+        byteOrder.put32(bytes, offset, (value shr 32).toInt())
+        byteOrder.put32(bytes, offset + 4, value.toInt())
     }
 
     private fun xtestFakeInputDelayIfValid(body: ByteArray): Long {
