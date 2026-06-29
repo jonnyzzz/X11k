@@ -176,6 +176,10 @@ internal class X11Connection(
                 xcmisc(minorOpcode, body, opcode)
                 return
             }
+            if (extension.name == "MIT-SUNDRY-NONSTANDARD") {
+                mitmisc(minorOpcode, body, opcode)
+                return
+            }
         }
         when (opcode) {
             1 -> createWindow(minorOpcode, body)
@@ -6376,6 +6380,7 @@ internal class X11Connection(
             XXinerama.MajorOpcode -> "XINERAMA.${XXinerama.operationName(minorOpcode)}"
             XXTest.MajorOpcode -> "XTEST.${XXTest.operationName(minorOpcode)}"
             XXCMisc.MajorOpcode -> "XC-MISC.${XXCMisc.operationName(minorOpcode)}"
+            XXMitMisc.MajorOpcode -> "MIT-SUNDRY-NONSTANDARD.${XXMitMisc.operationName(minorOpcode)}"
             1 -> "CreateWindow"
             2 -> "ChangeWindowAttributes"
             3 -> "GetWindowAttributes"
@@ -6730,6 +6735,25 @@ internal class X11Connection(
             offset += 4
         }
         write(reply)
+    }
+
+    private fun mitmisc(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        when (minorOpcode) {
+            XXMitMisc.SetBugMode -> mitmiscSetBugMode(body, majorOpcode)
+            XXMitMisc.GetBugMode -> mitmiscGetBugMode(body, majorOpcode)
+            else -> unsupportedRequest(majorOpcode, minorOpcode, "MIT-SUNDRY-NONSTANDARD.${XXMitMisc.operationName(minorOpcode)}")
+        }
+    }
+
+    private fun mitmiscSetBugMode(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXMitMisc.SetBugMode, badValue = 0)
+        val enabled = body[0].toInt() and 0xff
+        if (enabled !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXMitMisc.SetBugMode, badValue = enabled)
+    }
+
+    private fun mitmiscGetBugMode(body: ByteArray, majorOpcode: Int) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXMitMisc.GetBugMode, badValue = 0)
+        write(reply(extra = 0, payloadUnits = 0))
     }
 
     private fun xtestFakeInputDelayIfValid(body: ByteArray): Long {

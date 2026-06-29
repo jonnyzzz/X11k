@@ -184,6 +184,13 @@ internal class X11State(
             firstEvent = XXCMisc.FirstEvent,
             firstError = XXCMisc.FirstError,
         ),
+        XExtension(
+            name = "MIT-SUNDRY-NONSTANDARD",
+            majorOpcode = XXMitMisc.MajorOpcode,
+            firstEvent = XXMitMisc.FirstEvent,
+            firstError = XXMitMisc.FirstError,
+            aliases = setOf("MIT-MISC"),
+        ),
     )
 
     init {
