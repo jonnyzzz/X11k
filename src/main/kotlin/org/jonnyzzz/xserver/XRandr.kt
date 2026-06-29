@@ -34,6 +34,8 @@ internal object XRandr {
     const val GetScreenResourcesCurrent = 25
     const val SetCrtcTransform = 26
     const val GetCrtcTransform = 27
+    const val GetPanning = 28
+    const val SetPanning = 29
     const val SetOutputPrimary = 30
     const val GetOutputPrimary = 31
     const val GetProviders = 32
@@ -102,6 +104,8 @@ internal object XRandr {
             GetScreenResourcesCurrent -> "GetScreenResourcesCurrent"
             SetCrtcTransform -> "SetCrtcTransform"
             GetCrtcTransform -> "GetCrtcTransform"
+            GetPanning -> "GetPanning"
+            SetPanning -> "SetPanning"
             SetOutputPrimary -> "SetOutputPrimary"
             GetOutputPrimary -> "GetOutputPrimary"
             GetProviders -> "GetProviders"

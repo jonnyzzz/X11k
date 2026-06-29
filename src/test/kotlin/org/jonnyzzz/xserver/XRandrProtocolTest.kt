@@ -380,6 +380,52 @@ class XRandrProtocolTest {
     }
 
     @Test
+    fun `RANDR panning reports disabled state and validates no-op updates`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(request(XRandr.MajorOpcode, XRandr.GetPanning, ByteArray(0)))
+                out.write(u32Request(XRandr.GetPanning, 0x0102_0304))
+                out.write(u32Request(XRandr.GetPanning, XRandr.CrtcId))
+                out.write(request(XRandr.MajorOpcode, XRandr.SetPanning, ByteArray(28)))
+                out.write(setPanningRequest(crtc = 0x0102_0304))
+                out.write(setPanningRequest(width = 1))
+                out.write(setPanningRequest())
+                out.write(setPanningRequest(timestamp = XRandr.ConfigTimestamp))
+                out.write(u32Request(XRandr.GetPanning, XRandr.CrtcId))
+                out.write(randrQueryVersionRequest(1, 6))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 1, minorOpcode = XRandr.GetPanning)
+                assertError(socket.getInputStream(), error = XRandr.BadCrtc, badValue = 0x0102_0304, sequence = 2, minorOpcode = XRandr.GetPanning)
+
+                val initial = readReply(socket.getInputStream())
+                val initialTimestamp = assertPanningReply(initial, sequence = 3, timestampAtLeast = XRandr.ConfigTimestamp)
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 4, minorOpcode = XRandr.SetPanning)
+                assertError(socket.getInputStream(), error = XRandr.BadCrtc, badValue = 0x0102_0304, sequence = 5, minorOpcode = XRandr.SetPanning)
+                assertError(socket.getInputStream(), error = 8, badValue = 0, sequence = 6, minorOpcode = XRandr.SetPanning)
+
+                val successTimestamp = assertRandrStatusReply(readReply(socket.getInputStream()), sequence = 7, status = XRandr.Success)
+                assertEquals(true, Integer.compareUnsigned(successTimestamp, initialTimestamp) > 0)
+                assertRandrStatusReply(readReply(socket.getInputStream()), sequence = 8, status = XRandr.InvalidTime)
+
+                assertPanningReply(readReply(socket.getInputStream()), sequence = 9, timestampAtLeast = successTimestamp)
+
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(10, u16le(recovered, 2))
+                assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
+                assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RANDR output properties store values and report property metadata`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -753,6 +799,9 @@ class XRandrProtocolTest {
                 out.write(queryOutputPropertyRequestBe(XRandr.OutputId, StringAtom))
                 out.write(changeOutputPropertyRequestBe(XRandr.OutputId, PrimaryAtom, AtomAtom, format = 16, data = byteArrayOf(0x11, 0x22, 0x33, 0x44)))
                 out.write(getOutputPropertyRequestBe(XRandr.OutputId, PrimaryAtom, AtomAtom, longLength = 1))
+                out.write(u32RequestBe(XRandr.GetPanning, XRandr.CrtcId))
+                out.write(setPanningRequestBe())
+                out.write(setPanningRequestBe(timestamp = XRandr.ConfigTimestamp))
                 out.flush()
 
                 val version = readReply(socket.getInputStream())
@@ -817,6 +866,11 @@ class XRandrProtocolTest {
                 assertEquals(0x22, property[33].toInt() and 0xff)
                 assertEquals(0x33, property[34].toInt() and 0xff)
                 assertEquals(0x44, property[35].toInt() and 0xff)
+
+                val initialPanningTimestamp = assertPanningReplyBe(readReplyBe(socket.getInputStream()), sequence = 10, timestampAtLeast = XRandr.ConfigTimestamp)
+                val panningTimestamp = assertRandrStatusReplyBe(readReplyBe(socket.getInputStream()), sequence = 11, status = XRandr.Success)
+                assertEquals(true, Integer.compareUnsigned(panningTimestamp, initialPanningTimestamp) > 0)
+                assertRandrStatusReplyBe(readReplyBe(socket.getInputStream()), sequence = 12, status = XRandr.InvalidTime)
             }
             server.close()
             serverThread.join(1_000)
@@ -1029,6 +1083,52 @@ class XRandrProtocolTest {
         val valuesOffset = 44 + ((filterBytes.size + 3) and -4)
         values.forEachIndexed { index, value -> put32le(body, valuesOffset + index * 4, value) }
         return request(XRandr.MajorOpcode, XRandr.SetCrtcTransform, body)
+    }
+
+    private fun setPanningRequest(
+        crtc: Int = XRandr.CrtcId,
+        timestamp: Int = 0,
+        left: Int = 0,
+        top: Int = 0,
+        width: Int = 0,
+        height: Int = 0,
+        trackLeft: Int = 0,
+        trackTop: Int = 0,
+        trackWidth: Int = 0,
+        trackHeight: Int = 0,
+        borderLeft: Int = 0,
+        borderTop: Int = 0,
+        borderRight: Int = 0,
+        borderBottom: Int = 0,
+    ): ByteArray {
+        val body = ByteArray(32)
+        put32le(body, 0, crtc)
+        put32le(body, 4, timestamp)
+        intArrayOf(
+            left,
+            top,
+            width,
+            height,
+            trackLeft,
+            trackTop,
+            trackWidth,
+            trackHeight,
+            borderLeft,
+            borderTop,
+            borderRight,
+            borderBottom,
+        ).forEachIndexed { index, value -> put16le(body, 8 + index * 2, value) }
+        return request(XRandr.MajorOpcode, XRandr.SetPanning, body)
+    }
+
+    private fun setPanningRequestBe(
+        crtc: Int = XRandr.CrtcId,
+        timestamp: Int = 0,
+    ): ByteArray {
+        val body = ByteArray(32)
+        put32be(body, 0, crtc)
+        put32be(body, 4, timestamp)
+        return requestBe(XRandr.MajorOpcode, XRandr.SetPanning, body)
     }
 
     private fun createWindowRequest(id: Int): ByteArray {
@@ -1287,6 +1387,48 @@ class XRandrProtocolTest {
         assertEquals(status, bytes[1].toInt() and 0xff)
         assertEquals(sequence, u16le(bytes, 2))
         assertEquals(0, u32le(bytes, 4))
+    }
+
+    private fun assertRandrStatusReply(bytes: ByteArray, sequence: Int, status: Int): Int {
+        assertEquals(1, bytes[0].toInt() and 0xff)
+        assertEquals(status, bytes[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(bytes, 2))
+        assertEquals(0, u32le(bytes, 4))
+        return u32le(bytes, 8)
+    }
+
+    private fun assertRandrStatusReplyBe(bytes: ByteArray, sequence: Int, status: Int): Int {
+        assertEquals(1, bytes[0].toInt() and 0xff)
+        assertEquals(status, bytes[1].toInt() and 0xff)
+        assertEquals(sequence, u16be(bytes, 2))
+        assertEquals(0, u32be(bytes, 4))
+        return u32be(bytes, 8)
+    }
+
+    private fun assertPanningReply(bytes: ByteArray, sequence: Int, timestampAtLeast: Int): Int {
+        assertEquals(1, bytes[0].toInt() and 0xff)
+        assertEquals(XRandr.Success, bytes[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(bytes, 2))
+        assertEquals(1, u32le(bytes, 4))
+        val timestamp = u32le(bytes, 8)
+        assertEquals(true, Integer.compareUnsigned(timestamp, timestampAtLeast) >= 0)
+        for (offset in 12 until 36 step 2) {
+            assertEquals(0, u16le(bytes, offset))
+        }
+        return timestamp
+    }
+
+    private fun assertPanningReplyBe(bytes: ByteArray, sequence: Int, timestampAtLeast: Int): Int {
+        assertEquals(1, bytes[0].toInt() and 0xff)
+        assertEquals(XRandr.Success, bytes[1].toInt() and 0xff)
+        assertEquals(sequence, u16be(bytes, 2))
+        assertEquals(1, u32be(bytes, 4))
+        val timestamp = u32be(bytes, 8)
+        assertEquals(true, Integer.compareUnsigned(timestamp, timestampAtLeast) >= 0)
+        for (offset in 12 until 36 step 2) {
+            assertEquals(0, u16be(bytes, offset))
+        }
+        return timestamp
     }
 
     private fun assertCrtcTransformReply(

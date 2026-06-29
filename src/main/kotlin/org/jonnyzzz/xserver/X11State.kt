@@ -125,6 +125,7 @@ internal class X11State(
     private var randrLastCrtcConfigTime = XRandr.ConfigTimestamp
     private var randrPendingCrtcTransform = XRandrCrtcTransform.Identity
     private var randrCurrentCrtcTransform = XRandrCrtcTransform.Identity
+    private var randrLastPanningTime = XRandr.ConfigTimestamp
     private val xkbButtonActions = linkedMapOf<Int, ByteArray>()
     private var modifierMapping = XModifierMapping.Default
     private var keyboardMapping = XKeyboardMapping.Default
@@ -6522,6 +6523,21 @@ internal class X11State(
     @Synchronized
     fun randrCrtcTransforms(): Pair<XRandrCrtcTransform, XRandrCrtcTransform> =
         randrPendingCrtcTransform.snapshot() to randrCurrentCrtcTransform.snapshot()
+
+    @Synchronized
+    fun randrLastPanningTime(): Int = randrLastPanningTime
+
+    @Synchronized
+    fun markRandrPanningSet(): Int {
+        val now = syncServerTime()
+        val timestamp = if (Integer.compareUnsigned(now, randrLastPanningTime) <= 0) {
+            randrLastPanningTime + 1
+        } else {
+            now
+        }
+        randrLastPanningTime = timestamp
+        return timestamp
+    }
 
     @Synchronized
     fun setRandrScreenSize(widthMillimeters: Int, heightMillimeters: Int): XRandrScreenSizeChange {

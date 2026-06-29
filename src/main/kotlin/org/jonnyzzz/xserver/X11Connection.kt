@@ -6839,6 +6839,8 @@ internal class X11Connection(
             XRandr.SetCrtcGamma -> randrSetCrtcGamma(body, majorOpcode)
             XRandr.SetCrtcTransform -> randrSetCrtcTransform(body, majorOpcode)
             XRandr.GetCrtcTransform -> randrGetCrtcTransform(body, majorOpcode)
+            XRandr.GetPanning -> randrGetPanning(body, majorOpcode)
+            XRandr.SetPanning -> randrSetPanning(body, majorOpcode)
             XRandr.SetOutputPrimary -> randrSetOutputPrimary(body, majorOpcode)
             XRandr.GetOutputPrimary -> randrGetOutputPrimary(body, majorOpcode)
             XRandr.GetProviders -> randrGetProviders(body, majorOpcode)
@@ -7315,6 +7317,40 @@ internal class X11Connection(
             next += 4
         }
         return next
+    }
+
+    private fun randrGetPanning(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.GetPanning, badValue = 0)
+        val crtc = byteOrder.u32(body, 0)
+        if (crtc != XRandr.CrtcId) {
+            return writeError(error = XRandr.BadCrtc, opcode = majorOpcode, minorOpcode = XRandr.GetPanning, badValue = crtc)
+        }
+        val reply = reply(extra = XRandr.Success, payloadUnits = 1)
+        byteOrder.put32(reply, 8, state.randrLastPanningTime())
+        write(reply)
+    }
+
+    private fun randrSetPanning(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 32) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.SetPanning, badValue = 0)
+        val crtc = byteOrder.u32(body, 0)
+        if (crtc != XRandr.CrtcId) {
+            return writeError(error = XRandr.BadCrtc, opcode = majorOpcode, minorOpcode = XRandr.SetPanning, badValue = crtc)
+        }
+        val timestamp = byteOrder.u32(body, 4)
+        if (timestamp != 0 && Integer.compareUnsigned(timestamp, state.randrLastPanningTime()) < 0) {
+            return writeRandrSetPanningReply(XRandr.InvalidTime)
+        }
+        val panningFields = (8 until body.size step 2).map { offset -> byteOrder.u16(body, offset) }
+        if (panningFields.any { it != 0 }) {
+            return writeError(error = 8, opcode = majorOpcode, minorOpcode = XRandr.SetPanning, badValue = 0)
+        }
+        writeRandrSetPanningReply(XRandr.Success, timestamp = state.markRandrPanningSet())
+    }
+
+    private fun writeRandrSetPanningReply(status: Int, timestamp: Int = state.syncServerTime()) {
+        val reply = reply(extra = status, payloadUnits = 0)
+        byteOrder.put32(reply, 8, timestamp)
+        write(reply)
     }
 
     private fun randrGetOutputPrimary(body: ByteArray, majorOpcode: Int) {
