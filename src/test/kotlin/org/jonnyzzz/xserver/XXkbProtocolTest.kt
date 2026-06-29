@@ -1026,10 +1026,44 @@ class XXkbProtocolTest {
     }
 
     @Test
-    fun `XKEYBOARD ListComponents reports no component names`() {
+    fun `XKEYBOARD ListComponents without trailing specs returns built-in component names`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
             out.write(listComponentsRequest(maxNames = 64))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, reply[0].toInt())
+            assertEquals(0, reply[1].toInt() and 0xff)
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(17, u32le(reply, 4))
+            assertEquals(1, u16le(reply, 8))
+            assertEquals(1, u16le(reply, 10))
+            assertEquals(1, u16le(reply, 12))
+            assertEquals(1, u16le(reply, 14))
+            assertEquals(1, u16le(reply, 16))
+            assertEquals(1, u16le(reply, 18))
+            assertEquals(0, u16le(reply, 20))
+            assertEquals(
+                listOf(
+                    listOf(XXkb.ListComponentDefault to "base"),
+                    listOf(XXkb.ListComponentDefault to "evdev"),
+                    listOf(XXkb.ListComponentDefault to "complete"),
+                    listOf(XXkb.ListComponentDefault to "complete"),
+                    listOf(XXkb.ListComponentDefault to "us"),
+                    listOf(XXkb.ListComponentDefault to "pc(pc105)"),
+                ),
+                xkbListingsByCategory(reply),
+            )
+            assertEquals(100, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD ListComponents with explicit empty specs reports no component names`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(listComponentsRequest(maxNames = 64, trailingPatterns = xkbComponentSpecs()))
             out.flush()
 
             val reply = readReply(socket.getInputStream())
@@ -1044,15 +1078,16 @@ class XXkbProtocolTest {
             assertEquals(0, u16le(reply, 16))
             assertEquals(0, u16le(reply, 18))
             assertEquals(0, u16le(reply, 20))
+            assertEquals(emptyList(), xkbListingsByCategory(reply).flatten())
             assertEquals(32, reply.size)
         }
     }
 
     @Test
-    fun `XKEYBOARD ListComponents accepts and ignores trailing pattern data`() {
+    fun `XKEYBOARD ListComponents accepts trailing pattern data and throttles matches`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
-            val trailingPatterns = xkbComponentSpecs("base", "evdev", "complete", "pc", "us", "pc105")
+            val trailingPatterns = xkbComponentSpecs("base", "evdev", "complete", "complete", "us", "pc(pc105)")
             out.write(listComponentsRequest(maxNames = 1, trailingPatterns = trailingPatterns))
             out.flush()
 
@@ -1060,10 +1095,92 @@ class XXkbProtocolTest {
             assertEquals(1, reply[0].toInt())
             assertEquals(0, reply[1].toInt() and 0xff)
             assertEquals(1, u16le(reply, 2))
-            assertEquals(0, u32le(reply, 4))
-            assertEquals(0, u16le(reply, 8))
+            assertEquals(2, u32le(reply, 4))
+            assertEquals(1, u16le(reply, 8))
+            assertEquals(0, u16le(reply, 10))
+            assertEquals(5, u16le(reply, 20))
+            assertEquals(
+                listOf(
+                    listOf(XXkb.ListComponentDefault to "base"),
+                    emptyList(),
+                    emptyList(),
+                    emptyList(),
+                    emptyList(),
+                    emptyList(),
+                ),
+                xkbListingsByCategory(reply),
+            )
+            assertEquals(40, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD ListComponents returns built-in component names matching patterns`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val trailingPatterns = xkbComponentSpecs("base", "evdev", "complete", "complete", "u+s", "p c(*)")
+            out.write(listComponentsRequest(maxNames = 64, trailingPatterns = trailingPatterns))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, reply[0].toInt())
+            assertEquals(0, reply[1].toInt() and 0xff)
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(17, u32le(reply, 4))
+            assertEquals(1, u16le(reply, 8))
+            assertEquals(1, u16le(reply, 10))
+            assertEquals(1, u16le(reply, 12))
+            assertEquals(1, u16le(reply, 14))
+            assertEquals(1, u16le(reply, 16))
+            assertEquals(1, u16le(reply, 18))
             assertEquals(0, u16le(reply, 20))
-            assertEquals(32, reply.size)
+            assertEquals(
+                listOf(
+                    listOf(XXkb.ListComponentDefault to "base"),
+                    listOf(XXkb.ListComponentDefault to "evdev"),
+                    listOf(XXkb.ListComponentDefault to "complete"),
+                    listOf(XXkb.ListComponentDefault to "complete"),
+                    listOf(XXkb.ListComponentDefault to "us"),
+                    listOf(XXkb.ListComponentDefault to "pc(pc105)"),
+                ),
+                xkbListingsByCategory(reply),
+            )
+            assertEquals(100, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD ListComponents throttles names and reports extra matches`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val trailingPatterns = xkbComponentSpecs("*", "*", "*", "*", "*", "pc(*)")
+            out.write(listComponentsRequest(maxNames = 3, trailingPatterns = trailingPatterns))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, reply[0].toInt())
+            assertEquals(0, reply[1].toInt() and 0xff)
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(8, u32le(reply, 4))
+            assertEquals(1, u16le(reply, 8))
+            assertEquals(1, u16le(reply, 10))
+            assertEquals(1, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(0, u16le(reply, 16))
+            assertEquals(0, u16le(reply, 18))
+            assertEquals(3, u16le(reply, 20))
+            assertEquals(
+                listOf(
+                    listOf(XXkb.ListComponentDefault to "base"),
+                    listOf(XXkb.ListComponentDefault to "evdev"),
+                    listOf(XXkb.ListComponentDefault to "complete"),
+                    emptyList(),
+                    emptyList(),
+                    emptyList(),
+                ),
+                xkbListingsByCategory(reply),
+            )
+            assertEquals(64, reply.size)
         }
     }
 
@@ -1078,9 +1195,20 @@ class XXkbProtocolTest {
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.ListComponents)
             val reply = readReply(socket.getInputStream())
             assertEquals(2, u16le(reply, 2))
-            assertEquals(0, u16le(reply, 8))
+            assertEquals(1, u16le(reply, 8))
             assertEquals(0, u16le(reply, 20))
-            assertEquals(32, reply.size)
+            assertEquals(
+                listOf(
+                    listOf(XXkb.ListComponentDefault to "base"),
+                    emptyList(),
+                    emptyList(),
+                    emptyList(),
+                    emptyList(),
+                    emptyList(),
+                ),
+                xkbListingsByCategory(reply),
+            )
+            assertEquals(40, reply.size)
         }
     }
 
@@ -1095,9 +1223,20 @@ class XXkbProtocolTest {
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.ListComponents)
             val reply = readReply(socket.getInputStream())
             assertEquals(2, u16le(reply, 2))
-            assertEquals(0, u16le(reply, 8))
-            assertEquals(0, u16le(reply, 20))
-            assertEquals(32, reply.size)
+            assertEquals(1, u16le(reply, 8))
+            assertEquals(5, u16le(reply, 20))
+            assertEquals(
+                listOf(
+                    listOf(XXkb.ListComponentDefault to "base"),
+                    emptyList(),
+                    emptyList(),
+                    emptyList(),
+                    emptyList(),
+                    emptyList(),
+                ),
+                xkbListingsByCategory(reply),
+            )
+            assertEquals(40, reply.size)
         }
     }
 
@@ -1862,6 +2001,29 @@ class XXkbProtocolTest {
             offset += nameBytes.size
         }
         return bytes
+    }
+
+    private fun xkbListingsByCategory(reply: ByteArray): List<List<Pair<Int, String>>> {
+        val counts = listOf(
+            u16le(reply, 8),
+            u16le(reply, 10),
+            u16le(reply, 12),
+            u16le(reply, 14),
+            u16le(reply, 16),
+            u16le(reply, 18),
+        )
+        var offset = 32
+        return counts.map { count ->
+            List(count) {
+                val flags = u16le(reply, offset)
+                val length = u16le(reply, offset + 2)
+                val name = reply.copyOfRange(offset + 4, offset + 4 + length).decodeToString()
+                offset += (4 + length + 1) and -2
+                flags to name
+            }.also {
+                offset = paddedSize(offset)
+            }
+        }
     }
 
     private fun getDeviceInfoRequest(

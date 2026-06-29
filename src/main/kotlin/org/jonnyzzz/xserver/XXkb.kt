@@ -92,6 +92,7 @@ internal object XXkb {
     const val NameDetailVirtualModNames = 1 shl 11
     const val NameDetailGroupNames = 1 shl 12
     const val NameDetailRgNames = 1 shl 13
+    const val ListComponentDefault = 1 shl 1
     const val XiFeatureButtonActions = 1 shl 1
     const val XiFeatureIndicatorNames = 1 shl 2
     const val XiFeatureIndicatorMaps = 1 shl 3

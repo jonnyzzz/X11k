@@ -1956,8 +1956,33 @@ internal class X11Connection(
 
     private fun xkbListComponents(body: ByteArray, majorOpcode: Int) {
         if (body.size < 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.ListComponents, badValue = 0)
-        if (!validateXkbComponentSpecs(body, 4)) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.ListComponents, badValue = 0)
-        val reply = reply(extra = 0, payloadUnits = 0)
+        val includeAllComponents = body.size == 4
+        val patterns = xkbComponentSpecs(body, 4)
+            ?: return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.ListComponents, badValue = 0)
+        val maxNames = byteOrder.u16(body, 2)
+        val matches = xkbComponentCatalog().mapIndexed { index, names ->
+            val pattern = xkbSanitizeComponentPattern(patterns[index])
+            if (includeAllComponents) {
+                names
+            } else {
+                names.filter { name -> pattern.isNotEmpty() && xkbComponentPatternMatches(pattern, name) }
+            }
+        }
+        val flattened = matches.flatMapIndexed { index, names -> names.map { index to it } }
+        val returned = flattened.take(maxNames)
+        val returnedByCategory = List(6) { category ->
+            returned.filter { it.first == category }.map { it.second }
+        }
+        val payload = xkbComponentListingsPayload(returnedByCategory)
+        val reply = reply(extra = 0, payloadUnits = payload.size / 4)
+        byteOrder.put16(reply, 8, returnedByCategory[0].size)
+        byteOrder.put16(reply, 10, returnedByCategory[1].size)
+        byteOrder.put16(reply, 12, returnedByCategory[2].size)
+        byteOrder.put16(reply, 14, returnedByCategory[3].size)
+        byteOrder.put16(reply, 16, returnedByCategory[4].size)
+        byteOrder.put16(reply, 18, returnedByCategory[5].size)
+        byteOrder.put16(reply, 20, flattened.size - returned.size)
+        payload.copyInto(reply, 32)
         write(reply)
     }
 
@@ -1970,18 +1995,95 @@ internal class X11Connection(
         write(reply)
     }
 
-    private fun validateXkbComponentSpecs(body: ByteArray, startOffset: Int): Boolean {
-        if (body.size == startOffset) return true
+    private fun xkbComponentSpecs(body: ByteArray, startOffset: Int, absentPatterns: List<String> = List(6) { "" }): List<String>? {
+        if (body.size == startOffset) return absentPatterns
         var offset = startOffset
+        val patterns = mutableListOf<String>()
         repeat(6) {
-            if (offset >= body.size) return false
+            if (offset >= body.size) return null
             val length = body[offset].toInt() and 0xff
             offset += 1
-            if (offset > body.size - length) return false
+            if (offset > body.size - length) return null
+            patterns += String(body, offset, length, StandardCharsets.ISO_8859_1)
             offset += length
         }
-        return paddedLength(offset) == body.size
+        if (paddedLength(offset) != body.size) return null
+        return patterns
     }
+
+    private fun validateXkbComponentSpecs(body: ByteArray, startOffset: Int): Boolean =
+        xkbComponentSpecs(body, startOffset) != null
+
+    private fun xkbComponentCatalog(): List<List<String>> =
+        listOf(
+            listOf("base"),
+            listOf("evdev"),
+            listOf("complete"),
+            listOf("complete"),
+            listOf("us"),
+            listOf("pc(pc105)"),
+        )
+
+    private fun xkbComponentPatternMatches(pattern: String, name: String): Boolean {
+        fun matches(patternIndex: Int, nameIndex: Int): Boolean {
+            var p = patternIndex
+            var n = nameIndex
+            while (p < pattern.length) {
+                when (val ch = pattern[p]) {
+                    '*' -> {
+                        var candidate = n
+                        while (candidate <= name.length && (candidate == n || name[candidate - 1] !in "()")) {
+                            if (matches(p + 1, candidate)) return true
+                            candidate++
+                        }
+                        return false
+                    }
+                    '?' -> {
+                        if (n >= name.length || name[n] in "()") return false
+                        p++
+                        n++
+                    }
+                    else -> {
+                        if (n >= name.length || name[n] != ch) return false
+                        p++
+                        n++
+                    }
+                }
+            }
+            return n == name.length
+        }
+        return matches(0, 0)
+    }
+
+    private fun xkbSanitizeComponentPattern(pattern: String): String =
+        pattern.filter { ch ->
+            ch.isLetterOrDigit() || ch == '-' || ch == '_' || ch == '/' || ch == '(' || ch == ')' || ch == '*' || ch == '?'
+        }
+
+    private fun xkbComponentListingsPayload(categories: List<List<String>>): ByteArray {
+        val payloadBytes = categories.fold(0) { offset, names ->
+            val next = names.fold(offset) { categoryOffset, name ->
+                categoryOffset + xkbComponentListingLength(name)
+            }
+            paddedLength(next)
+        }
+        val payload = ByteArray(payloadBytes)
+        var offset = 0
+        categories.forEach { names ->
+            names.forEach { name ->
+                val nameBytes = name.encodeToByteArray()
+                byteOrder.put16(payload, offset, XXkb.ListComponentDefault)
+                byteOrder.put16(payload, offset + 2, nameBytes.size)
+                nameBytes.copyInto(payload, offset + 4)
+                offset += xkbComponentListingLength(name)
+            }
+            offset = paddedLength(offset)
+        }
+        return payload
+    }
+
+    private fun xkbComponentListingLength(name: String): Int =
+        (4 + name.encodeToByteArray().size + 1) and -2
 
     private fun xkbGetDeviceInfo(body: ByteArray, majorOpcode: Int) {
         if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = 0)
