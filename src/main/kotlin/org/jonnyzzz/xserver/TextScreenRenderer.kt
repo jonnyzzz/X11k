@@ -125,6 +125,7 @@ internal object TextScreenRenderer {
                     cursor.sourceChar?.let { append(" sourceChar=0x").append(it.toString(16)) }
                     cursor.maskChar?.let { append(" maskChar=0x").append(it.toString(16)) }
                     cursor.sourcePictureIdHex?.let { append(" sourcePicture=").append(it) }
+                    cursor.name?.let { append(" name=").append(it).append(" atom=").append(cursor.nameAtomHex ?: "None") }
                     if (cursor.animationElements.isNotEmpty()) {
                         append(" animation=")
                         append(cursor.animationElements.joinToString(",") { "${it.cursorIdHex}@${it.delayMilliseconds}ms" })

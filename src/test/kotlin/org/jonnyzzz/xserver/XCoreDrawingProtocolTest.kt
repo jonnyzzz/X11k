@@ -1407,6 +1407,211 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `XFIXES v2 cursor names round trip and follow displayed cursor snapshots`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+
+                val source = PixmapId + 100
+                val cursor = PixmapId + 101
+                val out = socket.getOutputStream()
+                out.write(createPixmapRequest(source, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createCursorRequest(cursor, source = source, mask = 0, x = 0, y = 0))
+                out.write(xfixesGetCursorNameRequest(cursor))
+                out.write(xfixesSetCursorNameRequest(cursor, "left_ptr"))
+                out.write(xfixesGetCursorNameRequest(cursor))
+                out.write(changeWindowAttributesRawRequest(X11Ids.RootWindow, 1 shl 14, cursor))
+                out.write(xfixesGetCursorImageAndNameRequest())
+                out.write(freeCursorRequest(cursor))
+                out.write(xfixesGetCursorImageAndNameRequest())
+                out.flush()
+
+                val unnamed = readReply(socket.getInputStream())
+                assertEquals(0, u32le(unnamed, 8))
+                assertEquals(0, u16le(unnamed, 12))
+                assertEquals(0, u32le(unnamed, 4))
+
+                val named = readReply(socket.getInputStream())
+                val atom = u32le(named, 8)
+                assertTrue(atom != 0)
+                assertEquals("left_ptr", named.copyOfRange(32, 32 + u16le(named, 12)).decodeToString())
+
+                val imageAndName = readReply(socket.getInputStream())
+                assertEquals(7, u16le(imageAndName, 2))
+                assertEquals(3, u32le(imageAndName, 4))
+                assertEquals(1, u16le(imageAndName, 12))
+                assertEquals(1, u16le(imageAndName, 14))
+                assertEquals(2, u32le(imageAndName, 20))
+                assertEquals(atom, u32le(imageAndName, 24))
+                assertEquals("left_ptr", imageAndName.copyOfRange(36, 36 + u16le(imageAndName, 28)).decodeToString())
+
+                val retained = readReply(socket.getInputStream())
+                assertEquals(3, u32le(retained, 4))
+                assertEquals(2, u32le(retained, 20))
+                assertEquals(atom, u32le(retained, 24))
+                assertEquals("left_ptr", retained.copyOfRange(36, 36 + u16le(retained, 28)).decodeToString())
+
+                val replacementSource = PixmapId + 102
+                out.write(createPixmapRequest(replacementSource, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createCursorRequest(cursor, source = replacementSource, mask = 0, foregroundBlue = 0xffff))
+                out.write(xfixesSetCursorNameRequest(cursor, "text"))
+                out.write(xfixesGetCursorImageAndNameRequest())
+                out.flush()
+
+                val retainedAfterReusedId = readReply(socket.getInputStream())
+                assertEquals(3, u32le(retainedAfterReusedId, 4))
+                assertEquals(2, u32le(retainedAfterReusedId, 20))
+                assertEquals(atom, u32le(retainedAfterReusedId, 24))
+                assertEquals("left_ptr", retainedAfterReusedId.copyOfRange(36, 36 + u16le(retainedAfterReusedId, 28)).decodeToString())
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES v2 cursor name requests validate framing cursors and recover stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+
+                val missingCursor = PixmapId + 102
+                val out = socket.getOutputStream()
+                out.write(request(XFixes.MajorOpcode, XFixes.SetCursorName, ByteArray(4)))
+                out.write(xfixesSetCursorNameRequest(missingCursor, "missing"))
+                out.write(request(XFixes.MajorOpcode, XFixes.GetCursorName, ByteArray(0)))
+                out.write(xfixesGetCursorNameRequest(missingCursor))
+                out.write(request(XFixes.MajorOpcode, XFixes.GetCursorImageAndName, ByteArray(4)))
+                out.write(request(XFixes.MajorOpcode, XFixes.ChangeCursor, ByteArray(4)))
+                out.write(xfixesChangeCursorRequest(missingCursor, missingCursor + 1))
+                out.write(request(XFixes.MajorOpcode, XFixes.ChangeCursorByName, ByteArray(4)))
+                out.write(xfixesChangeCursorByNameRequest(missingCursor, "missing"))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.SetCursorName, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 6, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.SetCursorName, badValue = missingCursor, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.GetCursorName, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 6, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.GetCursorName, badValue = missingCursor, sequence = 4)
+                assertError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.GetCursorImageAndName, badValue = 0, sequence = 5)
+                assertError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.ChangeCursor, badValue = 0, sequence = 6)
+                assertError(socket.getInputStream(), error = 6, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.ChangeCursor, badValue = missingCursor, sequence = 7)
+                assertError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.ChangeCursorByName, badValue = 0, sequence = 8)
+                assertError(socket.getInputStream(), error = 6, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.ChangeCursorByName, badValue = missingCursor, sequence = 9)
+                assertEquals(10, u16le(readReply(socket.getInputStream()), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES v2 ChangeCursor replaces displayed cursor content and keeps destination name`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+
+                val destinationSource = PixmapId + 103
+                val sourceSource = PixmapId + 104
+                val destinationCursor = PixmapId + 105
+                val sourceCursor = PixmapId + 106
+                val out = socket.getOutputStream()
+                out.write(xfixesSelectCursorInputRequest(X11Ids.RootWindow))
+                out.write(queryPointerRequest())
+                out.write(createPixmapRequest(destinationSource, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createPixmapRequest(sourceSource, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createGcRequest(GcId, foreground = 1, background = 0, drawable = destinationSource))
+                out.write(putImageBitmapRequest(destinationSource, GcId, width = 1, height = 1, bits = listOf(true)))
+                out.write(putImageBitmapRequest(sourceSource, GcId, width = 1, height = 1, bits = listOf(true)))
+                out.write(createCursorRequest(destinationCursor, source = destinationSource, mask = 0))
+                out.write(createCursorRequest(sourceCursor, source = sourceSource, mask = 0, foregroundRed = 0, foregroundBlue = 0xffff))
+                out.write(xfixesSetCursorNameRequest(destinationCursor, "left_ptr"))
+                out.write(xfixesGetCursorNameRequest(destinationCursor))
+                out.write(changeWindowAttributesRawRequest(X11Ids.RootWindow, 1 shl 14, destinationCursor))
+                out.write(xfixesChangeCursorRequest(sourceCursor, destinationCursor))
+                out.write(xfixesGetCursorImageAndNameRequest())
+                out.flush()
+
+                assertEquals(2, u16le(readReply(socket.getInputStream()), 2))
+                val name = readReply(socket.getInputStream())
+                val atom = u32le(name, 8)
+                assertTrue(atom != 0)
+                assertXFixesCursorNotify(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 12,
+                    window = X11Ids.RootWindow,
+                    cursorSerial = 2,
+                    timestamp = 1,
+                    name = atom,
+                )
+                assertXFixesCursorNotify(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 13,
+                    window = X11Ids.RootWindow,
+                    cursorSerial = 3,
+                    timestamp = 1,
+                    name = atom,
+                )
+                val changed = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), u32le(changed, 32))
+                assertEquals(atom, u32le(changed, 24))
+                assertEquals("left_ptr", changed.copyOfRange(36, 36 + u16le(changed, 28)).decodeToString())
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES v2 ChangeCursorByName replaces named cursors and escapes semantic names`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+
+                val destinationSource = PixmapId + 107
+                val sourceSource = PixmapId + 108
+                val destinationCursor = PixmapId + 109
+                val sourceCursor = PixmapId + 110
+                val cursorName = "line\nquote\"tab\tzero\u0000"
+                val out = socket.getOutputStream()
+                out.write(createPixmapRequest(destinationSource, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createPixmapRequest(sourceSource, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createGcRequest(GcId, foreground = 1, background = 0, drawable = destinationSource))
+                out.write(putImageBitmapRequest(destinationSource, GcId, width = 1, height = 1, bits = listOf(true)))
+                out.write(putImageBitmapRequest(sourceSource, GcId, width = 1, height = 1, bits = listOf(true)))
+                out.write(createCursorRequest(destinationCursor, source = destinationSource, mask = 0))
+                out.write(createCursorRequest(sourceCursor, source = sourceSource, mask = 0, foregroundRed = 0, foregroundGreen = 0xffff))
+                out.write(xfixesSetCursorNameRequest(destinationCursor, cursorName))
+                out.write(changeWindowAttributesRawRequest(X11Ids.RootWindow, 1 shl 14, destinationCursor))
+                out.write(xfixesChangeCursorByNameRequest(sourceCursor, cursorName))
+                out.write(xfixesGetCursorImageAndNameRequest())
+                out.flush()
+
+                val changed = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), u32le(changed, 32))
+                assertEquals(cursorName, changed.copyOfRange(36, 36 + u16le(changed, 28)).decodeToString())
+                val cursorJson = Regex("""\{"id":"0x${destinationCursor.toUInt().toString(16)}".*?\}""").find(httpGet(server.localPort, "/state.json"))?.value.orEmpty()
+                assertContains(cursorJson, "\\n")
+                assertContains(cursorJson, "\\\"")
+                assertContains(cursorJson, "\\t")
+                assertContains(cursorJson, "\\u0000")
+                assertFalse(cursorJson.contains('\n'))
+                assertFalse(cursorJson.contains('\u0000'))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CreateCursor rejects oversized cursor image snapshots and recovers stream`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -14941,6 +15146,40 @@ class XCoreDrawingProtocolTest {
 
     private fun xfixesGetCursorImageRequest(): ByteArray =
         request(XFixes.MajorOpcode, XFixes.GetCursorImage, ByteArray(0))
+
+    private fun xfixesSetCursorNameRequest(cursor: Int, name: String): ByteArray {
+        val nameBytes = name.encodeToByteArray()
+        val body = ByteArray(8 + paddedLength(nameBytes.size))
+        put32le(body, 0, cursor)
+        put16le(body, 4, nameBytes.size)
+        nameBytes.copyInto(body, 8)
+        return request(XFixes.MajorOpcode, XFixes.SetCursorName, body)
+    }
+
+    private fun xfixesGetCursorNameRequest(cursor: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, cursor)
+        return request(XFixes.MajorOpcode, XFixes.GetCursorName, body)
+    }
+
+    private fun xfixesGetCursorImageAndNameRequest(): ByteArray =
+        request(XFixes.MajorOpcode, XFixes.GetCursorImageAndName, ByteArray(0))
+
+    private fun xfixesChangeCursorRequest(source: Int, destination: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, source)
+        put32le(body, 4, destination)
+        return request(XFixes.MajorOpcode, XFixes.ChangeCursor, body)
+    }
+
+    private fun xfixesChangeCursorByNameRequest(source: Int, name: String): ByteArray {
+        val nameBytes = name.encodeToByteArray()
+        val body = ByteArray(8 + paddedLength(nameBytes.size))
+        put32le(body, 0, source)
+        put16le(body, 4, nameBytes.size)
+        nameBytes.copyInto(body, 8)
+        return request(XFixes.MajorOpcode, XFixes.ChangeCursorByName, body)
+    }
 
     private fun openFontRequest(font: Int, name: String = "fixed"): ByteArray {
         val nameBytes = name.encodeToByteArray()

@@ -31,6 +31,11 @@ internal data class XCursorIdentity(
     val generation: Long,
 )
 
+internal data class XCursorName(
+    val atom: Int,
+    val name: String,
+)
+
 internal data class XClientResourceIdRange(
     val startId: Int,
     val count: Int,
@@ -503,10 +508,28 @@ internal class X11State(
         cursors[id]?.generation
 
     @Synchronized
+    fun cursorName(id: Int): XCursorName? =
+        cursors[id]?.name
+
+    @Synchronized
     fun displayedCursorImage(): XCursorImage? {
         activePointerGrab?.cursor?.let { return cursors[it]?.image }
         val pointerWindow = windowAt(pointerX, pointerY) ?: windows[X11Ids.RootWindow] ?: return null
         return windowPathToRoot(pointerWindow.id).firstOrNull { it.cursorId != null }?.cursorImage
+    }
+
+    @Synchronized
+    fun displayedCursorName(): XCursorName? {
+        activePointerGrab?.cursor?.let { return cursors[it]?.name }
+        val pointerWindow = windowAt(pointerX, pointerY) ?: windows[X11Ids.RootWindow] ?: return null
+        val cursorWindow = windowPathToRoot(pointerWindow.id).firstOrNull { it.cursorId != null } ?: return null
+        val id = cursorWindow.cursorId ?: return null
+        val cursor = cursors[id]
+        return if (cursor != null && cursorWindow.cursorGeneration == cursor.generation) {
+            cursor.name
+        } else {
+            cursorWindow.cursorName
+        }
     }
 
     @Synchronized
@@ -2207,6 +2230,7 @@ internal class X11State(
         cursorId: Int? = null,
         cursorImage: XCursorImage? = null,
         cursorGeneration: Long? = null,
+        cursorName: XCursorName? = null,
         cursorIdChanged: Boolean = false,
     ): XWindow? {
         val window = windows[id] ?: return null
@@ -2254,6 +2278,7 @@ internal class X11State(
             window.cursorId = cursorId
             window.cursorImage = cursorImage
             window.cursorGeneration = cursorGeneration
+            window.cursorName = cursorName
         }
         return window
     }
@@ -2266,6 +2291,7 @@ internal class X11State(
         window.cursorId = cursorId
         window.cursorImage = cursor?.image
         window.cursorGeneration = cursor?.generation
+        window.cursorName = cursor?.name
         return xfixesCursorNotifyDispatchesIfChanged(previousCursor)
     }
 
@@ -6208,6 +6234,78 @@ internal class X11State(
     fun hasCursor(id: Int): Boolean = cursors.containsKey(id)
 
     @Synchronized
+    fun setCursorName(id: Int, name: XCursorName): Boolean {
+        val cursor = cursors[id] ?: return false
+        val namedCursor = cursor.copy(name = name)
+        cursors[id] = namedCursor
+        for (window in windows.values) {
+            if (window.cursorId == id && window.cursorGeneration == namedCursor.generation) {
+                window.cursorName = name
+            }
+        }
+        return true
+    }
+
+    @Synchronized
+    fun changeCursor(sourceId: Int, destinationId: Int): List<XXFixesCursorNotifyDispatch>? {
+        val source = cursors[sourceId] ?: return null
+        val destination = cursors[destinationId] ?: return null
+        if (sourceId == destinationId) return emptyList()
+        val previousCursor = displayedCursorIdentity()
+        val changedIdentity = XCursorIdentity(id = destinationId, generation = destination.generation)
+        val changedCursor = source.copy(
+            id = destination.id,
+            generation = destination.generation,
+            name = destination.name,
+        )
+        cursors[destinationId] = changedCursor
+        for (window in windows.values) {
+            if (window.cursorId == destinationId && window.cursorGeneration == destination.generation) {
+                window.cursorImage = changedCursor.image
+                window.cursorGeneration = changedCursor.generation
+                window.cursorName = changedCursor.name
+            }
+        }
+        return if (previousCursor == changedIdentity) {
+            cursorSerial += 1
+            xfixesCursorNotifyDispatches(cursorSerial = cursorSerial, timestamp = currentServerTime(inputTime))
+        } else {
+            emptyList()
+        }
+    }
+
+    @Synchronized
+    fun changeCursorsByName(sourceId: Int, name: String): List<XXFixesCursorNotifyDispatch>? {
+        val source = cursors[sourceId] ?: return null
+        val previousCursor = displayedCursorIdentity()
+        val changedIdentities = mutableSetOf<XCursorIdentity>()
+        for ((id, cursor) in cursors.toList()) {
+            if (cursor.name?.name != name) continue
+            if (id == sourceId) continue
+            val changedCursor = source.copy(
+                id = id,
+                generation = cursor.generation,
+                name = cursor.name,
+            )
+            cursors[id] = changedCursor
+            changedIdentities += XCursorIdentity(id = id, generation = cursor.generation)
+            for (window in windows.values) {
+                if (window.cursorId == id && window.cursorGeneration == cursor.generation) {
+                    window.cursorImage = changedCursor.image
+                    window.cursorGeneration = changedCursor.generation
+                    window.cursorName = changedCursor.name
+                }
+            }
+        }
+        return if (previousCursor != null && previousCursor in changedIdentities) {
+            cursorSerial += 1
+            xfixesCursorNotifyDispatches(cursorSerial = cursorSerial, timestamp = currentServerTime(inputTime))
+        } else {
+            emptyList()
+        }
+    }
+
+    @Synchronized
     fun recolorCursor(
         id: Int,
         foregroundRed: Int,
@@ -6838,6 +6936,7 @@ internal class X11State(
                         windowId = windowId,
                         cursorSerial = cursorSerial,
                         timestamp = timestamp,
+                        name = displayedCursorName()?.atom ?: 0,
                     ),
                 )
             }
@@ -7388,6 +7487,7 @@ internal data class XWindow(
     var cursorId: Int? = null,
     var cursorImage: XCursorImage? = null,
     var cursorGeneration: Long? = null,
+    var cursorName: XCursorName? = null,
     var boundingShape: List<XRectangleCommand>? = null,
     var clipShape: List<XRectangleCommand>? = null,
     var inputShape: List<XRectangleCommand>? = null,
@@ -8296,6 +8396,7 @@ internal data class XCursor(
     val sourcePictureId: Int? = null,
     val animationElements: List<XAnimatedCursorElement> = emptyList(),
     val image: XCursorImage? = null,
+    val name: XCursorName? = null,
     val hotspotX: Int? = null,
     val hotspotY: Int? = null,
     val foregroundRed: Int = 0,
@@ -8317,6 +8418,8 @@ internal data class XCursor(
             maskChar = maskChar,
             sourcePictureId = sourcePictureId,
             animationElements = animationElements,
+            nameAtom = name?.atom,
+            name = name?.name,
             hotspotX = hotspotX,
             hotspotY = hotspotY,
             foregroundRed = foregroundRed,
@@ -8436,6 +8539,8 @@ internal data class XCursorSnapshot(
     val maskChar: Int?,
     val sourcePictureId: Int?,
     val animationElements: List<XAnimatedCursorElement>,
+    val nameAtom: Int?,
+    val name: String?,
     val hotspotX: Int?,
     val hotspotY: Int?,
     val foregroundRed: Int,
@@ -8451,6 +8556,7 @@ internal data class XCursorSnapshot(
     val sourceFontIdHex: String? get() = sourceFontId?.let { "0x${it.toUInt().toString(16)}" }
     val maskFontIdHex: String? get() = maskFontId?.let { "0x${it.toUInt().toString(16)}" }
     val sourcePictureIdHex: String? get() = sourcePictureId?.let { "0x${it.toUInt().toString(16)}" }
+    val nameAtomHex: String? get() = nameAtom?.let { "0x${it.toUInt().toString(16)}" }
     val foregroundHex: String get() = rgb16Hex(foregroundRed, foregroundGreen, foregroundBlue)
     val backgroundHex: String get() = rgb16Hex(backgroundRed, backgroundGreen, backgroundBlue)
 }

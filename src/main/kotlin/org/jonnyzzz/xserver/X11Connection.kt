@@ -575,6 +575,11 @@ internal class X11Connection(
             XFixes.SetGCClipRegion -> xfixesSetGcClipRegion(body, majorOpcode)
             XFixes.SetWindowShapeRegion -> xfixesSetWindowShapeRegion(body, majorOpcode)
             XFixes.SetPictureClipRegion -> xfixesSetPictureClipRegion(body, majorOpcode)
+            XFixes.SetCursorName -> xfixesSetCursorName(body, majorOpcode)
+            XFixes.GetCursorName -> xfixesGetCursorName(body, majorOpcode)
+            XFixes.GetCursorImageAndName -> xfixesGetCursorImageAndName(body, majorOpcode)
+            XFixes.ChangeCursor -> xfixesChangeCursor(body, majorOpcode)
+            XFixes.ChangeCursorByName -> xfixesChangeCursorByName(body, majorOpcode)
             else -> xfixesBadImplementation(majorOpcode, minorOpcode)
         }
     }
@@ -663,6 +668,90 @@ internal class X11Connection(
             byteOrder.put32(reply, 32 + index * 4, pixel)
         }
         write(reply)
+    }
+
+    private fun xfixesSetCursorName(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.SetCursorName, badValue = 0)
+        val cursor = byteOrder.u32(body, 0)
+        val nameLength = byteOrder.u16(body, 4)
+        if (body.size != 8 + paddedLength(nameLength)) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.SetCursorName, badValue = 0)
+        }
+        if (!state.hasCursor(cursor)) {
+            return writeError(error = 6, opcode = majorOpcode, minorOpcode = XFixes.SetCursorName, badValue = cursor)
+        }
+        val name = body.copyOfRange(8, 8 + nameLength).decodeToString()
+        val atom = state.internAtom(name, onlyIfExists = false)
+        state.setCursorName(cursor, XCursorName(atom = atom, name = name))
+    }
+
+    private fun xfixesGetCursorName(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.GetCursorName, badValue = 0)
+        val cursor = byteOrder.u32(body, 0)
+        if (!state.hasCursor(cursor)) {
+            return writeError(error = 6, opcode = majorOpcode, minorOpcode = XFixes.GetCursorName, badValue = cursor)
+        }
+        val cursorName = state.cursorName(cursor)
+        val nameBytes = cursorName?.name?.encodeToByteArray() ?: ByteArray(0)
+        val reply = reply(extra = 0, payloadUnits = paddedLength(nameBytes.size) / 4)
+        byteOrder.put32(reply, 8, cursorName?.atom ?: 0)
+        byteOrder.put16(reply, 12, nameBytes.size)
+        nameBytes.copyInto(reply, 32)
+        write(reply)
+    }
+
+    private fun xfixesGetCursorImageAndName(body: ByteArray, majorOpcode: Int) {
+        if (body.isNotEmpty()) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.GetCursorImageAndName, badValue = 0)
+        }
+        val pointer = state.queryPointer(X11Ids.RootWindow)
+            ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XFixes.GetCursorImageAndName, badValue = X11Ids.RootWindow)
+        val cursorImage = state.displayedCursorImage()
+        val pixels = cursorImage?.pixels ?: intArrayOf(0)
+        val cursorName = state.displayedCursorName()
+        val nameBytes = cursorName?.name?.encodeToByteArray() ?: ByteArray(0)
+        val reply = reply(extra = 0, payloadUnits = pixels.size + paddedLength(nameBytes.size) / 4)
+        byteOrder.put16(reply, 8, pointer.rootX)
+        byteOrder.put16(reply, 10, pointer.rootY)
+        byteOrder.put16(reply, 12, cursorImage?.width ?: 1)
+        byteOrder.put16(reply, 14, cursorImage?.height ?: 1)
+        byteOrder.put16(reply, 16, cursorImage?.hotspotX ?: 0)
+        byteOrder.put16(reply, 18, cursorImage?.hotspotY ?: 0)
+        byteOrder.put32(reply, 20, state.cursorSerial())
+        byteOrder.put32(reply, 24, cursorName?.atom ?: 0)
+        byteOrder.put16(reply, 28, nameBytes.size)
+        pixels.forEachIndexed { index, pixel ->
+            byteOrder.put32(reply, 32 + index * 4, pixel)
+        }
+        nameBytes.copyInto(reply, 32 + pixels.size * 4)
+        write(reply)
+    }
+
+    private fun xfixesChangeCursor(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.ChangeCursor, badValue = 0)
+        val source = byteOrder.u32(body, 0)
+        if (!state.hasCursor(source)) {
+            return writeError(error = 6, opcode = majorOpcode, minorOpcode = XFixes.ChangeCursor, badValue = source)
+        }
+        val destination = byteOrder.u32(body, 4)
+        if (!state.hasCursor(destination)) {
+            return writeError(error = 6, opcode = majorOpcode, minorOpcode = XFixes.ChangeCursor, badValue = destination)
+        }
+        sendXFixesCursorNotify(state.changeCursor(source, destination).orEmpty())
+    }
+
+    private fun xfixesChangeCursorByName(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.ChangeCursorByName, badValue = 0)
+        val source = byteOrder.u32(body, 0)
+        val nameLength = byteOrder.u16(body, 4)
+        if (body.size != 8 + paddedLength(nameLength)) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.ChangeCursorByName, badValue = 0)
+        }
+        if (!state.hasCursor(source)) {
+            return writeError(error = 6, opcode = majorOpcode, minorOpcode = XFixes.ChangeCursorByName, badValue = source)
+        }
+        val name = body.copyOfRange(8, 8 + nameLength).decodeToString()
+        sendXFixesCursorNotify(state.changeCursorsByName(source, name).orEmpty())
     }
 
     private fun xfixesCreateRegion(body: ByteArray, majorOpcode: Int) {
@@ -4033,6 +4122,7 @@ internal class X11Connection(
             cursorId = attributes.cursorId?.takeIf { it != 0 },
             cursorImage = attributes.cursorId?.takeIf { it != 0 }?.let { state.cursorImage(it) },
             cursorGeneration = attributes.cursorId?.takeIf { it != 0 }?.let { state.cursorGeneration(it) },
+            cursorName = attributes.cursorId?.takeIf { it != 0 }?.let { state.cursorName(it) },
         )
         state.putWindow(window, this)
         own(id)

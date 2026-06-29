@@ -31,6 +31,11 @@ internal object XFixes {
     const val SetGCClipRegion = 20
     const val SetWindowShapeRegion = 21
     const val SetPictureClipRegion = 22
+    const val SetCursorName = 23
+    const val GetCursorName = 24
+    const val GetCursorImageAndName = 25
+    const val ChangeCursor = 26
+    const val ChangeCursorByName = 27
 
     const val ShapeBounding = 0
     const val ShapeClip = 1
@@ -80,6 +85,11 @@ internal object XFixes {
             SetGCClipRegion -> "SetGCClipRegion"
             SetWindowShapeRegion -> "SetWindowShapeRegion"
             SetPictureClipRegion -> "SetPictureClipRegion"
+            SetCursorName -> "SetCursorName"
+            GetCursorName -> "GetCursorName"
+            GetCursorImageAndName -> "GetCursorImageAndName"
+            ChangeCursor -> "ChangeCursor"
+            ChangeCursorByName -> "ChangeCursorByName"
             else -> "Unknown"
         }
 }

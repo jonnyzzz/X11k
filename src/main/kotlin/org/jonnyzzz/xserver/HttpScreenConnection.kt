@@ -131,6 +131,26 @@ internal class HttpScreenConnection(
         URLDecoder.decode(value.replace("+", "%2B"), StandardCharsets.UTF_8)
 
     private fun escapeJson(value: String): String =
-        value.replace("\\", "\\\\").replace("\"", "\\\"")
+        buildString(value.length) {
+            for (char in value) {
+                when (char) {
+                    '\\' -> append("\\\\")
+                    '"' -> append("\\\"")
+                    '\b' -> append("\\b")
+                    '\u000c' -> append("\\f")
+                    '\n' -> append("\\n")
+                    '\r' -> append("\\r")
+                    '\t' -> append("\\t")
+                    else -> {
+                        if (char < ' ') {
+                            append("\\u")
+                            append(char.code.toString(16).padStart(4, '0'))
+                        } else {
+                            append(char)
+                        }
+                    }
+                }
+            }
+        }
 
 }

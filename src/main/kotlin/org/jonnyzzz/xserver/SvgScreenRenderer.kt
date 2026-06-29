@@ -134,6 +134,10 @@ internal object SvgScreenRenderer {
                 cursor.maskChar?.let { append(it) } ?: append("null")
                 append(""","sourcePicture":""")
                 cursor.sourcePictureIdHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append(""","nameAtom":""")
+                cursor.nameAtomHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append(""","name":""")
+                cursor.name?.let { append('"').append(escapeJson(it)).append('"') } ?: append("null")
                 append(""","animation":[""")
                 cursor.animationElements.forEachIndexed { elementIndex, element ->
                     if (elementIndex > 0) append(',')
@@ -982,7 +986,27 @@ internal object SvgScreenRenderer {
         label.trim().ifEmpty { idHex }
 
     private fun escapeJson(value: String): String =
-        value.replace("\\", "\\\\").replace("\"", "\\\"")
+        buildString(value.length) {
+            for (char in value) {
+                when (char) {
+                    '\\' -> append("\\\\")
+                    '"' -> append("\\\"")
+                    '\b' -> append("\\b")
+                    '\u000c' -> append("\\f")
+                    '\n' -> append("\\n")
+                    '\r' -> append("\\r")
+                    '\t' -> append("\\t")
+                    else -> {
+                        if (char < ' ') {
+                            append("\\u")
+                            append(char.code.toString(16).padStart(4, '0'))
+                        } else {
+                            append(char)
+                        }
+                    }
+                }
+            }
+        }
 
     private val palette = listOf(
         "#8bd5ca",
