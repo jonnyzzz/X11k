@@ -411,7 +411,7 @@ internal object SvgScreenRenderer {
                         "stroke-width" to strokeWidth,
                     )
                 }
-                renderFramebuffers(this, visibleWindows, originX = 0, originY = 0, clipPrefix = "screen")
+                renderFramebuffers(this, snapshot, visibleWindows, originX = 0, originY = 0, clipPrefix = "screen")
                 renderDrawings(this, snapshot, clipPrefix = "screen")
                 visibleWindows.forEachIndexed { index, window ->
                     val color = palette[index % palette.size]
@@ -634,7 +634,7 @@ internal object SvgScreenRenderer {
                     )
                 }
             }
-            renderFramebuffers(this, subtree, originX = rootWindow.x, originY = rootWindow.y, clipPrefix = clipPrefix)
+            renderFramebuffers(this, snapshot, subtree, originX = rootWindow.x, originY = rootWindow.y, clipPrefix = clipPrefix)
             renderDrawings(
                 this,
                 snapshot,
@@ -774,6 +774,7 @@ internal object SvgScreenRenderer {
 
     private fun renderFramebuffers(
         builder: XmlDom,
+        snapshot: XScreenSnapshot,
         windows: List<XWindowSnapshot>,
         originX: Int,
         originY: Int,
@@ -781,25 +782,57 @@ internal object SvgScreenRenderer {
     ) {
         for (window in windows) {
             if (window.windowClass != XWindowClass.InputOutput) continue
-            val href = window.framebufferDataUri ?: continue
+            val surface = displaySurface(snapshot, window) ?: continue
             builder.svgElement(
                 "g",
                 "clip-path" to "url(#${clipId(clipPrefix, window)})",
             ) {
                 svgElement(
                     "image",
-                    "class" to "framebuffer-image",
+                    "class" to surface.cssClass,
                     "data-window-id" to window.idHex,
+                    "data-pixmap-id" to surface.pixmapIdHex,
+                    "data-source" to surface.source,
                     "x" to window.x - originX,
                     "y" to window.y - originY,
                     "width" to window.width,
                     "height" to window.height,
-                    "href" to href,
+                    "href" to surface.href,
                     "preserveAspectRatio" to "none",
                 )
             }
         }
     }
+
+    private fun displaySurface(snapshot: XScreenSnapshot, window: XWindowSnapshot): XDisplaySurface? {
+        val pixmapSurface = matchingPixmapCandidates(snapshot, window)
+            .firstOrNull { it.width == window.width && it.height == window.height }
+            ?.let(::pixmapDisplaySurface)
+        if (pixmapSurface != null && !snapshot.hasDirectFramebufferPaint(window.id)) return pixmapSurface
+        window.framebufferDataUri?.let {
+            return XDisplaySurface(
+                href = it,
+                source = "window-framebuffer",
+                cssClass = "framebuffer-image",
+            )
+        }
+        return pixmapSurface
+    }
+
+    private fun pixmapDisplaySurface(pixmap: XPixmapSnapshot): XDisplaySurface? {
+        val href = pixmap.framebufferDataUri ?: return null
+        return XDisplaySurface(
+            href = href,
+            source = "matching-pixmap",
+            cssClass = "framebuffer-image backing-pixmap-image",
+            pixmapIdHex = pixmap.idHex,
+        )
+    }
+
+    // Exact-size pixmap matching is a presentation heuristic for IDE backing stores;
+    // any recent direct framebuffer drawing keeps the real window framebuffer authoritative.
+    private fun XScreenSnapshot.hasDirectFramebufferPaint(windowId: Int): Boolean =
+        drawings.any { it.drawableId == windowId && it.framebufferBacked }
 
     private fun renderFilledRectangles(
         builder: XmlDom,
@@ -1007,6 +1040,13 @@ internal object SvgScreenRenderer {
                 }
             }
         }
+
+    private data class XDisplaySurface(
+        val href: String,
+        val source: String,
+        val cssClass: String,
+        val pixmapIdHex: String? = null,
+    )
 
     private val palette = listOf(
         "#8bd5ca",

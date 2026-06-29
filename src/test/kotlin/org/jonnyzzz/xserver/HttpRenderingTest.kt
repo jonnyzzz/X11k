@@ -221,6 +221,72 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `screen svg presents exact painted backing pixmap for otherwise unpainted window`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                out.write(createWindowRequest(0x0020_0001, 10, 20, 64, 64))
+                out.write(changePropertyRequest(0x0020_0001, "backing pixmap target"))
+                out.write(createPixmapRequest(0x0020_0100, width = 64, height = 64))
+                out.write(createGcRequest(0x0020_1001, 0x0020_0100))
+                out.write(putImageRequest(0x0020_0100, 0x0020_1001))
+                out.write(mapWindowRequest(0x0020_0001))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "backing pixmap target")
+                assertContains(svg, """class="framebuffer-image backing-pixmap-image"""")
+                assertContains(svg, """data-window-id="0x200001"""")
+                assertContains(svg, """data-pixmap-id="0x200100"""")
+                assertContains(svg, """data-source="matching-pixmap"""")
+                assertContains(svg, """href="data:image/png;base64,""")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `screen svg keeps direct window framebuffer ahead of matching backing pixmap`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                out.write(createWindowRequest(0x0020_0001, 10, 20, 64, 64))
+                out.write(changePropertyRequest(0x0020_0001, "direct window target"))
+                out.write(createPixmapRequest(0x0020_0100, width = 64, height = 64))
+                out.write(createGcRequest(0x0020_1001, 0x0020_0100))
+                out.write(putImageRequest(0x0020_0100, 0x0020_1001))
+                out.write(createGcRequest(0x0020_1002, 0x0020_0001))
+                out.write(putImageRequest(0x0020_0001, 0x0020_1002))
+                out.write(mapWindowRequest(0x0020_0001))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "direct window target")
+                assertContains(svg, """class="framebuffer-image"""")
+                assertContains(svg, """data-window-id="0x200001"""")
+                assertContains(svg, """data-source="window-framebuffer"""")
+                assertFalse(svg.contains("""class="framebuffer-image backing-pixmap-image""""))
+                assertFalse(svg.contains("""data-source="matching-pixmap""""))
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `unsupported copy area does not draw diagnostic rectangle artifacts`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
