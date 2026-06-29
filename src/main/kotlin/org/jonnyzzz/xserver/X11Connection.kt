@@ -58,6 +58,7 @@ internal class X11Connection(
                 return
             }
 
+            val resourceIds = state.allocateSetupResourceIds()
             val reply = SetupReply.success(
                 byteOrder = byteOrder,
                 clientMajor = major,
@@ -67,6 +68,8 @@ internal class X11Connection(
                 widthMillimeters = state.widthMillimeters,
                 heightMillimeters = state.heightMillimeters,
                 currentInputMasks = state.windowEventMask(X11Ids.RootWindow),
+                resourceIdBase = resourceIds.base,
+                resourceIdMask = resourceIds.mask,
             )
             write(reply)
             state.registerEventSink(this)
@@ -104,7 +107,8 @@ internal class X11Connection(
                 ) {
                     sequence = (sequence + 1) and 0xffff
                     if (trace) {
-                        System.err.println("x11 seq=$sequence opcode=$opcode minor=$minorOpcode units=$units body=${body.size}")
+                        val detail = requestDetail(opcode, minorOpcode, body).takeIf { it.isNotEmpty() }?.let { " $it" } ?: ""
+                        System.err.println("x11 seq=$sequence opcode=$opcode minor=$minorOpcode units=$units body=${body.size} name=${requestName(opcode, minorOpcode)}$detail")
                     }
                     state.recordRequest(requestName(opcode, minorOpcode))
                     dispatch(opcode, minorOpcode, body, units)
@@ -343,6 +347,49 @@ internal class X11Connection(
             119 -> getModifierMapping(body)
             127 -> noOperation(body)
             else -> unsupportedRequest(opcode, minorOpcode, requestName(opcode, minorOpcode))
+        }
+    }
+
+    private fun requestDetail(opcode: Int, minorOpcode: Int, body: ByteArray): String {
+        fun hex(offset: Int): String = if (body.size >= offset + 4) byteOrder.u32(body, offset).toHex() else "n/a"
+        fun u16(offset: Int): String = if (body.size >= offset + 2) byteOrder.u16(body, offset).toString() else "n/a"
+        fun i16(offset: Int): String = if (body.size >= offset + 2) byteOrder.i16(body, offset).toString() else "n/a"
+        fun atom(offset: Int): String {
+            val id = if (body.size >= offset + 4) byteOrder.u32(body, offset) else return "n/a"
+            return "${id.toHex()}(${state.atomName(id) ?: "?"})"
+        }
+        return when (opcode) {
+            XGlx.MajorOpcode -> glxDetail(minorOpcode, body)
+            XRender.MajorOpcode -> renderDetail(minorOpcode, body)
+            XXkb.MajorOpcode -> xkbDetail(minorOpcode, body)
+            1 -> "window=${hex(0)} parent=${hex(4)} xy=${i16(8)},${i16(10)} size=${u16(12)}x${u16(14)} mask=${hex(24)}"
+            2 -> "window=${hex(0)} mask=${hex(4)}"
+            4 -> "window=${hex(0)}"
+            7 -> "window=${hex(0)} parent=${hex(4)} xy=${i16(8)},${i16(10)}"
+            8, 10 -> "window=${hex(0)}"
+            12 -> "window=${hex(0)} mask=${u16(4)}"
+            18 -> "window=${hex(0)} property=${atom(4)} type=${atom(8)} format=${body.getOrNull(12)?.toInt()?.and(0xff) ?: "n/a"} items=${hex(16)}"
+            19 -> "window=${hex(0)} property=${atom(4)}"
+            20 -> "window=${hex(0)} property=${atom(4)} type=${atom(8)} offset=${hex(12)} length=${hex(16)}"
+            21 -> "window=${hex(0)}"
+            25 -> "destination=${hex(0)} eventMask=${hex(8)}"
+            53 -> "pixmap=${hex(0)} drawable=${hex(4)} size=${u16(8)}x${u16(10)}"
+            54 -> "pixmap=${hex(0)}"
+            55 -> "gc=${hex(0)} drawable=${hex(4)} mask=${hex(8)}"
+            60 -> "gc=${hex(0)}"
+            72 -> "drawable=${hex(0)} gc=${hex(4)} size=${u16(8)}x${u16(10)} dst=${i16(12)},${i16(14)} bytes=${(body.size - 20).coerceAtLeast(0)}"
+            93 -> "cursor=${hex(0)} source=${hex(4)} mask=${hex(8)}"
+            98 -> if (body.size >= 4) "name=${body.copyOfRange(4, 4 + byteOrder.u16(body, 0).coerceAtMost((body.size - 4).coerceAtLeast(0))).decodeToString()}" else ""
+            else -> ""
+        }
+    }
+
+    private fun xkbDetail(minorOpcode: Int, body: ByteArray): String {
+        fun u8(offset: Int): String = if (body.size > offset) (body[offset].toInt() and 0xff).toString() else "n/a"
+        fun hex16(offset: Int): String = if (body.size >= offset + 2) "0x${byteOrder.u16(body, offset).toString(16)}" else "n/a"
+        return when (minorOpcode) {
+            XXkb.GetMap -> "device=${hex16(0)} full=${hex16(2)} partial=${hex16(4)} firstType=${u8(6)} nTypes=${u8(7)} firstKeySym=${u8(8)} nKeySyms=${u8(9)} firstKeyAction=${u8(10)} nKeyActions=${u8(11)} firstKeyBehavior=${u8(12)} nKeyBehaviors=${u8(13)} virtualMods=${hex16(14)} firstKeyExplicit=${u8(16)} nKeyExplicit=${u8(17)} firstModMapKey=${u8(18)} nModMapKeys=${u8(19)} firstVModMapKey=${u8(20)} nVModMapKeys=${u8(21)}"
+            else -> ""
         }
     }
 
@@ -1650,10 +1697,136 @@ internal class X11Connection(
 
     private fun xkbGetMap(body: ByteArray, majorOpcode: Int) {
         if (body.size != 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetMap, badValue = 0)
-        val reply = reply(extra = 0, payloadUnits = 2)
+        val full = byteOrder.u16(body, 2)
+        val partial = byteOrder.u16(body, 4)
+        val keyTypesRequested = ((full or partial) and XXkb.MapPartKeyTypes) != 0
+        val keySymsRequested = ((full or partial) and XXkb.MapPartKeySyms) != 0
+        val modifierMapRequested = ((full or partial) and XXkb.MapPartModifierMap) != 0
+        val virtualModsRequested = ((full or partial) and XXkb.MapPartVirtualMods) != 0
+        val keySymFirst = if ((full and XXkb.MapPartKeySyms) != 0) XKeyboard.MinKeycode else body[8].toInt() and 0xff
+        val keySymCount = if ((full and XXkb.MapPartKeySyms) != 0) {
+            XKeyboard.MaxKeycode - XKeyboard.MinKeycode + 1
+        } else {
+            body[9].toInt() and 0xff
+        }
+        if (keySymsRequested && keySymCount > 0) {
+            if (keySymFirst !in XKeyboard.MinKeycode..XKeyboard.MaxKeycode) {
+                return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.GetMap, badValue = keySymFirst)
+            }
+            if (keySymFirst + keySymCount - 1 > XKeyboard.MaxKeycode) {
+                return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.GetMap, badValue = keySymFirst)
+            }
+        }
+
+        val keySymMapping = if (keySymsRequested) state.keyboardMapping(keySymFirst, keySymCount) else null
+        val keySymRows = if (keySymMapping != null) {
+            (keySymFirst until keySymFirst + keySymCount).map { keycode ->
+                keySymMapping.keysymsFor(keycode).dropLastWhile { it == 0 }.ifEmpty { listOf(0) }
+            }
+        } else {
+            emptyList()
+        }
+        val totalKeySyms = keySymRows.sumOf { it.size }
+        val keyTypesPayloadBytes = if (keyTypesRequested) XkbDefaultKeyTypesPayloadBytes else 0
+        val keySymPayloadBytes = keySymRows.sumOf { 8 + it.size * 4 }
+        val modifierMapEntries = if (modifierMapRequested) xkbModifierMapEntries() else emptyList()
+        val modifierMapFirst = if ((full and XXkb.MapPartModifierMap) != 0) {
+            XKeyboard.MinKeycode
+        } else {
+            body[18].toInt() and 0xff
+        }
+        val modifierMapCount = if ((full and XXkb.MapPartModifierMap) != 0) {
+            XKeyboard.MaxKeycode - XKeyboard.MinKeycode + 1
+        } else {
+            body[19].toInt() and 0xff
+        }
+        val modifierMapPayloadBytes = paddedLength(modifierMapEntries.size * 2)
+        val payloadBytes = keyTypesPayloadBytes + keySymPayloadBytes + modifierMapPayloadBytes
+        val reply = reply(extra = 0, payloadUnits = 2 + payloadBytes / 4)
+        var present = 0
+        if (keyTypesRequested) present = present or XXkb.MapPartKeyTypes
+        if (keySymMapping != null) present = present or XXkb.MapPartKeySyms
+        if (modifierMapRequested) present = present or XXkb.MapPartModifierMap
+        if (virtualModsRequested) present = present or XXkb.MapPartVirtualMods
+        byteOrder.put16(reply, 12, present)
         reply[10] = XKeyboard.MinKeycode.toByte()
         reply[11] = XKeyboard.MaxKeycode.toByte()
+        if (keyTypesRequested) {
+            reply[14] = 0
+            reply[15] = XkbDefaultKeyTypeCount.toByte()
+            reply[16] = XkbDefaultKeyTypeCount.toByte()
+        }
+        if (keySymMapping != null) {
+            reply[17] = keySymFirst.toByte()
+            byteOrder.put16(reply, 18, totalKeySyms)
+            reply[20] = keySymCount.toByte()
+        }
+        if (modifierMapRequested) {
+            reply[31] = modifierMapFirst.toByte()
+            reply[32] = modifierMapCount.toByte()
+            reply[33] = modifierMapEntries.size.toByte()
+        }
+
+        var offset = 40
+        if (keyTypesRequested) {
+            offset = xkbWriteDefaultKeyTypes(reply, offset)
+        }
+        if (keySymMapping != null) {
+            for (keysyms in keySymRows) {
+                reply[offset] = (if (keysyms.size > 1) 1 else 0).toByte()
+                reply[offset + 4] = 1
+                reply[offset + 5] = keysyms.size.toByte()
+                byteOrder.put16(reply, offset + 6, keysyms.size)
+                offset += 8
+                for (keysym in keysyms) {
+                    byteOrder.put32(reply, offset, keysym)
+                    offset += 4
+                }
+            }
+        }
+        if (modifierMapRequested) {
+            for ((keycode, modifiers) in modifierMapEntries) {
+                reply[offset++] = keycode.toByte()
+                reply[offset++] = modifiers.toByte()
+            }
+        }
         write(reply)
+    }
+
+    private fun xkbWriteDefaultKeyTypes(reply: ByteArray, offset: Int): Int {
+        var current = offset
+        reply[current + 4] = 1
+        current += 8
+
+        repeat(3) {
+            reply[current] = 1
+            reply[current + 1] = 1
+            reply[current + 4] = 2
+            reply[current + 5] = 1
+            current += 8
+            reply[current] = 1
+            reply[current + 1] = 1
+            reply[current + 2] = 1
+            reply[current + 3] = 1
+            current += 8
+        }
+        return current
+    }
+
+    private fun xkbModifierMapEntries(): List<Pair<Int, Int>> {
+        val mapping = state.modifierMapping()
+        val keycodesPerModifier = mapping.size / 8
+        if (keycodesPerModifier == 0) return emptyList()
+        val modifiersByKeycode = linkedMapOf<Int, Int>()
+        for (modifier in 0 until 8) {
+            for (index in 0 until keycodesPerModifier) {
+                val keycode = mapping[modifier * keycodesPerModifier + index]
+                if (keycode != 0) {
+                    modifiersByKeycode[keycode] = (modifiersByKeycode[keycode] ?: 0) or (1 shl modifier)
+                }
+            }
+        }
+        return modifiersByKeycode.toSortedMap().map { (keycode, modifiers) -> keycode to modifiers }
     }
 
     private fun xkbSetMap(body: ByteArray, majorOpcode: Int) {
@@ -10684,6 +10857,8 @@ internal class X11Connection(
         const val QueryBestSizeCursor = 0
         const val QueryBestSizeTile = 1
         const val QueryBestSizeStipple = 2
+        const val XkbDefaultKeyTypeCount = 4
+        const val XkbDefaultKeyTypesPayloadBytes = 56
         const val MaxCursorImagePixels = 16_777_216
         const val MaxGlyphMaskPixels = 16_777_216
         const val XColorFlagMask = 0x07

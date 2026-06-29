@@ -31,7 +31,7 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
-    listOf("x.intellijSmoke", "x.intellijUrl", "x.intellijImage").forEach { name ->
+    listOf("x.intellijSmoke", "x.intellijUrl", "x.intellijImage", "x.trace").forEach { name ->
         System.getProperty(name)?.let { systemProperty(name, it) }
     }
 }

@@ -12,6 +12,7 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class XCoreDrawingProtocolTest {
@@ -12078,11 +12079,11 @@ class XCoreDrawingProtocolTest {
                 out.flush()
 
                 assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 1, request = 1, firstKeycode = 38, count = 2)
-                assertKeyboardMapping(readReply(socket.getInputStream()), sequence = 2, keysymsPerKeycode = 2, 0, 0, 0x0061, 0x0041, 0x0062, 0x0042)
-                assertContains(
-                    httpGet(server.localPort, "/state.json"),
-                    """"keyboardMapping":{"keysymsPerKeycode":2,"keycodes":[{"keycode":38,"keysyms":["0x61","0x41"]},{"keycode":39,"keysyms":["0x62","0x42"]}]}""",
-                )
+                assertKeyboardMapping(readReply(socket.getInputStream()), sequence = 2, keysymsPerKeycode = 2, 0xffe3, 0, 0x0061, 0x0041, 0x0062, 0x0042)
+                val state = httpGet(server.localPort, "/state.json")
+                assertContains(state, """"keyboardMapping":{"keysymsPerKeycode":2""")
+                assertContains(state, """{"keycode":38,"keysyms":["0x61","0x41"]}""")
+                assertContains(state, """{"keycode":39,"keysyms":["0x62","0x42"]}""")
 
                 out.write(changeKeyboardMappingRequest(40, 1, 0x0063))
                 out.write(getKeyboardMappingRequest(38, 3))
@@ -12125,7 +12126,7 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 16, opcode = 100, badValue = 0, sequence = 7)
                 assertError(socket.getInputStream(), error = 16, opcode = 100, badValue = 0, sequence = 8)
                 assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 9, request = 1, firstKeycode = 40, count = 1)
-                assertKeyboardMapping(readReply(socket.getInputStream()), sequence = 10, keysymsPerKeycode = 1, 0x0063)
+                assertKeyboardMapping(readReply(socket.getInputStream()), sequence = 10, keysymsPerKeycode = 2, 0x0063, 0)
             }
             server.close()
             serverThread.join(1_000)
@@ -12263,7 +12264,7 @@ class XCoreDrawingProtocolTest {
                 out.write(getModifierMappingRequest())
                 out.flush()
 
-                assertModifierMapping(readReply(socket.getInputStream()), sequence = 1, keycodesPerModifier = 0)
+                assertModifierMapping(readReply(socket.getInputStream()), sequence = 1, keycodesPerModifier = 2, 50, 62, 66, 0, 37, 105, 64, 108, 0, 0, 0, 0, 133, 134, 0, 0)
                 assertMappingStatus(readReply(socket.getInputStream()), sequence = 2, status = 0)
                 assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 2, request = 0)
                 assertModifierMapping(readReply(socket.getInputStream()), 3, 1, 50, 66, 37, 64, 77, 0, 133, 92)
@@ -13107,6 +13108,50 @@ class XCoreDrawingProtocolTest {
                 assertTrue(retainedWindow in finalChildren)
             }
             assertFalse(transientWindow in finalChildren)
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `setup assigns distinct resource id bases so client close down does not collide`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { firstSocket ->
+                Socket("127.0.0.1", server.localPort).use { secondSocket ->
+                    firstSocket.soTimeout = 2_000
+                    secondSocket.soTimeout = 2_000
+                    val firstSetup = setupReply(firstSocket)
+                    val secondSetup = setupReply(secondSocket)
+                    val firstBase = u32le(firstSetup, 12)
+                    val secondBase = u32le(secondSetup, 12)
+                    assertEquals(X11Ids.ResourceIdMask, u32le(firstSetup, 16))
+                    assertEquals(X11Ids.ResourceIdMask, u32le(secondSetup, 16))
+                    assertNotEquals(firstBase, secondBase)
+
+                    val firstWindow = firstBase or 1
+                    val secondWindow = secondBase or 1
+                    val firstOut = firstSocket.getOutputStream()
+                    firstOut.write(createWindowRequest(firstWindow))
+                    firstOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    firstOut.flush()
+                    assertTrue(firstWindow in treeChildren(readReply(firstSocket.getInputStream())))
+
+                    val secondOut = secondSocket.getOutputStream()
+                    secondOut.write(createWindowRequest(secondWindow))
+                    secondOut.write(changePropertyRequest(secondWindow, PrimaryAtom, StringAtom, "one"))
+                    secondOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    secondOut.flush()
+                    assertTrue(secondWindow in treeChildren(readReply(secondSocket.getInputStream())))
+
+                    closeClientAndWait(firstSocket)
+
+                    secondOut.write(changePropertyRequest(secondWindow, PrimaryAtom, StringAtom, "two"))
+                    secondOut.write(getPropertyRequest(secondWindow, PrimaryAtom, StringAtom))
+                    secondOut.flush()
+                    assertPropertyReply(readReply(secondSocket.getInputStream()), sequence = 5, type = StringAtom, value = "two")
+                }
+            }
             server.close()
             serverThread.join(1_000)
         }
@@ -14811,6 +14856,10 @@ class XCoreDrawingProtocolTest {
     }
 
     private fun setup(socket: Socket, byteOrderByte: Int = 0x6c) {
+        setupReply(socket, byteOrderByte)
+    }
+
+    private fun setupReply(socket: Socket, byteOrderByte: Int = 0x6c): ByteArray {
         val setup = ByteArray(12)
         setup[0] = byteOrderByte.toByte()
         when (byteOrderByte) {
@@ -14822,7 +14871,8 @@ class XCoreDrawingProtocolTest {
         val prefix = socket.getInputStream().readExactly(8)
         assertEquals(1, prefix[0].toInt())
         val payloadUnits = if (byteOrderByte == 0x42) u16be(prefix, 6) else u16le(prefix, 6)
-        socket.getInputStream().readExactly(payloadUnits * 4)
+        val payload = socket.getInputStream().readExactly(payloadUnits * 4)
+        return prefix + payload
     }
 
     private fun assertSetupSuccess(port: Int) {

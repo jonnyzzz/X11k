@@ -92,6 +92,8 @@ internal object SetupReply {
         widthMillimeters: Int,
         heightMillimeters: Int,
         currentInputMasks: Int,
+        resourceIdBase: Int = X11Ids.ResourceIdBase,
+        resourceIdMask: Int = X11Ids.ResourceIdMask,
     ): ByteArray {
         val vendor = "jonnyzzz/x".encodeToByteArray()
         val vendorPaddedLength = paddedLength(vendor.size)
@@ -108,8 +110,8 @@ internal object SetupReply {
         byteOrder.put16(reply, 4, clientMinor)
         byteOrder.put16(reply, 6, additionalLength / 4)
         byteOrder.put32(reply, 8, ReleaseNumber)
-        byteOrder.put32(reply, 12, X11Ids.ResourceIdBase)
-        byteOrder.put32(reply, 16, X11Ids.ResourceIdMask)
+        byteOrder.put32(reply, 12, resourceIdBase)
+        byteOrder.put32(reply, 16, resourceIdMask)
         byteOrder.put32(reply, 20, MotionBufferSize)
         byteOrder.put16(reply, 24, vendor.size)
         byteOrder.put16(reply, 26, 0xffff)
@@ -190,6 +192,7 @@ internal object SetupReply {
 internal object X11Ids {
     const val ResourceIdBase = 0x0020_0000
     const val ResourceIdMask = 0x001f_ffff
+    const val ResourceIdStride = ResourceIdMask + 1
     const val RootWindow = 0x0000_0026
     const val DefaultColormap = 0x0000_0027
     const val RootVisual = 0x0000_0028

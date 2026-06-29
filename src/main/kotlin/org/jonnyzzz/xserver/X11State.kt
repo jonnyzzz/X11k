@@ -41,6 +41,11 @@ internal data class XClientResourceIdRange(
     val count: Int,
 )
 
+internal data class XClientSetupResourceIds(
+    val base: Int,
+    val mask: Int,
+)
+
 internal class X11State(
     val width: Int,
     val height: Int,
@@ -144,6 +149,7 @@ internal class X11State(
     private var accessControlEnabled = false
     private val accessHosts = linkedSetOf<XAccessHost>()
     private var nextClientResourceOffset = 0
+    private var nextSetupResourceBlock = 0
     private val clientResourceReservations = linkedMapOf<Int, XEventSink>()
     private val serverStartMillis = System.currentTimeMillis()
 
@@ -6138,6 +6144,16 @@ internal class X11State(
             glxPbuffers.containsKey(id)
 
     @Synchronized
+    fun allocateSetupResourceIds(): XClientSetupResourceIds {
+        val block = nextSetupResourceBlock
+        nextSetupResourceBlock = (nextSetupResourceBlock + 1) % SetupResourceBlockCount
+        return XClientSetupResourceIds(
+            base = X11Ids.ResourceIdBase + block * X11Ids.ResourceIdStride,
+            mask = X11Ids.ResourceIdMask,
+        )
+    }
+
+    @Synchronized
     fun allocateClientResourceIdRange(owner: XEventSink, maxCount: Int = XXCMisc.MaxIdsPerReply): XClientResourceIdRange {
         val first = allocateNextClientResourceId(owner) ?: return XClientResourceIdRange(startId = 0, count = 0)
         var count = 1
@@ -6767,6 +6783,7 @@ internal class X11State(
         private const val MaxGlyphMaskPixels = 16_777_216
         private const val MaxRequestCounts = 256
         private const val MaxExtensionQueries = 200
+        private const val SetupResourceBlockCount = 1023
         private const val MaxUnsupportedRequests = 200
 
         private fun pixelsToMillimeters(pixels: Int, dpi: Int): Int =
@@ -7566,7 +7583,24 @@ internal object XPointerMapping {
 }
 
 internal object XModifierMapping {
-    val Default = emptyList<Int>()
+    val Default = listOf(
+        50,
+        62,
+        66,
+        0,
+        37,
+        105,
+        64,
+        108,
+        0,
+        0,
+        0,
+        0,
+        133,
+        134,
+        0,
+        0,
+    )
 }
 
 internal object XKeyboard {
@@ -7609,9 +7643,97 @@ internal data class XKeyboardMapping(
         )
 
     companion object {
+        private const val NoSymbol = 0
+        private fun row(keysym: Int, shifted: Int = NoSymbol): List<Int> = listOf(keysym, shifted)
+
         val Default = XKeyboardMapping(
-            keysymsPerKeycode = 1,
-            keysymsByKeycode = emptyMap(),
+            keysymsPerKeycode = 2,
+            keysymsByKeycode = mapOf(
+                9 to row(0xff1b),
+                10 to row(0x0031, 0x0021),
+                11 to row(0x0032, 0x0040),
+                12 to row(0x0033, 0x0023),
+                13 to row(0x0034, 0x0024),
+                14 to row(0x0035, 0x0025),
+                15 to row(0x0036, 0x005e),
+                16 to row(0x0037, 0x0026),
+                17 to row(0x0038, 0x002a),
+                18 to row(0x0039, 0x0028),
+                19 to row(0x0030, 0x0029),
+                20 to row(0x002d, 0x005f),
+                21 to row(0x003d, 0x002b),
+                22 to row(0xff08),
+                23 to row(0xff09),
+                24 to row(0x0071, 0x0051),
+                25 to row(0x0077, 0x0057),
+                26 to row(0x0065, 0x0045),
+                27 to row(0x0072, 0x0052),
+                28 to row(0x0074, 0x0054),
+                29 to row(0x0079, 0x0059),
+                30 to row(0x0075, 0x0055),
+                31 to row(0x0069, 0x0049),
+                32 to row(0x006f, 0x004f),
+                33 to row(0x0070, 0x0050),
+                34 to row(0x005b, 0x007b),
+                35 to row(0x005d, 0x007d),
+                36 to row(0xff0d),
+                37 to row(0xffe3),
+                38 to row(0x0061, 0x0041),
+                39 to row(0x0073, 0x0053),
+                40 to row(0x0064, 0x0044),
+                41 to row(0x0066, 0x0046),
+                42 to row(0x0067, 0x0047),
+                43 to row(0x0068, 0x0048),
+                44 to row(0x006a, 0x004a),
+                45 to row(0x006b, 0x004b),
+                46 to row(0x006c, 0x004c),
+                47 to row(0x003b, 0x003a),
+                48 to row(0x0027, 0x0022),
+                49 to row(0x0060, 0x007e),
+                50 to row(0xffe1),
+                51 to row(0x005c, 0x007c),
+                52 to row(0x007a, 0x005a),
+                53 to row(0x0078, 0x0058),
+                54 to row(0x0063, 0x0043),
+                55 to row(0x0076, 0x0056),
+                56 to row(0x0062, 0x0042),
+                57 to row(0x006e, 0x004e),
+                58 to row(0x006d, 0x004d),
+                59 to row(0x002c, 0x003c),
+                60 to row(0x002e, 0x003e),
+                61 to row(0x002f, 0x003f),
+                62 to row(0xffe2),
+                64 to row(0xffe9),
+                65 to row(0x0020),
+                66 to row(0xffe5),
+                67 to row(0xffbe),
+                68 to row(0xffbf),
+                69 to row(0xffc0),
+                70 to row(0xffc1),
+                71 to row(0xffc2),
+                72 to row(0xffc3),
+                73 to row(0xffc4),
+                74 to row(0xffc5),
+                75 to row(0xffc6),
+                76 to row(0xffc7),
+                95 to row(0xffc8),
+                96 to row(0xffc9),
+                104 to row(0xff8d),
+                105 to row(0xffe4),
+                108 to row(0xffea),
+                110 to row(0xff50),
+                111 to row(0xff52),
+                112 to row(0xff55),
+                113 to row(0xff51),
+                114 to row(0xff53),
+                115 to row(0xff57),
+                116 to row(0xff54),
+                117 to row(0xff56),
+                118 to row(0xff63),
+                119 to row(0xffff),
+                133 to row(0xffeb),
+                134 to row(0xffec),
+            ),
         )
     }
 }

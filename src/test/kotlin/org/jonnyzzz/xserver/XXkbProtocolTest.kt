@@ -439,7 +439,7 @@ class XXkbProtocolTest {
     fun `XKEYBOARD GetMap reports key range with no map parts`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
-            out.write(getMapRequest(full = -1, partial = -1))
+            out.write(getMapRequest(full = 0, partial = 0))
             out.flush()
 
             val map = readReply(socket.getInputStream())
@@ -479,6 +479,96 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetMap returns requested default key symbols`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getMapRequest(full = 0, partial = XXkb.MapPartKeySyms, firstKeySym = 38, nKeySyms = 2))
+            out.flush()
+
+            val map = readReply(socket.getInputStream())
+            assertEquals(1, map[0].toInt())
+            assertEquals(1, u16le(map, 2))
+            assertEquals(10, u32le(map, 4))
+            assertEquals(0, u16le(map, 8))
+            assertEquals(XXkb.MapPartKeySyms, u16le(map, 12))
+            assertEquals(XKeyboard.MinKeycode, map[10].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, map[11].toInt() and 0xff)
+            assertEquals(38, map[17].toInt() and 0xff)
+            assertEquals(4, u16le(map, 18))
+            assertEquals(2, map[20].toInt() and 0xff)
+            val symsOffset = xkbKeySymMapBaseOffset(map)
+            assertXkbKeySymMap(map, offset = symsOffset, width = 2, 0x0061, 0x0041)
+            assertXkbKeySymMap(map, offset = symsOffset + 16, width = 2, 0x0073, 0x0053)
+            assertEquals(72, map.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetMap full key symbols returns complete core range`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getMapRequest(full = XXkb.MapPartKeySyms, partial = 0, firstKeySym = 38, nKeySyms = 1))
+            out.flush()
+
+            val map = readReply(socket.getInputStream())
+            val keycodeCount = XKeyboard.MaxKeycode - XKeyboard.MinKeycode + 1
+            assertEquals(1, u16le(map, 2))
+            assertEquals(map.size, 32 + u32le(map, 4) * 4)
+            assertEquals(0, u16le(map, 8))
+            assertEquals(XXkb.MapPartKeySyms, u16le(map, 12))
+            assertEquals(XKeyboard.MinKeycode, map[17].toInt() and 0xff)
+            assertEquals(keycodeCount, map[20].toInt() and 0xff)
+            assertEquals(xkbTotalKeySyms(map), u16le(map, 18))
+            val aOffset = xkbKeySymMapOffset(map, keycode = 38)
+            assertXkbKeySymMap(map, offset = aOffset, width = 2, 0x0061, 0x0041)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetMap returns IntelliJ requested key types symbols modifiers and virtual mods`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val requested = XXkb.MapPartKeyTypes or XXkb.MapPartKeySyms or XXkb.MapPartModifierMap or XXkb.MapPartVirtualMods
+            out.write(getMapRequest(full = requested, partial = 0, firstKeySym = 38, nKeySyms = 1))
+            out.flush()
+
+            val map = readReply(socket.getInputStream())
+            val keycodeCount = XKeyboard.MaxKeycode - XKeyboard.MinKeycode + 1
+            assertEquals(1, u16le(map, 2))
+            assertEquals(map.size, 32 + u32le(map, 4) * 4)
+            assertEquals(0, u16le(map, 8))
+            assertEquals(requested, u16le(map, 12))
+            assertEquals(XKeyboard.MinKeycode, map[10].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, map[11].toInt() and 0xff)
+            assertEquals(0, map[14].toInt() and 0xff)
+            assertEquals(4, map[15].toInt() and 0xff)
+            assertEquals(4, map[16].toInt() and 0xff)
+            assertEquals(XKeyboard.MinKeycode, map[17].toInt() and 0xff)
+            assertEquals(keycodeCount, map[20].toInt() and 0xff)
+            assertEquals(xkbTotalKeySyms(map), u16le(map, 18))
+            assertEquals(XKeyboard.MinKeycode, map[31].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode - XKeyboard.MinKeycode + 1, map[32].toInt() and 0xff)
+            assertEquals(9, map[33].toInt() and 0xff)
+            assertEquals(0, u16le(map, 38))
+
+            assertXkbDefaultKeyTypes(map, offset = 40)
+            assertXkbKeySymMap(map, offset = xkbKeySymMapOffset(map, keycode = 38), width = 2, 0x0061, 0x0041)
+            assertXkbModifierMap(
+                map,
+                37 to 0x04,
+                50 to 0x01,
+                62 to 0x01,
+                64 to 0x08,
+                66 to 0x02,
+                105 to 0x04,
+                108 to 0x08,
+                133 to 0x40,
+                134 to 0x40,
+            )
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetMap validates request length and recovers stream`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -498,23 +588,24 @@ class XXkbProtocolTest {
     }
 
     @Test
-    fun `XKEYBOARD SetMap accepts full map payload without changing empty map`() {
+    fun `XKEYBOARD SetMap accepts full map payload without changing key symbols`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
             out.write(setMapRequest(includeAllParts = true))
-            out.write(getMapRequest(full = -1, partial = -1))
+            out.write(getMapRequest(full = 0, partial = XXkb.MapPartKeySyms, firstKeySym = 38, nKeySyms = 1))
             out.flush()
 
             val map = readReply(socket.getInputStream())
             assertEquals(2, u16le(map, 2))
-            assertEquals(2, u32le(map, 4))
-            assertEquals(0, u16le(map, 8))
+            assertEquals(6, u32le(map, 4))
+            assertEquals(XXkb.MapPartKeySyms, u16le(map, 12))
             assertEquals(XKeyboard.MinKeycode, map[10].toInt() and 0xff)
             assertEquals(XKeyboard.MaxKeycode, map[11].toInt() and 0xff)
-            assertEquals(0, u16le(map, 12))
-            assertEquals(0, map[14].toInt() and 0xff)
-            assertEquals(0, map[15].toInt() and 0xff)
-            assertEquals(40, map.size)
+            assertEquals(38, map[17].toInt() and 0xff)
+            assertEquals(2, u16le(map, 18))
+            assertEquals(1, map[20].toInt() and 0xff)
+            assertXkbKeySymMap(map, offset = 40, width = 2, 0x0061, 0x0041)
+            assertEquals(56, map.size)
         }
     }
 
@@ -523,15 +614,18 @@ class XXkbProtocolTest {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
             out.write(setMapRequest(includeAllParts = true, oddExplicitAndModifierMapCounts = true))
-            out.write(getMapRequest(full = -1, partial = -1))
+            out.write(getMapRequest(full = 0, partial = XXkb.MapPartKeySyms, firstKeySym = 38, nKeySyms = 1))
             out.flush()
 
             val map = readReply(socket.getInputStream())
             assertEquals(2, u16le(map, 2))
-            assertEquals(2, u32le(map, 4))
-            assertEquals(0, u16le(map, 8))
-            assertEquals(0, u16le(map, 12))
-            assertEquals(40, map.size)
+            assertEquals(6, u32le(map, 4))
+            assertEquals(XXkb.MapPartKeySyms, u16le(map, 12))
+            assertEquals(38, map[17].toInt() and 0xff)
+            assertEquals(2, u16le(map, 18))
+            assertEquals(1, map[20].toInt() and 0xff)
+            assertXkbKeySymMap(map, offset = 40, width = 2, 0x0061, 0x0041)
+            assertEquals(56, map.size)
         }
     }
 
@@ -1783,15 +1877,20 @@ class XXkbProtocolTest {
         return request(XXkb.MajorOpcode, XXkb.SetControls, body)
     }
 
-    private fun getMapRequest(full: Int, partial: Int): ByteArray {
+    private fun getMapRequest(
+        full: Int,
+        partial: Int,
+        firstKeySym: Int = XKeyboard.MinKeycode,
+        nKeySyms: Int = 0xff,
+    ): ByteArray {
         val body = ByteArray(24)
         put16le(body, 0, 0x0100)
         put16le(body, 2, full)
         put16le(body, 4, partial)
         body[6] = 0
         body[7] = 0xff.toByte()
-        body[8] = XKeyboard.MinKeycode.toByte()
-        body[9] = 0xff.toByte()
+        body[8] = firstKeySym.toByte()
+        body[9] = nKeySyms.toByte()
         body[10] = XKeyboard.MinKeycode.toByte()
         body[11] = 0xff.toByte()
         body[12] = XKeyboard.MinKeycode.toByte()
@@ -2397,6 +2496,116 @@ class XXkbProtocolTest {
         assertEquals(enabledControls, u32le(reply, 56))
         assertEquals(92, reply.size)
     }
+
+    private fun assertXkbKeySymMap(reply: ByteArray, offset: Int, width: Int, vararg keysyms: Int) {
+        assertEquals(if (width > 1) 1 else 0, reply[offset].toInt() and 0xff)
+        assertEquals(0, reply[offset + 1].toInt() and 0xff)
+        assertEquals(0, reply[offset + 2].toInt() and 0xff)
+        assertEquals(0, reply[offset + 3].toInt() and 0xff)
+        assertEquals(1, reply[offset + 4].toInt() and 0xff)
+        assertEquals(width, reply[offset + 5].toInt() and 0xff)
+        assertEquals(keysyms.size, u16le(reply, offset + 6))
+        keysyms.forEachIndexed { index, keysym ->
+            assertEquals(keysym, u32le(reply, offset + 8 + index * 4))
+        }
+    }
+
+    private fun assertXkbDefaultKeyTypes(reply: ByteArray, offset: Int) {
+        assertEquals(0, reply[offset].toInt() and 0xff)
+        assertEquals(0, reply[offset + 1].toInt() and 0xff)
+        assertEquals(0, u16le(reply, offset + 2))
+        assertEquals(1, reply[offset + 4].toInt() and 0xff)
+        assertEquals(0, reply[offset + 5].toInt() and 0xff)
+        assertEquals(0, reply[offset + 6].toInt() and 0xff)
+        assertEquals(0, reply[offset + 7].toInt() and 0xff)
+
+        var twoLevel = offset + 8
+        repeat(3) {
+            assertEquals(1, reply[twoLevel].toInt() and 0xff)
+            assertEquals(1, reply[twoLevel + 1].toInt() and 0xff)
+            assertEquals(0, u16le(reply, twoLevel + 2))
+            assertEquals(2, reply[twoLevel + 4].toInt() and 0xff)
+            assertEquals(1, reply[twoLevel + 5].toInt() and 0xff)
+            assertEquals(0, reply[twoLevel + 6].toInt() and 0xff)
+            assertEquals(0, reply[twoLevel + 7].toInt() and 0xff)
+
+            val shiftEntry = twoLevel + 8
+            assertEquals(1, reply[shiftEntry].toInt() and 0xff)
+            assertEquals(1, reply[shiftEntry + 1].toInt() and 0xff)
+            assertEquals(1, reply[shiftEntry + 2].toInt() and 0xff)
+            assertEquals(1, reply[shiftEntry + 3].toInt() and 0xff)
+            assertEquals(0, u16le(reply, shiftEntry + 4))
+            assertEquals(0, u16le(reply, shiftEntry + 6))
+            twoLevel += 16
+        }
+    }
+
+    private fun assertXkbModifierMap(reply: ByteArray, vararg entries: Pair<Int, Int>) {
+        val offset = xkbModifierMapOffset(reply)
+        entries.forEachIndexed { index, (keycode, modifiers) ->
+            assertEquals(keycode, reply[offset + index * 2].toInt() and 0xff)
+            assertEquals(modifiers, reply[offset + index * 2 + 1].toInt() and 0xff)
+        }
+        assertZero(reply, offset + entries.size * 2, 32 + u32le(reply, 4) * 4)
+    }
+
+    private fun xkbKeySymMapOffset(reply: ByteArray, keycode: Int): Int {
+        val firstKeySym = reply[17].toInt() and 0xff
+        val nKeySyms = reply[20].toInt() and 0xff
+        require(keycode in firstKeySym until firstKeySym + nKeySyms)
+        var offset = xkbKeySymMapBaseOffset(reply)
+        repeat(keycode - firstKeySym) {
+            offset += 8 + u16le(reply, offset + 6) * 4
+        }
+        return offset
+    }
+
+    private fun xkbTotalKeySyms(reply: ByteArray): Int {
+        val nKeySyms = reply[20].toInt() and 0xff
+        var offset = xkbKeySymMapBaseOffset(reply)
+        var total = 0
+        repeat(nKeySyms) {
+            val nSyms = u16le(reply, offset + 6)
+            total += nSyms
+            offset += 8 + nSyms * 4
+        }
+        return total
+    }
+
+    private fun xkbKeySymMapBaseOffset(reply: ByteArray): Int {
+        var offset = 40
+        if ((u16le(reply, 12) and XXkb.MapPartKeyTypes) != 0) {
+            repeat(reply[15].toInt() and 0xff) {
+                val nMapEntries = reply[offset + 5].toInt() and 0xff
+                val preserve = reply[offset + 6].toInt() != 0
+                offset += 8 + nMapEntries * 8 + if (preserve) nMapEntries * 4 else 0
+            }
+        }
+        return offset
+    }
+
+    private fun xkbModifierMapOffset(reply: ByteArray): Int {
+        var offset = xkbKeySymMapBaseOffset(reply)
+        if ((u16le(reply, 12) and XXkb.MapPartKeySyms) != 0) {
+            repeat(reply[20].toInt() and 0xff) {
+                offset += 8 + u16le(reply, offset + 6) * 4
+            }
+        }
+        if ((u16le(reply, 12) and XXkb.MapPartVirtualMods) != 0) {
+            offset += Integer.bitCount(u16le(reply, 38))
+            offset = paddedLengthForTest(offset)
+        }
+        return offset
+    }
+
+    private fun assertZero(bytes: ByteArray, from: Int, until: Int) {
+        for (index in from until until) {
+            assertEquals(0, bytes[index].toInt() and 0xff)
+        }
+    }
+
+    private fun paddedLengthForTest(value: Int): Int =
+        (value + 3) and -4
 
     private fun readReply(input: InputStream): ByteArray {
         val header = input.readExactly(32)
