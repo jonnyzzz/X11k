@@ -12621,6 +12621,68 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER AddGlyphsFromPicture honors source picture alpha map`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val sourcePixmap = PixmapId
+                val sourcePicture = PictureId + 10
+                val alphaPicture = PictureId + 11
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 5, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(createPixmapRequest(sourcePixmap, depth = 24, width = 3, height = 1))
+                out.write(renderCreatePicture(sourcePicture, sourcePixmap, XRender.Rgb24Format))
+                out.write(renderFillRectangles(sourcePicture, x = 0, y = 0, width = 3, height = 1, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 3, height = 1))
+                out.write(renderCreatePicture(alphaPicture, MaskPixmapId, XRender.A8Format))
+                out.write(
+                    putImage8Request(
+                        MaskPixmapId,
+                        width = 3,
+                        height = 1,
+                        alphas = byteArrayOf(
+                            0xff.toByte(),
+                            0x00,
+                            0x80.toByte(),
+                        ),
+                    ),
+                )
+                out.write(renderChangePictureAttributes(sourcePicture, XRender.CPAlphaMap to alphaPicture))
+                out.write(renderCreateGlyphSet(GlyphSetId, XRender.A8Format))
+                out.write(renderAddGlyphsFromPicture(GlyphSetId, sourcePicture, GlyphId, width = 3, height = 1, xOff = 3))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(
+                    renderCompositeGlyphs32(
+                        source = SolidPictureId,
+                        destination = PictureId,
+                        glyphSet = GlyphSetId,
+                        sourceX = 0,
+                        sourceY = 0,
+                        deltaX = 1,
+                        deltaY = 0,
+                        glyphIds = listOf(GlyphId),
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 5, x = 0, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 5, x = 1, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 5, x = 2, y = 0))
+                assertEquals(0xff80_007f.toInt(), pixelAt(image, imageWidth = 5, x = 3, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 5, x = 4, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER AddGlyphsFromPicture honors source picture ClipByChildren`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
