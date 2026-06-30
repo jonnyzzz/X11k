@@ -5188,7 +5188,57 @@ internal class X11State(
 
     private fun effectivePictureClip(picture: XPicture): List<XRectangleCommand>? {
         val drawableId = picture.drawableId ?: return picture.clipRectangles
-        return effectiveDrawableClip(drawableId, picture.clipRectangles)
+        val drawableClip = effectiveDrawableClip(drawableId, picture.clipRectangles)
+        if (picture.subwindowMode == XRender.SubwindowModeIncludeInferiors) return drawableClip
+        val window = windows[drawableId] ?: return drawableClip
+        val childClips = mappedChildClipRectangles(window)
+        if (childClips.isEmpty()) return drawableClip
+        val baseClip = drawableClip ?: listOf(XRectangleCommand(0, 0, window.width, window.height))
+        return subtractClips(baseClip, childClips)
+    }
+
+    private fun mappedChildClipRectangles(window: XWindow): List<XRectangleCommand> =
+        childrenOf(window.id)
+            .filter { child -> child.windowClass == XWindowClass.InputOutput && windowIsViewable(child.id) }
+            .flatMap { child ->
+                val boundingShape = child.boundingShape ?: defaultWindowShapeRegion(child, XFixes.ShapeBounding)
+                boundingShape.map { rectangle ->
+                    XRectangleCommand(
+                        x = child.x + rectangle.x,
+                        y = child.y + rectangle.y,
+                        width = rectangle.width,
+                        height = rectangle.height,
+                    )
+                }
+            }
+
+    private fun subtractClips(
+        clips: List<XRectangleCommand>,
+        holes: List<XRectangleCommand>,
+    ): List<XRectangleCommand> =
+        holes.fold(clips) { current, hole ->
+            current.flatMap { rectangle -> subtractRectangle(rectangle, hole) }
+        }
+
+    private fun subtractRectangle(
+        rectangle: XRectangleCommand,
+        hole: XRectangleCommand,
+    ): List<XRectangleCommand> {
+        val intersection = intersectRectangles(rectangle, hole) ?: return listOf(rectangle)
+        val rectangleRight = rectangle.x + rectangle.width
+        val rectangleBottom = rectangle.y + rectangle.height
+        val intersectionRight = intersection.x + intersection.width
+        val intersectionBottom = intersection.y + intersection.height
+        return buildList {
+            addRectangleIfNotEmpty(rectangle.x, rectangle.y, rectangle.width, intersection.y - rectangle.y)
+            addRectangleIfNotEmpty(rectangle.x, intersectionBottom, rectangle.width, rectangleBottom - intersectionBottom)
+            addRectangleIfNotEmpty(rectangle.x, intersection.y, intersection.x - rectangle.x, intersection.height)
+            addRectangleIfNotEmpty(intersectionRight, intersection.y, rectangleRight - intersectionRight, intersection.height)
+        }
+    }
+
+    private fun MutableList<XRectangleCommand>.addRectangleIfNotEmpty(x: Int, y: Int, width: Int, height: Int) {
+        if (width > 0 && height > 0) add(XRectangleCommand(x, y, width, height))
     }
 
     private fun intersectClips(

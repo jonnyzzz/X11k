@@ -1965,6 +1965,129 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER picture subwindow mode clips mapped child windows`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val childWindow = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 0, y = 0, width = 6, height = 1, borderWidth = 0))
+                out.write(mapWindowRequest(WindowId))
+                out.write(createWindowRequest(childWindow, parent = WindowId, x = 3, y = 0, width = 1, height = 1, borderWidth = 1))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(
+                    renderChangePictureAttributes(
+                        PictureId,
+                        XRender.CPSubwindowMode to XRender.SubwindowModeIncludeInferiors,
+                    ),
+                )
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 6, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(mapWindowRequest(childWindow))
+                out.write(renderSetPictureClipRectangles(PictureId, rectangles = listOf(XRectangleCommand(1, 0, 5, 1))))
+                out.write(
+                    renderChangePictureAttributes(
+                        PictureId,
+                        XRender.CPSubwindowMode to XRender.SubwindowModeClipByChildren,
+                    ),
+                )
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 6, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 6, height = 1))
+                out.write(
+                    renderChangePictureAttributes(
+                        PictureId,
+                        XRender.CPSubwindowMode to XRender.SubwindowModeIncludeInferiors,
+                    ),
+                )
+                out.write(renderFillRectangles(PictureId, x = 2, y = 0, width = 3, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 6, height = 1))
+                out.flush()
+
+                assertExpose(socket.getInputStream(), WindowId)
+                assertExpose(socket.getInputStream(), childWindow)
+                val clippedImage = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(clippedImage, imageWidth = 6, x = 0, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(clippedImage, imageWidth = 6, x = 1, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(clippedImage, imageWidth = 6, x = 2, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(clippedImage, imageWidth = 6, x = 3, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(clippedImage, imageWidth = 6, x = 4, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(clippedImage, imageWidth = 6, x = 5, y = 0))
+
+                val includedImage = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(includedImage, imageWidth = 6, x = 2, y = 0))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(includedImage, imageWidth = 6, x = 3, y = 0))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(includedImage, imageWidth = 6, x = 4, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER picture subwindow mode clips shaped child bounds`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val childWindow = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 0, y = 0, width = 5, height = 1, borderWidth = 0))
+                out.write(mapWindowRequest(WindowId))
+                out.write(createWindowRequest(childWindow, parent = WindowId, x = 1, y = 0, width = 3, height = 1, borderWidth = 0))
+                out.write(shapeRectangles(childWindow, XFixes.ShapeBounding, XShape.OpSet, listOf(XRectangleCommand(1, 0, 1, 1))))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(
+                    renderChangePictureAttributes(
+                        PictureId,
+                        XRender.CPSubwindowMode to XRender.SubwindowModeIncludeInferiors,
+                    ),
+                )
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 5, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(mapWindowRequest(childWindow))
+                out.write(
+                    renderChangePictureAttributes(
+                        PictureId,
+                        XRender.CPSubwindowMode to XRender.SubwindowModeClipByChildren,
+                    ),
+                )
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 5, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 1))
+                out.write(
+                    renderChangePictureAttributes(
+                        PictureId,
+                        XRender.CPSubwindowMode to XRender.SubwindowModeIncludeInferiors,
+                    ),
+                )
+                out.write(renderFillRectangles(PictureId, x = 2, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 1))
+                out.flush()
+
+                assertExpose(socket.getInputStream(), WindowId)
+                assertExpose(socket.getInputStream(), childWindow)
+                val clippedImage = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(clippedImage, imageWidth = 5, x = 0, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(clippedImage, imageWidth = 5, x = 1, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(clippedImage, imageWidth = 5, x = 2, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(clippedImage, imageWidth = 5, x = 3, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(clippedImage, imageWidth = 5, x = 4, y = 0))
+
+                val includedImage = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(includedImage, imageWidth = 5, x = 2, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    private fun assertExpose(input: InputStream, window: Int) {
+        val event = input.readExactly(32)
+        assertEquals(12, event[0].toInt() and 0x7f)
+        assertEquals(window, u32le(event, 4))
+    }
+
+    @Test
     fun `RENDER clip mask attribute replaces rectangle clips and None clears it`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -12000,15 +12123,23 @@ class XRenderProtocolTest {
         return request(XFixes.MajorOpcode, XFixes.QueryVersion, body)
     }
 
-    private fun createWindowRequest(id: Int): ByteArray {
+    private fun createWindowRequest(
+        id: Int,
+        parent: Int = X11Ids.RootWindow,
+        x: Int = 10,
+        y: Int = 20,
+        width: Int = 100,
+        height: Int = 80,
+        borderWidth: Int = 1,
+    ): ByteArray {
         val body = ByteArray(28)
         put32le(body, 0, id)
-        put32le(body, 4, X11Ids.RootWindow)
-        put16le(body, 8, 10)
-        put16le(body, 10, 20)
-        put16le(body, 12, 100)
-        put16le(body, 14, 80)
-        put16le(body, 16, 1)
+        put32le(body, 4, parent)
+        put16le(body, 8, x)
+        put16le(body, 10, y)
+        put16le(body, 12, width)
+        put16le(body, 14, height)
+        put16le(body, 16, borderWidth)
         put16le(body, 18, 1)
         put32le(body, 20, X11Ids.RootVisual)
         return request(1, 24, body)
@@ -12278,6 +12409,22 @@ class XRenderProtocolTest {
         put32le(body, 4, XRender.CPClipMask)
         put32le(body, 8, 0)
         return request(XRender.MajorOpcode, 5, body)
+    }
+
+    private fun shapeRectangles(window: Int, kind: Int, operation: Int, rectangles: List<XRectangleCommand>): ByteArray {
+        val body = ByteArray(12 + rectangles.size * 8)
+        body[0] = operation.toByte()
+        body[1] = kind.toByte()
+        body[2] = XShape.OrderingYXBanded.toByte()
+        put32le(body, 4, window)
+        rectangles.forEachIndexed { index, rectangle ->
+            val offset = 12 + index * 8
+            put16le(body, offset, rectangle.x)
+            put16le(body, offset + 2, rectangle.y)
+            put16le(body, offset + 4, rectangle.width)
+            put16le(body, offset + 6, rectangle.height)
+        }
+        return request(XShape.MajorOpcode, XShape.Rectangles, body)
     }
 
     private fun renderChangePictureComponentAlpha(picture: Int, componentAlpha: Boolean): ByteArray {
