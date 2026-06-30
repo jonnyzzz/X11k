@@ -3496,7 +3496,11 @@ internal class X11State(
     @Synchronized
     fun addGlyphsFromPicture(glyphSetId: Int, source: XPicture, glyphs: List<XPictureGlyph>) {
         val glyphSet = glyphSets[glyphSetId] ?: return
-        val sourcePixelAt = source.sourcePixelSampler() ?: return
+        val sourcePixelAt = if (source.alphaMap != 0 || source.hasPictureClip()) {
+            source.sourcePixelSamplerOptional()
+        } else {
+            source.sourcePixelSampler()?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
+        } ?: return
         for (glyph in glyphs) {
             glyphSet.glyphs[glyph.id] = XGlyph(
                 id = glyph.id,
@@ -5027,14 +5031,14 @@ internal class X11State(
         height: Int,
         sourceX: Int,
         sourceY: Int,
-        sourcePixelAt: (x: Int, y: Int) -> Int,
+        sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): XFramebuffer? {
         if (width <= 0 || height <= 0) return null
         if (width.toLong() * height.toLong() > MaxGlyphMaskPixels) return null
         val pixels = IntArray(width * height)
         for (y in 0 until height) {
             for (x in 0 until width) {
-                val pixel = sourcePixelAt(sourceX + x, sourceY + y)
+                val pixel = sourcePixelAt(sourceX + x, sourceY + y) ?: 0
                 val alpha = (pixel ushr 24) and 0xff
                 pixels[y * width + x] = when (format) {
                     XRender.A1Format -> if (alpha >= 0x80) 0xff shl 24 else 0
