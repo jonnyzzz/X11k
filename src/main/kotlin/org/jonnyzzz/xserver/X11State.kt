@@ -2175,12 +2175,15 @@ internal class X11State(
         destinationY: Int,
     ): XPointerDispatch {
         val deliveries = mutableListOf<Pair<XEventSink, XPointerEvent>>()
+        val crossingDeliveries = mutableListOf<Pair<XEventSink, XCrossingEvent>>()
         val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
         val targetId: Int?
         val finalRootX: Int
         val finalRootY: Int
         synchronized(this) {
             val previousCursor = displayedCursorIdentity()
+            val previousWindowId = windowAt(pointerX, pointerY)?.id
+            val previousPath = previousWindowId?.let { windowPathToRoot(it) }.orEmpty()
             val sourceWindow = sourceWindowId.takeIf { it != 0 }?.let { windows[it] }
             if (sourceWindow != null && !sourceWindowContainsPointer(sourceWindow, sourceX, sourceY, sourceWidth, sourceHeight)) {
                 return XPointerDispatch(targetWindowId = windowAt(pointerX, pointerY)?.id, deliveredEvents = 0, rootX = pointerX, rootY = pointerY)
@@ -2215,6 +2218,18 @@ internal class X11State(
             recordMotionHistory(time, pointerX, pointerY)
 
             val grab = activePointerGrab
+            val crossedWindow = previousWindowId != targetId
+            if (grab == null && crossedWindow) {
+                crossingDeliveries += crossingEventDeliveries(
+                    previousPath = previousPath,
+                    targetPath = path,
+                    absoluteById = absoluteById,
+                    rootX = pointerX,
+                    rootY = pointerY,
+                    state = pointerMask(),
+                    time = time,
+                )
+            }
             val normalSelection = firstPointerEventSelection(path, XEventMasks.PointerMotion)
             if (grab != null) {
                 val ownerSelection = if (grab.ownerEvents) {
@@ -2239,7 +2254,7 @@ internal class X11State(
                     )
                 }
             } else {
-                normalSelection?.let { (window, sinks) ->
+                normalSelection?.takeUnless { crossedWindow }?.let { (window, sinks) ->
                     val absolute = absoluteById.getValue(window.id)
                     for (sink in sinks) {
                         deliveries += sink to XPointerEvent(
@@ -2260,6 +2275,9 @@ internal class X11State(
             xfixesCursorNotifyDispatches += xfixesCursorNotifyDispatchesIfChanged(previousCursor, timestamp = time)
         }
 
+        for ((sink, event) in crossingDeliveries) {
+            sink.sendCrossingEvent(event)
+        }
         for ((sink, event) in deliveries) {
             sink.sendPointerEvent(event)
         }
@@ -8039,6 +8057,86 @@ internal class X11State(
         }
         return result
     }
+
+    private fun crossingEventDeliveries(
+        previousPath: List<XWindow>,
+        targetPath: List<XWindow>,
+        absoluteById: Map<Int, Pair<Int, Int>>,
+        rootX: Int,
+        rootY: Int,
+        state: Int,
+        time: Int,
+    ): List<Pair<XEventSink, XCrossingEvent>> {
+        if (previousPath.isEmpty() || targetPath.isEmpty()) return emptyList()
+        if (previousPath.first().id == targetPath.first().id) return emptyList()
+
+        val previousIds = previousPath.map { it.id }
+        val targetIds = targetPath.map { it.id }
+        val commonId = previousIds.firstOrNull { it in targetIds } ?: return emptyList()
+        val previousCommonIndex = previousIds.indexOf(commonId)
+        val targetCommonIndex = targetIds.indexOf(commonId)
+        val result = mutableListOf<Pair<XEventSink, XCrossingEvent>>()
+
+        fun childInPath(path: List<XWindow>, index: Int): Int =
+            if (index > 0) path[index - 1].id else 0
+
+        fun append(type: XCrossingEventType, path: List<XWindow>, index: Int, detail: Int) {
+            val window = path[index]
+            val mask = when (type) {
+                XCrossingEventType.EnterNotify -> XEventMasks.EnterWindow
+                XCrossingEventType.LeaveNotify -> XEventMasks.LeaveWindow
+            }
+            val sinks = eventSelectionsForWindow(window.id, mask)
+            if (sinks.isEmpty()) return
+            val absolute = absoluteById[window.id] ?: absolutePosition(window)
+            val event = XCrossingEvent(
+                type = type,
+                detail = detail,
+                focus = crossingEventFocus(window.id),
+                rootX = rootX,
+                rootY = rootY,
+                eventWindowId = window.id,
+                childWindowId = childInPath(path, index),
+                eventX = rootX - absolute.first,
+                eventY = rootY - absolute.second,
+                state = state,
+                time = time,
+            )
+            for (sink in sinks) result += sink to event
+        }
+
+        if (targetCommonIndex == 0) {
+            append(XCrossingEventType.LeaveNotify, previousPath, 0, XNotifyDetail.Ancestor)
+            for (index in 1 until previousCommonIndex) {
+                append(XCrossingEventType.LeaveNotify, previousPath, index, XNotifyDetail.Virtual)
+            }
+            append(XCrossingEventType.EnterNotify, targetPath, 0, XNotifyDetail.Inferior)
+        } else if (previousCommonIndex == 0) {
+            append(XCrossingEventType.LeaveNotify, previousPath, 0, XNotifyDetail.Inferior)
+            for (index in (targetCommonIndex - 1) downTo 1) {
+                append(XCrossingEventType.EnterNotify, targetPath, index, XNotifyDetail.Virtual)
+            }
+            append(XCrossingEventType.EnterNotify, targetPath, 0, XNotifyDetail.Ancestor)
+        } else {
+            append(XCrossingEventType.LeaveNotify, previousPath, 0, XNotifyDetail.Nonlinear)
+            for (index in 1 until previousCommonIndex) {
+                append(XCrossingEventType.LeaveNotify, previousPath, index, XNotifyDetail.NonlinearVirtual)
+            }
+            for (index in (targetCommonIndex - 1) downTo 1) {
+                append(XCrossingEventType.EnterNotify, targetPath, index, XNotifyDetail.NonlinearVirtual)
+            }
+            append(XCrossingEventType.EnterNotify, targetPath, 0, XNotifyDetail.Nonlinear)
+        }
+
+        return result
+    }
+
+    private fun crossingEventFocus(windowId: Int): Boolean =
+        when (focusWindowId) {
+            0 -> false
+            1 -> true
+            else -> windowIsAncestorOrSelf(focusWindowId, windowId)
+        }
 
     private fun recordMotionHistory(time: Int, rootX: Int, rootY: Int) {
         motionHistory += XMotionHistoryEntry(

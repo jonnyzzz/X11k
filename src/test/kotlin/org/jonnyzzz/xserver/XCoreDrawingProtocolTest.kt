@@ -6840,16 +6840,18 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
-    fun `WarpPointer sends MotionNotify to selected destination window`() {
+    fun `WarpPointer sends MotionNotify within selected destination window`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             Socket("127.0.0.1", server.localPort).use { socket ->
                 socket.soTimeout = 2_000
                 setup(socket)
                 val out = socket.getOutputStream()
-                out.write(createWindowRequest(WindowId, x = 20, y = 15, width = 40, height = 30, eventMask = 1 shl 6))
+                out.write(createWindowRequest(WindowId, x = 20, y = 15, width = 40, height = 30))
                 out.write(mapWindowRequest(WindowId))
                 out.write(warpPointerRequest(destinationWindow = WindowId, destinationX = 3, destinationY = 4))
+                out.write(changeWindowEventMaskRequest(WindowId, XEventMasks.PointerMotion))
+                out.write(warpPointerRequest(destinationWindow = WindowId, destinationX = 10, destinationY = 11))
                 out.write(queryPointerRequest())
                 out.flush()
 
@@ -6857,22 +6859,22 @@ class XCoreDrawingProtocolTest {
                 val motion = socket.getInputStream().readExactly(32)
                 assertEquals(6, motion[0].toInt() and 0xff)
                 assertEquals(0, motion[1].toInt() and 0xff)
-                assertEquals(3, u16le(motion, 2))
+                assertEquals(5, u16le(motion, 2))
                 assertEquals(X11Ids.RootWindow, u32le(motion, 8))
                 assertEquals(WindowId, u32le(motion, 12))
                 assertEquals(0, u32le(motion, 16))
-                assertEquals(23, u16le(motion, 20))
-                assertEquals(19, u16le(motion, 22))
-                assertEquals(3, u16le(motion, 24))
-                assertEquals(4, u16le(motion, 26))
+                assertEquals(30, u16le(motion, 20))
+                assertEquals(26, u16le(motion, 22))
+                assertEquals(10, u16le(motion, 24))
+                assertEquals(11, u16le(motion, 26))
                 assertEquals(0, u16le(motion, 28))
                 assertEquals(1, motion[30].toInt() and 0xff)
 
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(1, pointer[0].toInt())
-                assertEquals(4, u16le(pointer, 2))
-                assertEquals(23, u16le(pointer, 16))
-                assertEquals(19, u16le(pointer, 18))
+                assertEquals(6, u16le(pointer, 2))
+                assertEquals(30, u16le(pointer, 16))
+                assertEquals(26, u16le(pointer, 18))
             }
             server.close()
             serverThread.join(1_000)
@@ -6906,6 +6908,124 @@ class XCoreDrawingProtocolTest {
                 assertEquals(WindowId, u32le(pointer, 12))
                 assertEquals(29, u16le(pointer, 16))
                 assertEquals(29, u16le(pointer, 18))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `WarpPointer emits normal crossing events between selected sibling windows`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val first = WindowId
+                val second = WindowId + 1
+                out.write(createWindowRequest(first, x = 10, y = 10, width = 20, height = 20))
+                out.write(createWindowRequest(second, x = 40, y = 10, width = 20, height = 20))
+                out.write(mapWindowRequest(first))
+                out.write(mapWindowRequest(second))
+                out.write(warpPointerRequest(destinationWindow = first, destinationX = 5, destinationY = 5))
+                out.write(changeWindowEventMaskRequest(first, XEventMasks.LeaveWindow or XEventMasks.PointerMotion))
+                out.write(changeWindowEventMaskRequest(second, XEventMasks.EnterWindow or XEventMasks.PointerMotion))
+                out.write(warpPointerRequest(destinationWindow = second, destinationX = 6, destinationY = 7))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, first)
+                assertMapAndExpose(input, second)
+
+                val leave = input.readExactly(32)
+                assertCrossingEvent(
+                    leave,
+                    type = 8,
+                    detail = XNotifyDetail.Nonlinear,
+                    eventWindow = first,
+                    rootX = 46,
+                    rootY = 17,
+                    eventX = 36,
+                    eventY = 7,
+                )
+                val enter = input.readExactly(32)
+                assertCrossingEvent(
+                    enter,
+                    type = 7,
+                    detail = XNotifyDetail.Nonlinear,
+                    eventWindow = second,
+                    rootX = 46,
+                    rootY = 17,
+                    eventX = 6,
+                    eventY = 7,
+                )
+                val queryPointer = input.readExactly(32)
+                assertEquals(1, queryPointer[0].toInt() and 0xff)
+                assertEquals(9, u16le(queryPointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `WarpPointer emits crossing events on selected ancestor path windows`() {
+        XServer(ServerOptions(port = 0, width = 140, height = 100)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val firstParent = WindowId
+                val firstChild = WindowId + 1
+                val secondParent = WindowId + 2
+                val secondChild = WindowId + 3
+                out.write(createWindowRequest(firstParent, x = 10, y = 10, width = 40, height = 40))
+                out.write(createWindowRequest(firstChild, parent = firstParent, x = 5, y = 5, width = 10, height = 10))
+                out.write(createWindowRequest(secondParent, x = 70, y = 10, width = 40, height = 40))
+                out.write(createWindowRequest(secondChild, parent = secondParent, x = 6, y = 6, width = 10, height = 10))
+                out.write(mapWindowRequest(firstParent))
+                out.write(mapWindowRequest(firstChild))
+                out.write(mapWindowRequest(secondParent))
+                out.write(mapWindowRequest(secondChild))
+                out.write(warpPointerRequest(destinationWindow = firstChild, destinationX = 2, destinationY = 3))
+                out.write(changeWindowEventMaskRequest(firstParent, XEventMasks.LeaveWindow))
+                out.write(changeWindowEventMaskRequest(secondParent, XEventMasks.EnterWindow))
+                out.write(warpPointerRequest(destinationWindow = secondChild, destinationX = 1, destinationY = 2))
+                out.flush()
+
+                assertMapAndExpose(input, firstParent)
+                assertMapAndExpose(input, firstChild)
+                assertMapAndExpose(input, secondParent)
+                assertMapAndExpose(input, secondChild)
+
+                val leaveParent = input.readExactly(32)
+                assertCrossingEvent(
+                    leaveParent,
+                    type = 8,
+                    detail = XNotifyDetail.NonlinearVirtual,
+                    eventWindow = firstParent,
+                    childWindow = firstChild,
+                    rootX = 77,
+                    rootY = 18,
+                    eventX = 67,
+                    eventY = 8,
+                )
+                val enterParent = input.readExactly(32)
+                assertCrossingEvent(
+                    enterParent,
+                    type = 7,
+                    detail = XNotifyDetail.NonlinearVirtual,
+                    eventWindow = secondParent,
+                    childWindow = secondChild,
+                    rootX = 77,
+                    rootY = 18,
+                    eventX = 7,
+                    eventY = 8,
+                )
             }
             server.close()
             serverThread.join(1_000)
@@ -19332,6 +19452,33 @@ class XCoreDrawingProtocolTest {
     private fun assertButtonEvent(event: ByteArray, type: Int, detail: Int) {
         assertEquals(type, event[0].toInt() and 0xff)
         assertEquals(detail, event[1].toInt() and 0xff)
+    }
+
+    private fun assertCrossingEvent(
+        event: ByteArray,
+        type: Int,
+        detail: Int,
+        eventWindow: Int,
+        childWindow: Int = 0,
+        rootX: Int,
+        rootY: Int,
+        eventX: Int,
+        eventY: Int,
+    ) {
+        assertEquals(type, event[0].toInt() and 0xff)
+        assertEquals(detail, event[1].toInt() and 0xff)
+        assertEquals(X11Ids.RootWindow, u32le(event, 8))
+        assertEquals(eventWindow, u32le(event, 12))
+        assertEquals(childWindow, u32le(event, 16))
+        assertEquals(rootX, u16le(event, 20))
+        assertEquals(rootY, u16le(event, 22))
+        assertEquals(eventX, u16le(event, 24))
+        assertEquals(eventY, u16le(event, 26))
+        assertEquals(0, u16le(event, 28))
+        assertEquals(XNotifyMode.Normal, event[30].toInt() and 0xff)
+        val sameScreenAndFocus = event[31].toInt() and 0xff
+        assertEquals(0x02, sameScreenAndFocus and 0x02)
+        assertEquals(0, sameScreenAndFocus and 0xfc)
     }
 
     private fun assertFocusEvent(event: ByteArray, type: Int, sequence: Int, window: Int, detail: Int = 3, mode: Int = 0) {

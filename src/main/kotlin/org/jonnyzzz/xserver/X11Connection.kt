@@ -9459,6 +9459,25 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendCrossingEvent(event: XCrossingEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = event.type.code.toByte()
+        bytes[1] = event.detail.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.time)
+        byteOrder.put32(bytes, 8, X11Ids.RootWindow)
+        byteOrder.put32(bytes, 12, event.eventWindowId)
+        byteOrder.put32(bytes, 16, event.childWindowId)
+        byteOrder.put16(bytes, 20, event.rootX)
+        byteOrder.put16(bytes, 22, event.rootY)
+        byteOrder.put16(bytes, 24, event.eventX)
+        byteOrder.put16(bytes, 26, event.eventY)
+        byteOrder.put16(bytes, 28, event.state)
+        bytes[30] = XNotifyMode.Normal.toByte()
+        bytes[31] = ((if (event.focus) 0x01 else 0x00) or 0x02).toByte()
+        write(bytes)
+    }
+
     override fun sendKeyEvent(event: XKeyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = event.type.code.toByte()

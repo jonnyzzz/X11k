@@ -163,6 +163,7 @@ internal interface XEventSink {
     fun isKilled(): Boolean = false
     fun killClient() = Unit
     fun sendPointerEvent(event: XPointerEvent)
+    fun sendCrossingEvent(event: XCrossingEvent)
     fun sendKeyEvent(event: XKeyEvent)
     fun sendMappingNotifyEvent(event: XMappingNotifyEvent)
     fun sendExposeEvent(event: XExposeEvent)
@@ -209,6 +210,25 @@ internal enum class XPointerEventType(val code: Int) {
     ButtonPress(4),
     ButtonRelease(5),
     MotionNotify(6),
+}
+
+internal data class XCrossingEvent(
+    val type: XCrossingEventType,
+    val detail: Int,
+    val focus: Boolean,
+    val rootX: Int,
+    val rootY: Int,
+    val eventWindowId: Int,
+    val childWindowId: Int,
+    val eventX: Int,
+    val eventY: Int,
+    val state: Int,
+    val time: Int,
+)
+
+internal enum class XCrossingEventType(val code: Int) {
+    EnterNotify(7),
+    LeaveNotify(8),
 }
 
 internal data class XPointerDispatch(
@@ -589,6 +609,8 @@ internal object XEventMasks {
     const val KeyRelease = 1 shl 1
     const val ButtonPress = 1 shl 2
     const val ButtonRelease = 1 shl 3
+    const val EnterWindow = 1 shl 4
+    const val LeaveWindow = 1 shl 5
     const val PointerMotion = 1 shl 6
     const val Exposure = 1 shl 15
     const val StructureNotify = 1 shl 17
@@ -610,4 +632,21 @@ internal object XEventMasks {
             XKeyEventType.KeyPress -> KeyPress
             XKeyEventType.KeyRelease -> KeyRelease
         }
+}
+
+internal object XNotifyDetail {
+    const val Ancestor = 0
+    const val Virtual = 1
+    const val Inferior = 2
+    const val Nonlinear = 3
+    const val NonlinearVirtual = 4
+    const val Pointer = 5
+    const val PointerRoot = 6
+    const val None = 7
+}
+
+internal object XNotifyMode {
+    const val Normal = 0
+    const val Grab = 1
+    const val Ungrab = 2
 }
