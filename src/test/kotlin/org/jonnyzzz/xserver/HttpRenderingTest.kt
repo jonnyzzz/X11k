@@ -327,6 +327,40 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `screen svg presents matching backing pixmap painted after direct window framebuffer`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                out.write(createWindowRequest(0x0020_0001, 10, 20, 64, 64))
+                out.write(changePropertyRequest(0x0020_0001, "late backing pixmap target"))
+                out.write(createGcRequest(0x0020_1001, 0x0020_0001))
+                out.write(putImageRequest(0x0020_0001, 0x0020_1001))
+                out.write(createPixmapRequest(0x0020_0100, width = 64, height = 64))
+                out.write(createGcRequest(0x0020_1002, 0x0020_0100))
+                out.write(putImageRequest(0x0020_0100, 0x0020_1002))
+                out.write(mapWindowRequest(0x0020_0001))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "late backing pixmap target")
+                assertContains(svg, """class="framebuffer-image backing-pixmap-image"""")
+                assertContains(svg, """data-window-id="0x200001"""")
+                assertContains(svg, """data-pixmap-id="0x200100"""")
+                assertContains(svg, """data-source="matching-pixmap"""")
+                assertFalse(svg.contains("""data-source="window-framebuffer""""))
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `screen svg presents retained render picture surface after FreePixmap`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

@@ -850,10 +850,14 @@ internal object SvgScreenRenderer {
     }
 
     private fun displaySurface(snapshot: XScreenSnapshot, window: XWindowSnapshot): XDisplaySurface? {
-        val pixmapSurface = matchingPixmapCandidates(snapshot, window)
+        val pixmap = matchingPixmapCandidates(snapshot, window)
             .firstOrNull { it.width == window.width && it.height == window.height }
-            ?.let(::pixmapDisplaySurface)
-        if (pixmapSurface != null && !snapshot.hasDirectFramebufferPaint(window.id)) return pixmapSurface
+        val pixmapSurface = pixmap?.let(::pixmapDisplaySurface)
+        if (pixmapSurface != null) {
+            val windowPaintIndex = snapshot.latestFramebufferPaintIndex(window.id)
+            val pixmapPaintIndex = snapshot.latestFramebufferPaintIndex(pixmap.id)
+            if (windowPaintIndex < 0 || pixmapPaintIndex > windowPaintIndex) return pixmapSurface
+        }
         window.framebufferDataUri?.let {
             return XDisplaySurface(
                 href = it,
@@ -876,9 +880,9 @@ internal object SvgScreenRenderer {
     }
 
     // Exact-size pixmap matching is a presentation heuristic for IDE backing stores;
-    // any recent direct framebuffer drawing keeps the real window framebuffer authoritative.
-    private fun XScreenSnapshot.hasDirectFramebufferPaint(windowId: Int): Boolean =
-        drawings.any { it.drawableId == windowId && it.framebufferBacked }
+    // the most recently framebuffer-painted candidate stays authoritative.
+    private fun XScreenSnapshot.latestFramebufferPaintIndex(drawableId: Int): Int =
+        drawings.indexOfLast { it.drawableId == drawableId && it.framebufferBacked }
 
     private fun renderFilledRectangles(
         builder: XmlDom,
