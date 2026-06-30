@@ -4521,6 +4521,7 @@ internal class X11State(
         val sourceDrawableId = source.drawableId ?: return null
         val sourceFramebuffer = source.drawableFramebuffer() ?: return null
         if (source.transform != IdentityTransform || source.repeat != XRender.RepeatNone) {
+            val sourcePixelAt = source.sourcePixelSampler(snapshotDrawableId = destinationDrawableId) ?: return null
             return destinationFramebuffer.compositeGenerated(
                 sourceX = sourceX,
                 sourceY = sourceY,
@@ -4536,7 +4537,7 @@ internal class X11State(
                 maskY = maskY,
                 maskAlphaAt = maskAlphaAt,
             ) { x, y ->
-                source.sampleDrawablePixel(sourceFramebuffer, x + 0.5, y + 0.5, source.filterName) ?: 0
+                sourcePixelAt(x, y)
             }
         }
         val sourceSnapshot = sourceFramebuffer.snapshot().takeIf { sourceDrawableId == destinationDrawableId }
