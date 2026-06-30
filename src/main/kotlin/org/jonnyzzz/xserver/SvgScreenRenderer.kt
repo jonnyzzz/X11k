@@ -181,10 +181,24 @@ internal object SvgScreenRenderer {
                     if (dashIndex > 0) append(',')
                     append(dash)
                 }
-                append("""],"rectangles":[""")
+                append("""],"fillStyle":${drawing.fillStyle},"fillRule":${drawing.fillRule},"tilePixmap":""")
+                drawing.tilePixmapId?.let { append("\"0x${it.toUInt().toString(16)}\"") } ?: append("null")
+                append(""","stipplePixmap":""")
+                drawing.stipplePixmapId?.let { append("\"0x${it.toUInt().toString(16)}\"") } ?: append("null")
+                append(""","tileStippleOrigin":[${drawing.tileStippleXOrigin},${drawing.tileStippleYOrigin}],"arcMode":${drawing.arcMode},"rectangles":[""")
                 drawing.rectangles.forEachIndexed { rectangleIndex, rectangle ->
                     if (rectangleIndex > 0) append(',')
                     append("""{"x":${rectangle.x},"y":${rectangle.y},"width":${rectangle.width},"height":${rectangle.height}}""")
+                }
+                append("""],"points":[""")
+                drawing.points.forEachIndexed { pointIndex, point ->
+                    if (pointIndex > 0) append(',')
+                    append("""{"x":${point.x},"y":${point.y}}""")
+                }
+                append("""],"arcs":[""")
+                drawing.arcs.forEachIndexed { arcIndex, arc ->
+                    if (arcIndex > 0) append(',')
+                    append("""{"x":${arc.x},"y":${arc.y},"width":${arc.width},"height":${arc.height},"angle1":${arc.angle1},"angle2":${arc.angle2}}""")
                 }
                 append("""]}""")
             }

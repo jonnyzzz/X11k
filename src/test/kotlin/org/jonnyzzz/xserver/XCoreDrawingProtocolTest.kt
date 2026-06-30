@@ -3770,6 +3770,18 @@ class XCoreDrawingProtocolTest {
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, 14, 10, 3))
                 assertEquals(0xff12_3456.toInt(), pixelAt(image, 14, 11, 3))
                 assertEquals(0xffff_ffff.toInt(), pixelAt(image, 14, 13, 3))
+
+                val stateJson = httpGet(server.localPort, "/state.json")
+                val fillPolyJson = Regex("""\{"drawable":"0x${WindowId.toUInt().toString(16)}","kind":"FillPoly".*?\}""")
+                    .find(stateJson)?.value.orEmpty()
+                val fillArcJson = Regex("""\{"drawable":"0x${WindowId.toUInt().toString(16)}","kind":"FillArc".*?\}""")
+                    .find(stateJson)?.value.orEmpty()
+                assertContains(fillPolyJson, """"fillStyle":1,"fillRule":0,"tilePixmap":"0x${PixmapId.toUInt().toString(16)}"""")
+                assertContains(fillPolyJson, """"tileStippleOrigin":[0,0],"arcMode":1""")
+                assertContains(stateJson, """"points":[{"x":1,"y":1},{"x":5,"y":1},{"x":5,"y":4},{"x":1,"y":4}]""")
+                assertContains(fillArcJson, """"fillStyle":1,"fillRule":0,"tilePixmap":"0x${PixmapId.toUInt().toString(16)}"""")
+                assertContains(fillArcJson, """"tileStippleOrigin":[0,0],"arcMode":1""")
+                assertContains(stateJson, """"arcs":[{"x":8,"y":1,"width":5,"height":5,"angle1":0,"angle2":23040}]""")
             }
             server.close()
             serverThread.join(1_000)
@@ -3804,6 +3816,68 @@ class XCoreDrawingProtocolTest {
                 assertEquals(0xffff_0000.toInt(), pixelAt(image, 7, 5, 1))
                 assertEquals(0xffff_0000.toInt(), pixelAt(image, 7, 4, 2))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, 7, 5, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `drawing command state retains non-default GC fill context for core primitives`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val stipplePixmap = PixmapId + 1
+                val bitmapGc = GcId + 1
+                val solidGc = GcId + 2
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2))
+                out.write(createPixmapRequest(stipplePixmap, width = 2, height = 2, depth = 1))
+                out.write(createGcRequest(GcId, foreground = Red, background = Blue))
+                out.write(createGcRequest(bitmapGc, foreground = 1, background = 0, drawable = stipplePixmap))
+                out.write(createGcRequest(solidGc, foreground = Green))
+                out.write(
+                    putImage24PixelsRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 2,
+                        pixels = listOf(Red, Green, Blue, 0x0012_3456),
+                    ),
+                )
+                out.write(putImageBitmapRequest(stipplePixmap, gc = bitmapGc, width = 2, height = 2, bits = listOf(true, false, false, true)))
+                out.write(changeGcTiledFillRequest(GcId, tilePixmap = PixmapId, xOrigin = 1, yOrigin = 2))
+                out.write(changeGcFillRuleRequest(GcId, fillRule = WindingRule))
+                out.write(changeGcArcModeRequest(GcId, arcMode = ArcChord))
+                out.write(polyLineRequest(WindowId, GcId, points = listOf(1 to 1, 5 to 1)))
+                out.write(polySegmentRequest(WindowId, GcId, segments = listOf((1 to 3) to (5 to 3))))
+                out.write(polyRectangleRequest(WindowId, GcId, rectangles = listOf(XRectangleCommand(1, 5, 4, 3))))
+                out.write(polyArcRequest(WindowId, GcId, filled = false, arcs = listOf(XArcCommand(8, 1, 5, 5, 0, 180 * 64))))
+                out.write(fillPolyRequest(WindowId, GcId, coordMode = 0, points = listOf(10 to 1, 14 to 1, 14 to 4, 10 to 4)))
+                out.write(polyArcRequest(WindowId, GcId, filled = true, arcs = listOf(XArcCommand(16, 1, 5, 5, 0, FullCircleAngle))))
+                out.write(changeGcStippledFillRequest(GcId, fillStyle = FillOpaqueStippled, stipplePixmap = stipplePixmap, xOrigin = 3, yOrigin = 4))
+                out.write(polyFillRectangleRequest(WindowId, GcId, rectangles = listOf(XRectangleCommand(22, 1, 2, 2))))
+                out.write(polyFillRectangleRequest(WindowId, solidGc, rectangles = listOf(XRectangleCommand(26, 1, 2, 2))))
+                out.flush()
+
+                waitForStateContains(server.localPort, """"drawings":10""")
+                val stateJson = httpGet(server.localPort, "/state.json")
+                val tiledContext =
+                    """"fillStyle":1,"fillRule":1,"tilePixmap":"0x${PixmapId.toUInt().toString(16)}","stipplePixmap":null,"tileStippleOrigin":[1,2],"arcMode":0"""
+                val stippledContext =
+                    """"fillStyle":3,"fillRule":1,"tilePixmap":"0x${PixmapId.toUInt().toString(16)}","stipplePixmap":"0x${stipplePixmap.toUInt().toString(16)}","tileStippleOrigin":[3,4],"arcMode":0"""
+                val solidContext =
+                    """"fillStyle":0,"fillRule":0,"tilePixmap":null,"stipplePixmap":null,"tileStippleOrigin":[0,0],"arcMode":1"""
+                assertEquals(6, Regex(Regex.escape(tiledContext)).findAll(stateJson).count())
+                assertContains(stateJson, stippledContext)
+                assertContains(stateJson, solidContext)
+                assertContains(stateJson, """"kind":"Segment"""")
+                assertContains(stateJson, """"kind":"Rectangle"""")
+                assertContains(stateJson, """"kind":"Arc"""")
+                assertContains(stateJson, """"points":[{"x":1,"y":3},{"x":5,"y":3}]""")
+                assertContains(stateJson, """"rectangles":[{"x":1,"y":5,"width":4,"height":3}]""")
+                assertContains(stateJson, """"arcs":[{"x":8,"y":1,"width":5,"height":5,"angle1":0,"angle2":11520}]""")
             }
             server.close()
             serverThread.join(1_000)
@@ -4046,6 +4120,14 @@ class XCoreDrawingProtocolTest {
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, 8, 2, 1))
                 assertEquals(0xffff_ffff.toInt(), pixelAt(image, 8, 3, 1))
                 assertEquals(0, countPixels(image, 8, 4, 0xffaa_00aa.toInt()))
+
+                val stateJson = httpGet(server.localPort, "/state.json")
+                val lineJson = Regex("""\{"drawable":"0x${WindowId.toUInt().toString(16)}","kind":"Line".*?\}""")
+                    .find(stateJson)?.value.orEmpty()
+                assertContains(lineJson, """"lineStyle":1""")
+                assertContains(lineJson, """"fillStyle":1,"fillRule":0,"tilePixmap":"0x${PixmapId.toUInt().toString(16)}"""")
+                assertContains(lineJson, """"tileStippleOrigin":[0,0],"arcMode":1""")
+                assertContains(stateJson, """"points":[{"x":1,"y":1},{"x":5,"y":1}]""")
             }
             server.close()
             serverThread.join(1_000)
