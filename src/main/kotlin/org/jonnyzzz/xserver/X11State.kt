@@ -558,7 +558,7 @@ internal class X11State(
         val framebuffer = source.drawableFramebuffer() ?: return null
         if (framebuffer.width <= 0 || framebuffer.height <= 0) return null
         if (framebuffer.width.toLong() * framebuffer.height.toLong() > MaxCursorImagePixels) return null
-        val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0 || source.hasPictureClip()) {
+        val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0 || source.hasPictureClip() || source.hasSourceSubwindowClip()) {
             source.sourcePixelSamplerOptional()
         } else {
             source.sourcePixelSampler()?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
@@ -3521,7 +3521,7 @@ internal class X11State(
     @Synchronized
     fun addGlyphsFromPicture(glyphSetId: Int, source: XPicture, glyphs: List<XPictureGlyph>) {
         val glyphSet = glyphSets[glyphSetId] ?: return
-        val sourcePixelAt = if (source.alphaMap != 0 || source.hasPictureClip()) {
+        val sourcePixelAt = if (source.alphaMap != 0 || source.hasPictureClip() || source.hasSourceSubwindowClip()) {
             source.sourcePixelSamplerOptional()
         } else {
             source.sourcePixelSampler()?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
@@ -3708,7 +3708,7 @@ internal class X11State(
         if (maskPixelAt != null) {
             val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0) {
                 source.compositeSourcePixelSamplerOptional(destinationDrawableId)
-            } else if (source.hasPictureClip()) {
+            } else if (source.hasPictureClip() || source.hasSourceSubwindowClip()) {
                 source.sourcePixelSamplerOptional(snapshotDrawableId = destinationDrawableId)
             } else {
                 source.sourcePixelSampler(snapshotDrawableId = destinationDrawableId)?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
@@ -3750,7 +3750,7 @@ internal class X11State(
                 sourcePixelAt(x, y)
             }
         }
-        if (source.hasPictureClip()) {
+        if (source.hasPictureClip() || source.hasSourceSubwindowClip()) {
             val sourcePixelAt = source.sourcePixelSamplerOptional(snapshotDrawableId = destinationDrawableId) ?: return null
             return destinationFramebuffer.compositeGeneratedOptional(
                 sourceX = sourceX,
@@ -4652,6 +4652,7 @@ internal class X11State(
         val sourceDrawableId = source.drawableId ?: return null
         val sourceFramebuffer = source.drawableFramebuffer() ?: return null
         val sourceSnapshot = if (sourceDrawableId == snapshotDrawableId) sourceFramebuffer.snapshot() else null
+        val sourceSubwindowClip = source.sourceSubwindowClip()
         return { x, y ->
             if (source.insidePictureClip(x, y)) {
                 if (source.alphaMap == 0) {
@@ -4659,6 +4660,8 @@ internal class X11State(
                     val sourceWidth = sourceSnapshot?.width ?: sourceFramebuffer.width
                     val sourceHeight = sourceSnapshot?.height ?: sourceFramebuffer.height
                     if (source.scaleClipsBaseDrawable(sample.first, sample.second, sourceWidth, sourceHeight)) {
+                        null
+                    } else if (!source.insideSourceSubwindowClip(sourceSubwindowClip, sample.first, sample.second, sourceWidth, sourceHeight)) {
                         null
                     } else {
                         val pixel = if (sourceSnapshot != null) {
@@ -4671,9 +4674,9 @@ internal class X11State(
                     }
                 } else {
                     val pixel = if (sourceSnapshot != null) {
-                        source.sampleDrawablePixel(sourceSnapshot, x + 0.5, y + 0.5, source.filterName)
+                        source.sampleDrawablePixel(sourceSnapshot, x + 0.5, y + 0.5, source.filterName, sourceSubwindowClip)
                     } else {
-                        source.sampleDrawablePixel(sourceFramebuffer, x + 0.5, y + 0.5, source.filterName)
+                        source.sampleDrawablePixel(sourceFramebuffer, x + 0.5, y + 0.5, source.filterName, sourceSubwindowClip)
                     }
                     pixel
                         ?.let { scaledPixel(it, colorScale, alphaScale) }
@@ -4720,11 +4723,12 @@ internal class X11State(
                 }
             }
         }
-        if (transform == IdentityTransform && repeat == XRender.RepeatNone && !hasPictureClip() && alphaMap == 0) return null
+        val sourceSubwindowClip = sourceSubwindowClip()
+        if (transform == IdentityTransform && repeat == XRender.RepeatNone && !hasPictureClip() && alphaMap == 0 && sourceSubwindowClip == null) return null
         val framebuffer = drawableFramebuffer() ?: return null
         return { x, y ->
             if (insidePictureClip(x, y)) {
-                sampleMaskDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName)?.let { (it ushr 24) and 0xff }
+                sampleMaskDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName, sourceSubwindowClip)?.let { (it ushr 24) and 0xff }
             } else {
                 0
             }
@@ -4737,7 +4741,8 @@ internal class X11State(
             return { x, y -> if (insidePictureClip(x, y)) withAlphaMap(sampler(x, y), x + 0.5, y + 0.5) else 0 }
         }
         val framebuffer = drawableFramebuffer() ?: return null
-        return { x, y -> if (insidePictureClip(x, y)) sampleMaskDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName) else 0 }
+        val sourceSubwindowClip = sourceSubwindowClip()
+        return { x, y -> if (insidePictureClip(x, y)) sampleMaskDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName, sourceSubwindowClip) else 0 }
     }
 
     private fun XFramebuffer.samplePixelAt(x: Double, y: Double, repeat: Int, filterName: String?): Int? {
@@ -4770,24 +4775,45 @@ internal class X11State(
         return snapshotPixelAt(sampleX, sampleY)
     }
 
-    private fun XPicture.sampleDrawablePixel(framebuffer: XFramebuffer, x: Double, y: Double, effectiveFilterName: String?): Int? {
+    private fun XPicture.sampleDrawablePixel(
+        framebuffer: XFramebuffer,
+        x: Double,
+        y: Double,
+        effectiveFilterName: String?,
+        sourceSubwindowClip: ((Int, Int) -> Boolean)? = null,
+    ): Int? {
         val sample = transformedPoint(x, y, transform)
+        if (!insideSourceSubwindowClip(sourceSubwindowClip, sample.first, sample.second, framebuffer.width, framebuffer.height)) return null
         if (alphaMapClipsBaseDrawable(sample.first, sample.second, framebuffer.width, framebuffer.height)) return null
         val pixel = framebuffer.samplePixelAt(sample.first, sample.second, repeat, effectiveFilterName)
             ?: return if (alphaMap == 0) 0 else null
         return withAlphaMap(pixel, sample.first, sample.second)
     }
 
-    private fun XPicture.sampleDrawablePixel(snapshot: XImagePixels, x: Double, y: Double, effectiveFilterName: String?): Int? {
+    private fun XPicture.sampleDrawablePixel(
+        snapshot: XImagePixels,
+        x: Double,
+        y: Double,
+        effectiveFilterName: String?,
+        sourceSubwindowClip: ((Int, Int) -> Boolean)? = null,
+    ): Int? {
         val sample = transformedPoint(x, y, transform)
+        if (!insideSourceSubwindowClip(sourceSubwindowClip, sample.first, sample.second, snapshot.width, snapshot.height)) return null
         if (alphaMapClipsBaseDrawable(sample.first, sample.second, snapshot.width, snapshot.height)) return null
         val pixel = snapshot.samplePixelAt(sample.first, sample.second, repeat, effectiveFilterName)
             ?: return if (alphaMap == 0) 0 else null
         return withAlphaMap(pixel, sample.first, sample.second)
     }
 
-    private fun XPicture.sampleMaskDrawablePixel(framebuffer: XFramebuffer, x: Double, y: Double, effectiveFilterName: String?): Int? {
+    private fun XPicture.sampleMaskDrawablePixel(
+        framebuffer: XFramebuffer,
+        x: Double,
+        y: Double,
+        effectiveFilterName: String?,
+        sourceSubwindowClip: ((Int, Int) -> Boolean)? = null,
+    ): Int? {
         val sample = transformedPoint(x, y, transform)
+        if (!insideSourceSubwindowClip(sourceSubwindowClip, sample.first, sample.second, framebuffer.width, framebuffer.height)) return null
         if (alphaMapClipsBaseDrawable(sample.first, sample.second, framebuffer.width, framebuffer.height)) return null
         val pixel = framebuffer.samplePixelAt(sample.first, sample.second, repeat, effectiveFilterName)
             ?: return if (alphaMap == 0) 0 else null
@@ -4928,11 +4954,12 @@ internal class X11State(
         gradientSampler()?.let { sampler -> return { x, y -> withAlphaMap(sampler(x, y), x + 0.5, y + 0.5) ?: 0 } }
         val sourceDrawableId = drawableId ?: return null
         val framebuffer = drawableFramebuffer() ?: return null
+        val sourceSubwindowClip = sourceSubwindowClip()
         val snapshot = if (sourceDrawableId == snapshotDrawableId) framebuffer.snapshot() else null
         if (snapshot != null) {
-            return { x, y -> sampleDrawablePixel(snapshot, x + 0.5, y + 0.5, filterName) ?: 0 }
+            return { x, y -> sampleDrawablePixel(snapshot, x + 0.5, y + 0.5, filterName, sourceSubwindowClip) ?: 0 }
         }
-        return { x, y -> sampleDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName) ?: 0 }
+        return { x, y -> sampleDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName, sourceSubwindowClip) ?: 0 }
     }
 
     private fun XPicture.sourcePixelSamplerOptional(snapshotDrawableId: Int? = null): ((x: Int, y: Int) -> Int?)? {
@@ -4942,11 +4969,12 @@ internal class X11State(
         }
         val sourceDrawableId = drawableId ?: return null
         val framebuffer = drawableFramebuffer() ?: return null
+        val sourceSubwindowClip = sourceSubwindowClip()
         val snapshot = if (sourceDrawableId == snapshotDrawableId) framebuffer.snapshot() else null
         return if (snapshot != null) {
-            { x, y -> if (insidePictureClip(x, y)) sampleDrawablePixel(snapshot, x + 0.5, y + 0.5, filterName) else null }
+            { x, y -> if (insidePictureClip(x, y)) sampleDrawablePixel(snapshot, x + 0.5, y + 0.5, filterName, sourceSubwindowClip) else null }
         } else {
-            { x, y -> if (insidePictureClip(x, y)) sampleDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName) else null }
+            { x, y -> if (insidePictureClip(x, y)) sampleDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName, sourceSubwindowClip) else null }
         }
     }
 
@@ -4957,17 +4985,18 @@ internal class X11State(
         }
         val sourceDrawableId = drawableId ?: return null
         val framebuffer = drawableFramebuffer() ?: return null
+        val sourceSubwindowClip = sourceSubwindowClip()
         val snapshot = if (sourceDrawableId == destinationDrawableId) framebuffer.snapshot() else null
         if (snapshot != null) {
             return { x, y ->
                 if (insidePictureClip(x, y)) {
-                    sampleDrawablePixel(snapshot, x + 0.5, y + 0.5, filterName)
+                    sampleDrawablePixel(snapshot, x + 0.5, y + 0.5, filterName, sourceSubwindowClip)
                 } else {
                     null
                 }
             }
         }
-        return { x, y -> if (insidePictureClip(x, y)) sampleDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName) else null }
+        return { x, y -> if (insidePictureClip(x, y)) sampleDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName, sourceSubwindowClip) else null }
     }
 
     private fun XPicture.drawableFramebuffer(): XFramebuffer? {
@@ -4994,6 +5023,34 @@ internal class X11State(
 
     private fun XPicture.hasPictureClip(): Boolean =
         clipRectangles != null || clipMask != 0
+
+    private fun XPicture.hasSourceSubwindowClip(): Boolean =
+        sourceSubwindowClip() != null
+
+    private fun XPicture.sourceSubwindowClip(): ((Int, Int) -> Boolean)? {
+        if (subwindowMode == XRender.SubwindowModeIncludeInferiors) return null
+        val sourceDrawableId = drawableId ?: return null
+        val window = windows[sourceDrawableId] ?: return null
+        val childClips = mappedChildClipRectangles(window)
+        if (childClips.isEmpty()) return null
+        return { x: Int, y: Int -> childClips.none { rectangle -> rectangle.contains(x, y) } }
+    }
+
+    private fun XPicture.insideSourceSubwindowClip(
+        sourceSubwindowClip: ((Int, Int) -> Boolean)?,
+        x: Double,
+        y: Double,
+        width: Int,
+        height: Int,
+    ): Boolean {
+        if (sourceSubwindowClip == null) return true
+        val sampleX = repeatedPixelCoordinate(x, width, repeat) ?: return true
+        val sampleY = repeatedPixelCoordinate(y, height, repeat) ?: return true
+        return sourceSubwindowClip(sampleX, sampleY)
+    }
+
+    private fun XRectangleCommand.contains(x: Int, y: Int): Boolean =
+        x >= this.x && y >= this.y && x < this.x + width && y < this.y + height
 
     private fun XPicture.clipMaskPredicate(): XClipMask? {
         val maskId = clipMask
@@ -5092,11 +5149,12 @@ internal class X11State(
         val sourceDrawableId = drawableId ?: return null
         val framebuffer = drawableFramebuffer() ?: return null
         val effectiveFilterName = filterNameOverride ?: filterName
+        val sourceSubwindowClip = sourceSubwindowClip()
         val snapshot = if (sourceDrawableId == snapshotDrawableId) framebuffer.snapshot() else null
         return if (snapshot != null) {
-            { x, y -> if (insidePictureClip(x, y)) sampleDrawablePixel(snapshot, x, y, effectiveFilterName) else null }
+            { x, y -> if (insidePictureClip(x, y)) sampleDrawablePixel(snapshot, x, y, effectiveFilterName, sourceSubwindowClip) else null }
         } else {
-            { x, y -> if (insidePictureClip(x, y)) sampleDrawablePixel(framebuffer, x, y, effectiveFilterName) else null }
+            { x, y -> if (insidePictureClip(x, y)) sampleDrawablePixel(framebuffer, x, y, effectiveFilterName, sourceSubwindowClip) else null }
         }
     }
 
@@ -6132,7 +6190,7 @@ internal class X11State(
         val framebuffer = destination.drawableFramebuffer() ?: return false
         val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0) {
             source.compositeSourcePixelSamplerOptional(drawableId)
-        } else if (source.hasPictureClip()) {
+        } else if (source.hasPictureClip() || source.hasSourceSubwindowClip()) {
             source.sourcePixelSamplerOptional(snapshotDrawableId = drawableId)
         } else {
             source.sourcePixelSampler(snapshotDrawableId = drawableId)?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
@@ -6179,7 +6237,7 @@ internal class X11State(
         val framebuffer = destination.drawableFramebuffer() ?: return false
         val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0) {
             source.compositeSourcePixelSamplerOptional(drawableId)
-        } else if (source.hasPictureClip()) {
+        } else if (source.hasPictureClip() || source.hasSourceSubwindowClip()) {
             source.sourcePixelSamplerOptional(snapshotDrawableId = drawableId)
         } else {
             source.sourcePixelSampler(snapshotDrawableId = drawableId)?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
@@ -6271,7 +6329,7 @@ internal class X11State(
         val destinationClipMask = destination.clipMaskPredicate()
         val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0) {
             source.compositeSourcePixelSamplerOptional(destinationDrawableId)
-        } else if (source.hasPictureClip()) {
+        } else if (source.hasPictureClip() || source.hasSourceSubwindowClip()) {
             source.sourcePixelSamplerOptional(snapshotDrawableId = destinationDrawableId)
         } else {
             source.sourcePixelSampler(snapshotDrawableId = destinationDrawableId)?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
@@ -6368,7 +6426,7 @@ internal class X11State(
         }
         val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0) {
             source.compositeSourcePixelSamplerOptional(destinationDrawableId)
-        } else if (source.hasPictureClip()) {
+        } else if (source.hasPictureClip() || source.hasSourceSubwindowClip()) {
             source.sourcePixelSamplerOptional(snapshotDrawableId = destinationDrawableId)
         } else {
             source.sourcePixelSampler(snapshotDrawableId = destinationDrawableId)?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
