@@ -2640,7 +2640,7 @@ internal class X11State(
         }
         fun matchingWindowIds(width: Int, height: Int): List<Int> =
             windowSnapshots
-                .filter { it.mapped && it.width == width && it.height == height }
+                .filter { it.mapped && it.width <= width && it.height <= height }
                 .map { it.id }
 
         val livePixmapSnapshots = pixmaps.values.map { pixmap ->

@@ -520,8 +520,10 @@ internal object SvgScreenRenderer {
     }
 
     private fun renderPrimaryPixmapPreview(builder: XmlDom, snapshot: XScreenSnapshot, window: XWindowSnapshot) {
-        val pixmap = matchingPixmapCandidates(snapshot, window)
-            .firstOrNull { it.width == window.width && it.height == window.height }
+        val candidates = matchingPixmapCandidates(snapshot, window)
+        val pixmap = candidates
+            .firstOrNull { window.id in it.matchingWindowIds }
+            ?: candidates.firstOrNull()
             ?: return
         builder.element("section", "class" to "primary-surface") {
             element("header") {
@@ -565,7 +567,15 @@ internal object SvgScreenRenderer {
                     pixmap.matchingWindowIds.any { it in subtreeIds }
             }
             .sortedWith(
-                compareByDescending<XPixmapSnapshot> { it.width * it.height }
+                compareByDescending<XPixmapSnapshot> { window.id in it.matchingWindowIds }
+                    .thenByDescending { it.width == window.width && it.height == window.height }
+                    .thenBy { pixmap ->
+                        if (window.id in pixmap.matchingWindowIds) {
+                            pixmap.width.toLong() * pixmap.height.toLong() - window.width.toLong() * window.height.toLong()
+                        } else {
+                            Long.MAX_VALUE
+                        }
+                    }
                     // If the bounded drawing log no longer contains a pixmap paint, fall back to stable id ordering.
                     .thenByDescending { recentPaintByDrawable[it.id] ?: -1 }
                     .thenBy { it.retained }
@@ -837,8 +847,8 @@ internal object SvgScreenRenderer {
                     "data-source" to surface.source,
                     "x" to window.x - originX,
                     "y" to window.y - originY,
-                    "width" to window.width,
-                    "height" to window.height,
+                    "width" to surface.width,
+                    "height" to surface.height,
                     "href" to surface.href,
                     "preserveAspectRatio" to "none",
                 )
@@ -848,7 +858,7 @@ internal object SvgScreenRenderer {
 
     private fun displaySurface(snapshot: XScreenSnapshot, window: XWindowSnapshot): XDisplaySurface? {
         val pixmap = matchingPixmapCandidates(snapshot, window)
-            .firstOrNull { it.width == window.width && it.height == window.height }
+            .firstOrNull { window.id in it.matchingWindowIds }
         val pixmapSurface = pixmap?.let(::pixmapDisplaySurface)
         if (pixmapSurface != null) {
             val windowPaintIndex = snapshot.latestFramebufferPaintIndex(window.id)
@@ -860,6 +870,8 @@ internal object SvgScreenRenderer {
                 href = it,
                 source = "window-framebuffer",
                 cssClass = "framebuffer-image",
+                width = window.width,
+                height = window.height,
             )
         }
         return pixmapSurface
@@ -871,13 +883,15 @@ internal object SvgScreenRenderer {
             href = href,
             source = if (pixmap.retained) "retained-picture" else "matching-pixmap",
             cssClass = "framebuffer-image backing-pixmap-image",
+            width = pixmap.width,
+            height = pixmap.height,
             pixmapIdHex = pixmap.idHex,
             pictureIdHex = pixmap.retainedPictureIdHex,
         )
     }
 
-    // Exact-size pixmap matching is a presentation heuristic for IDE backing stores;
-    // the most recently framebuffer-painted candidate stays authoritative.
+    // Covering pixmap matching is a presentation heuristic for IDE backing stores;
+    // exact-size candidates stay ahead of oversized surfaces, then recent paints win.
     private fun XScreenSnapshot.latestFramebufferPaintIndex(drawableId: Int): Int =
         drawings.indexOfLast { it.drawableId == drawableId && it.framebufferBacked }
 
@@ -1095,6 +1109,8 @@ internal object SvgScreenRenderer {
         val href: String,
         val source: String,
         val cssClass: String,
+        val width: Int,
+        val height: Int,
         val pixmapIdHex: String? = null,
         val pictureIdHex: String? = null,
     )
