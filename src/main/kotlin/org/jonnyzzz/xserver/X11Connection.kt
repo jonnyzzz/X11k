@@ -3504,7 +3504,14 @@ internal class X11Connection(
             )
             offset += 8
         }
-        state.putCursor(XCursor(id = id, kind = "animated", animationElements = elements))
+        state.putCursor(
+            XCursor(
+                id = id,
+                kind = "animated",
+                animationElements = elements,
+                image = elements.firstOrNull()?.let { state.cursorImage(it.cursorId) },
+            ),
+        )
         own(id)
     }
 

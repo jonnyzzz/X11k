@@ -2455,6 +2455,47 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `Render CreateAnimCursor exposes first frame image for XFIXES cursor image`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val pixmap = PixmapId + 0x470
+                val picture = pixmap + 1
+                val firstFrameCursor = picture + 1
+                val secondFrameCursor = firstFrameCursor + 1
+                val animatedCursor = secondFrameCursor + 1
+                val out = socket.getOutputStream()
+                out.write(createPixmapRequest(pixmap, width = 2, height = 1, depth = 32, drawable = X11Ids.RootWindow))
+                out.write(renderCreatePictureRequest(picture, drawable = pixmap, format = XRender.Argb32Format))
+                out.write(renderFillRectanglesRequest(picture, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff, x = 0, y = 0))
+                out.write(renderFillRectanglesRequest(picture, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff, x = 1, y = 0))
+                out.write(renderCreateCursorRequest(firstFrameCursor, picture, x = 1, y = 0))
+                out.write(renderFillRectanglesRequest(picture, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff, x = 0, y = 0))
+                out.write(renderFillRectanglesRequest(picture, red = 0xffff, green = 0xffff, blue = 0x0000, alpha = 0xffff, x = 1, y = 0))
+                out.write(renderCreateCursorRequest(secondFrameCursor, picture, x = 0, y = 0))
+                out.write(renderCreateAnimCursorRequest(animatedCursor, firstFrameCursor to 100, secondFrameCursor to 200))
+                out.write(changeWindowAttributesRawRequest(X11Ids.RootWindow, 1 shl 14, animatedCursor))
+                out.write(xfixesGetCursorImageRequest())
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(2, u32le(image, 4))
+                assertEquals(2, u16le(image, 12))
+                assertEquals(1, u16le(image, 14))
+                assertEquals(1, u16le(image, 16))
+                assertEquals(0, u16le(image, 18))
+                assertEquals(2, u32le(image, 20))
+                assertEquals(0xffff_0000.toInt(), u32le(image, 32))
+                assertEquals(0xff00_ff00.toInt(), u32le(image, 36))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `OpenFont rejects duplicate resource id without replacing existing resource`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -17568,6 +17609,17 @@ class XCoreDrawingProtocolTest {
 
     private fun renderCreateCursorRaw(body: ByteArray): ByteArray =
         renderRequest(27, body)
+
+    private fun renderCreateAnimCursorRequest(cursor: Int, vararg elements: Pair<Int, Int>): ByteArray {
+        val body = ByteArray(4 + elements.size * 8)
+        put32le(body, 0, cursor)
+        elements.forEachIndexed { index, (sourceCursor, delay) ->
+            val offset = 4 + index * 8
+            put32le(body, offset, sourceCursor)
+            put32le(body, offset + 4, delay)
+        }
+        return renderRequest(31, body)
+    }
 
     private fun readReply(input: InputStream, byteOrderByte: Int = 0x6c): ByteArray {
         val header = input.readExactly(32)
