@@ -23,7 +23,9 @@ Outcome:
 When available, run:
 
 ```bash
-https://run-agent.sh/run-agent.sh
+RUN_AGENT_TIMEOUT_SECONDS=1800 ./run-agent.sh claude /Users/jonnyzzz/Work/jonnyzzz-x /Users/jonnyzzz/Work/jonnyzzz-x/THE_PROMPT_v5_review.md
 ```
 
 or the local equivalent provided by the environment, and append findings here before changing the roadmap.
+
+Do not ask a review run-agent to spawn its own unbounded review quorum. Schedule each quorum member as a separate root-level run with an explicit timeout, then consolidate the results in the root agent. See `workflow/agent-reliability.md`.
