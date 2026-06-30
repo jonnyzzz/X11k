@@ -9344,6 +9344,40 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `MapWindow requester SubstructureRedirect selection does not self redirect`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+
+                val child = WindowId + 425
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(child))
+                out.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureRedirect))
+                out.write(queryPointerRequest())
+                out.flush()
+                assertEquals(3, u16le(readReply(input), 2))
+
+                out.write(mapWindowRequest(child))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.flush()
+
+                assertExpose(input.readExactly(32), child)
+                val children = treeChildren(readReply(input))
+                assertTrue(child in children)
+                val childJson = httpGet(server.localPort, "/state.json")
+                    .substringAfter(windowJsonId(child))
+                    .substringBefore("}")
+                assertContains(childJson, """"mapped":true""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `MapWindow override redirect bypasses parent SubstructureRedirect`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
