@@ -2640,7 +2640,7 @@ internal class X11State(
         }
         fun matchingWindowIds(width: Int, height: Int): List<Int> =
             windowSnapshots
-                .filter { it.mapped && it.width <= width && it.height <= height }
+                .filter { it.id != X11Ids.RootWindow && it.mapped && it.backingPixmapMatchWidth <= width && it.backingPixmapMatchHeight <= height }
                 .map { it.id }
 
         val livePixmapSnapshots = pixmaps.values.map { pixmap ->
@@ -9737,6 +9737,8 @@ internal data class XWindowSnapshot(
     val parentIdHex: String get() = "0x${parentId.toUInt().toString(16)}"
     val backgroundPixmapIdHex: String? get() = backgroundPixmapId?.let { "0x${it.toUInt().toString(16)}" }
     val borderPixmapIdHex: String? get() = borderPixmapId?.let { "0x${it.toUInt().toString(16)}" }
+    val backingPixmapMatchWidth: Int get() = if (visibleWidth > 0) (visibleX - x).coerceAtLeast(0) + visibleWidth else width
+    val backingPixmapMatchHeight: Int get() = if (visibleHeight > 0) (visibleY - y).coerceAtLeast(0) + visibleHeight else height
     val className: String get() = when (windowClass) {
         XWindowClass.InputOutput -> "InputOutput"
         XWindowClass.InputOnly -> "InputOnly"

@@ -571,7 +571,8 @@ internal object SvgScreenRenderer {
                     .thenByDescending { it.width == window.width && it.height == window.height }
                     .thenBy { pixmap ->
                         if (window.id in pixmap.matchingWindowIds) {
-                            pixmap.width.toLong() * pixmap.height.toLong() - window.width.toLong() * window.height.toLong()
+                            pixmap.width.toLong() * pixmap.height.toLong() -
+                                window.backingPixmapMatchWidth.toLong() * window.backingPixmapMatchHeight.toLong()
                         } else {
                             Long.MAX_VALUE
                         }

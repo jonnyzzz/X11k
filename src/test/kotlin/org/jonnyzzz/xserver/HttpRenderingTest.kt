@@ -292,6 +292,74 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `screen svg presents painted backing pixmap that covers visible window bounds`() {
+        XServer(ServerOptions(port = 0, width = 64, height = 64)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                out.write(createWindowRequest(0x0020_0001, 0, 0, 96, 64))
+                out.write(changePropertyRequest(0x0020_0001, "visible backing pixmap target"))
+                out.write(createPixmapRequest(0x0020_0100, width = 64, height = 64))
+                out.write(createGcRequest(0x0020_1001, 0x0020_0100))
+                out.write(putImageRequest(0x0020_0100, 0x0020_1001))
+                out.write(mapWindowRequest(0x0020_0001))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "visible backing pixmap target")
+                assertContains(svg, """class="framebuffer-image backing-pixmap-image"""")
+                assertContains(svg, """data-window-id="0x200001"""")
+                assertContains(svg, """data-pixmap-id="0x200100"""")
+                assertContains(svg, """data-source="matching-pixmap"""")
+
+                val json = httpGet(server.localPort, "/state.json").body
+                assertContains(json, """"width":96,"height":64,"visibleX":0,"visibleY":0,"visibleWidth":64,"visibleHeight":64""")
+                assertContains(json, """"matchingWindows":["0x200001"]""")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `screen svg rejects visible bounds pixmap that does not cover left clipped window origin`() {
+        XServer(ServerOptions(port = 0, width = 64, height = 64)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                out.write(createWindowRequest(0x0020_0001, -32, 0, 96, 64))
+                out.write(changePropertyRequest(0x0020_0001, "left clipped pixmap target"))
+                out.write(createPixmapRequest(0x0020_0100, width = 64, height = 64))
+                out.write(createGcRequest(0x0020_1001, 0x0020_0100))
+                out.write(putImageRequest(0x0020_0100, 0x0020_1001))
+                out.write(mapWindowRequest(0x0020_0001))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "left clipped pixmap target")
+                assertFalse(svg.contains("""data-source="matching-pixmap""""))
+                assertFalse(svg.contains("""data-pixmap-id="0x200100""""))
+
+                val json = httpGet(server.localPort, "/state.json").body
+                assertContains(json, """"width":96,"height":64,"visibleX":0,"visibleY":0,"visibleWidth":64,"visibleHeight":64""")
+                assertContains(json, """"matchingWindows":[]""")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `screen svg presents most recently painted matching backing pixmap`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
