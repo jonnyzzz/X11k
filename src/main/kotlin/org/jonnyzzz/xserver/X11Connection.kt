@@ -4807,8 +4807,10 @@ internal class X11Connection(
             return
         }
         val previousCursor = state.displayedCursorSnapshot()
+        val exposeWindows = state.circulateExposeWindows(target)
         val result = state.circulateWindow(windowId, direction) ?: return
         sendCirculateNotify(state.circulateNotifySinks(result))
+        exposeWindows.forEach { sendExposeToSubscribers(it) }
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
 
@@ -9090,6 +9092,10 @@ internal class X11Connection(
         for (child in state.childrenOf(window.id)) {
             if (child.mapped) sendExposeForViewableMappedSubtree(child)
         }
+    }
+
+    private fun sendExposeToSubscribers(window: XWindow) {
+        sendExpose(state.exposureSinks(window.id), window.id, XRectangleCommand(0, 0, window.width, window.height))
     }
 
     private fun sendExpose(sinks: List<XEventSink>, windowId: Int, rectangle: XRectangleCommand) {

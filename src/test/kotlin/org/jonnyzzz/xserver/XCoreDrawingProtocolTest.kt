@@ -12874,6 +12874,100 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CirculateWindow exposes raised lowest mapped child`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val first = WindowId + 110
+                val second = WindowId + 111
+
+                out.write(createWindowRequest(first, x = 0, y = 0, width = 30, height = 30, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(second, x = 10, y = 10, width = 30, height = 30))
+                out.write(mapWindowRequest(first))
+                out.write(mapWindowRequest(second))
+                out.write(circulateWindowRequest(XCirculateResult.RaiseLowest, X11Ids.RootWindow))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.flush()
+
+                assertMapAndExpose(input, first)
+                assertMapAndExpose(input, second)
+                assertExpose(input.readExactly(32), first, sequence = 5, width = 30, height = 30, count = 0)
+                assertEquals(listOf(second, first), treeChildren(readReply(input)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CirculateWindow exposes sibling uncovered by lowered highest child`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val first = WindowId + 112
+                val second = WindowId + 113
+                val third = WindowId + 114
+
+                out.write(createWindowRequest(first, x = 0, y = 0, width = 30, height = 30))
+                out.write(createWindowRequest(second, x = 10, y = 10, width = 30, height = 30, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(third, x = 12, y = 12, width = 10, height = 10))
+                out.write(mapWindowRequest(first))
+                out.write(mapWindowRequest(second))
+                out.write(mapWindowRequest(third))
+                out.write(circulateWindowRequest(XCirculateResult.LowerHighest, X11Ids.RootWindow))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.flush()
+
+                assertMapAndExpose(input, first)
+                assertMapAndExpose(input, second)
+                assertMapAndExpose(input, third)
+                assertExpose(input.readExactly(32), second, sequence = 7, width = 30, height = 30, count = 0)
+                assertEquals(listOf(third, first, second), treeChildren(readReply(input)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CirculateWindow does not expose siblings when lowered highest child is InputOnly`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val first = WindowId + 115
+                val inputOnly = WindowId + 116
+
+                out.write(createWindowRequest(first, x = 0, y = 0, width = 30, height = 30, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(inputOnly, x = 10, y = 10, width = 30, height = 30, depth = 0, windowClass = XWindowClass.InputOnly))
+                out.write(mapWindowRequest(first))
+                out.write(mapWindowRequest(inputOnly))
+                out.write(circulateWindowRequest(XCirculateResult.LowerHighest, X11Ids.RootWindow))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, first)
+                val pointer = input.readExactly(32)
+                assertEquals(1, pointer[0].toInt() and 0xff)
+                assertEquals(6, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CirculateWindow delivers CirculateRequest to parent SubstructureRedirect without restacking`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

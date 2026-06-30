@@ -662,6 +662,23 @@ internal class X11State(
     }
 
     @Synchronized
+    fun circulateExposeWindows(result: XCirculateResult): List<XWindow> {
+        val target = windows[result.window.id] ?: return emptyList()
+        if (!target.mapped || target.windowClass != XWindowClass.InputOutput || !windowIsViewable(target.id)) return emptyList()
+        return when (result.place) {
+            XCirculateResult.Top -> listOf(target)
+            XCirculateResult.Bottom -> childrenOf(result.parentId).filter { child ->
+                child.id != target.id &&
+                    child.mapped &&
+                    child.windowClass == XWindowClass.InputOutput &&
+                    windowIsViewable(child.id) &&
+                    windowsOverlap(target, child)
+            }
+            else -> emptyList()
+        }
+    }
+
+    @Synchronized
     fun reparentWindow(id: Int, parentId: Int, x: Int, y: Int): XWindow? {
         val window = windows[id] ?: return null
         if (!canReparentWindow(id, parentId)) return null
