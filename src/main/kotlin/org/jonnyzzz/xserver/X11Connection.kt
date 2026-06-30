@@ -3364,16 +3364,24 @@ internal class X11Connection(
         val id = byteOrder.u32(body, 0)
         if (!resourceIdAvailable(id, XRender.MajorOpcode, 27)) return
         val source = byteOrder.u32(body, 4)
-        if (state.picture(source) == null) {
+        val sourcePicture = state.picture(source)
+        if (sourcePicture == null) {
             return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 27, badValue = source)
         }
+        val hotspotX = byteOrder.u16(body, 8)
+        val hotspotY = byteOrder.u16(body, 10)
         state.putCursor(
             XCursor(
                 id = id,
                 kind = "render",
                 sourcePictureId = source,
-                hotspotX = byteOrder.u16(body, 8),
-                hotspotY = byteOrder.u16(body, 10),
+                hotspotX = hotspotX,
+                hotspotY = hotspotY,
+                image = state.cursorImageFromPicture(
+                    source = sourcePicture,
+                    hotspotX = hotspotX,
+                    hotspotY = hotspotY,
+                ),
             ),
         )
         own(id)

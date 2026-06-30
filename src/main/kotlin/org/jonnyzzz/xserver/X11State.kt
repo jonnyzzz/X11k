@@ -554,6 +554,31 @@ internal class X11State(
         cursors[id]?.image
 
     @Synchronized
+    fun cursorImageFromPicture(source: XPicture, hotspotX: Int, hotspotY: Int): XCursorImage? {
+        val framebuffer = source.drawableFramebuffer() ?: return null
+        if (framebuffer.width <= 0 || framebuffer.height <= 0) return null
+        if (framebuffer.width.toLong() * framebuffer.height.toLong() > MaxCursorImagePixels) return null
+        val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0 || source.hasPictureClip()) {
+            source.sourcePixelSamplerOptional()
+        } else {
+            source.sourcePixelSampler()?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
+        }) ?: return null
+        val pixels = IntArray(framebuffer.width * framebuffer.height)
+        for (y in 0 until framebuffer.height) {
+            for (x in 0 until framebuffer.width) {
+                pixels[y * framebuffer.width + x] = sourcePixelAt(x, y) ?: 0
+            }
+        }
+        return XCursorImage.fromPixels(
+            width = framebuffer.width,
+            height = framebuffer.height,
+            hotspotX = hotspotX,
+            hotspotY = hotspotY,
+            pixels = pixels,
+        )
+    }
+
+    @Synchronized
     fun cursorGeneration(id: Int): Long? =
         cursors[id]?.generation
 
@@ -7090,6 +7115,7 @@ internal class X11State(
         private const val MaxRenderOperations = 400
         private const val MaxGetImagePixels = 16_777_216
         private const val MaxGlyphMaskPixels = 16_777_216
+        private const val MaxCursorImagePixels = 16_777_216
         private const val MaxRequestCounts = 256
         private const val MaxExtensionQueries = 200
         private const val SetupResourceBlockCount = 1023
@@ -9224,6 +9250,7 @@ internal data class XCursorImage(
     val sourceBits: BooleanArray,
     val maskBits: BooleanArray,
     val pixels: IntArray,
+    val recolorable: Boolean = true,
 ) {
     fun recolored(
         foregroundRed: Int,
@@ -9232,8 +9259,9 @@ internal data class XCursorImage(
         backgroundRed: Int,
         backgroundGreen: Int,
         backgroundBlue: Int,
-    ): XCursorImage =
-        copy(
+    ): XCursorImage {
+        if (!recolorable) return this
+        return copy(
             pixels = pixelsFor(
                 sourceBits = sourceBits,
                 maskBits = maskBits,
@@ -9245,6 +9273,7 @@ internal data class XCursorImage(
                 backgroundBlue = backgroundBlue,
             ),
         )
+    }
 
     companion object {
         fun fromBits(
@@ -9278,6 +9307,24 @@ internal data class XCursorImage(
                     backgroundGreen = backgroundGreen,
                     backgroundBlue = backgroundBlue,
                 ),
+            )
+
+        fun fromPixels(
+            width: Int,
+            height: Int,
+            hotspotX: Int,
+            hotspotY: Int,
+            pixels: IntArray,
+        ): XCursorImage =
+            XCursorImage(
+                width = width,
+                height = height,
+                hotspotX = hotspotX,
+                hotspotY = hotspotY,
+                sourceBits = BooleanArray(width * height),
+                maskBits = BooleanArray(width * height) { index -> ((pixels[index] ushr 24) and 0xff) != 0 },
+                pixels = pixels.copyOf(),
+                recolorable = false,
             )
 
         private fun pixelsFor(
