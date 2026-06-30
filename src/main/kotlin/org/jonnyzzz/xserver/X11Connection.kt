@@ -7052,6 +7052,8 @@ internal class X11Connection(
             XRandr.GetMonitors -> randrGetMonitors(body, majorOpcode)
             XRandr.SetMonitor -> randrSetMonitor(body, majorOpcode)
             XRandr.DeleteMonitor -> randrDeleteMonitor(body, majorOpcode)
+            XRandr.CreateLease -> randrCreateLease(body, majorOpcode)
+            XRandr.FreeLease -> randrFreeLease(body, majorOpcode)
             else -> unsupportedRequest(majorOpcode, minorOpcode, "RANDR.${XRandr.operationName(minorOpcode)}")
         }
     }
@@ -7764,6 +7766,38 @@ internal class X11Connection(
         val monitorChange = state.deleteRandrMonitor(name)
             ?: return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.DeleteMonitor, badValue = name)
         sendRandrMonitorChange(monitorChange)
+    }
+
+    private fun randrCreateLease(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.CreateLease, badValue = 0)
+        val crtcCount = byteOrder.u16(body, 8)
+        val outputCount = byteOrder.u16(body, 10)
+        val expectedSize = 12L + (crtcCount.toLong() + outputCount.toLong()) * 4L
+        if (expectedSize > Int.MAX_VALUE || body.size != expectedSize.toInt()) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.CreateLease, badValue = 0)
+        }
+        val window = byteOrder.u32(body, 0)
+        val lease = byteOrder.u32(body, 4)
+        if (!resourceIdAvailable(lease, majorOpcode, XRandr.CreateLease)) return
+        if (state.window(window) == null) return writeError(error = 3, opcode = majorOpcode, minorOpcode = XRandr.CreateLease, badValue = window)
+        if (crtcCount == 0 && outputCount == 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.CreateLease, badValue = 0)
+
+        val badCrtc = (0 until crtcCount).firstOrNull { index -> byteOrder.u32(body, 12 + index * 4) != XRandr.CrtcId }
+            ?.let { index -> byteOrder.u32(body, 12 + index * 4) }
+        if (badCrtc != null) return writeError(error = XRandr.BadCrtc, opcode = majorOpcode, minorOpcode = XRandr.CreateLease, badValue = badCrtc)
+
+        val outputOffset = 12 + crtcCount * 4
+        val badOutput = (0 until outputCount).firstOrNull { index -> byteOrder.u32(body, outputOffset + index * 4) != XRandr.OutputId }
+            ?.let { index -> byteOrder.u32(body, outputOffset + index * 4) }
+        if (badOutput != null) return writeError(error = XRandr.BadOutput, opcode = majorOpcode, minorOpcode = XRandr.CreateLease, badValue = badOutput)
+
+        writeError(error = 10, opcode = majorOpcode, minorOpcode = XRandr.CreateLease, badValue = 0)
+    }
+
+    private fun randrFreeLease(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.FreeLease, badValue = 0)
+        val lease = byteOrder.u32(body, 0)
+        writeError(error = XRandr.BadLease, opcode = majorOpcode, minorOpcode = XRandr.FreeLease, badValue = lease)
     }
 
     private fun putRandrModeInfo(bytes: ByteArray, offset: Int, nameLength: Int) {

@@ -14502,7 +14502,11 @@ class XCoreDrawingProtocolTest {
                     setup(recipientSocket)
                     val recipient = WindowId + 3
                     recipientSocket.getOutputStream().write(createWindowRequest(recipient))
+                    recipientSocket.getOutputStream().write(getGeometryRequest(recipient))
                     recipientSocket.getOutputStream().flush()
+                    val geometry = readReply(recipientSocket.getInputStream())
+                    assertEquals(1, geometry[0].toInt())
+                    assertEquals(2, u16le(geometry, 2))
 
                     senderSocket.getOutputStream().write(
                         sendEventRequest(
@@ -14521,7 +14525,7 @@ class XCoreDrawingProtocolTest {
                     val event = recipientSocket.getInputStream().readExactly(32)
                     assertEquals(0x80 or (XFixes.FirstEvent + XFixes.SelectionNotify), event[0].toInt() and 0xff)
                     assertEquals(XFixes.SetSelectionOwnerNotify, event[1].toInt() and 0xff)
-                    assertEquals(1, u16le(event, 2))
+                    assertEquals(2, u16le(event, 2))
                     assertEquals(recipient, u32le(event, 4))
                     assertEquals(WindowId + 4, u32le(event, 8))
                     assertEquals(PrimaryAtom, u32le(event, 12))

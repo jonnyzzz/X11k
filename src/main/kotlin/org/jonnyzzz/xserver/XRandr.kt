@@ -51,6 +51,8 @@ internal object XRandr {
     const val GetMonitors = 42
     const val SetMonitor = 43
     const val DeleteMonitor = 44
+    const val CreateLease = 45
+    const val FreeLease = 46
 
     const val Rotate0 = 1
     const val Connected = 0
@@ -132,6 +134,8 @@ internal object XRandr {
             GetMonitors -> "GetMonitors"
             SetMonitor -> "SetMonitor"
             DeleteMonitor -> "DeleteMonitor"
+            CreateLease -> "CreateLease"
+            FreeLease -> "FreeLease"
             else -> "Unknown"
         }
 }

@@ -426,6 +426,54 @@ class XRandrProtocolTest {
     }
 
     @Test
+    fun `RANDR lease requests validate resources fail deterministically and recover`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val lease = X11Ids.ResourceIdBase + 0x0200
+                val secondLease = X11Ids.ResourceIdBase + 0x0201
+                val missing = 0x0102_0304
+                out.write(request(XRandr.MajorOpcode, XRandr.CreateLease, ByteArray(8)))
+                out.write(malformedCreateLeaseRequest(lease = lease, crtcs = intArrayOf(XRandr.CrtcId)))
+                out.write(createWindowRequest(lease))
+                out.write(createLeaseRequest(lease = lease, outputs = intArrayOf(XRandr.OutputId)))
+                out.write(createLeaseRequest(window = missing, lease = secondLease, outputs = intArrayOf(XRandr.OutputId)))
+                out.write(createLeaseRequest(lease = secondLease, crtcs = intArrayOf(), outputs = intArrayOf()))
+                out.write(createLeaseRequest(lease = secondLease, crtcs = intArrayOf(missing)))
+                out.write(createLeaseRequest(lease = secondLease, outputs = intArrayOf(missing)))
+                out.write(createLeaseRequest(lease = secondLease, crtcs = intArrayOf(XRandr.CrtcId), outputs = intArrayOf(XRandr.OutputId)))
+                out.write(request(XRandr.MajorOpcode, XRandr.FreeLease, ByteArray(4)))
+                out.write(freeLeaseRequest(secondLease, terminate = 2))
+                out.write(freeLeaseRequest(secondLease, terminate = 1))
+                out.write(randrQueryVersionRequest(1, 6))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 1, minorOpcode = XRandr.CreateLease)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 2, minorOpcode = XRandr.CreateLease)
+                assertError(socket.getInputStream(), error = 14, badValue = lease, sequence = 4, minorOpcode = XRandr.CreateLease)
+                assertError(socket.getInputStream(), error = 3, badValue = missing, sequence = 5, minorOpcode = XRandr.CreateLease)
+                assertError(socket.getInputStream(), error = 2, badValue = 0, sequence = 6, minorOpcode = XRandr.CreateLease)
+                assertError(socket.getInputStream(), error = XRandr.BadCrtc, badValue = missing, sequence = 7, minorOpcode = XRandr.CreateLease)
+                assertError(socket.getInputStream(), error = XRandr.BadOutput, badValue = missing, sequence = 8, minorOpcode = XRandr.CreateLease)
+                assertError(socket.getInputStream(), error = 10, badValue = 0, sequence = 9, minorOpcode = XRandr.CreateLease)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 10, minorOpcode = XRandr.FreeLease)
+                assertError(socket.getInputStream(), error = XRandr.BadLease, badValue = secondLease, sequence = 11, minorOpcode = XRandr.FreeLease)
+                assertError(socket.getInputStream(), error = XRandr.BadLease, badValue = secondLease, sequence = 12, minorOpcode = XRandr.FreeLease)
+
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(13, u16le(recovered, 2))
+                assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
+                assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RANDR SetCrtcGamma validates fixed zero gamma ramp and recovers`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1459,6 +1507,44 @@ class XRandrProtocolTest {
         put32le(body, 0, window)
         put32le(body, 4, name)
         return request(XRandr.MajorOpcode, XRandr.DeleteMonitor, body)
+    }
+
+    private fun createLeaseRequest(
+        window: Int = X11Ids.RootWindow,
+        lease: Int,
+        crtcs: IntArray = intArrayOf(),
+        outputs: IntArray = intArrayOf(),
+    ): ByteArray {
+        val body = ByteArray(12 + (crtcs.size + outputs.size) * 4)
+        put32le(body, 0, window)
+        put32le(body, 4, lease)
+        put16le(body, 8, crtcs.size)
+        put16le(body, 10, outputs.size)
+        crtcs.forEachIndexed { index, crtc -> put32le(body, 12 + index * 4, crtc) }
+        val outputOffset = 12 + crtcs.size * 4
+        outputs.forEachIndexed { index, output -> put32le(body, outputOffset + index * 4, output) }
+        return request(XRandr.MajorOpcode, XRandr.CreateLease, body)
+    }
+
+    private fun malformedCreateLeaseRequest(
+        window: Int = X11Ids.RootWindow,
+        lease: Int,
+        crtcs: IntArray = intArrayOf(),
+        outputs: IntArray = intArrayOf(),
+    ): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, window)
+        put32le(body, 4, lease)
+        put16le(body, 8, crtcs.size)
+        put16le(body, 10, outputs.size)
+        return request(XRandr.MajorOpcode, XRandr.CreateLease, body)
+    }
+
+    private fun freeLeaseRequest(lease: Int, terminate: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, lease)
+        body[4] = terminate.toByte()
+        return request(XRandr.MajorOpcode, XRandr.FreeLease, body)
     }
 
     private fun createWindowRequest(id: Int): ByteArray {
