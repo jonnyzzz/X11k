@@ -4534,6 +4534,80 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `PutImage and GetImage ZPixmap honor depth one packing`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 9, height = 1, depth = 1))
+                out.write(createGcRequest(GcId, foreground = 0, drawable = PixmapId))
+                out.write(
+                    putImageRawRequest(
+                        PixmapId,
+                        GcId,
+                        format = 2,
+                        width = 9,
+                        height = 1,
+                        depth = 1,
+                        data = byteArrayOf(0x85.toByte(), 0x01, 0, 0),
+                    ),
+                )
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 9, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(1, image[1].toInt() and 0xff)
+                assertEquals(4, u32le(image, 12))
+                assertEquals(0x85, image[32].toInt() and 0xff)
+                assertEquals(0x01, image[33].toInt() and 0xff)
+                assertEquals(0, image[34].toInt() and 0xff)
+                assertEquals(0, image[35].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PutImage and GetImage ZPixmap honor depth four packing`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 3, height = 1, depth = 4))
+                out.write(createGcRequest(GcId, foreground = 0, drawable = PixmapId))
+                out.write(
+                    putImageRawRequest(
+                        PixmapId,
+                        GcId,
+                        format = 2,
+                        width = 3,
+                        height = 1,
+                        depth = 4,
+                        data = byteArrayOf(0x02, 0x0a, 0x0f, 0),
+                    ),
+                )
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 3, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(4, image[1].toInt() and 0xff)
+                assertEquals(4, u32le(image, 12))
+                assertEquals(0x02, image[32].toInt() and 0xff)
+                assertEquals(0x0a, image[33].toInt() and 0xff)
+                assertEquals(0x0f, image[34].toInt() and 0xff)
+                assertEquals(0, image[35].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `core drawing honors GC clip rectangles`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
