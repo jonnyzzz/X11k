@@ -6913,6 +6913,56 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `pointer button input clamps to active pointer grab confine window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 10, y = 10, width = 20, height = 20))
+                out.write(mapWindowRequest(WindowId))
+                out.write(grabPointerRequest(WindowId, eventMask = XEventMasks.ButtonPress, confineTo = WindowId))
+                out.flush()
+
+                assertMapAndExpose(input, WindowId)
+                val grab = readReply(input)
+                assertEquals(1, grab[0].toInt())
+                assertEquals(0, grab[1].toInt() and 0xff)
+                assertEquals(3, u16le(grab, 2))
+
+                val down = server.input.pointerDown(100, 80, button = 1)
+                assertEquals(WindowId, down.targetWindowId)
+                assertEquals(1, down.deliveredEvents)
+
+                val button = input.readExactly(32)
+                assertButtonEvent(button, type = 4, detail = 1)
+                assertEquals(X11Ids.RootWindow, u32le(button, 8))
+                assertEquals(WindowId, u32le(button, 12))
+                assertEquals(0, u32le(button, 16))
+                assertEquals(29, u16le(button, 20))
+                assertEquals(29, u16le(button, 22))
+                assertEquals(19, u16le(button, 24))
+                assertEquals(19, u16le(button, 26))
+                assertEquals(0, u16le(button, 28))
+                assertEquals(1, button[30].toInt() and 0xff)
+
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(WindowId, u32le(pointer, 12))
+                assertEquals(29, u16le(pointer, 16))
+                assertEquals(29, u16le(pointer, 18))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `WarpPointer validates windows and request length and preserves stream recovery`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

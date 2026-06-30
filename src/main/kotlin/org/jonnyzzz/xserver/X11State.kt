@@ -1930,8 +1930,9 @@ internal class X11State(
             val previousCursor = displayedCursorIdentity()
             val previousX = pointerX
             val previousY = pointerY
-            pointerX = x.coerceIn(0, width - 1)
-            pointerY = y.coerceIn(0, height - 1)
+            val confinedPosition = confinedPointerPosition(x, y)
+            pointerX = confinedPosition.first
+            pointerY = confinedPosition.second
             val previousState = pointerMask()
             val logicalButton = pointerLogicalButton(button)
             val type = if (pressed) XPointerEventType.ButtonPress else XPointerEventType.ButtonRelease
