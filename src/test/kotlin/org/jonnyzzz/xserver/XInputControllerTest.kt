@@ -1,10 +1,13 @@
 package org.jonnyzzz.xserver
 
 import java.net.Socket
+import java.net.SocketTimeoutException
 import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.fail
 
 class XInputControllerTest {
     @Test
@@ -50,6 +53,109 @@ class XInputControllerTest {
         }
     }
 
+    @Test
+    fun `input click does not propagate button events through do-not-propagate mask`() {
+        XServer(ServerOptions(port = 0, width = 800, height = 600)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val parent = 0x0020_0001
+                val child = 0x0020_0002
+                val buttonMask = XEventMasks.ButtonPress or XEventMasks.ButtonRelease
+                out.write(createWindowRequest(parent, x = 100, y = 120, width = 300, height = 200))
+                out.write(createWindowRequest(child, parent = parent, x = 10, y = 10, width = 50, height = 40, doNotPropagateMask = buttonMask))
+                out.write(selectButtonEventsRequest(parent))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.flush()
+                readUntilEvent(input, 12)
+                readUntilEvent(input, 12)
+
+                val direct = server.input.click(120, 140)
+                assertEquals("0x200002", direct.targetWindowIdHex)
+                assertEquals(0, direct.deliveredEvents)
+                socket.soTimeout = 250
+                assertFailsWith<SocketTimeoutException> {
+                    input.readExactly(32)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `input click stops button propagation at first selected window`() {
+        XServer(ServerOptions(port = 0, width = 800, height = 600)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val parent = 0x0020_0001
+                val child = 0x0020_0002
+                out.write(createWindowRequest(parent, x = 100, y = 120, width = 300, height = 200))
+                out.write(createWindowRequest(child, parent = parent, x = 10, y = 10, width = 50, height = 40))
+                out.write(selectButtonEventsRequest(parent))
+                out.write(selectButtonEventsRequest(child))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.flush()
+                readUntilEvent(input, 12)
+                readUntilEvent(input, 12)
+
+                val direct = server.input.click(120, 140)
+                assertEquals("0x200002", direct.targetWindowIdHex)
+                assertEquals(2, direct.deliveredEvents)
+                assertButtonEvent(input, type = 4, rootX = 120, rootY = 140, eventX = 10, eventY = 10, eventWindow = child)
+                assertButtonEvent(input, type = 5, rootX = 120, rootY = 140, eventX = 10, eventY = 10, eventWindow = child)
+                socket.soTimeout = 250
+                assertFailsWith<SocketTimeoutException> {
+                    input.readExactly(32)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `WarpPointer motion does not propagate through do-not-propagate mask`() {
+        XServer(ServerOptions(port = 0, width = 800, height = 600)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val parent = 0x0020_0001
+                val child = 0x0020_0002
+                out.write(createWindowRequest(parent, x = 100, y = 120, width = 300, height = 200))
+                out.write(createWindowRequest(child, parent = parent, x = 10, y = 10, width = 50, height = 40, doNotPropagateMask = XEventMasks.PointerMotion))
+                out.write(selectEventsRequest(parent, XEventMasks.PointerMotion))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.flush()
+                readUntilEvent(input, 12)
+                readUntilEvent(input, 12)
+                drainPendingEvents(socket, input)
+
+                out.write(warpPointerRequest(destinationWindow = child, destinationX = 5, destinationY = 5))
+                out.flush()
+                assertNoEvent(socket, input)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
     private fun setup(out: java.io.OutputStream, input: java.io.InputStream) {
         out.write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
         out.flush()
@@ -65,9 +171,11 @@ class XInputControllerTest {
         rootY: Int,
         eventX: Int,
         eventY: Int,
+        eventWindow: Int? = null,
     ) {
         val event = readUntilEvent(input, type)
         assertEquals(1, event[1].toInt() and 0xff)
+        eventWindow?.let { assertEquals(it, u32le(event, 12)) }
         assertEquals(rootX, u16le(event, 20))
         assertEquals(rootY, u16le(event, 22))
         assertEquals(eventX, u16le(event, 24))
@@ -82,19 +190,47 @@ class XInputControllerTest {
         error("Did not receive event type $type")
     }
 
+    private fun drainPendingEvents(socket: Socket, input: java.io.InputStream) {
+        val previousTimeout = socket.soTimeout
+        socket.soTimeout = 100
+        try {
+            while (true) {
+                input.readExactly(32)
+            }
+        } catch (_: SocketTimeoutException) {
+        } finally {
+            socket.soTimeout = previousTimeout
+        }
+    }
+
+    private fun assertNoEvent(socket: Socket, input: java.io.InputStream) {
+        val previousTimeout = socket.soTimeout
+        socket.soTimeout = 250
+        try {
+            val event = input.readExactly(32)
+            fail("Unexpected event type=${event[0].toInt() and 0x7f} detail=${event[1].toInt() and 0xff} event=0x${u32le(event, 12).toUInt().toString(16)}")
+        } catch (_: SocketTimeoutException) {
+        } finally {
+            socket.soTimeout = previousTimeout
+        }
+    }
+
     private fun createWindowRequest(
         id: Int,
+        parent: Int = X11Ids.RootWindow,
         x: Int,
         y: Int,
         width: Int,
         height: Int,
+        doNotPropagateMask: Int = 0,
     ): ByteArray {
-        val bytes = ByteArray(32)
+        val valueCount = if (doNotPropagateMask != 0) 1 else 0
+        val bytes = ByteArray(32 + valueCount * 4)
         bytes[0] = 1
         bytes[1] = 24
-        put16le(bytes, 2, 8)
+        put16le(bytes, 2, bytes.size / 4)
         put32le(bytes, 4, id)
-        put32le(bytes, 8, X11Ids.RootWindow)
+        put32le(bytes, 8, parent)
         put16le(bytes, 12, x)
         put16le(bytes, 14, y)
         put16le(bytes, 16, width)
@@ -102,17 +238,26 @@ class XInputControllerTest {
         put16le(bytes, 20, 0)
         put16le(bytes, 22, 1)
         put32le(bytes, 24, X11Ids.RootVisual)
-        put32le(bytes, 28, 0)
+        if (doNotPropagateMask != 0) {
+            put32le(bytes, 28, 1 shl 12)
+            put32le(bytes, 32, doNotPropagateMask)
+        } else {
+            put32le(bytes, 28, 0)
+        }
         return bytes
     }
 
     private fun selectButtonEventsRequest(window: Int): ByteArray {
+        return selectEventsRequest(window, XEventMasks.ButtonPress or XEventMasks.ButtonRelease)
+    }
+
+    private fun selectEventsRequest(window: Int, eventMask: Int): ByteArray {
         val bytes = ByteArray(16)
         bytes[0] = 2
         put16le(bytes, 2, 4)
         put32le(bytes, 4, window)
         put32le(bytes, 8, 1 shl 11)
-        put32le(bytes, 12, XEventMasks.ButtonPress or XEventMasks.ButtonRelease)
+        put32le(bytes, 12, eventMask)
         return bytes
     }
 
@@ -121,6 +266,21 @@ class XInputControllerTest {
         bytes[0] = 8
         put16le(bytes, 2, 2)
         put32le(bytes, 4, id)
+        return bytes
+    }
+
+    private fun warpPointerRequest(destinationWindow: Int, destinationX: Int, destinationY: Int): ByteArray {
+        val bytes = ByteArray(24)
+        bytes[0] = 41
+        put16le(bytes, 2, 6)
+        put32le(bytes, 4, 0)
+        put32le(bytes, 8, destinationWindow)
+        put16le(bytes, 12, 0)
+        put16le(bytes, 14, 0)
+        put16le(bytes, 16, 0)
+        put16le(bytes, 18, 0)
+        put16le(bytes, 20, destinationX)
+        put16le(bytes, 22, destinationY)
         return bytes
     }
 
@@ -179,6 +339,12 @@ class XInputControllerTest {
 
     private fun u16le(bytes: ByteArray, offset: Int): Int =
         (bytes[offset].toInt() and 0xff) or ((bytes[offset + 1].toInt() and 0xff) shl 8)
+
+    private fun u32le(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xff) or
+            ((bytes[offset + 1].toInt() and 0xff) shl 8) or
+            ((bytes[offset + 2].toInt() and 0xff) shl 16) or
+            ((bytes[offset + 3].toInt() and 0xff) shl 24)
 
     private data class HttpResponse(
         val headers: String,

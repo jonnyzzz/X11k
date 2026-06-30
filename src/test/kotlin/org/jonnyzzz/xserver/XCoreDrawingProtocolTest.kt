@@ -7469,6 +7469,48 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `passive GrabButton owner events ignore owner ancestor selection when child selects first`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { observer ->
+                    owner.soTimeout = 250
+                    observer.soTimeout = 250
+                    setup(owner)
+                    setup(observer)
+                    val child = WindowId + 1
+                    val ownerInput = owner.getInputStream()
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId, width = 80, height = 60, eventMask = XEventMasks.ButtonPress))
+                    ownerOut.write(createWindowRequest(child, parent = WindowId, x = 10, y = 10, width = 20, height = 20))
+                    ownerOut.write(grabButtonRequest(WindowId, ownerEvents = 1, eventMask = 0))
+                    ownerOut.write(mapWindowRequest(WindowId))
+                    ownerOut.write(mapWindowRequest(child))
+                    ownerOut.flush()
+                    assertMapAndExpose(ownerInput, WindowId)
+                    assertMapAndExpose(ownerInput, child)
+
+                    val observerOut = observer.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(child, XEventMasks.ButtonPress))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(1, readReply(observer.getInputStream())[0].toInt())
+
+                    assertEquals(0, server.input.pointerDown(15, 15, button = 1).deliveredEvents)
+                    assertFailsWith<SocketTimeoutException> {
+                        ownerInput.readExactly(32)
+                    }
+                    assertFailsWith<SocketTimeoutException> {
+                        observer.getInputStream().readExactly(32)
+                    }
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `passive GrabButton active grab routes pointer motion to grab owner`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

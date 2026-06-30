@@ -1967,15 +1967,15 @@ internal class X11State(
 
             if (logicalButton != 0) {
                 val grab = activePointerGrab
+                val normalSelection = firstPointerEventSelection(path, mask)
                 if (grab != null) {
-                    val ownerSelections = eventSinks[grab.owner]
-                    val ownerEventWindow = if (grab.ownerEvents) {
-                        path.firstOrNull { window -> ((ownerSelections?.get(window.id) ?: 0) and mask) != 0 }
+                    val ownerSelection = if (grab.ownerEvents) {
+                        normalSelection?.takeIf { (_, sinks) -> grab.owner in sinks }
                     } else {
                         null
                     }
-                    if (ownerEventWindow != null || (grab.eventMask and mask) != 0) {
-                        val eventWindowId = ownerEventWindow?.id ?: grab.windowId
+                    if (ownerSelection != null || (grab.eventMask and mask) != 0) {
+                        val eventWindowId = ownerSelection?.first?.id ?: grab.windowId
                         val absolute = windows[eventWindowId]?.let { absoluteById[it.id] } ?: (0 to 0)
                         deliveries += grab.owner to XPointerEvent(
                             type = type,
@@ -1991,11 +1991,9 @@ internal class X11State(
                         )
                     }
                 } else {
-                    for ((sink, selections) in eventSinks) {
-                        for (window in path) {
-                            val selectedMask = selections[window.id] ?: continue
-                            if ((selectedMask and mask) == 0) continue
-                            val absolute = absoluteById.getValue(window.id)
+                    normalSelection?.let { (window, sinks) ->
+                        val absolute = absoluteById.getValue(window.id)
+                        for (sink in sinks) {
                             deliveries += sink to XPointerEvent(
                                 type = type,
                                 button = logicalButton,
@@ -2142,6 +2140,20 @@ internal class X11State(
         return null
     }
 
+    private fun firstPointerEventSelection(
+        path: List<XWindow>,
+        mask: Int,
+    ): Pair<XWindow, List<XEventSink>>? {
+        var remainingMask = mask
+        for (window in path) {
+            val sinks = eventSelectionsForWindow(window.id, remainingMask)
+            if (sinks.isNotEmpty()) return window to sinks
+            remainingMask = remainingMask and window.doNotPropagateMask.inv()
+            if (remainingMask == 0) return null
+        }
+        return null
+    }
+
     private fun keyEventSelectionPath(path: List<XWindow>): List<XWindow> {
         if (focusWindowId in 0..1) return path
         val focusIndex = path.indexOfFirst { it.id == focusWindowId }
@@ -2193,15 +2205,15 @@ internal class X11State(
             recordMotionHistory(time, pointerX, pointerY)
 
             val grab = activePointerGrab
+            val normalSelection = firstPointerEventSelection(path, XEventMasks.PointerMotion)
             if (grab != null) {
-                val ownerSelections = eventSinks[grab.owner]
-                val ownerEventWindow = if (grab.ownerEvents) {
-                    path.firstOrNull { window -> ((ownerSelections?.get(window.id) ?: 0) and XEventMasks.PointerMotion) != 0 }
+                val ownerSelection = if (grab.ownerEvents) {
+                    normalSelection?.takeIf { (_, sinks) -> grab.owner in sinks }
                 } else {
                     null
                 }
-                if (ownerEventWindow != null || (grab.eventMask and XEventMasks.PointerMotion) != 0) {
-                    val eventWindowId = ownerEventWindow?.id ?: grab.windowId
+                if (ownerSelection != null || (grab.eventMask and XEventMasks.PointerMotion) != 0) {
+                    val eventWindowId = ownerSelection?.first?.id ?: grab.windowId
                     val absolute = windows[eventWindowId]?.let { absoluteById[it.id] } ?: (0 to 0)
                     deliveries += grab.owner to XPointerEvent(
                         type = XPointerEventType.MotionNotify,
@@ -2217,11 +2229,9 @@ internal class X11State(
                     )
                 }
             } else {
-                for ((sink, selections) in eventSinks) {
-                    for (window in path) {
-                        val selectedMask = selections[window.id] ?: continue
-                        if ((selectedMask and XEventMasks.PointerMotion) == 0) continue
-                        val absolute = absoluteById.getValue(window.id)
+                normalSelection?.let { (window, sinks) ->
+                    val absolute = absoluteById.getValue(window.id)
+                    for (sink in sinks) {
                         deliveries += sink to XPointerEvent(
                             type = XPointerEventType.MotionNotify,
                             button = 0,
