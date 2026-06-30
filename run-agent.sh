@@ -68,10 +68,10 @@ Configuration (env variables):
   RUN_AGENT_TIMEOUT_SECONDS
                       Wall-clock timeout for the agent process (default: 3600, 0 disables)
   RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS
-                      Dump diagnostics once after this many seconds with no stdout/stderr bytes
+                      Dump diagnostics once after this many seconds with no new stdout/stderr bytes
                       (default: 180, 0 disables)
   RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS
-                      Terminate after this many seconds with no stdout/stderr bytes
+                      Terminate after this many seconds with no new stdout/stderr bytes
                       (default: 0, disabled)
   RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT
                       Set to 1 to allow RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS for
@@ -534,6 +534,8 @@ echo "$AGENT_PID" > "$PID_FILE"
 EXIT_CODE=0
 START_SECONDS="$(now_seconds)"
 LAST_HEARTBEAT_SECONDS=0
+LAST_OUTPUT_SIZE=0
+LAST_OUTPUT_SECONDS="$START_SECONDS"
 NO_OUTPUT_DIAGNOSTICS_FIRED=false
 TIMEOUT_FIRED=false
 TIMEOUT_REASON=""
@@ -542,6 +544,12 @@ while kill -0 "$AGENT_PID" 2>/dev/null; do
   NOW_SECONDS="$(now_seconds)"
   ELAPSED_SECONDS=$((NOW_SECONDS - START_SECONDS))
   OUTPUT_SIZE="$(output_size)"
+  if [ "$OUTPUT_SIZE" -ne "$LAST_OUTPUT_SIZE" ]; then
+    LAST_OUTPUT_SIZE="$OUTPUT_SIZE"
+    LAST_OUTPUT_SECONDS="$NOW_SECONDS"
+    NO_OUTPUT_DIAGNOSTICS_FIRED=false
+  fi
+  OUTPUT_IDLE_SECONDS=$((NOW_SECONDS - LAST_OUTPUT_SECONDS))
   if [ "$RUN_AGENT_HEARTBEAT_SECONDS" -gt 0 ] && \
      [ $((NOW_SECONDS - LAST_HEARTBEAT_SECONDS)) -ge "$RUN_AGENT_HEARTBEAT_SECONDS" ]; then
     {
@@ -549,26 +557,25 @@ while kill -0 "$AGENT_PID" 2>/dev/null; do
       echo "PID=$AGENT_PID"
       echo "ELAPSED_SECONDS=$ELAPSED_SECONDS"
       echo "OUTPUT_BYTES=$OUTPUT_SIZE"
+      echo "OUTPUT_IDLE_SECONDS=$OUTPUT_IDLE_SECONDS"
       ps -p "$AGENT_PID" -o pid=,ppid=,stat=,etime=,command= 2>/dev/null || true
     } > "$RUN_DIR/heartbeat.txt" 2>/dev/null || true
     LAST_HEARTBEAT_SECONDS="$NOW_SECONDS"
   fi
-  if [ "$OUTPUT_SIZE" -eq 0 ]; then
-    if [ "$NO_OUTPUT_DIAGNOSTICS_FIRED" = false ] && \
-       [ "$RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS" -gt 0 ] && \
-       [ "$ELAPSED_SECONDS" -ge "$RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS" ]; then
-      NO_OUTPUT_DIAGNOSTICS_FIRED=true
-      dump_diagnostics "no-output-${RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS}s"
-    fi
-    if [ "$EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS" -gt 0 ] && \
-       [ "$ELAPSED_SECONDS" -ge "$EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS" ]; then
-      TIMEOUT_FIRED=true
-      TIMEOUT_REASON="no-output-timeout-${EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS}s"
-      dump_diagnostics "$TIMEOUT_REASON"
-      terminate_agent_tree
-      EXIT_CODE=124
-      break
-    fi
+  if [ "$NO_OUTPUT_DIAGNOSTICS_FIRED" = false ] && \
+     [ "$RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS" -gt 0 ] && \
+     [ "$OUTPUT_IDLE_SECONDS" -ge "$RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS" ]; then
+    NO_OUTPUT_DIAGNOSTICS_FIRED=true
+    dump_diagnostics "no-output-${RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS}s"
+  fi
+  if [ "$EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS" -gt 0 ] && \
+     [ "$OUTPUT_IDLE_SECONDS" -ge "$EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS" ]; then
+    TIMEOUT_FIRED=true
+    TIMEOUT_REASON="no-output-timeout-${EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS}s"
+    dump_diagnostics "$TIMEOUT_REASON"
+    terminate_agent_tree
+    EXIT_CODE=124
+    break
   fi
   if [ "$RUN_AGENT_TIMEOUT_SECONDS" -gt 0 ]; then
     if [ "$ELAPSED_SECONDS" -ge "$RUN_AGENT_TIMEOUT_SECONDS" ]; then

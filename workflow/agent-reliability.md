@@ -46,11 +46,14 @@ The overlay alone was still insufficient in this local Codex CLI configuration: 
 
 Timeout and stale-agent recovery also terminate the full descendant process tree now. Earlier versions killed only the top-level agent PID, so helper JVMs or MCP stdio children could survive the parent timeout and make later "stuck" diagnosis noisier.
 
+The 2026-07-01 Gemini scout stall was a runner progress-accounting bug layered on top of another idle agent CLI. The scout printed a few startup lines, then `watch-agents.sh` showed output ages growing past five minutes; `sample <pid>` showed Node idle in `uv__io_poll`/`kevent`, and `jps -lv` showed no active X server/test JVM. `RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300` did not fire because the runner only checked whether total output bytes were zero, not whether new bytes had appeared since the last poll. `run-agent.sh` now tracks the last output-size change, writes `OUTPUT_IDLE_SECONDS` to `heartbeat.txt`, and applies no-output diagnostics/timeouts to "no new bytes" after any earlier chatter.
+
 ## Required Practice
 
 - Start long commands through `timeout` or with `RUN_AGENT_TIMEOUT_SECONDS` set.
 - Before killing a suspected stuck JVM workload, collect `jps -lm` plus `jcmd <pid> Thread.print` or `jstack <pid>`.
 - Before restarting a silent run-agent, inspect its `heartbeat.txt`, `run-info.txt`, any `DIAGNOSTICS=...` entries, and stdout/stderr sizes.
+- For agents that print startup text and then may idle, trust `OUTPUT_IDLE_SECONDS`, not total output size.
 - To answer "ping agents" without entering an unbounded monitor loop, run:
 
   ```bash
