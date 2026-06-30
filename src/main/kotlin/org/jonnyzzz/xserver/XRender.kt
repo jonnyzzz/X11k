@@ -99,8 +99,10 @@ internal object XRender {
     const val SubwindowModeIncludeInferiors = 1
     const val PolyEdgeSharp = 0
     const val PolyEdgeSmooth = 1
+    const val DefaultPolyEdge = PolyEdgeSmooth
     const val PolyModePrecise = 0
     const val PolyModeImprecise = 1
+    const val DefaultPolyMode = PolyModePrecise
     const val LegacyTransformFilterNearest = 0
     const val FilterNearest = "nearest"
 

@@ -2093,7 +2093,7 @@ class XCoreDrawingProtocolTest {
                 assertContains(json, """"alphaMap":"none"""")
                 assertContains(json, """"graphicsExposure":false""")
                 assertContains(json, """"subwindowMode":0""")
-                assertContains(json, """"polyEdge":0""")
+                assertContains(json, """"polyEdge":1""")
                 assertContains(json, """"polyMode":0""")
                 assertContains(json, """"componentAlpha":false""")
             }
