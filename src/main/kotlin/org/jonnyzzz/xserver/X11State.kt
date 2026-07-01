@@ -28,6 +28,11 @@ internal data class XEventSinkRemoval(
     val xfixesCursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
 )
 
+internal data class XUnmapWindowResult(
+    val focusDispatches: List<XFocusDispatch>,
+    val pointerUngrabResult: XPointerUngrabResult = XPointerUngrabResult(),
+)
+
 internal data class XCursorIdentity(
     val id: Int,
     val generation: Long,
@@ -833,11 +838,14 @@ internal class X11State(
     }
 
     @Synchronized
-    fun unmapWindow(id: Int): List<XFocusDispatch> {
+    fun unmapWindow(id: Int): XUnmapWindowResult {
         windows[id]?.mapped = false
         val focusDispatches = revertFocusIfCurrentFocusNotViewable()
-        releaseActiveGrabsForVisibilityChanges()
-        return focusDispatches
+        val pointerUngrabResult = releaseActiveGrabsForVisibilityChanges()
+        return XUnmapWindowResult(
+            focusDispatches = focusDispatches,
+            pointerUngrabResult = pointerUngrabResult,
+        )
     }
 
     @Synchronized
@@ -1348,6 +1356,7 @@ internal class X11State(
             )
             activePointerGrab = null
             return XPointerUngrabResult(
+                released = true,
                 crossingDispatches = crossingDispatches,
                 cursorNotifyDispatches = xfixesCursorNotifyDispatchesIfChanged(previousCursor),
             )
@@ -1548,21 +1557,31 @@ internal class X11State(
         }
     }
 
-    private fun releaseActiveGrabsForVisibilityChanges() {
+    private fun releaseActiveGrabsForVisibilityChanges(): XPointerUngrabResult {
         val pointerGrab = activePointerGrab
-        if (
+        val pointerUngrabResult = if (
             pointerGrab != null &&
             (
                 !windowIsViewable(pointerGrab.windowId) ||
                     pointerGrab.confineTo?.let { !windowIsViewable(it) || !windowIntersectsRootBounds(it) } == true
                 )
         ) {
+            val crossingDispatches = pointerGrabCrossingEventDeliveries(
+                grabWindowId = pointerGrab.windowId,
+                mode = XNotifyMode.Ungrab,
+                time = currentServerTime(pointerGrab.time),
+                activating = false,
+            )
             activePointerGrab = null
+            XPointerUngrabResult(released = true, crossingDispatches = crossingDispatches)
+        } else {
+            XPointerUngrabResult()
         }
         val keyboardGrab = activeKeyboardGrab
         if (keyboardGrab != null && !windowIsViewable(keyboardGrab.windowId)) {
             activeKeyboardGrab = null
         }
+        return pointerUngrabResult
     }
 
     private fun validUngrabTime(requestTime: Int, grabTime: Int): Boolean =
@@ -2555,12 +2574,13 @@ internal class X11State(
             false
         }
         val changed = geometryChanged || stackChanged
-        if (changed) releaseActiveGrabsForVisibilityChanges()
+        val pointerUngrabResult = if (changed) releaseActiveGrabsForVisibilityChanges() else XPointerUngrabResult()
         return XConfigureWindowResult(
             window = window,
             changed = changed,
             sizeChanged = sizeChanged,
             aboveSiblingId = siblingBelow(window),
+            pointerUngrabResult = pointerUngrabResult,
         )
     }
 
@@ -7636,7 +7656,7 @@ internal class X11State(
             if (entry.map == XSaveSetMap.Map && !window.mapped) {
                 mapWindow(windowId)
             } else if (entry.map == XSaveSetMap.Unmap && window.mapped) {
-                focusDispatches += unmapWindow(windowId)
+                focusDispatches += unmapWindow(windowId).focusDispatches
             }
         }
         return XSaveSetProcessing(
@@ -8664,6 +8684,7 @@ internal data class XConfigureWindowResult(
     val changed: Boolean,
     val sizeChanged: Boolean,
     val aboveSiblingId: Int,
+    val pointerUngrabResult: XPointerUngrabResult = XPointerUngrabResult(),
 ) {
     fun configureNotifyEvent(eventWindowId: Int): XConfigureNotifyEvent =
         XConfigureNotifyEvent(
@@ -9391,6 +9412,7 @@ internal data class XPointerGrabResult(
 )
 
 internal data class XPointerUngrabResult(
+    val released: Boolean = false,
     val crossingDispatches: List<Pair<XEventSink, XCrossingEvent>> = emptyList(),
     val cursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
 )

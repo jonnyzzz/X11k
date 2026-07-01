@@ -4626,9 +4626,10 @@ internal class X11Connection(
         val wasMapped = window.mapped
         if (wasMapped) {
             val notifications = state.unmapNotifySinks(window)
-            val focusDispatches = state.unmapWindow(windowId)
+            val unmapResult = state.unmapWindow(windowId)
             sendUnmapNotify(notifications)
-            sendFocusEvents(focusDispatches)
+            sendCrossing(unmapResult.pointerUngrabResult.crossingDispatches)
+            sendFocusEvents(unmapResult.focusDispatches)
         }
         val oldParentId = window.parentId
         val reparented = state.reparentWindow(
@@ -4685,12 +4686,17 @@ internal class X11Connection(
         val previousPointerPath = state.pointerCrossingPath()
         val notifications = state.unmapNotifySinks(window)
         val exposeWindows = state.unmapExposeWindows(windowId)
-        val focusDispatches = state.unmapWindow(windowId)
-        val crossingEvents = state.hierarchyCrossingEventDeliveries(previousPointerPath)
+        val unmapResult = state.unmapWindow(windowId)
+        val crossingEvents = if (unmapResult.pointerUngrabResult.released) {
+            emptyList()
+        } else {
+            state.hierarchyCrossingEventDeliveries(previousPointerPath)
+        }
         sendUnmapNotify(notifications)
+        sendCrossing(unmapResult.pointerUngrabResult.crossingDispatches)
         sendCrossing(crossingEvents)
         exposeWindows.forEach { sendExposeToSubscribers(it) }
-        sendFocusEvents(focusDispatches)
+        sendFocusEvents(unmapResult.focusDispatches)
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
 
@@ -4731,8 +4737,10 @@ internal class X11Connection(
             if (child.mapped) {
                 val notifications = state.unmapNotifySinks(child)
                 state.unmapExposeWindows(child.id).forEach { exposeWindows[it.id] = it }
-                focusDispatches += state.unmapWindow(child.id)
+                val unmapResult = state.unmapWindow(child.id)
+                focusDispatches += unmapResult.focusDispatches
                 sendUnmapNotify(notifications)
+                sendCrossing(unmapResult.pointerUngrabResult.crossingDispatches)
             }
         }
         exposeWindows.values.forEach { sendExposeToSubscribers(it) }
@@ -4823,9 +4831,14 @@ internal class X11Connection(
             siblingId = siblingId,
             stackMode = stackMode,
         ) ?: return
-        val crossingEvents = state.hierarchyCrossingEventDeliveries(previousPointerPath)
+        val crossingEvents = if (configured.pointerUngrabResult.released) {
+            emptyList()
+        } else {
+            state.hierarchyCrossingEventDeliveries(previousPointerPath)
+        }
         if (configured.changed) {
             sendConfigureNotify(state.configureNotifySinks(configured))
+            sendCrossing(configured.pointerUngrabResult.crossingDispatches)
             sendCrossing(crossingEvents)
             if (configured.sizeChanged) sendExposeIfViewable(configured.window)
         }
