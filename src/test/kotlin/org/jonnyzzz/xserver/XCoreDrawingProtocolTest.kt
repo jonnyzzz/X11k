@@ -15055,7 +15055,9 @@ class XCoreDrawingProtocolTest {
                 assertSetupFailure(server.localPort)
 
                 out.write(changeHostsRequest(0, ipv4))
+                out.write(listHostsRequest())
                 out.flush()
+                assertListHosts(readReply(socket.getInputStream()), sequence = 11, enabled = true, serverInterpreted, ipv6, ipv4)
                 assertSetupSuccess(server.localPort)
 
                 out.write(setAccessControlRequest(0))
@@ -15071,18 +15073,18 @@ class XCoreDrawingProtocolTest {
                 out.write(listHostsRequest())
                 out.flush()
 
-                assertListHosts(readReply(socket.getInputStream()), sequence = 12, enabled = false, serverInterpreted, ipv6, ipv4)
+                assertListHosts(readReply(socket.getInputStream()), sequence = 13, enabled = false, serverInterpreted, ipv6, ipv4)
 
-                assertError(socket.getInputStream(), error = 2, opcode = 111, badValue = 2, sequence = 13)
-                assertError(socket.getInputStream(), error = 16, opcode = 111, badValue = 0, sequence = 14)
-                assertError(socket.getInputStream(), error = 16, opcode = 110, badValue = 0, sequence = 15)
-                assertError(socket.getInputStream(), error = 16, opcode = 109, badValue = 0, sequence = 16)
-                assertError(socket.getInputStream(), error = 2, opcode = 109, badValue = 2, sequence = 17)
-                assertError(socket.getInputStream(), error = 2, opcode = 109, badValue = 4, sequence = 18)
-                assertError(socket.getInputStream(), error = 2, opcode = 109, badValue = 3, sequence = 19)
-                assertError(socket.getInputStream(), error = 2, opcode = 109, badValue = 5, sequence = 20)
+                assertError(socket.getInputStream(), error = 2, opcode = 111, badValue = 2, sequence = 14)
+                assertError(socket.getInputStream(), error = 16, opcode = 111, badValue = 0, sequence = 15)
+                assertError(socket.getInputStream(), error = 16, opcode = 110, badValue = 0, sequence = 16)
+                assertError(socket.getInputStream(), error = 16, opcode = 109, badValue = 0, sequence = 17)
+                assertError(socket.getInputStream(), error = 2, opcode = 109, badValue = 2, sequence = 18)
+                assertError(socket.getInputStream(), error = 2, opcode = 109, badValue = 4, sequence = 19)
+                assertError(socket.getInputStream(), error = 2, opcode = 109, badValue = 3, sequence = 20)
+                assertError(socket.getInputStream(), error = 2, opcode = 109, badValue = 5, sequence = 21)
 
-                assertListHosts(readReply(socket.getInputStream()), sequence = 21, enabled = false, serverInterpreted, ipv6, ipv4)
+                assertListHosts(readReply(socket.getInputStream()), sequence = 22, enabled = false, serverInterpreted, ipv6, ipv4)
             }
             server.close()
             serverThread.join(1_000)
