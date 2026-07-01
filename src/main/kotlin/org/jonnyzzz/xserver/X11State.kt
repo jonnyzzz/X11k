@@ -4887,10 +4887,11 @@ internal class X11State(
         val sourceFramebuffer = source.drawableFramebuffer() ?: return null
         val sourceSnapshot = if (sourceDrawableId == snapshotDrawableId) sourceFramebuffer.snapshot() else null
         val sourceSubwindowClip = source.sourceSubwindowClip()
-        return { x, y ->
+        return sampler@{ x, y ->
             if (source.insidePictureClip(x, y)) {
                 if (source.alphaMap == 0) {
                     val sample = transformedPoint(x + 0.5, y + 0.5, source.transform)
+                        ?: return@sampler scaledPixel(0, colorScale, alphaScale)
                     val sourceWidth = sourceSnapshot?.width ?: sourceFramebuffer.width
                     val sourceHeight = sourceSnapshot?.height ?: sourceFramebuffer.height
                     if (source.scaleClipsBaseDrawable(sample.first, sample.second, sourceWidth, sourceHeight)) {
@@ -5017,6 +5018,7 @@ internal class X11State(
         sourceSubwindowClip: ((Int, Int) -> Boolean)? = null,
     ): Int? {
         val sample = transformedPoint(x, y, transform)
+            ?: return if (alphaMap == 0) 0 else null
         if (!insideSourceSubwindowClip(sourceSubwindowClip, sample.first, sample.second, framebuffer.width, framebuffer.height)) return null
         if (alphaMapClipsBaseDrawable(sample.first, sample.second, framebuffer.width, framebuffer.height)) return null
         val pixel = framebuffer.samplePixelAt(sample.first, sample.second, repeat, effectiveFilterName)
@@ -5032,6 +5034,7 @@ internal class X11State(
         sourceSubwindowClip: ((Int, Int) -> Boolean)? = null,
     ): Int? {
         val sample = transformedPoint(x, y, transform)
+            ?: return if (alphaMap == 0) 0 else null
         if (!insideSourceSubwindowClip(sourceSubwindowClip, sample.first, sample.second, snapshot.width, snapshot.height)) return null
         if (alphaMapClipsBaseDrawable(sample.first, sample.second, snapshot.width, snapshot.height)) return null
         val pixel = snapshot.samplePixelAt(sample.first, sample.second, repeat, effectiveFilterName)
@@ -5047,6 +5050,7 @@ internal class X11State(
         sourceSubwindowClip: ((Int, Int) -> Boolean)? = null,
     ): Int? {
         val sample = transformedPoint(x, y, transform)
+            ?: return if (alphaMap == 0) 0 else null
         if (!insideSourceSubwindowClip(sourceSubwindowClip, sample.first, sample.second, framebuffer.width, framebuffer.height)) return null
         if (alphaMapClipsBaseDrawable(sample.first, sample.second, framebuffer.width, framebuffer.height)) return null
         val pixel = framebuffer.samplePixelAt(sample.first, sample.second, repeat, effectiveFilterName)
@@ -5413,13 +5417,15 @@ internal class X11State(
         val denominator = dx * dx + dy * dy
         val fixedStops = pairs.map { it.first.fixedToDouble() }
         return { x, y ->
-            val position = if (denominator == 0.0) {
-                0.0
-            } else {
-                val sample = transformedPoint(x + 0.5, y + 0.5, transform)
-                val sampleX = sample.first
-                val sampleY = sample.second
-                ((sampleX - x1) * dx + (sampleY - y1) * dy) / denominator
+            val sample = transformedPoint(x + 0.5, y + 0.5, transform)
+            val position = sample?.let { transformed ->
+                if (denominator == 0.0) {
+                    0.0
+                } else {
+                    val sampleX = transformed.first
+                    val sampleY = transformed.second
+                    ((sampleX - x1) * dx + (sampleY - y1) * dy) / denominator
+                }
             }
             sampleGradientPosition(position, pairs, fixedStops, repeat)
         }
@@ -5440,12 +5446,14 @@ internal class X11State(
         val a = dx * dx + dy * dy - dr * dr
         val fixedStops = pairs.map { it.first.fixedToDouble() }
         return { x, y ->
-            val sample = transformedPoint(x + 0.5, y + 0.5, transform)
-            val pdx = sample.first - x1
-            val pdy = sample.second - y1
-            val b = pdx * dx + pdy * dy + r1 * dr
-            val c = pdx * pdx + pdy * pdy - r1 * r1
-            sampleGradientPosition(radialPosition(a, b, c, r1, dr, repeat), pairs, fixedStops, repeat)
+            val position = transformedPoint(x + 0.5, y + 0.5, transform)?.let { sample ->
+                val pdx = sample.first - x1
+                val pdy = sample.second - y1
+                val b = pdx * dx + pdy * dy + r1 * dr
+                val c = pdx * pdx + pdy * pdy - r1 * r1
+                radialPosition(a, b, c, r1, dr, repeat)
+            }
+            sampleGradientPosition(position, pairs, fixedStops, repeat)
         }
     }
 
@@ -5481,9 +5489,10 @@ internal class X11State(
         val angleRadians = angle.fixedToDouble() / 180.0 * PI
         val fixedStops = pairs.map { it.first.fixedToDouble() }
         return { x, y ->
-            val sample = transformedPoint(x + 0.5, y + 0.5, transform)
-            val radians = normalizeRadians(atan2(sample.second - centerY, sample.first - centerX) + angleRadians)
-            val position = 1.0 - radians / (2.0 * PI)
+            val position = transformedPoint(x + 0.5, y + 0.5, transform)?.let { sample ->
+                val radians = normalizeRadians(atan2(sample.second - centerY, sample.first - centerX) + angleRadians)
+                1.0 - radians / (2.0 * PI)
+            }
             sampleGradientPosition(position, pairs, fixedStops, repeat)
         }
     }
@@ -5491,7 +5500,7 @@ internal class X11State(
     private fun normalizeRadians(radians: Double): Double =
         ((radians % (2.0 * PI)) + (2.0 * PI)) % (2.0 * PI)
 
-    private fun transformedPoint(x: Double, y: Double, transform: List<Int>): Pair<Double, Double> {
+    private fun transformedPoint(x: Double, y: Double, transform: List<Int>): Pair<Double, Double>? {
         if (transform.size != 9 || transform == IdentityTransform) return x to y
         val m00 = transform[0].fixedToDouble()
         val m01 = transform[1].fixedToDouble()
@@ -5503,7 +5512,7 @@ internal class X11State(
         val m21 = transform[7].fixedToDouble()
         val m22 = transform[8].fixedToDouble()
         val w = m20 * x + m21 * y + m22
-        if (w == 0.0) return x to y
+        if (w == 0.0) return null
         return ((m00 * x + m01 * y + m02) / w) to ((m10 * x + m11 * y + m12) / w)
     }
 
