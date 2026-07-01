@@ -4812,6 +4812,7 @@ internal class X11Connection(
             sendResizeRequest(resizeRequests)
         }
         val previousCursor = state.displayedCursorSnapshot()
+        val previousPointerPath = state.pointerCrossingPath()
         val configured = state.configureWindow(
             window.id,
             x = x,
@@ -4822,8 +4823,10 @@ internal class X11Connection(
             siblingId = siblingId,
             stackMode = stackMode,
         ) ?: return
+        val crossingEvents = state.hierarchyCrossingEventDeliveries(previousPointerPath)
         if (configured.changed) {
             sendConfigureNotify(state.configureNotifySinks(configured))
+            sendCrossing(crossingEvents)
             if (configured.sizeChanged) sendExposeIfViewable(configured.window)
         }
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))

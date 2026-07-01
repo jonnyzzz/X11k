@@ -11596,6 +11596,61 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ConfigureWindow emits hierarchy crossing events after configure notify when pointer target changes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val first = WindowId
+                val second = WindowId + 1
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(first, x = 10, y = 10, width = 20, height = 20))
+                out.write(createWindowRequest(second, x = 50, y = 10, width = 20, height = 20))
+                out.write(mapWindowRequest(first))
+                out.write(mapWindowRequest(second))
+                out.write(warpPointerRequest(destinationWindow = first, destinationX = 5, destinationY = 5))
+                out.write(changeWindowEventMaskRequest(first, XEventMasks.LeaveWindow))
+                out.write(changeWindowEventMaskRequest(second, XEventMasks.StructureNotify or XEventMasks.EnterWindow))
+                out.write(configureWindowRequest(second, 0x0003, 10, 10))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, first)
+                assertMapAndExpose(input, second)
+                assertConfigureNotify(input.readExactly(32), sequence = 8, window = second, aboveSibling = first, x = 10, y = 10)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 8,
+                    detail = XNotifyDetail.Nonlinear,
+                    eventWindow = first,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                )
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Nonlinear,
+                    eventWindow = second,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                )
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt() and 0xff)
+                assertEquals(9, u16le(pointer, 2))
+                assertEquals(second, u32le(pointer, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ConfigureWindow restacks with stack mode and final geometry`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
