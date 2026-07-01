@@ -9901,6 +9901,214 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ReparentWindow emits hierarchy crossing during automatic unmap`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val oldParent = WindowId + 417
+                val newParent = WindowId + 418
+                val child = WindowId + 419
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(oldParent, width = 60, height = 60))
+                out.write(createWindowRequest(newParent, x = 80, y = 0, width = 30, height = 30))
+                out.write(
+                    createWindowRequest(
+                        child,
+                        parent = oldParent,
+                        x = 10,
+                        y = 10,
+                        width = 20,
+                        height = 20,
+                        eventMask = XEventMasks.StructureNotify or XEventMasks.LeaveWindow,
+                    ),
+                )
+                out.write(mapWindowRequest(oldParent))
+                out.write(mapWindowRequest(newParent))
+                out.write(mapWindowRequest(child))
+                out.write(warpPointerRequest(destinationWindow = child, destinationX = 5, destinationY = 5))
+                out.write(reparentWindowRequest(child, newParent, x = 0, y = 0))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertExpose(input.readExactly(32), oldParent)
+                assertExpose(input.readExactly(32), newParent)
+                assertSelectedMapAndExpose(input, child)
+                assertUnmapNotify(input.readExactly(32), sequence = 8, eventWindow = child, window = child)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 8,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = child,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                )
+                assertReparentNotify(
+                    input.readExactly(32),
+                    sequence = 8,
+                    eventWindow = child,
+                    window = child,
+                    parent = newParent,
+                    x = 0,
+                    y = 0,
+                )
+                assertMapNotify(input.readExactly(32), sequence = 8, eventWindow = child, window = child)
+                assertExpose(input.readExactly(32), child)
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt() and 0xff)
+                assertEquals(9, u16le(pointer, 2))
+                assertEquals(oldParent, u32le(pointer, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ReparentWindow emits hierarchy crossing during automatic remap`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val oldParent = WindowId + 420
+                val newParent = WindowId + 421
+                val child = WindowId + 422
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(oldParent, x = 80, y = 0, width = 30, height = 30))
+                out.write(createWindowRequest(newParent, width = 60, height = 60))
+                out.write(
+                    createWindowRequest(
+                        child,
+                        parent = oldParent,
+                        width = 20,
+                        height = 20,
+                        eventMask = XEventMasks.StructureNotify or XEventMasks.EnterWindow,
+                    ),
+                )
+                out.write(mapWindowRequest(oldParent))
+                out.write(mapWindowRequest(newParent))
+                out.write(mapWindowRequest(child))
+                out.write(warpPointerRequest(destinationWindow = newParent, destinationX = 15, destinationY = 15))
+                out.write(reparentWindowRequest(child, newParent, x = 10, y = 10))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertExpose(input.readExactly(32), oldParent)
+                assertExpose(input.readExactly(32), newParent)
+                assertSelectedMapAndExpose(input, child)
+                assertUnmapNotify(input.readExactly(32), sequence = 8, eventWindow = child, window = child)
+                assertReparentNotify(
+                    input.readExactly(32),
+                    sequence = 8,
+                    eventWindow = child,
+                    window = child,
+                    parent = newParent,
+                    x = 10,
+                    y = 10,
+                )
+                assertMapNotify(input.readExactly(32), sequence = 8, eventWindow = child, window = child)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = child,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                )
+                assertExpose(input.readExactly(32), child)
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt() and 0xff)
+                assertEquals(9, u16le(pointer, 2))
+                assertEquals(newParent, u32le(pointer, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ReparentWindow emits only ungrab crossing when automatic unmap releases pointer grab`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val oldParent = WindowId + 423
+                val newParent = WindowId + 424
+                val child = WindowId + 425
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(oldParent, width = 60, height = 60))
+                out.write(createWindowRequest(newParent, x = 80, y = 0, width = 30, height = 30))
+                out.write(
+                    createWindowRequest(
+                        child,
+                        parent = oldParent,
+                        x = 10,
+                        y = 10,
+                        width = 20,
+                        height = 20,
+                        eventMask = XEventMasks.StructureNotify or XEventMasks.LeaveWindow,
+                    ),
+                )
+                out.write(mapWindowRequest(oldParent))
+                out.write(mapWindowRequest(newParent))
+                out.write(mapWindowRequest(child))
+                out.write(warpPointerRequest(destinationWindow = child, destinationX = 5, destinationY = 5))
+                out.write(grabPointerRequest(child))
+                out.write(reparentWindowRequest(child, newParent, x = 0, y = 0))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertExpose(input.readExactly(32), oldParent)
+                assertExpose(input.readExactly(32), newParent)
+                assertSelectedMapAndExpose(input, child)
+                val grab = readReply(input)
+                assertEquals(1, grab[0].toInt() and 0xff)
+                assertEquals(XGrabStatus.Success, grab[1].toInt() and 0xff)
+                assertUnmapNotify(input.readExactly(32), sequence = 9, eventWindow = child, window = child)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 8,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = child,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                    mode = XNotifyMode.Ungrab,
+                )
+                assertReparentNotify(
+                    input.readExactly(32),
+                    sequence = 9,
+                    eventWindow = child,
+                    window = child,
+                    parent = newParent,
+                    x = 0,
+                    y = 0,
+                )
+                assertMapNotify(input.readExactly(32), sequence = 9, eventWindow = child, window = child)
+                assertExpose(input.readExactly(32), child)
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt() and 0xff)
+                assertEquals(10, u16le(pointer, 2))
+                assertEquals(oldParent, u32le(pointer, 12))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ChangeWindowAttributes validates value mask length and recovers stream`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

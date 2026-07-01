@@ -4625,10 +4625,17 @@ internal class X11Connection(
         val previousCursor = state.displayedCursorSnapshot()
         val wasMapped = window.mapped
         if (wasMapped) {
+            val previousPointerPath = state.pointerCrossingPath()
             val notifications = state.unmapNotifySinks(window)
             val unmapResult = state.unmapWindow(windowId)
+            val crossingEvents = if (unmapResult.pointerUngrabResult.released) {
+                emptyList()
+            } else {
+                state.hierarchyCrossingEventDeliveries(previousPointerPath)
+            }
             sendUnmapNotify(notifications)
             sendCrossing(unmapResult.pointerUngrabResult.crossingDispatches)
+            sendCrossing(crossingEvents)
             sendFocusEvents(unmapResult.focusDispatches)
         }
         val oldParentId = window.parentId
@@ -4640,12 +4647,15 @@ internal class X11Connection(
         ) ?: return
         sendReparentNotify(state.reparentNotifySinks(reparented, oldParentId))
         if (wasMapped) {
+            val previousPointerPath = state.pointerCrossingPath()
             val notifications = state.mapNotifySinks(reparented)
             val mapped = state.mapWindow(windowId) ?: return
+            val crossingEvents = state.hierarchyCrossingEventDeliveries(previousPointerPath)
             if (mapped.windowClass == XWindowClass.InputOutput) {
                 state.paintWindowBackground(mapped.id)
             }
             sendMapNotify(notifications)
+            sendCrossing(crossingEvents)
             sendExposeForViewableMappedSubtree(mapped)
         }
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
