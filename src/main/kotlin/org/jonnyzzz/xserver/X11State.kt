@@ -8044,6 +8044,7 @@ internal class X11State(
     }
 
     private fun visibleBounds(window: XWindow, absoluteX: Int, absoluteY: Int): XRectangle? {
+        if (!window.mapped) return null
         var left = absoluteX
         var top = absoluteY
         var right = absoluteX + window.width
@@ -8052,6 +8053,7 @@ internal class X11State(
         val visited = mutableSetOf(window.id)
         while (parentId != 0 && visited.add(parentId)) {
             val parent = windows[parentId] ?: break
+            if (!parent.mapped) return null
             val parentAbsolute = absolutePosition(parent)
             left = maxOf(left, parentAbsolute.first)
             top = maxOf(top, parentAbsolute.second)

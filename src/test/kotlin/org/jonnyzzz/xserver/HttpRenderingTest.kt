@@ -703,6 +703,58 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `screen svg hides mapped child while ancestor is unmapped`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val parent = 0x0020_0010
+                val child = 0x0020_0011
+                val sibling = 0x0020_0012
+                out.write(createWindowRequest(parent, x = 10, y = 10, width = 90, height = 70))
+                out.write(changePropertyRequest(parent, "hidden parent"))
+                out.write(createWindowRequest(child, parent = parent, x = 5, y = 5, width = 40, height = 30))
+                out.write(changePropertyRequest(child, "mapped hidden child"))
+                out.write(createWindowRequest(sibling, x = 140, y = 10, width = 50, height = 40))
+                out.write(changePropertyRequest(sibling, "visible sibling"))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(mapWindowRequest(sibling))
+                out.write(unmapWindowRequest(parent))
+                out.flush()
+                Thread.sleep(100)
+
+                val hiddenJson = httpGet(server.localPort, "/state.json").body
+                assertContains(hiddenJson, """"id":"0x200010"""")
+                assertContains(hiddenJson, """"visibleWidth":0,"visibleHeight":0,"mapped":false""")
+                assertContains(hiddenJson, """"id":"0x200011","parent":"0x200010"""")
+                assertContains(hiddenJson, """"visibleWidth":0,"visibleHeight":0,"mapped":true""")
+                val hiddenSvg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(hiddenSvg, "visible sibling")
+                assertFalse(hiddenSvg.contains("mapped hidden child"), "Mapped child of an unmapped parent must not render on the screen")
+
+                out.write(mapWindowRequest(parent))
+                out.flush()
+                Thread.sleep(100)
+
+                val visibleJson = httpGet(server.localPort, "/state.json").body
+                assertContains(visibleJson, """"id":"0x200010"""")
+                assertContains(visibleJson, """"visibleX":10,"visibleY":10,"visibleWidth":90,"visibleHeight":70,"mapped":true""")
+                assertContains(visibleJson, """"id":"0x200011","parent":"0x200010"""")
+                assertContains(visibleJson, """"visibleX":15,"visibleY":15,"visibleWidth":40,"visibleHeight":30,"mapped":true""")
+                val visibleSvg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(visibleSvg, "mapped hidden child")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `window preview svg paints each child window layer in stacking order`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1096,6 +1148,14 @@ class HttpRenderingTest {
     private fun mapWindowRequest(id: Int): ByteArray {
         val bytes = ByteArray(8)
         bytes[0] = 8
+        put16le(bytes, 2, 2)
+        put32le(bytes, 4, id)
+        return bytes
+    }
+
+    private fun unmapWindowRequest(id: Int): ByteArray {
+        val bytes = ByteArray(8)
+        bytes[0] = 10
         put16le(bytes, 2, 2)
         put32le(bytes, 4, id)
         return bytes
