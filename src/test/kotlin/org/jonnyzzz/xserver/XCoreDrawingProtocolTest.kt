@@ -7661,7 +7661,7 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
-    fun `WarpPointer emits normal crossing events between selected sibling windows`() {
+    fun `WarpPointer emits crossing events without MotionNotify between selected sibling windows`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             Socket("127.0.0.1", server.localPort).use { socket ->
@@ -7708,7 +7708,7 @@ class XCoreDrawingProtocolTest {
                     eventY = 7,
                 )
                 val queryPointer = input.readExactly(32)
-                assertEquals(1, queryPointer[0].toInt() and 0xff)
+                assertEquals(1, queryPointer[0].toInt() and 0xff, "cross-window warp must not emit MotionNotify before QueryPointer")
                 assertEquals(9, u16le(queryPointer, 2))
             }
             server.close()
