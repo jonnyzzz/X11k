@@ -16708,8 +16708,19 @@ class XCoreDrawingProtocolTest {
                 appSocket.soTimeout = 2_000
                 setup(appSocket)
                 val appWindow = WindowId + 200
-                appSocket.getOutputStream().write(createWindowRequest(appWindow, width = 20, height = 15))
-                appSocket.getOutputStream().flush()
+                val appOut = appSocket.getOutputStream()
+                appOut.write(
+                    createWindowRequest(
+                        appWindow,
+                        width = 20,
+                        height = 15,
+                        eventMask = XEventMasks.StructureNotify or XEventMasks.Exposure,
+                    ),
+                )
+                appOut.write(queryPointerRequest())
+                appOut.flush()
+                val appInput = appSocket.getInputStream()
+                assertEquals(2, u16le(readReply(appInput), 2))
 
                 val frameWindow = WindowId + 201
                 Socket("127.0.0.1", server.localPort).use { frameSocket ->
@@ -16720,9 +16731,31 @@ class XCoreDrawingProtocolTest {
                     out.write(reparentWindowRequest(appWindow, frameWindow, x = 7, y = 8))
                     out.write(changeSaveSetRequest(0, appWindow))
                     out.flush()
+                    assertReparentNotify(
+                        appInput.readExactly(32),
+                        sequence = 2,
+                        eventWindow = appWindow,
+                        window = appWindow,
+                        parent = frameWindow,
+                        x = 7,
+                        y = 8,
+                        overrideRedirect = false,
+                    )
                     closeClientAndWait(frameSocket)
                 }
 
+                assertReparentNotify(
+                    appInput.readExactly(32),
+                    sequence = 2,
+                    eventWindow = appWindow,
+                    window = appWindow,
+                    parent = X11Ids.RootWindow,
+                    x = 17,
+                    y = 18,
+                    overrideRedirect = false,
+                )
+                assertMapNotify(appInput.readExactly(32), sequence = 2, eventWindow = appWindow, window = appWindow)
+                assertExpose(appInput.readExactly(32), sequence = 2, windowId = appWindow, x = 0, y = 0, width = 20, height = 15)
                 assertEquals(listOf(appWindow), waitForRootChildren(server.localPort) { it == listOf(appWindow) })
                 val json = httpGet(server.localPort, "/state.json")
                 val windowJson = json.substringAfter(windowJsonId(appWindow)).substringBefore("}")
@@ -16731,6 +16764,61 @@ class XCoreDrawingProtocolTest {
                     windowJsonId(appWindow) + ""","parent":"${X11Ids.RootWindow.toJsonHex()}","x":17,"y":18,"localX":17,"localY":18,"width":20,"height":15""",
                 )
                 assertContains(windowJson, """"mapped":true""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeSaveSet preserves mixed map and unmap event order when frame owner closes`() {
+        XServer(ServerOptions(port = 0, width = 160, height = 120)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { appSocket ->
+                appSocket.soTimeout = 2_000
+                setup(appSocket)
+                val mapOnClose = WindowId + 202
+                val unmapOnClose = WindowId + 203
+                val appOut = appSocket.getOutputStream()
+                val appInput = appSocket.getInputStream()
+                val appMask = XEventMasks.StructureNotify or XEventMasks.Exposure
+                appOut.write(createWindowRequest(mapOnClose, width = 20, height = 15, eventMask = appMask))
+                appOut.write(createWindowRequest(unmapOnClose, x = 30, y = 0, width = 20, height = 15, eventMask = appMask))
+                appOut.write(queryPointerRequest())
+                appOut.flush()
+                assertEquals(3, u16le(readReply(appInput), 2))
+
+                val frameWindow = WindowId + 204
+                Socket("127.0.0.1", server.localPort).use { frameSocket ->
+                    frameSocket.soTimeout = 2_000
+                    setup(frameSocket)
+                    val frameOut = frameSocket.getOutputStream()
+                    frameOut.write(createWindowRequest(frameWindow, x = 10, y = 10, width = 80, height = 60))
+                    frameOut.write(reparentWindowRequest(mapOnClose, frameWindow, x = 7, y = 8))
+                    frameOut.write(reparentWindowRequest(unmapOnClose, frameWindow, x = 37, y = 8))
+                    frameOut.write(mapWindowRequest(unmapOnClose))
+                    frameOut.write(changeSaveSetRequest(0, mapOnClose))
+                    frameOut.write(
+                        xfixesChangeSaveSetRequest(
+                            mode = 0,
+                            target = XFixes.SaveSetNearest,
+                            map = XFixes.SaveSetUnmap,
+                            window = unmapOnClose,
+                        ),
+                    )
+                    frameOut.flush()
+
+                    assertReparentNotify(appInput.readExactly(32), sequence = 3, eventWindow = mapOnClose, window = mapOnClose, parent = frameWindow, x = 7, y = 8)
+                    assertReparentNotify(appInput.readExactly(32), sequence = 3, eventWindow = unmapOnClose, window = unmapOnClose, parent = frameWindow, x = 37, y = 8)
+                    assertMapNotify(appInput.readExactly(32), sequence = 3, eventWindow = unmapOnClose, window = unmapOnClose)
+                    closeClientAndWait(frameSocket)
+                }
+
+                assertReparentNotify(appInput.readExactly(32), sequence = 3, eventWindow = mapOnClose, window = mapOnClose, parent = X11Ids.RootWindow, x = 17, y = 18)
+                assertMapNotify(appInput.readExactly(32), sequence = 3, eventWindow = mapOnClose, window = mapOnClose)
+                assertExpose(appInput.readExactly(32), sequence = 3, windowId = mapOnClose, x = 0, y = 0, width = 20, height = 15)
+                assertReparentNotify(appInput.readExactly(32), sequence = 3, eventWindow = unmapOnClose, window = unmapOnClose, parent = X11Ids.RootWindow, x = 47, y = 18)
+                assertUnmapNotify(appInput.readExactly(32), sequence = 3, eventWindow = unmapOnClose, window = unmapOnClose)
             }
             server.close()
             serverThread.join(1_000)
@@ -17336,8 +17424,18 @@ class XCoreDrawingProtocolTest {
                 setup(appSocket)
                 val appWindow = WindowId + 36
                 val appOut = appSocket.getOutputStream()
-                appOut.write(createWindowRequest(appWindow, width = 20, height = 15))
+                appOut.write(
+                    createWindowRequest(
+                        appWindow,
+                        width = 20,
+                        height = 15,
+                        eventMask = XEventMasks.StructureNotify or XEventMasks.Exposure,
+                    ),
+                )
+                appOut.write(queryPointerRequest())
                 appOut.flush()
+                val appInput = appSocket.getInputStream()
+                assertEquals(2, u16le(readReply(appInput), 2))
 
                 val frameWindow = WindowId + 38
                 Socket("127.0.0.1", server.localPort).use { frameSocket ->
@@ -17350,6 +17448,15 @@ class XCoreDrawingProtocolTest {
                     frameOut.write(setCloseDownModeRequest(1))
                     frameOut.write(queryTreeRequest(X11Ids.RootWindow))
                     frameOut.flush()
+                    assertReparentNotify(
+                        appInput.readExactly(32),
+                        sequence = 2,
+                        eventWindow = appWindow,
+                        window = appWindow,
+                        parent = frameWindow,
+                        x = 7,
+                        y = 8,
+                    )
                     assertTrue(frameWindow in treeChildren(readReply(frameSocket.getInputStream())))
                     closeClientAndWait(frameSocket)
                 }
@@ -17369,6 +17476,17 @@ class XCoreDrawingProtocolTest {
                     assertFalse(frameWindow in children)
                 }
 
+                assertReparentNotify(
+                    appInput.readExactly(32),
+                    sequence = 2,
+                    eventWindow = appWindow,
+                    window = appWindow,
+                    parent = X11Ids.RootWindow,
+                    x = 17,
+                    y = 18,
+                )
+                assertMapNotify(appInput.readExactly(32), sequence = 2, eventWindow = appWindow, window = appWindow)
+                assertExpose(appInput.readExactly(32), sequence = 2, windowId = appWindow, x = 0, y = 0, width = 20, height = 15)
                 val json = httpGet(server.localPort, "/state.json")
                 assertContains(
                     json,

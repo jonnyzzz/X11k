@@ -4662,6 +4662,7 @@ internal class X11Connection(
             state.hierarchyCrossingEventDeliveries(previousPointerPath)
         }
         ownedResources.removeAll(removal.removedResources)
+        sendSaveSetSideEffects(removal.saveSetSideEffects)
         sendFocusEvents(removal.focusDispatches)
         sendDestroyNotify(removal.destroyNotifyDispatches)
         sendCrossing(removal.pointerUngrabResult.crossingDispatches)
@@ -4683,6 +4684,7 @@ internal class X11Connection(
                 state.hierarchyCrossingEventDeliveries(previousPointerPath)
             }
             ownedResources.removeAll(removal.removedResources)
+            sendSaveSetSideEffects(removal.saveSetSideEffects)
             sendFocusEvents(removal.focusDispatches)
             sendDestroyNotify(removal.destroyNotifyDispatches)
             sendCrossing(removal.pointerUngrabResult.crossingDispatches)
@@ -11299,6 +11301,7 @@ internal class X11Connection(
     }
 
     private fun sendResourceRemoval(removal: XResourceRemoval) {
+        sendSaveSetSideEffects(removal.saveSetSideEffects)
         sendFocusEvents(removal.focusDispatches)
         sendDestroyNotify(removal.destroyNotifyDispatches)
         sendCrossing(removal.pointerUngrabResult.crossingDispatches)
@@ -11306,6 +11309,19 @@ internal class X11Connection(
         sendXFixesCursorNotify(removal.xfixesCursorNotifyDispatches)
         sendSyncAlarmNotifyDispatches(removal.syncAlarmNotifyDispatches)
         sendColormapNotify(removal.colormapNotifyDispatches)
+    }
+
+    private fun sendSaveSetSideEffects(sideEffects: List<XSaveSetSideEffect>) {
+        for (sideEffect in sideEffects) {
+            when (sideEffect) {
+                is XSaveSetSideEffect.ReparentNotify -> sendReparentNotify(sideEffect.dispatches)
+                is XSaveSetSideEffect.UnmapNotify -> sendUnmapNotify(sideEffect.dispatches)
+                is XSaveSetSideEffect.MapNotify -> sendMapNotify(sideEffect.dispatches)
+                is XSaveSetSideEffect.Crossing -> sendCrossing(sideEffect.dispatches)
+                is XSaveSetSideEffect.Expose -> sendExposeToSubscribers(sideEffect.windows)
+                is XSaveSetSideEffect.Focus -> sendFocusEvents(sideEffect.dispatches)
+            }
+        }
     }
 
     private fun sendRetainedResourceRemoval(previousPointerPath: List<XWindow>, remove: () -> XResourceRemoval) {

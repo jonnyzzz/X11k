@@ -12,6 +12,7 @@ internal data class XWindowRemoval(
     val removedResources: Set<Int>,
     val destroyNotifyDispatches: List<XDestroyNotifyDispatch>,
     val focusDispatches: List<XFocusDispatch> = emptyList(),
+    val saveSetSideEffects: List<XSaveSetSideEffect> = emptyList(),
     val pointerUngrabResult: XPointerUngrabResult = XPointerUngrabResult(),
     val xfixesSelectionNotifyDispatches: List<XXFixesSelectionNotifyDispatch> = emptyList(),
     val xfixesCursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
@@ -21,11 +22,21 @@ internal data class XResourceRemoval(
     val destroyNotifyDispatches: List<XDestroyNotifyDispatch>,
     val xfixesSelectionNotifyDispatches: List<XXFixesSelectionNotifyDispatch>,
     val focusDispatches: List<XFocusDispatch> = emptyList(),
+    val saveSetSideEffects: List<XSaveSetSideEffect> = emptyList(),
     val pointerUngrabResult: XPointerUngrabResult = XPointerUngrabResult(),
     val xfixesCursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
     val syncAlarmNotifyDispatches: List<XSyncAlarmNotifyDispatch> = emptyList(),
     val colormapNotifyDispatches: List<XColormapNotifyDispatch> = emptyList(),
 )
+
+internal sealed class XSaveSetSideEffect {
+    data class ReparentNotify(val dispatches: List<XReparentNotifyDispatch>) : XSaveSetSideEffect()
+    data class UnmapNotify(val dispatches: List<XUnmapNotifyDispatch>) : XSaveSetSideEffect()
+    data class MapNotify(val dispatches: List<XMapNotifyDispatch>) : XSaveSetSideEffect()
+    data class Crossing(val dispatches: List<Pair<XEventSink, XCrossingEvent>>) : XSaveSetSideEffect()
+    data class Expose(val windows: List<XWindowExposure>) : XSaveSetSideEffect()
+    data class Focus(val dispatches: List<XFocusDispatch>) : XSaveSetSideEffect()
+}
 
 internal data class XEventSinkRemoval(
     val xfixesSelectionNotifyDispatches: List<XXFixesSelectionNotifyDispatch>,
@@ -318,7 +329,7 @@ internal class X11State(
             emptyList()
         }
         // Build focus events before windows and their event selections are removed.
-        val focusDispatches = saveSetProcessing.focusDispatches + revertFocusIfWindowRemoved(removed)
+        val focusDispatches = revertFocusIfWindowRemoved(removed)
         for (windowId in removed) {
             windows.remove(windowId)
             windowOwners.remove(windowId)
@@ -359,6 +370,7 @@ internal class X11State(
             removedResources = removedResources,
             destroyNotifyDispatches = destroyNotifyDispatches,
             focusDispatches = focusDispatches,
+            saveSetSideEffects = saveSetProcessing.sideEffects,
             pointerUngrabResult = pointerUngrabResult,
             xfixesSelectionNotifyDispatches = xfixesSelectionNotifyDispatches,
             xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatches + xfixesCursorNotifyDispatchesIfChanged(previousCursor),
@@ -373,7 +385,7 @@ internal class X11State(
         saveSets.remove(owner)
         val inputGrabRelease = releaseInputGrabs(owner)
         return removal.copy(
-            focusDispatches = saveSetProcessing.focusDispatches + removal.focusDispatches,
+            saveSetSideEffects = saveSetProcessing.sideEffects + removal.saveSetSideEffects,
             pointerUngrabResult = removal.pointerUngrabResult + inputGrabRelease,
             xfixesCursorNotifyDispatches = saveSetProcessing.xfixesCursorNotifyDispatches + removal.xfixesCursorNotifyDispatches + inputGrabRelease.cursorNotifyDispatches,
         )
@@ -393,6 +405,7 @@ internal class X11State(
         val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
         val syncAlarmNotifyDispatches = mutableListOf<XSyncAlarmNotifyDispatch>()
         val focusDispatches = mutableListOf<XFocusDispatch>()
+        val saveSetSideEffects = mutableListOf<XSaveSetSideEffect>()
         var pointerUngrabResult = XPointerUngrabResult()
         for (id in resourceIds) {
             if (id != X11Ids.RootWindow && windows.containsKey(id)) {
@@ -400,6 +413,7 @@ internal class X11State(
                 removedWindows += removal.removedResources
                 destroyNotifyDispatches += removal.destroyNotifyDispatches
                 focusDispatches += removal.focusDispatches
+                saveSetSideEffects += removal.saveSetSideEffects
                 pointerUngrabResult = pointerUngrabResult + removal.pointerUngrabResult
                 xfixesSelectionNotifyDispatches += removal.xfixesSelectionNotifyDispatches
                 xfixesCursorNotifyDispatches += removal.xfixesCursorNotifyDispatches
@@ -440,6 +454,7 @@ internal class X11State(
             destroyNotifyDispatches = destroyNotifyDispatches,
             xfixesSelectionNotifyDispatches = xfixesSelectionNotifyDispatches,
             focusDispatches = focusDispatches,
+            saveSetSideEffects = saveSetSideEffects,
             pointerUngrabResult = pointerUngrabResult,
             xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatches,
             syncAlarmNotifyDispatches = syncAlarmNotifyDispatches,
@@ -477,7 +492,7 @@ internal class X11State(
         val saveSetProcessing = processRetainedSaveSet(retained.value)
         val removal = removeClientResources(retained.value.resourceIds)
         return removal.copy(
-            focusDispatches = saveSetProcessing.focusDispatches + removal.focusDispatches,
+            saveSetSideEffects = saveSetProcessing.sideEffects + removal.saveSetSideEffects,
             xfixesCursorNotifyDispatches = saveSetProcessing.xfixesCursorNotifyDispatches + removal.xfixesCursorNotifyDispatches,
         )
     }
@@ -493,15 +508,17 @@ internal class X11State(
         val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
         val syncAlarmNotifyDispatches = mutableListOf<XSyncAlarmNotifyDispatch>()
         val focusDispatches = mutableListOf<XFocusDispatch>()
+        val saveSetSideEffects = mutableListOf<XSaveSetSideEffect>()
         var pointerUngrabResult = XPointerUngrabResult()
         for (id in temporaryIds) {
             val retained = retainedClients.remove(id) ?: continue
             val saveSetProcessing = processRetainedSaveSet(retained)
-            focusDispatches += saveSetProcessing.focusDispatches
+            saveSetSideEffects += saveSetProcessing.sideEffects
             xfixesCursorNotifyDispatches += saveSetProcessing.xfixesCursorNotifyDispatches
             val removal = removeClientResources(retained.resourceIds)
             destroyNotifyDispatches += removal.destroyNotifyDispatches
             focusDispatches += removal.focusDispatches
+            saveSetSideEffects += removal.saveSetSideEffects
             pointerUngrabResult = pointerUngrabResult + removal.pointerUngrabResult
             xfixesSelectionNotifyDispatches += removal.xfixesSelectionNotifyDispatches
             xfixesCursorNotifyDispatches += removal.xfixesCursorNotifyDispatches
@@ -511,6 +528,7 @@ internal class X11State(
             destroyNotifyDispatches = destroyNotifyDispatches,
             xfixesSelectionNotifyDispatches = xfixesSelectionNotifyDispatches,
             focusDispatches = focusDispatches,
+            saveSetSideEffects = saveSetSideEffects,
             pointerUngrabResult = pointerUngrabResult,
             xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatches,
             syncAlarmNotifyDispatches = syncAlarmNotifyDispatches,
@@ -8055,7 +8073,7 @@ internal class X11State(
     private fun processSaveSet(saveSet: List<XSaveSetEntry>, resourceIds: Set<Int>): XSaveSetProcessing {
         if (saveSet.isEmpty()) return XSaveSetProcessing()
         val previousCursor = displayedCursorIdentity()
-        val focusDispatches = mutableListOf<XFocusDispatch>()
+        val sideEffects = mutableListOf<XSaveSetSideEffect>()
         val ownedWindows = resourceIds.filterTo(linkedSetOf()) { it != X11Ids.RootWindow && windows.containsKey(it) }
         for (entry in saveSet) {
             val windowId = entry.windowId
@@ -8068,18 +8086,40 @@ internal class X11State(
                     closestNonOwnedAncestor(window.parentId, ownedWindows)
                 }
                 val parentAbsolute = windows[parentId]?.let { absolutePosition(it) } ?: (0 to 0)
+                val oldParentId = window.parentId
                 window.parentId = parentId
                 window.x = absolute.first - parentAbsolute.first
                 window.y = absolute.second - parentAbsolute.second
+                sideEffects += XSaveSetSideEffect.ReparentNotify(reparentNotifySinks(window, oldParentId))
             }
             if (entry.map == XSaveSetMap.Map && !window.mapped) {
+                val previousPointerPath = pointerCrossingPath()
+                val notifications = mapNotifySinks(window)
                 mapWindow(windowId)
+                if (window.windowClass == XWindowClass.InputOutput) {
+                    paintWindowBackground(window.id)
+                }
+                sideEffects += XSaveSetSideEffect.MapNotify(notifications)
+                sideEffects += XSaveSetSideEffect.Crossing(hierarchyCrossingEventDeliveries(previousPointerPath))
+                if (window.windowClass == XWindowClass.InputOutput && windowIsViewable(window.id)) {
+                    sideEffects += XSaveSetSideEffect.Expose(exposedWindowsInSubtree(window, listOf(windowBoundsInRoot(window))))
+                }
             } else if (entry.map == XSaveSetMap.Unmap && window.mapped) {
-                focusDispatches += unmapWindow(windowId).focusDispatches
+                val previousPointerPath = pointerCrossingPath()
+                val notifications = unmapNotifySinks(window)
+                val exposeWindows = unmapExposeWindows(windowId)
+                val unmapResult = unmapWindow(windowId)
+                sideEffects += XSaveSetSideEffect.UnmapNotify(notifications)
+                sideEffects += XSaveSetSideEffect.Crossing(unmapResult.pointerUngrabResult.crossingDispatches)
+                if (!unmapResult.pointerUngrabResult.released) {
+                    sideEffects += XSaveSetSideEffect.Crossing(hierarchyCrossingEventDeliveries(previousPointerPath))
+                }
+                sideEffects += XSaveSetSideEffect.Expose(exposeWindows)
+                sideEffects += XSaveSetSideEffect.Focus(unmapResult.focusDispatches)
             }
         }
         return XSaveSetProcessing(
-            focusDispatches = focusDispatches,
+            sideEffects = sideEffects,
             xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatchesIfChanged(previousCursor),
         )
     }
@@ -8090,14 +8130,14 @@ internal class X11State(
             .filter { resources -> resources.resourceIds.any { it in windowIds && windows.containsKey(it) } }
             .toList()
         val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
-        val focusDispatches = mutableListOf<XFocusDispatch>()
+        val sideEffects = mutableListOf<XSaveSetSideEffect>()
         for (resources in retained) {
             val saveSetProcessing = processRetainedSaveSet(resources)
-            focusDispatches += saveSetProcessing.focusDispatches
+            sideEffects += saveSetProcessing.sideEffects
             xfixesCursorNotifyDispatches += saveSetProcessing.xfixesCursorNotifyDispatches
         }
         return XSaveSetProcessing(
-            focusDispatches = focusDispatches,
+            sideEffects = sideEffects,
             xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatches,
         )
     }
@@ -8749,7 +8789,7 @@ private data class XSaveSetEntry(
 )
 
 private data class XSaveSetProcessing(
-    val focusDispatches: List<XFocusDispatch> = emptyList(),
+    val sideEffects: List<XSaveSetSideEffect> = emptyList(),
     val xfixesCursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
 )
 
