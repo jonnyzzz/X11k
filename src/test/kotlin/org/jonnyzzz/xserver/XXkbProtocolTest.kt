@@ -1734,11 +1734,36 @@ class XXkbProtocolTest {
     }
 
     @Test
-    fun `XKEYBOARD SetNamedIndicator accepts fixed request without creating indicators`() {
+    fun `XKEYBOARD SetNamedIndicator tracks named indicator state`() {
         withServer { socket, _ ->
             val indicator = 0x0020_0400
             val out = socket.getOutputStream()
             out.write(setNamedIndicatorRequest(indicator, setState = true, on = true, setMap = true, createMap = true))
+            out.write(getNamedIndicatorRequest(indicator))
+            out.write(getIndicatorStateRequest())
+            out.flush()
+
+            val named = readReply(socket.getInputStream())
+            assertEquals(2, u16le(named, 2))
+            assertEquals(indicator, u32le(named, 8))
+            assertEquals(1, named[12].toInt() and 0xff)
+            assertEquals(1, named[13].toInt() and 0xff)
+            assertEquals(1, named[14].toInt() and 0xff)
+            assertEquals(0, named[15].toInt() and 0xff)
+            assertEquals(1, named[28].toInt() and 0xff)
+
+            val state = readReply(socket.getInputStream())
+            assertEquals(3, u16le(state, 2))
+            assertEquals(1, u32le(state, 8))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetNamedIndicator does not create absent indicator state when createMap is false`() {
+        withServer { socket, _ ->
+            val indicator = 0x0020_0400
+            val out = socket.getOutputStream()
+            out.write(setNamedIndicatorRequest(indicator, setState = true, on = true, setMap = false, createMap = false))
             out.write(getNamedIndicatorRequest(indicator))
             out.write(getIndicatorStateRequest())
             out.flush()
@@ -1753,6 +1778,120 @@ class XXkbProtocolTest {
             val state = readReply(socket.getInputStream())
             assertEquals(3, u16le(state, 2))
             assertEquals(0, u32le(state, 8))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD IndicatorStateNotify reports selected SetNamedIndicator state changes`() {
+        withServer { socket, _ ->
+            val indicator = 0x0020_0400
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventIndicatorStateNotify,
+                    details = selectEvents32Details(0x1, 0x1),
+                ),
+            )
+            out.write(setNamedIndicatorRequest(indicator, setState = true, on = true, setMap = false, createMap = true))
+            out.write(getIndicatorStateRequest())
+            out.flush()
+
+            assertIndicatorStateNotify(socket.getInputStream().readExactly(32), sequence = 2, state = 1, changed = 1)
+            val state = readReply(socket.getInputStream())
+            assertEquals(3, u16le(state, 2))
+            assertEquals(1, u32le(state, 8))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD IndicatorStateNotify is suppressed when selected details do not intersect changed indicators`() {
+        withServer { socket, _ ->
+            val indicator = 0x0020_0400
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventIndicatorStateNotify,
+                    details = selectEvents32Details(0x2, 0x2),
+                ),
+            )
+            out.write(setNamedIndicatorRequest(indicator, setState = true, on = true, setMap = false, createMap = true))
+            out.write(getIndicatorStateRequest())
+            out.flush()
+
+            val state = readReply(socket.getInputStream())
+            assertEquals(3, u16le(state, 2))
+            assertEquals(1, u32le(state, 8))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetNamedIndicator toggles existing indicator state without createMap`() {
+        withServer { socket, _ ->
+            val indicator = 0x0020_0400
+            val out = socket.getOutputStream()
+            out.write(setNamedIndicatorRequest(indicator, setState = true, on = true, setMap = false, createMap = true))
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventIndicatorStateNotify,
+                    details = selectEvents32Details(0x1, 0x1),
+                ),
+            )
+            out.write(setNamedIndicatorRequest(indicator, setState = true, on = false, setMap = false, createMap = false))
+            out.write(getIndicatorStateRequest())
+            out.flush()
+
+            assertIndicatorStateNotify(socket.getInputStream().readExactly(32), sequence = 3, state = 0, changed = 1)
+            val state = readReply(socket.getInputStream())
+            assertEquals(4, u16le(state, 2))
+            assertEquals(0, u32le(state, 8))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SelectEvents clear removes IndicatorStateNotify selection`() {
+        withServer { socket, _ ->
+            val indicator = 0x0020_0400
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventIndicatorStateNotify,
+                    selectAll = XXkb.EventIndicatorStateNotify,
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventIndicatorStateNotify,
+                    clear = XXkb.EventIndicatorStateNotify,
+                ),
+            )
+            out.write(setNamedIndicatorRequest(indicator, setState = true, on = true, setMap = false, createMap = true))
+            out.write(getIndicatorStateRequest())
+            out.flush()
+
+            val state = readReply(socket.getInputStream())
+            assertEquals(4, u16le(state, 2))
+            assertEquals(1, u32le(state, 8))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SelectEvents validates IndicatorStateNotify details and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventIndicatorStateNotify,
+                    details = selectEvents32Details(0x1, 0x2),
+                ),
+            )
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SelectEvents)
+            val version = readReply(socket.getInputStream())
+            assertEquals(2, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+            assertEquals(XXkb.MajorVersion, u16le(version, 8))
         }
     }
 
@@ -3488,6 +3627,20 @@ class XXkbProtocolTest {
     private fun assertIndicatorMapNotify(event: ByteArray, sequence: Int, state: Int, changed: Int) {
         assertEquals(XXkb.FirstEvent, event[0].toInt() and 0xff)
         assertEquals(XXkb.IndicatorMapNotify, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(0, event[8].toInt() and 0xff)
+        assertEquals(0, event[9].toInt() and 0xff)
+        assertEquals(0, u16le(event, 10))
+        assertEquals(state, u32le(event, 12))
+        assertEquals(changed, u32le(event, 16))
+        assertEquals(0, u32le(event, 20))
+        assertEquals(0, u32le(event, 24))
+        assertEquals(0, u32le(event, 28))
+    }
+
+    private fun assertIndicatorStateNotify(event: ByteArray, sequence: Int, state: Int, changed: Int) {
+        assertEquals(XXkb.FirstEvent, event[0].toInt() and 0xff)
+        assertEquals(XXkb.IndicatorStateNotify, event[1].toInt() and 0xff)
         assertEquals(sequence, u16le(event, 2))
         assertEquals(0, event[8].toInt() and 0xff)
         assertEquals(0, event[9].toInt() and 0xff)

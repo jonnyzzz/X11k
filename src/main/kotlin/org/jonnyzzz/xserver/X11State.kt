@@ -103,6 +103,7 @@ internal class X11State(
     private val xkbMapNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbStateNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbControlsNotifyInputs = linkedMapOf<XEventSink, Int>()
+    private val xkbIndicatorStateNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbIndicatorMapNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbBellNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val screenSaverInputs = linkedMapOf<XEventSink, Int>()
@@ -173,6 +174,8 @@ internal class X11State(
     private var modifierMapping = XModifierMapping.Default
     private var keyboardMapping = XKeyboardMapping.Default
     private var keyboardControl = XKeyboardControlSettings.Default
+    private var xkbIndicatorState = 0
+    private val xkbNamedIndicatorIndexes = linkedMapOf<Int, Int>()
     private var activePointerGrab: XInputGrab? = null
     private var frozenPointerOwner: XEventSink? = null
     private val frozenPointerButtons = mutableListOf<XQueuedPointerButton>()
@@ -655,6 +658,20 @@ internal class X11State(
             xkbControlsNotifyInputs.remove(owner)
         } else {
             xkbControlsNotifyInputs[owner] = eventMask
+        }
+    }
+
+    @Synchronized
+    fun selectXkbIndicatorStateNotifyInput(owner: XEventSink, clear: Boolean, selectAll: Boolean, affect: Int?, selected: Int) {
+        var eventMask = xkbIndicatorStateNotifyInputs[owner] ?: 0
+        if (clear) eventMask = 0
+        if (selectAll) eventMask = XXkb.AllIndicatorEventsMask
+        if (affect != null) eventMask = (eventMask and affect.inv()) or (selected and affect)
+
+        if (eventMask == 0) {
+            xkbIndicatorStateNotifyInputs.remove(owner)
+        } else {
+            xkbIndicatorStateNotifyInputs[owner] = eventMask
         }
     }
 
@@ -1563,6 +1580,18 @@ internal class X11State(
     }
 
     @Synchronized
+    fun xkbIndicatorStateNotifyDispatches(event: XXkbIndicatorStateNotifyEvent): List<XXkbIndicatorStateNotifyDispatch> {
+        if (event.changed == 0) return emptyList()
+        return xkbIndicatorStateNotifyInputs.mapNotNull { (sink, selected) ->
+            if ((selected and event.changed) == 0) {
+                null
+            } else {
+                XXkbIndicatorStateNotifyDispatch(sink = sink, event = event)
+            }
+        }
+    }
+
+    @Synchronized
     fun xkbIndicatorMapNotifyDispatches(event: XXkbIndicatorMapNotifyEvent): List<XXkbIndicatorMapNotifyDispatch> {
         if (event.changed == 0) return emptyList()
         return xkbIndicatorMapNotifyInputs.mapNotNull { (sink, selected) ->
@@ -1572,6 +1601,40 @@ internal class X11State(
                 XXkbIndicatorMapNotifyDispatch(sink = sink, event = event)
             }
         }
+    }
+
+    @Synchronized
+    fun xkbIndicatorState(): Int = xkbIndicatorState
+
+    @Synchronized
+    fun xkbNamedIndicator(indicator: Int): XkbNamedIndicator? {
+        val index = xkbNamedIndicatorIndexes[indicator] ?: return null
+        val mask = 1 shl index
+        return XkbNamedIndicator(
+            indicator = indicator,
+            index = index,
+            on = (xkbIndicatorState and mask) != 0,
+        )
+    }
+
+    @Synchronized
+    fun setXkbNamedIndicatorState(indicator: Int, on: Boolean, createIfMissing: Boolean): XXkbIndicatorStateNotifyEvent? {
+        val existingIndex = xkbNamedIndicatorIndexes[indicator]
+        if (existingIndex == null && !createIfMissing) return null
+        val index = existingIndex ?: run {
+            if (xkbNamedIndicatorIndexes.size >= 32) return null
+            xkbNamedIndicatorIndexes.size.also { xkbNamedIndicatorIndexes[indicator] = it }
+        }
+        val mask = 1 shl index
+        val previous = xkbIndicatorState
+        xkbIndicatorState = if (on) xkbIndicatorState or mask else xkbIndicatorState and mask.inv()
+        val changed = previous xor xkbIndicatorState
+        if (changed == 0) return null
+        return XXkbIndicatorStateNotifyEvent(
+            timestamp = syncServerTime(),
+            state = xkbIndicatorState,
+            changed = changed,
+        )
     }
 
     @Synchronized
@@ -2391,6 +2454,7 @@ internal class X11State(
         xkbMapNotifyInputs.remove(sink)
         xkbStateNotifyInputs.remove(sink)
         xkbControlsNotifyInputs.remove(sink)
+        xkbIndicatorStateNotifyInputs.remove(sink)
         xkbIndicatorMapNotifyInputs.remove(sink)
         xkbBellNotifyInputs.remove(sink)
         screenSaverInputs.remove(sink)
@@ -10948,6 +11012,12 @@ internal data class XAnimatedCursorElement(
 
 private fun rgb16Hex(red: Int, green: Int, blue: Int): String =
     "0x${red.toUInt().toString(16).padStart(4, '0')}${green.toUInt().toString(16).padStart(4, '0')}${blue.toUInt().toString(16).padStart(4, '0')}"
+
+internal data class XkbNamedIndicator(
+    val indicator: Int,
+    val index: Int,
+    val on: Boolean,
+)
 
 internal data class XWindowSnapshot(
     val id: Int,

@@ -37,6 +37,7 @@ internal object XXkb {
     const val MapNotify = 1
     const val StateNotify = 2
     const val ControlsNotify = 3
+    const val IndicatorStateNotify = 4
     const val IndicatorMapNotify = 5
     const val BellNotify = 8
 
