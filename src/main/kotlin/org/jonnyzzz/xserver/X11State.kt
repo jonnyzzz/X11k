@@ -934,8 +934,7 @@ internal class X11State(
     private fun rootSpaceWindowVisibilityRegions(window: XWindow): List<XRectangleCommand> {
         val absolute = absolutePosition(window)
         val bounding = window.boundingShape ?: defaultWindowShapeRegion(window, XFixes.ShapeBounding)
-        val visible = window.clipShape?.let { clip -> intersectClipLists(bounding, clip) } ?: bounding
-        return visible.map { rectangle ->
+        return bounding.map { rectangle ->
             XRectangleCommand(
                 x = absolute.first + rectangle.x,
                 y = absolute.second + rectangle.y,
