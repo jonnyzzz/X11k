@@ -177,6 +177,130 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD BellNotify reports selected accepted bell requests`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventBellNotify,
+                    details = selectEvents8Details(
+                        affect = XXkb.AllBellEventsMask,
+                        selected = XXkb.AllBellEventsMask,
+                    ),
+                ),
+            )
+            out.write(
+                xkbBellRequest(
+                    percent = 50,
+                    bellClass = 2,
+                    bellId = 3,
+                    eventOnly = true,
+                    pitch = 440,
+                    duration = 120,
+                    name = 0x12345678,
+                    window = X11Ids.RootWindow,
+                ),
+            )
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertBellNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 2,
+                bellClass = 2,
+                bellId = 3,
+                percent = 50,
+                pitch = 440,
+                duration = 120,
+                name = 0x12345678,
+                window = X11Ids.RootWindow,
+                eventOnly = true,
+            )
+            assertEquals(3, u16le(readReply(socket.getInputStream()), 2))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD BellNotify suppresses invalid and unselected bell requests`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventBellNotify,
+                    details = selectEvents8Details(
+                        affect = XXkb.AllBellEventsMask,
+                        selected = 0,
+                    ),
+                ),
+            )
+            out.write(xkbBellRequest(percent = 50))
+            out.write(useExtensionRequest())
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventBellNotify,
+                    details = selectEvents8Details(
+                        affect = XXkb.AllBellEventsMask,
+                        selected = XXkb.AllBellEventsMask,
+                    ),
+                ),
+            )
+            out.write(xkbBellRequest(percent = 101))
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertEquals(3, u16le(readReply(socket.getInputStream()), 2))
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 101, sequence = 5, minorOpcode = XXkb.Bell)
+            assertEquals(6, u16le(readReply(socket.getInputStream()), 2))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD BellNotify suppresses forced bells and rejects forced event-only bells`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventBellNotify,
+                    selectAll = XXkb.EventBellNotify,
+                ),
+            )
+            out.write(xkbBellRequest(percent = 50, forceSound = true))
+            out.write(useExtensionRequest())
+            out.write(xkbBellRequest(percent = 50, forceSound = true, eventOnly = true))
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertEquals(3, u16le(readReply(socket.getInputStream()), 2))
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.Bell)
+            assertEquals(5, u16le(readReply(socket.getInputStream()), 2))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SelectEvents clear removes BellNotify selection`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventBellNotify,
+                    selectAll = XXkb.EventBellNotify,
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventBellNotify,
+                    clear = XXkb.EventBellNotify,
+                ),
+            )
+            out.write(xkbBellRequest(percent = 50))
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertEquals(4, u16le(readReply(socket.getInputStream()), 2))
+        }
+    }
+
+    @Test
     fun `XKEYBOARD Bell validates fixed length and signed percent range`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -2383,18 +2507,28 @@ class XXkbProtocolTest {
     private fun selectEvents8Details(affect: Int, selected: Int): ByteArray =
         byteArrayOf(affect.toByte(), selected.toByte())
 
-    private fun xkbBellRequest(percent: Int): ByteArray {
+    private fun xkbBellRequest(
+        percent: Int,
+        bellClass: Int = 0,
+        bellId: Int = 0,
+        forceSound: Boolean = false,
+        eventOnly: Boolean = false,
+        pitch: Int = 0,
+        duration: Int = 0,
+        name: Int = 0,
+        window: Int = 0,
+    ): ByteArray {
         val body = ByteArray(24)
         put16le(body, 0, 0x0100)
-        put16le(body, 2, 0)
-        put16le(body, 4, 0)
+        put16le(body, 2, bellClass)
+        put16le(body, 4, bellId)
         body[6] = percent.toByte()
-        body[7] = 0
-        body[8] = 0
-        put16le(body, 10, 0)
-        put16le(body, 12, 0)
-        put32le(body, 16, 0)
-        put32le(body, 20, 0)
+        body[7] = (if (forceSound) 1 else 0).toByte()
+        body[8] = (if (eventOnly) 1 else 0).toByte()
+        put16le(body, 10, pitch)
+        put16le(body, 12, duration)
+        put32le(body, 16, name)
+        put32le(body, 20, window)
         return request(XXkb.MajorOpcode, XXkb.Bell, body)
     }
 
@@ -3100,6 +3234,35 @@ class XXkbProtocolTest {
         assertEquals(0, event[25].toInt() and 0xff)
         assertEquals(XXkb.MajorOpcode, event[26].toInt() and 0xff)
         assertEquals(XXkb.SetControls, event[27].toInt() and 0xff)
+        assertEquals(0, u32le(event, 28))
+    }
+
+    private fun assertBellNotify(
+        event: ByteArray,
+        sequence: Int,
+        bellClass: Int,
+        bellId: Int,
+        percent: Int,
+        pitch: Int,
+        duration: Int,
+        name: Int,
+        window: Int,
+        eventOnly: Boolean,
+    ) {
+        assertEquals(XXkb.FirstEvent, event[0].toInt() and 0xff)
+        assertEquals(XXkb.BellNotify, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(0, event[8].toInt() and 0xff)
+        assertEquals(bellClass, event[9].toInt() and 0xff)
+        assertEquals(bellId, event[10].toInt() and 0xff)
+        assertEquals(percent, event[11].toInt())
+        assertEquals(pitch, u16le(event, 12))
+        assertEquals(duration, u16le(event, 14))
+        assertEquals(name, u32le(event, 16))
+        assertEquals(window, u32le(event, 20))
+        assertEquals(if (eventOnly) 1 else 0, event[24].toInt() and 0xff)
+        assertEquals(0, event[25].toInt() and 0xff)
+        assertEquals(0, u16le(event, 26))
         assertEquals(0, u32le(event, 28))
     }
 

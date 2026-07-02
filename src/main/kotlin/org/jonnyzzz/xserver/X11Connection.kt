@@ -1598,6 +1598,15 @@ internal class X11Connection(
                 selected = details.controlsNotifySelected,
             )
         }
+        if ((affectWhich and XXkb.EventBellNotify) != 0) {
+            state.selectXkbBellNotifyInput(
+                owner = this,
+                clear = (clear and XXkb.EventBellNotify) != 0,
+                selectAll = (selectAll and XXkb.EventBellNotify) != 0,
+                affect = details.bellNotifyAffect,
+                selected = details.bellNotifySelected,
+            )
+        }
     }
 
     private fun validateXkbSelectEventDetails(
@@ -1613,6 +1622,8 @@ internal class X11Connection(
         var stateNotifySelected = 0
         var controlsNotifyAffect: Int? = null
         var controlsNotifySelected = 0
+        var bellNotifyAffect: Int? = null
+        var bellNotifySelected = 0
 
         fun require(bytes: Int): Boolean {
             val next = offset + bytes
@@ -1656,7 +1667,7 @@ internal class X11Connection(
             return true
         }
 
-        fun details8(mask: Int): Boolean {
+        fun details8(mask: Int, captureBellNotify: Boolean = false): Boolean {
             if ((detailsMask and mask) == 0) return true
             if (!require(2)) return false
             val affect = body[offset - 2].toInt() and 0xff
@@ -1664,6 +1675,10 @@ internal class X11Connection(
             if ((selected and affect.inv()) != 0) {
                 writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
                 return false
+            }
+            if (captureBellNotify) {
+                bellNotifyAffect = affect
+                bellNotifySelected = selected
             }
             return true
         }
@@ -1675,7 +1690,7 @@ internal class X11Connection(
         if (!details32(XXkb.EventIndicatorMapNotify)) return null
         if (!details16(XXkb.EventNamesNotify)) return null
         if (!details8(XXkb.EventCompatMapNotify)) return null
-        if (!details8(XXkb.EventBellNotify)) return null
+        if (!details8(XXkb.EventBellNotify, captureBellNotify = true)) return null
         if (!details8(XXkb.EventActionMessage)) return null
         if (!details16(XXkb.EventAccessXNotify)) return null
         if (!details16(XXkb.EventExtensionDeviceNotify)) return null
@@ -1689,6 +1704,8 @@ internal class X11Connection(
             stateNotifySelected = stateNotifySelected,
             controlsNotifyAffect = controlsNotifyAffect,
             controlsNotifySelected = controlsNotifySelected,
+            bellNotifyAffect = bellNotifyAffect,
+            bellNotifySelected = bellNotifySelected,
         )
     }
 
@@ -1696,6 +1713,25 @@ internal class X11Connection(
         if (body.size != 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.Bell, badValue = 0)
         val percent = body[6].toInt()
         if (percent !in -100..100) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.Bell, badValue = percent)
+        val forceSound = body[7].toInt() != 0
+        val eventOnly = body[8].toInt() != 0
+        if (forceSound && eventOnly) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.Bell, badValue = 0)
+        if (forceSound) return
+        sendXkbBellNotify(
+            state.xkbBellNotifyDispatches(
+                XXkbBellNotifyEvent(
+                    timestamp = state.syncServerTime(),
+                    bellClass = byteOrder.u16(body, 2),
+                    bellId = byteOrder.u16(body, 4),
+                    percent = percent,
+                    pitch = byteOrder.u16(body, 10),
+                    duration = byteOrder.u16(body, 12),
+                    name = byteOrder.u32(body, 16),
+                    windowId = byteOrder.u32(body, 20),
+                    eventOnly = eventOnly,
+                ),
+            ),
+        )
     }
 
     private fun xkbGetState(body: ByteArray, majorOpcode: Int) {
@@ -1758,6 +1794,8 @@ internal class X11Connection(
         val stateNotifySelected: Int,
         val controlsNotifyAffect: Int?,
         val controlsNotifySelected: Int,
+        val bellNotifyAffect: Int?,
+        val bellNotifySelected: Int,
     )
 
     private fun xkbGetControls(body: ByteArray, majorOpcode: Int) {
@@ -10169,6 +10207,27 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendXkbBellNotifyEvent(event: XXkbBellNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = XXkb.FirstEvent.toByte()
+        bytes[1] = XXkb.BellNotify.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.timestamp)
+        bytes[8] = 0
+        bytes[9] = event.bellClass.toByte()
+        bytes[10] = event.bellId.toByte()
+        bytes[11] = event.percent.toByte()
+        byteOrder.put16(bytes, 12, event.pitch)
+        byteOrder.put16(bytes, 14, event.duration)
+        byteOrder.put32(bytes, 16, event.name)
+        byteOrder.put32(bytes, 20, event.windowId)
+        bytes[24] = (if (event.eventOnly) 1 else 0).toByte()
+        bytes[25] = 0
+        byteOrder.put16(bytes, 26, 0)
+        byteOrder.put32(bytes, 28, 0)
+        write(bytes)
+    }
+
     override fun sendSyncCounterNotifyEvent(event: XSyncCounterNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = (XSync.FirstEvent + 0).toByte()
@@ -11499,6 +11558,12 @@ internal class X11Connection(
     private fun sendXkbControlsNotify(notifications: List<XXkbControlsNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendXkbControlsNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendXkbBellNotify(notifications: List<XXkbBellNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendXkbBellNotifyEvent(notification.event) }
         }
     }
 

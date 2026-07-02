@@ -102,6 +102,7 @@ internal class X11State(
     private val randrInputs = linkedMapOf<XEventSink, LinkedHashMap<Int, Int>>()
     private val xkbStateNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbControlsNotifyInputs = linkedMapOf<XEventSink, Int>()
+    private val xkbBellNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val screenSaverInputs = linkedMapOf<XEventSink, Int>()
     private val windowOwners = linkedMapOf<Int, XEventSink>()
     private val resourceOwners = linkedMapOf<Int, XEventSink>()
@@ -638,6 +639,20 @@ internal class X11State(
             xkbControlsNotifyInputs.remove(owner)
         } else {
             xkbControlsNotifyInputs[owner] = eventMask
+        }
+    }
+
+    @Synchronized
+    fun selectXkbBellNotifyInput(owner: XEventSink, clear: Boolean, selectAll: Boolean, affect: Int?, selected: Int) {
+        var eventMask = xkbBellNotifyInputs[owner] ?: 0
+        if (clear) eventMask = 0
+        if (selectAll) eventMask = XXkb.AllBellEventsMask
+        if (affect != null) eventMask = (eventMask and affect.inv()) or (selected and affect)
+
+        if (eventMask == 0) {
+            xkbBellNotifyInputs.remove(owner)
+        } else {
+            xkbBellNotifyInputs[owner] = eventMask
         }
     }
 
@@ -1506,6 +1521,16 @@ internal class X11State(
     }
 
     @Synchronized
+    fun xkbBellNotifyDispatches(event: XXkbBellNotifyEvent): List<XXkbBellNotifyDispatch> =
+        xkbBellNotifyInputs.mapNotNull { (sink, selected) ->
+            if ((selected and XXkb.AllBellEventsMask) == 0) {
+                null
+            } else {
+                XXkbBellNotifyDispatch(sink = sink, event = event)
+            }
+        }
+
+    @Synchronized
     fun queryKeymap(): ByteArray {
         val keys = ByteArray(32)
         for (keycode in pressedKeycodes) {
@@ -2311,6 +2336,7 @@ internal class X11State(
         randrInputs.remove(sink)
         xkbStateNotifyInputs.remove(sink)
         xkbControlsNotifyInputs.remove(sink)
+        xkbBellNotifyInputs.remove(sink)
         screenSaverInputs.remove(sink)
         if (screenSaverAttributes?.owner == sink) screenSaverAttributes = null
         screenSaverSuspensions.remove(sink)
