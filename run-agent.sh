@@ -96,6 +96,14 @@ Configuration (env variables):
   RUN_AGENT_RELIABILITY_PREAMBLE
                       Prepend local workflow/agent-reliability.md guidance to prompts
                       when present (default: 1, set 0 to disable)
+  RUN_AGENT_PREFLIGHT_WATCH
+                      Run watch-agents.sh once before launching a new agent, with
+                      stale diagnostics enabled (default: 1, set 0 to disable)
+  RUN_AGENT_PREFLIGHT_RECOVER_STALE
+                      During preflight watch, terminate and restart stale runs after
+                      diagnostics are captured (default: 0, set 1 to enable)
+  RUN_AGENT_PREFLIGHT_WATCH_LIMIT
+                      Number of recent runs scanned by preflight watch (default: 40)
 
 Exported to agent process:
   RUNS_DIR            Absolute path to the runs directory
@@ -180,6 +188,26 @@ unset CLAUDECODE
 
 RUN_AGENT_CLAUDE_SAFE_MODE="${RUN_AGENT_CLAUDE_SAFE_MODE:-1}"
 RUN_AGENT_CODEX_ISOLATED="${RUN_AGENT_CODEX_ISOLATED:-1}"
+RUN_AGENT_PREFLIGHT_WATCH="${RUN_AGENT_PREFLIGHT_WATCH:-1}"
+RUN_AGENT_PREFLIGHT_RECOVER_STALE="${RUN_AGENT_PREFLIGHT_RECOVER_STALE:-0}"
+RUN_AGENT_PREFLIGHT_WATCH_LIMIT="${RUN_AGENT_PREFLIGHT_WATCH_LIMIT:-40}"
+
+if [ "$RUN_AGENT_PREFLIGHT_WATCH" != "0" ] && \
+   [ -x "$BASE_DIR/watch-agents.sh" ] && \
+   [ "${RUN_AGENT_IN_PREFLIGHT_WATCH:-0}" != "1" ]; then
+  echo "RUN_AGENT_PREFLIGHT_WATCH=1"
+  env \
+    RUN_AGENT_IN_PREFLIGHT_WATCH=1 \
+    RUN_AGENT_WATCH_ONCE=1 \
+    RUN_AGENT_WATCH_LIMIT="$RUN_AGENT_PREFLIGHT_WATCH_LIMIT" \
+    RUN_AGENT_DIAGNOSE_STALE=1 \
+    RUN_AGENT_TERMINATE_STALE="$RUN_AGENT_PREFLIGHT_RECOVER_STALE" \
+    RUN_AGENT_RESTART_STALE="$RUN_AGENT_PREFLIGHT_RECOVER_STALE" \
+    "$BASE_DIR/watch-agents.sh" || {
+      _preflight_status=$?
+      echo "RUN_AGENT_PREFLIGHT_WATCH_EXIT=$_preflight_status" >&2
+    }
+fi
 
 # Build agent command array — properly quoted, no eval needed.
 # To add a new agent, add a case entry here and update BUILTIN_AGENTS above.

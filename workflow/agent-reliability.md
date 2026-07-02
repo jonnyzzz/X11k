@@ -48,6 +48,8 @@ Timeout and stale-agent recovery also terminate the full descendant process tree
 
 The 2026-07-01 Gemini scout stall was a runner progress-accounting bug layered on top of another idle agent CLI. The scout printed a few startup lines, then `watch-agents.sh` showed output ages growing past five minutes; `sample <pid>` showed Node idle in `uv__io_poll`/`kevent`, and `jps -lv` showed no active X server/test JVM. `RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300` did not fire because the runner only checked whether total output bytes were zero, not whether new bytes had appeared since the last poll. `run-agent.sh` now tracks the last output-size change, writes `OUTPUT_IDLE_SECONDS` to `heartbeat.txt`, and applies no-output diagnostics/timeouts to "no new bytes" after any earlier chatter.
 
+The 2026-07-02 recurrence exposed a root-agent tooling failure rather than a repo runner failure. A bounded `wait_agent` returned completed results for several old built-in subagents, but a later `close_agent` call against a non-responsive old subagent blocked the whole root turn for more than an hour. Do not use built-in subagent lifecycle tools as part of the Ralph loop. For repo work, start agents only through `run-agent.sh`, and recover them only through `watch-agents.sh` so every timeout has persisted stdout/stderr, `run-info.txt`, heartbeat state, process lists, and JVM thread dumps.
+
 ## Required Practice
 
 - Start long commands through `timeout` or with `RUN_AGENT_TIMEOUT_SECONDS` set.
@@ -81,6 +83,18 @@ The 2026-07-01 Gemini scout stall was a runner progress-accounting bug layered o
 - When a run times out, inspect the generated `DIAGNOSTICS=...` file in `run-info.txt` before retrying.
 - On macOS, install GNU coreutils or make sure `gtimeout` is available if you need hard time limits around watcher diagnostics. Without either `timeout` or `gtimeout`, the watcher still runs but cannot bound individual `jps`/`jcmd`/`jstack` calls.
 - Treat built-in subagents as scarce stateful resources. After a bounded `wait_agent`, close only agents that have returned a final status, and close them individually. Do not call `close_agent` for a non-responsive agent and do not wrap `close_agent` calls in a parallel tool batch; one blocked close can stall the whole root agent.
+- Run a one-shot diagnostic watcher before every new implementation/review batch:
+
+  ```bash
+  RUN_AGENT_WATCH_ONCE=1 RUN_AGENT_DIAGNOSE_STALE=1 ./watch-agents.sh
+  ```
+
+  If it reports stale active runs, rerun the same watcher with recovery enabled so diagnostics are captured before termination/restart:
+
+  ```bash
+  RUN_AGENT_WATCH_ONCE=1 RUN_AGENT_DIAGNOSE_STALE=1 \
+  RUN_AGENT_TERMINATE_STALE=1 RUN_AGENT_RESTART_STALE=1 ./watch-agents.sh
+  ```
 
 ## Runner Timeout Knobs
 
