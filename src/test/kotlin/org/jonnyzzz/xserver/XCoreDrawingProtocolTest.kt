@@ -16902,6 +16902,135 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CirculateWindow RaiseLowest redirects with top place without restacking`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val first = WindowId + 574
+                    val second = WindowId + 575
+                    val ownerOut = ownerSocket.getOutputStream()
+                    val ownerInput = ownerSocket.getInputStream()
+                    ownerOut.write(createWindowRequest(first, x = 0, y = 0, width = 30, height = 30))
+                    ownerOut.write(createWindowRequest(second, x = 10, y = 10, width = 30, height = 30))
+                    ownerOut.write(mapWindowRequest(first))
+                    ownerOut.write(mapWindowRequest(second))
+                    ownerOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    ownerOut.flush()
+
+                    assertMapAndExpose(ownerInput, first)
+                    assertMapAndExpose(ownerInput, second)
+                    assertEquals(listOf(first, second), treeChildren(readReply(ownerInput)))
+
+                    val observerOut = observerSocket.getOutputStream()
+                    val observerInput = observerSocket.getInputStream()
+                    observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureRedirect))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observerInput), 2))
+
+                    ownerOut.write(circulateWindowRequest(XCirculateResult.RaiseLowest, X11Ids.RootWindow))
+                    ownerOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    ownerOut.flush()
+
+                    assertCirculateRequest(
+                        observerInput.readExactly(32),
+                        sequence = 2,
+                        parent = X11Ids.RootWindow,
+                        window = first,
+                        place = XCirculateResult.Top,
+                    )
+                    assertEquals(listOf(first, second), treeChildren(readReply(ownerInput)))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CirculateWindow ignores requester SubstructureRedirect and restacks`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val first = WindowId + 576
+                val second = WindowId + 577
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(first, x = 0, y = 0, width = 30, height = 30))
+                out.write(createWindowRequest(second, x = 10, y = 10, width = 30, height = 30))
+                out.write(mapWindowRequest(first))
+                out.write(mapWindowRequest(second))
+                out.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureRedirect))
+                out.write(circulateWindowRequest(XCirculateResult.RaiseLowest, X11Ids.RootWindow))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.flush()
+
+                assertMapAndExpose(input, first)
+                assertMapAndExpose(input, second)
+                assertEquals(listOf(second, first), treeChildren(readReply(input)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CirculateWindow with no target sends no CirculateRequest and does not restack`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val first = WindowId + 578
+                    val second = WindowId + 579
+                    val ownerOut = ownerSocket.getOutputStream()
+                    val ownerInput = ownerSocket.getInputStream()
+                    ownerOut.write(createWindowRequest(first, x = 0, y = 0, width = 20, height = 20))
+                    ownerOut.write(createWindowRequest(second, x = 60, y = 60, width = 20, height = 20))
+                    ownerOut.write(mapWindowRequest(first))
+                    ownerOut.write(mapWindowRequest(second))
+                    ownerOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    ownerOut.flush()
+
+                    assertMapAndExpose(ownerInput, first)
+                    assertMapAndExpose(ownerInput, second)
+                    assertEquals(listOf(first, second), treeChildren(readReply(ownerInput)))
+
+                    val observerOut = observerSocket.getOutputStream()
+                    val observerInput = observerSocket.getInputStream()
+                    observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureRedirect))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observerInput), 2))
+
+                    ownerOut.write(circulateWindowRequest(XCirculateResult.RaiseLowest, X11Ids.RootWindow))
+                    ownerOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    ownerOut.flush()
+
+                    assertEquals(listOf(first, second), treeChildren(readReply(ownerInput)))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(3, u16le(readReply(observerInput), 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CirculateWindow delivers selected structure notifications without requester local event`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
