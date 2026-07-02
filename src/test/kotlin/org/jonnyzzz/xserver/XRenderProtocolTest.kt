@@ -11144,6 +11144,50 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER Transform samples linear gradient at fractional source coordinates`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = 1 to 0,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
+                out.write(
+                    renderTransform(
+                        GradientPictureId,
+                        PictureId,
+                        sourceQuad = listOf(0 to 0, 1 to 0, 1 to 1, 0 to 1),
+                        destinationQuad = listOf(0 to 0, 4 to 0, 4 to 1, 0 to 1),
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffdf_0020.toInt(), pixelAt(image, imageWidth = 4, x = 0, y = 0))
+                assertEquals(0xff9f_0060.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 0))
+                assertEquals(0xff60_009f.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 0))
+                assertEquals(0xff20_00df.toInt(), pixelAt(image, imageWidth = 4, x = 3, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER Transform honors source picture clip rectangles`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

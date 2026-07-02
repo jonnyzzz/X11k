@@ -5256,6 +5256,9 @@ internal class X11State(
     }
 
     private fun XPicture.gradientSampler(): ((x: Int, y: Int) -> Int)? =
+        gradientSamplerAt()?.let { sampler -> { x, y -> sampler(x + 0.5, y + 0.5) } }
+
+    private fun XPicture.gradientSamplerAt(): ((x: Double, y: Double) -> Int)? =
         linearGradient?.pixelSampler(repeat, transform)
             ?: radialGradient?.pixelSampler(repeat, transform)
             ?: conicalGradient?.pixelSampler(repeat, transform)
@@ -5448,10 +5451,10 @@ internal class X11State(
 
     private fun XPicture.sourcePixelSamplerAt(snapshotDrawableId: Int? = null, filterNameOverride: String? = null): ((x: Double, y: Double) -> Int?)? {
         solidPixel?.let { pixel -> return { x, y -> if (insidePictureClip(x, y)) withAlphaMap(pixel, x, y) else null } }
-        gradientSampler()?.let { sampler ->
+        gradientSamplerAt()?.let { sampler ->
             return { x, y ->
                 if (insidePictureClip(x, y)) {
-                    withAlphaMap(sampler(floor(x).toInt(), floor(y).toInt()), x, y)
+                    withAlphaMap(sampler(x, y), x, y)
                 } else {
                     null
                 }
@@ -5478,7 +5481,7 @@ internal class X11State(
         return x1 + (x2 - x1) * ((y - y1) / (y2 - y1))
     }
 
-    private fun XLinearGradient.pixelSampler(repeat: Int, transform: List<Int>): (x: Int, y: Int) -> Int {
+    private fun XLinearGradient.pixelSampler(repeat: Int, transform: List<Int>): (x: Double, y: Double) -> Int {
         val pairs = stops.zip(colors).sortedBy { it.first }
         if (pairs.isEmpty()) return { _, _ -> 0xff00_0000.toInt() }
         val x1 = p1.x.fixedToDouble()
@@ -5490,7 +5493,7 @@ internal class X11State(
         val denominator = dx * dx + dy * dy
         val fixedStops = pairs.map { it.first.fixedToDouble() }
         return { x, y ->
-            val sample = transformedPoint(x + 0.5, y + 0.5, transform)
+            val sample = transformedPoint(x, y, transform)
             val position = sample?.let { transformed ->
                 if (denominator == 0.0) {
                     0.0
@@ -5504,7 +5507,7 @@ internal class X11State(
         }
     }
 
-    private fun XRadialGradient.pixelSampler(repeat: Int, transform: List<Int>): (x: Int, y: Int) -> Int {
+    private fun XRadialGradient.pixelSampler(repeat: Int, transform: List<Int>): (x: Double, y: Double) -> Int {
         val pairs = stops.zip(colors).sortedBy { it.first }
         if (pairs.isEmpty()) return { _, _ -> 0xff00_0000.toInt() }
         val x1 = inner.center.x.fixedToDouble()
@@ -5519,7 +5522,7 @@ internal class X11State(
         val a = dx * dx + dy * dy - dr * dr
         val fixedStops = pairs.map { it.first.fixedToDouble() }
         return { x, y ->
-            val position = transformedPoint(x + 0.5, y + 0.5, transform)?.let { sample ->
+            val position = transformedPoint(x, y, transform)?.let { sample ->
                 val pdx = sample.first - x1
                 val pdy = sample.second - y1
                 val b = pdx * dx + pdy * dy + r1 * dr
@@ -5554,7 +5557,7 @@ internal class X11State(
         }
     }
 
-    private fun XConicalGradient.pixelSampler(repeat: Int, transform: List<Int>): (x: Int, y: Int) -> Int {
+    private fun XConicalGradient.pixelSampler(repeat: Int, transform: List<Int>): (x: Double, y: Double) -> Int {
         val pairs = stops.zip(colors).sortedBy { it.first }
         if (pairs.isEmpty()) return { _, _ -> 0xff00_0000.toInt() }
         val centerX = center.x.fixedToDouble()
@@ -5562,7 +5565,7 @@ internal class X11State(
         val angleRadians = angle.fixedToDouble() / 180.0 * PI
         val fixedStops = pairs.map { it.first.fixedToDouble() }
         return { x, y ->
-            val position = transformedPoint(x + 0.5, y + 0.5, transform)?.let { sample ->
+            val position = transformedPoint(x, y, transform)?.let { sample ->
                 val radians = normalizeRadians(atan2(sample.second - centerY, sample.first - centerX) + angleRadians)
                 1.0 - radians / (2.0 * PI)
             }
