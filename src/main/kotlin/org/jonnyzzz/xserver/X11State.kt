@@ -116,6 +116,10 @@ internal class X11State(
     private var pointerY: Int = 0
     private var pointerState: Int = 0
     private var keyboardModifierState: Int = 0
+    private var xkbLatchedModifiers: Int = 0
+    private var xkbLockedModifiers: Int = 0
+    private var xkbLatchedGroup: Int = 0
+    private var xkbLockedGroup: Int = 0
     private val pressedKeycodes = mutableSetOf<Int>()
     private val pressedLogicalButtons = mutableSetOf<Int>()
     private var inputTime: Int = 1
@@ -1422,9 +1426,30 @@ internal class X11State(
     @Synchronized
     fun keyboardPointerState(): XKeyboardPointerState =
         XKeyboardPointerState(
-            modifiers = keyboardModifierState,
+            baseModifiers = keyboardModifierState,
+            latchedModifiers = xkbLatchedModifiers,
+            lockedModifiers = xkbLockedModifiers,
+            latchedGroup = xkbLatchedGroup,
+            lockedGroup = xkbLockedGroup,
             pointerButtons = pointerState,
         )
+
+    @Synchronized
+    fun latchLockXkbState(
+        affectModLocks: Int,
+        modLocks: Int,
+        lockGroup: Boolean,
+        groupLock: Int,
+        affectModLatches: Int,
+        modLatches: Int,
+        latchGroup: Boolean,
+        groupLatch: Int,
+    ) {
+        xkbLockedModifiers = (xkbLockedModifiers and affectModLocks.inv()) or (modLocks and affectModLocks)
+        xkbLatchedModifiers = (xkbLatchedModifiers and affectModLatches.inv()) or (modLatches and affectModLatches)
+        if (lockGroup) xkbLockedGroup = groupLock
+        if (latchGroup) xkbLatchedGroup = groupLatch
+    }
 
     @Synchronized
     fun queryKeymap(): ByteArray {
@@ -3161,6 +3186,10 @@ internal class X11State(
             ),
             keyboardState = XKeyboardStateSnapshot(
                 modifierMask = keyboardModifierState,
+                xkbLatchedModifiers = xkbLatchedModifiers,
+                xkbLockedModifiers = xkbLockedModifiers,
+                xkbLatchedGroup = xkbLatchedGroup,
+                xkbLockedGroup = xkbLockedGroup,
                 keycodesDown = pressedKeycodes.sorted(),
             ),
             fontPath = fontPath.toList(),
@@ -10022,6 +10051,10 @@ internal data class XKeycodeMappingSnapshot(
 
 internal data class XKeyboardStateSnapshot(
     val modifierMask: Int,
+    val xkbLatchedModifiers: Int,
+    val xkbLockedModifiers: Int,
+    val xkbLatchedGroup: Int,
+    val xkbLockedGroup: Int,
     val keycodesDown: List<Int>,
 )
 
@@ -10039,9 +10072,16 @@ internal data class XKeyboardControlSnapshot(
 }
 
 internal data class XKeyboardPointerState(
-    val modifiers: Int,
+    val baseModifiers: Int,
+    val latchedModifiers: Int,
+    val lockedModifiers: Int,
+    val latchedGroup: Int,
+    val lockedGroup: Int,
     val pointerButtons: Int,
-)
+) {
+    val effectiveModifiers: Int get() = baseModifiers or latchedModifiers or lockedModifiers
+    val effectiveGroup: Int get() = lockedGroup + latchedGroup
+}
 
 internal data class XPointerStateSnapshot(
     val x: Int,

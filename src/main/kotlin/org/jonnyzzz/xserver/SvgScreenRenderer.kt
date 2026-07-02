@@ -61,7 +61,7 @@ internal object SvgScreenRenderer {
                 if (index > 0) append(',')
                 append(button)
             }
-            append("""],"window":"${snapshot.pointer.windowIdHex}"},"keyboardState":{"modifierMask":${snapshot.keyboardState.modifierMask},"keycodesDown":[""")
+            append("""],"window":"${snapshot.pointer.windowIdHex}"},"keyboardState":{"modifierMask":${snapshot.keyboardState.modifierMask},"xkbLatchedModifiers":${snapshot.keyboardState.xkbLatchedModifiers},"xkbLockedModifiers":${snapshot.keyboardState.xkbLockedModifiers},"xkbLatchedGroup":${snapshot.keyboardState.xkbLatchedGroup},"xkbLockedGroup":${snapshot.keyboardState.xkbLockedGroup},"keycodesDown":[""")
             snapshot.keyboardState.keycodesDown.forEachIndexed { index, keycode ->
                 if (index > 0) append(',')
                 append(keycode)

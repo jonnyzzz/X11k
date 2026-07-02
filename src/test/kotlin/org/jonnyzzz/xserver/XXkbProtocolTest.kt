@@ -308,7 +308,7 @@ class XXkbProtocolTest {
     }
 
     @Test
-    fun `XKEYBOARD LatchLockState accepts fixed no-op and recovers stream`() {
+    fun `XKEYBOARD LatchLockState accepts fixed request and recovers stream`() {
         withServer { socket, port ->
             val out = socket.getOutputStream()
             out.write(latchLockStateRequest(modLocks = 0x05, groupLock = 1, latchGroup = true, groupLatch = -1))
@@ -323,6 +323,121 @@ class XXkbProtocolTest {
             assertEquals(XXkb.MinorVersion, u16le(version, 10))
 
             assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.LatchLockState: 2")
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD LatchLockState updates XKB state without changing core state`() {
+        withServer { socket, port ->
+            val out = socket.getOutputStream()
+            out.write(
+                latchLockStateRequest(
+                    modLocks = 0x05,
+                    groupLock = 0,
+                    latchGroup = false,
+                    groupLatch = 0,
+                    affectModLocks = 0x05,
+                    lockGroup = false,
+                    affectModLatches = 0x02,
+                    modLatches = 0x02,
+                ),
+            )
+            out.write(getStateRequest())
+            out.write(queryPointerRequest())
+            out.flush()
+
+            val locked = readReply(socket.getInputStream())
+            assertEquals(2, u16le(locked, 2))
+            assertEquals(0x07, locked[8].toInt() and 0xff)
+            assertEquals(0x00, locked[9].toInt() and 0xff)
+            assertEquals(0x02, locked[10].toInt() and 0xff)
+            assertEquals(0x05, locked[11].toInt() and 0xff)
+            assertEquals(0x07, locked[18].toInt() and 0xff)
+            assertEquals(0x07, locked[19].toInt() and 0xff)
+            assertEquals(0x07, locked[20].toInt() and 0xff)
+            assertEquals(0x07, locked[21].toInt() and 0xff)
+            assertEquals(0x07, locked[22].toInt() and 0xff)
+            assertEquals(0, u16le(locked, 24))
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(3, u16le(pointer, 2))
+            assertEquals(0, u16le(pointer, 24))
+
+            assertContains(httpGet(port, "/state.json"), """"xkbLatchedModifiers":2""")
+            assertContains(httpGet(port, "/state.json"), """"xkbLockedModifiers":5""")
+
+            out.write(
+                latchLockStateRequest(
+                    modLocks = 0,
+                    groupLock = 0,
+                    latchGroup = false,
+                    groupLatch = 0,
+                    affectModLocks = 0xff,
+                    lockGroup = false,
+                    affectModLatches = 0xff,
+                    modLatches = 0,
+                ),
+            )
+            out.write(getStateRequest())
+            out.write(queryPointerRequest())
+            out.flush()
+
+            val cleared = readReply(socket.getInputStream())
+            assertEquals(5, u16le(cleared, 2))
+            assertEquals(0, cleared[8].toInt() and 0xff)
+            assertEquals(0, cleared[10].toInt() and 0xff)
+            assertEquals(0, cleared[11].toInt() and 0xff)
+            assertEquals(0, u16le(cleared, 24))
+
+            val clearedPointer = readReply(socket.getInputStream())
+            assertEquals(6, u16le(clearedPointer, 2))
+            assertEquals(0, u16le(clearedPointer, 24))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD LatchLockState rejects invalid modifier masks without changing XKB state`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                latchLockStateRequest(
+                    modLocks = 0x04,
+                    groupLock = 0,
+                    latchGroup = false,
+                    groupLatch = 0,
+                    affectModLocks = 0x04,
+                    lockGroup = false,
+                    affectModLatches = 0x08,
+                    modLatches = 0x08,
+                ),
+            )
+            out.write(
+                latchLockStateRequest(
+                    modLocks = 0x01,
+                    groupLock = 0,
+                    latchGroup = false,
+                    groupLatch = 0,
+                    affectModLocks = 0,
+                    lockGroup = false,
+                    affectModLatches = 0x02,
+                    modLatches = 0x0a,
+                ),
+            )
+            out.write(getStateRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.LatchLockState)
+            val state = readReply(socket.getInputStream())
+            assertEquals(3, u16le(state, 2))
+            assertEquals(0x0c, state[8].toInt() and 0xff)
+            assertEquals(0, state[9].toInt() and 0xff)
+            assertEquals(0x08, state[10].toInt() and 0xff)
+            assertEquals(0x04, state[11].toInt() and 0xff)
+            assertEquals(0x0c, state[18].toInt() and 0xff)
+            assertEquals(0x0c, state[19].toInt() and 0xff)
+            assertEquals(0x0c, state[20].toInt() and 0xff)
+            assertEquals(0x0c, state[21].toInt() and 0xff)
+            assertEquals(0x0c, state[22].toInt() and 0xff)
         }
     }
 
@@ -1905,15 +2020,24 @@ class XXkbProtocolTest {
         return request(38, 0, body)
     }
 
-    private fun latchLockStateRequest(modLocks: Int, groupLock: Int, latchGroup: Boolean, groupLatch: Int): ByteArray {
+    private fun latchLockStateRequest(
+        modLocks: Int,
+        groupLock: Int,
+        latchGroup: Boolean,
+        groupLatch: Int,
+        affectModLocks: Int = 0xff,
+        lockGroup: Boolean = true,
+        affectModLatches: Int = 0xff,
+        modLatches: Int = 0,
+    ): ByteArray {
         val body = ByteArray(12)
         put16le(body, 0, 0x0100)
-        body[2] = 0xff.toByte()
+        body[2] = affectModLocks.toByte()
         body[3] = modLocks.toByte()
-        body[4] = 1
+        body[4] = if (lockGroup) 1 else 0
         body[5] = groupLock.toByte()
-        body[6] = 0xff.toByte()
-        body[7] = 0
+        body[6] = affectModLatches.toByte()
+        body[7] = modLatches.toByte()
         body[9] = if (latchGroup) 1 else 0
         put16le(body, 10, groupLatch)
         return request(XXkb.MajorOpcode, XXkb.LatchLockState, body)

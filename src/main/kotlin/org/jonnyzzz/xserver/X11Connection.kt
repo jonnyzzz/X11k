@@ -1667,20 +1667,42 @@ internal class X11Connection(
         if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetState, badValue = 0)
         val reply = reply(extra = 0, payloadUnits = 0)
         val keyboardPointerState = state.keyboardPointerState()
-        val modifiers = keyboardPointerState.modifiers
-        reply[8] = modifiers.toByte()
-        reply[9] = modifiers.toByte()
-        reply[18] = modifiers.toByte()
-        reply[19] = modifiers.toByte()
-        reply[20] = modifiers.toByte()
-        reply[21] = modifiers.toByte()
-        reply[22] = modifiers.toByte()
+        val effectiveModifiers = keyboardPointerState.effectiveModifiers
+        reply[8] = effectiveModifiers.toByte()
+        reply[9] = keyboardPointerState.baseModifiers.toByte()
+        reply[10] = keyboardPointerState.latchedModifiers.toByte()
+        reply[11] = keyboardPointerState.lockedModifiers.toByte()
+        reply[12] = keyboardPointerState.effectiveGroup.toByte()
+        reply[13] = keyboardPointerState.lockedGroup.toByte()
+        byteOrder.put16(reply, 16, keyboardPointerState.latchedGroup)
+        reply[18] = effectiveModifiers.toByte()
+        reply[19] = effectiveModifiers.toByte()
+        reply[20] = effectiveModifiers.toByte()
+        reply[21] = effectiveModifiers.toByte()
+        reply[22] = effectiveModifiers.toByte()
         byteOrder.put16(reply, 24, keyboardPointerState.pointerButtons)
         write(reply)
     }
 
     private fun xkbLatchLockState(body: ByteArray, majorOpcode: Int) {
         if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.LatchLockState, badValue = 0)
+        val affectModLocks = body[2].toInt() and 0xff
+        val modLocks = body[3].toInt() and 0xff
+        val affectModLatches = body[6].toInt() and 0xff
+        val modLatches = body[7].toInt() and 0xff
+        if ((modLocks and affectModLocks.inv()) != 0 || (modLatches and affectModLatches.inv()) != 0) {
+            return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.LatchLockState, badValue = 0)
+        }
+        state.latchLockXkbState(
+            affectModLocks = affectModLocks,
+            modLocks = modLocks,
+            lockGroup = body[4].toInt() != 0,
+            groupLock = body[5].toInt() and 0xff,
+            affectModLatches = affectModLatches,
+            modLatches = modLatches,
+            latchGroup = body[9].toInt() != 0,
+            groupLatch = byteOrder.i16(body, 10),
+        )
     }
 
     private fun xkbGetControls(body: ByteArray, majorOpcode: Int) {
