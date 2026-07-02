@@ -1374,6 +1374,7 @@ class XXkbProtocolTest {
             out.write(getMapRequest(full = 0, partial = XXkb.MapPartKeySyms, firstKeySym = 38, nKeySyms = 2))
             out.flush()
 
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 1, request = 0, firstKeycode = 0, count = 0)
             val map = readReply(socket.getInputStream())
             assertEquals(2, u16le(map, 2))
             assertEquals(9, u32le(map, 4))
@@ -1397,6 +1398,7 @@ class XXkbProtocolTest {
             out.write(getMapRequest(full = 0, partial = XXkb.MapPartKeySyms, firstKeySym = 38, nKeySyms = 1))
             out.flush()
 
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 1, request = 0, firstKeycode = 0, count = 0)
             val map = readReply(socket.getInputStream())
             assertEquals(2, u16le(map, 2))
             assertEquals(6, u32le(map, 4))
@@ -1420,7 +1422,7 @@ class XXkbProtocolTest {
                     map = XXkb.MapPartKeySyms,
                 ),
             )
-            out.write(setMapRequest(includeAllParts = true))
+            out.write(setMapKeySymsRequest())
             out.write(getMapRequest(full = 0, partial = XXkb.MapPartKeySyms, firstKeySym = 38, nKeySyms = 1))
             out.flush()
 
@@ -1449,7 +1451,7 @@ class XXkbProtocolTest {
                     map = XXkb.MapPartModifierMap,
                 ),
             )
-            out.write(setMapRequest(includeAllParts = true))
+            out.write(setMapKeySymsRequest())
             out.write(getMapRequest(full = 0, partial = XXkb.MapPartKeySyms, firstKeySym = 38, nKeySyms = 1))
             out.flush()
 
@@ -1464,7 +1466,7 @@ class XXkbProtocolTest {
     fun `XKEYBOARD SetMap validates key symbol range and recovers stream`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
-            out.write(setMapRequest(includeAllParts = true, firstKeySym = XKeyboard.MaxKeycode))
+            out.write(setMapKeySymsRequest(firstKeySym = XKeyboard.MaxKeycode))
             out.write(getMapRequest(full = 0, partial = 0))
             out.flush()
 
@@ -1479,6 +1481,172 @@ class XXkbProtocolTest {
             val map = readReply(socket.getInputStream())
             assertEquals(2, u16le(map, 2))
             assertEquals(0, u16le(map, 12))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetMap persists modifier map into core state`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(setMapModifierMapRequest(firstModMapKey = 77, nModMapKeys = 1, entries = listOf(77 to 0x08)))
+            out.write(getMapRequest(full = 0, partial = XXkb.MapPartModifierMap, firstModMapKey = 77, nModMapKeys = 1))
+            out.flush()
+
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 1, request = 0, firstKeycode = 0, count = 0)
+            val map = readReply(socket.getInputStream())
+            assertEquals(2, u16le(map, 2))
+            assertEquals(XXkb.MapPartModifierMap, u16le(map, 12))
+            assertEquals(77, map[31].toInt() and 0xff)
+            assertEquals(1, map[32].toInt() and 0xff)
+            assertEquals(1, map[33].toInt() and 0xff)
+            assertXkbModifierMap(map, 77 to 0x08)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetMap updates modifier map while changed key is down`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventMapNotify,
+                    affectMap = XXkb.MapPartModifierMap,
+                    map = XXkb.MapPartModifierMap,
+                ),
+            )
+            out.write(xtestFakeInputRequest(type = XXTest.KeyPress, detail = 77, x = 0, y = 0))
+            out.write(setMapModifierMapRequest(firstModMapKey = 77, nModMapKeys = 1, entries = listOf(77 to 0x08)))
+            out.write(xtestFakeInputRequest(type = XXTest.KeyRelease, detail = 77, x = 0, y = 0))
+            out.write(getMapRequest(full = 0, partial = XXkb.MapPartModifierMap, firstModMapKey = 77, nModMapKeys = 1))
+            out.flush()
+
+            assertMapNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 3,
+                changed = XXkb.MapPartModifierMap,
+                firstKeySym = 0,
+                nKeySyms = 0,
+                firstModMapKey = 77,
+                nModMapKeys = 1,
+            )
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 3, request = 0, firstKeycode = 0, count = 0)
+            val map = readReply(socket.getInputStream())
+            assertEquals(5, u16le(map, 2))
+            assertEquals(XXkb.MapPartModifierMap, u16le(map, 12))
+            assertXkbModifierMap(map, 77 to 0x08)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetMap emits selected MapNotify and core MappingNotify for modifier map`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventMapNotify,
+                    affectMap = XXkb.MapPartModifierMap,
+                    map = XXkb.MapPartModifierMap,
+                ),
+            )
+            out.write(setMapModifierMapRequest(firstModMapKey = 77, nModMapKeys = 1, entries = listOf(77 to 0x08)))
+            out.write(getMapRequest(full = 0, partial = XXkb.MapPartModifierMap, firstModMapKey = 77, nModMapKeys = 1))
+            out.flush()
+
+            assertMapNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 2,
+                changed = XXkb.MapPartModifierMap,
+                firstKeySym = 0,
+                nKeySyms = 0,
+                firstModMapKey = 77,
+                nModMapKeys = 1,
+            )
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 2, request = 0, firstKeycode = 0, count = 0)
+            val map = readReply(socket.getInputStream())
+            assertEquals(3, u16le(map, 2))
+            assertEquals(XXkb.MapPartModifierMap, u16le(map, 12))
+            assertXkbModifierMap(map, 77 to 0x08)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetMap suppresses modifier MapNotify when selected details do not intersect`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventMapNotify,
+                    affectMap = XXkb.MapPartKeySyms,
+                    map = XXkb.MapPartKeySyms,
+                ),
+            )
+            out.write(setMapModifierMapRequest(firstModMapKey = 77, nModMapKeys = 1, entries = listOf(77 to 0x08)))
+            out.write(getMapRequest(full = 0, partial = XXkb.MapPartModifierMap, firstModMapKey = 77, nModMapKeys = 1))
+            out.flush()
+
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 2, request = 0, firstKeycode = 0, count = 0)
+            val map = readReply(socket.getInputStream())
+            assertEquals(3, u16le(map, 2))
+            assertEquals(XXkb.MapPartModifierMap, u16le(map, 12))
+            assertXkbModifierMap(map, 77 to 0x08)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetMap validates modifier map range and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                setMapModifierMapRequest(
+                    firstModMapKey = XKeyboard.MaxKeycode,
+                    nModMapKeys = 2,
+                    entries = listOf(XKeyboard.MaxKeycode to 0x08),
+                ),
+            )
+            out.write(getMapRequest(full = 0, partial = 0))
+            out.flush()
+
+            assertError(
+                socket.getInputStream(),
+                error = 8,
+                opcode = XXkb.MajorOpcode,
+                badValue = XKeyboard.MaxKeycode,
+                sequence = 1,
+                minorOpcode = XXkb.SetMap,
+            )
+            val map = readReply(socket.getInputStream())
+            assertEquals(2, u16le(map, 2))
+            assertEquals(0, u16le(map, 12))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetMap rejects invalid modifier map without partial key symbol update`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                setMapRequest(
+                    includeAllParts = true,
+                    firstModMapKey = XKeyboard.MaxKeycode,
+                    nModMapKeys = 2,
+                    modifierMapEntries = listOf(XKeyboard.MaxKeycode to 0x08),
+                ),
+            )
+            out.write(getMapRequest(full = 0, partial = XXkb.MapPartKeySyms, firstKeySym = 38, nKeySyms = 1))
+            out.flush()
+
+            assertError(
+                socket.getInputStream(),
+                error = 8,
+                opcode = XXkb.MajorOpcode,
+                badValue = XKeyboard.MaxKeycode,
+                sequence = 1,
+                minorOpcode = XXkb.SetMap,
+            )
+            val map = readReply(socket.getInputStream())
+            assertEquals(2, u16le(map, 2))
+            assertEquals(XXkb.MapPartKeySyms, u16le(map, 12))
+            assertXkbKeySymMap(map, offset = 40, width = 2, 0x0061, 0x0041)
         }
     }
 
@@ -3177,6 +3345,17 @@ class XXkbProtocolTest {
         return request(38, 0, body)
     }
 
+    private fun xtestFakeInputRequest(type: Int, detail: Int, root: Int = X11Ids.RootWindow, x: Int, y: Int, delay: Int = 0): ByteArray {
+        val body = ByteArray(32)
+        body[0] = type.toByte()
+        body[1] = detail.toByte()
+        put32le(body, 4, delay)
+        put32le(body, 8, root)
+        put16le(body, 20, x)
+        put16le(body, 22, y)
+        return request(XXTest.MajorOpcode, XXTest.FakeInput, body)
+    }
+
     private fun latchLockStateRequest(
         modLocks: Int,
         groupLock: Int,
@@ -3267,14 +3446,73 @@ class XXkbProtocolTest {
         return request(100, keysyms.size / keysymsPerKeycode, body)
     }
 
+    private fun setMapKeySymsRequest(
+        firstKeySym: Int = 38,
+        keySymRows: List<List<Int>> = listOf(listOf(0x0078, 0x0058), listOf(0x0079)),
+        bodySize: Int = 32 + keySymRows.sumOf { 8 + it.size * 4 },
+    ): ByteArray {
+        val body = ByteArray(bodySize)
+        put16le(body, 0, 0x0100)
+        put16le(body, 2, XXkb.MapPartKeySyms)
+        body[6] = XKeyboard.MinKeycode.toByte()
+        body[7] = XKeyboard.MaxKeycode.toByte()
+        body[10] = firstKeySym.toByte()
+        body[11] = keySymRows.size.toByte()
+        put16le(body, 12, keySymRows.sumOf { it.size })
+
+        var offset = 32
+        for (row in keySymRows) {
+            if (offset + 8 + row.size * 4 <= body.size) {
+                body[offset] = (if (row.size > 1) 1 else 0).toByte()
+                body[offset + 4] = 1
+                body[offset + 5] = row.size.toByte()
+                put16le(body, offset + 6, row.size)
+                row.forEachIndexed { index, keysym ->
+                    put32le(body, offset + 8 + index * 4, keysym)
+                }
+            }
+            offset += 8 + row.size * 4
+        }
+        return request(XXkb.MajorOpcode, XXkb.SetMap, body)
+    }
+
+    private fun setMapModifierMapRequest(
+        firstModMapKey: Int,
+        nModMapKeys: Int,
+        entries: List<Pair<Int, Int>>,
+        bodySize: Int = 32 + paddedLengthForTest(entries.size * 2),
+    ): ByteArray {
+        val body = ByteArray(bodySize)
+        put16le(body, 0, 0x0100)
+        put16le(body, 2, XXkb.MapPartModifierMap)
+        body[6] = XKeyboard.MinKeycode.toByte()
+        body[7] = XKeyboard.MaxKeycode.toByte()
+        body[24] = firstModMapKey.toByte()
+        body[25] = nModMapKeys.toByte()
+        body[26] = entries.size.toByte()
+        var offset = 32
+        for ((keycode, modifiers) in entries) {
+            if (offset + 2 <= body.size) {
+                body[offset] = keycode.toByte()
+                body[offset + 1] = modifiers.toByte()
+            }
+            offset += 2
+        }
+        return request(XXkb.MajorOpcode, XXkb.SetMap, body)
+    }
+
     private fun setMapRequest(
         includeAllParts: Boolean,
         oddExplicitAndModifierMapCounts: Boolean = false,
         firstKeySym: Int = 38,
         keySymRows: List<List<Int>> = listOf(listOf(0x0078, 0x0058), listOf(0x0079)),
+        firstModMapKey: Int = 77,
+        nModMapKeys: Int = 1,
+        modifierMapEntries: List<Pair<Int, Int>> = listOf(77 to 0x08),
         bodySize: Int = setMapBodySize(includeAllParts, keySymRows),
     ): ByteArray {
         val body = ByteArray(bodySize)
+        val modMapEntries = if (oddExplicitAndModifierMapCounts) modifierMapEntries.take(1) else modifierMapEntries
         val present = if (includeAllParts) {
             XXkb.MapPartKeyTypes or
                 XXkb.MapPartKeySyms or
@@ -3294,7 +3532,6 @@ class XXkbProtocolTest {
         body[7] = XKeyboard.MaxKeycode.toByte()
         if (includeAllParts) {
             val explicitCount = if (oddExplicitAndModifierMapCounts) 1 else 2
-            val modMapCount = if (oddExplicitAndModifierMapCounts) 1 else 2
             body[8] = 0
             body[9] = 2
             body[10] = firstKeySym.toByte()
@@ -3309,9 +3546,9 @@ class XXkbProtocolTest {
             body[21] = XKeyboard.MinKeycode.toByte()
             body[22] = 2
             body[23] = explicitCount.toByte()
-            body[24] = XKeyboard.MinKeycode.toByte()
-            body[25] = 2
-            body[26] = modMapCount.toByte()
+            body[24] = firstModMapKey.toByte()
+            body[25] = nModMapKeys.toByte()
+            body[26] = modMapEntries.size.toByte()
             body[27] = XKeyboard.MinKeycode.toByte()
             body[28] = 2
             body[29] = 2
@@ -3351,9 +3588,16 @@ class XXkbProtocolTest {
             align4()
             write(16)
             write(8)
-            write(if (oddExplicitAndModifierMapCounts) 1 * 2 else 2 * 2)
+            write(2)
             align4()
             write(if (oddExplicitAndModifierMapCounts) 1 * 2 else 2 * 2)
+            align4()
+            write(modMapEntries.size * 2) {
+                modMapEntries.forEachIndexed { index, (keycode, modifiers) ->
+                    body[it + index * 2] = keycode.toByte()
+                    body[it + index * 2 + 1] = modifiers.toByte()
+                }
+            }
             align4()
             write(8)
         }
@@ -3944,7 +4188,15 @@ class XXkbProtocolTest {
         assertEquals(0, u32le(event, 28))
     }
 
-    private fun assertMapNotify(event: ByteArray, sequence: Int, changed: Int, firstKeySym: Int, nKeySyms: Int) {
+    private fun assertMapNotify(
+        event: ByteArray,
+        sequence: Int,
+        changed: Int,
+        firstKeySym: Int,
+        nKeySyms: Int,
+        firstModMapKey: Int = 0,
+        nModMapKeys: Int = 0,
+    ) {
         assertEquals(XXkb.FirstEvent, event[0].toInt() and 0xff)
         assertEquals(XXkb.MapNotify, event[1].toInt() and 0xff)
         assertEquals(sequence, u16le(event, 2))
@@ -3957,7 +4209,12 @@ class XXkbProtocolTest {
         assertEquals(0, event[15].toInt() and 0xff)
         assertEquals(firstKeySym, event[16].toInt() and 0xff)
         assertEquals(nKeySyms, event[17].toInt() and 0xff)
-        for (index in 18 until 32) {
+        for (index in 18 until 24) {
+            assertEquals(0, event[index].toInt() and 0xff)
+        }
+        assertEquals(firstModMapKey, event[24].toInt() and 0xff)
+        assertEquals(nModMapKeys, event[25].toInt() and 0xff)
+        for (index in 26 until 32) {
             assertEquals(0, event[index].toInt() and 0xff)
         }
     }

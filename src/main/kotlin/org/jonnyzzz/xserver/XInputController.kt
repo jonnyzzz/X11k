@@ -588,6 +588,8 @@ internal data class XXkbMapNotifyEvent(
     val maxKeycode: Int,
     val firstKeySym: Int = 0,
     val nKeySyms: Int = 0,
+    val firstModMapKey: Int = 0,
+    val nModMapKeys: Int = 0,
 )
 
 internal data class XXkbMapNotifyDispatch(

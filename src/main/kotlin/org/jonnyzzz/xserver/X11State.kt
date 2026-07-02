@@ -1531,6 +1531,11 @@ internal class X11State(
         return true
     }
 
+    @Synchronized
+    fun setModifierMapping(mapping: List<Int>) {
+        modifierMapping = mapping.toList()
+    }
+
     private fun modifierKeycodes(mapping: List<Int>, keycodesPerModifier: Int, modifier: Int): Set<Int> {
         if (keycodesPerModifier == 0) return emptySet()
         val start = modifier * keycodesPerModifier

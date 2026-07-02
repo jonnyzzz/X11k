@@ -2106,6 +2106,11 @@ internal class X11Connection(
         if (unsupportedParts != 0) {
             return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.SetMap, badValue = unsupportedParts)
         }
+        var changed = 0
+        var firstKeySym = 0
+        var nKeySyms = 0
+        var firstModMapKey = 0
+        var nModMapKeys = 0
         val keySyms = payload.keySyms
         if (keySyms != null && keySyms.rows.isNotEmpty()) {
             if (keySyms.firstKeySym !in XKeyboard.MinKeycode..XKeyboard.MaxKeycode) {
@@ -2114,35 +2119,116 @@ internal class X11Connection(
             if (keySyms.firstKeySym + keySyms.rows.size - 1 > XKeyboard.MaxKeycode) {
                 return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SetMap, badValue = keySyms.firstKeySym)
             }
+        }
+        val modifierMap = payload.modifierMap
+        var updatedModifierMapping: List<Int>? = null
+        if (modifierMap != null && modifierMap.nModMapKeys > 0) {
+            if (modifierMap.firstModMapKey !in XKeyboard.MinKeycode..XKeyboard.MaxKeycode) {
+                return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SetMap, badValue = modifierMap.firstModMapKey)
+            }
+            if (modifierMap.firstModMapKey + modifierMap.nModMapKeys - 1 > XKeyboard.MaxKeycode) {
+                return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SetMap, badValue = modifierMap.firstModMapKey)
+            }
+            for ((keycode, _) in modifierMap.entries) {
+                if (keycode !in modifierMap.firstModMapKey until modifierMap.firstModMapKey + modifierMap.nModMapKeys) {
+                    return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.SetMap, badValue = keycode)
+                }
+            }
+            updatedModifierMapping = xkbUpdatedModifierMapping(modifierMap)
+        }
+        if (modifierMap != null && updatedModifierMapping != null) {
+            state.setModifierMapping(updatedModifierMapping)
+            changed = changed or XXkb.MapPartModifierMap
+            firstModMapKey = modifierMap.firstModMapKey
+            nModMapKeys = modifierMap.nModMapKeys
+        }
+        if (keySyms != null && keySyms.rows.isNotEmpty()) {
             val keysymsPerKeycode = maxOf(1, keySyms.rows.maxOf { it.size })
             val flattened = keySyms.rows.flatMap { row ->
                 List(keysymsPerKeycode) { index -> row.getOrElse(index) { 0 } }
             }
             state.setKeyboardMapping(keySyms.firstKeySym, keysymsPerKeycode, flattened)
+            changed = changed or XXkb.MapPartKeySyms
+            firstKeySym = keySyms.firstKeySym
+            nKeySyms = keySyms.rows.size
+        }
+        if (changed != 0) {
             sendXkbMapNotify(
                 state.xkbMapNotifyDispatches(
                     XXkbMapNotifyEvent(
                         timestamp = state.syncServerTime(),
-                        changed = XXkb.MapPartKeySyms,
+                        changed = changed,
                         minKeycode = XKeyboard.MinKeycode,
                         maxKeycode = XKeyboard.MaxKeycode,
-                        firstKeySym = keySyms.firstKeySym,
-                        nKeySyms = keySyms.rows.size,
+                        firstKeySym = firstKeySym,
+                        nKeySyms = nKeySyms,
+                        firstModMapKey = firstModMapKey,
+                        nModMapKeys = nModMapKeys,
                     ),
                 ),
             )
+        }
+        if ((changed and XXkb.MapPartModifierMap) != 0) {
+            val event = XMappingNotifyEvent(request = 0)
+            for (sink in state.mappingNotifySinks()) {
+                runCatching { sink.sendMappingNotifyEvent(event) }
+            }
         }
     }
 
     private data class XkbSetMapPayload(
         val expectedSize: Int,
         val keySyms: XkbSetMapKeySyms?,
+        val modifierMap: XkbSetMapModifierMap?,
     )
 
     private data class XkbSetMapKeySyms(
         val firstKeySym: Int,
         val rows: List<List<Int>>,
     )
+
+    private data class XkbSetMapModifierMap(
+        val firstModMapKey: Int,
+        val nModMapKeys: Int,
+        val entries: List<Pair<Int, Int>>,
+    )
+
+    private fun xkbUpdatedModifierMapping(modifierMap: XkbSetMapModifierMap): List<Int> {
+        val existing = state.modifierMapping()
+        val keycodesPerModifier = existing.size / 8
+        val modifiersByKeycode = linkedMapOf<Int, Int>()
+        for (modifier in 0 until 8) {
+            for (index in 0 until keycodesPerModifier) {
+                val keycode = existing[modifier * keycodesPerModifier + index]
+                if (keycode != 0) {
+                    modifiersByKeycode[keycode] = (modifiersByKeycode[keycode] ?: 0) or (1 shl modifier)
+                }
+            }
+        }
+        val range = modifierMap.firstModMapKey until modifierMap.firstModMapKey + modifierMap.nModMapKeys
+        for (keycode in range) {
+            modifiersByKeycode.remove(keycode)
+        }
+        for ((keycode, modifiers) in modifierMap.entries) {
+            if (modifiers == 0) {
+                modifiersByKeycode.remove(keycode)
+            } else {
+                modifiersByKeycode[keycode] = modifiers
+            }
+        }
+        val keycodesByModifier = List(8) { mutableListOf<Int>() }
+        for ((keycode, modifiers) in modifiersByKeycode.toSortedMap()) {
+            for (modifier in 0 until 8) {
+                if ((modifiers and (1 shl modifier)) != 0) {
+                    keycodesByModifier[modifier] += keycode
+                }
+            }
+        }
+        val updatedKeycodesPerModifier = maxOf(1, keycodesByModifier.maxOf { it.size })
+        return keycodesByModifier.flatMap { keycodes ->
+            List(updatedKeycodesPerModifier) { index -> keycodes.getOrElse(index) { 0 } }
+        }
+    }
 
     private fun xkbSetMapPayload(body: ByteArray): XkbSetMapPayload? {
         val present = byteOrder.u16(body, 2)
@@ -2154,6 +2240,8 @@ internal class X11Connection(
         val totalActions = byteOrder.u16(body, 16)
         val totalKeyBehaviors = body[20].toInt() and 0xff
         val totalKeyExplicit = body[23].toInt() and 0xff
+        val firstModMapKey = body[24].toInt() and 0xff
+        val nModMapKeys = body[25].toInt() and 0xff
         val totalModMapKeys = body[26].toInt() and 0xff
         val totalVModMapKeys = body[29].toInt() and 0xff
         val virtualMods = byteOrder.u16(body, 30)
@@ -2212,8 +2300,19 @@ internal class X11Connection(
             offset = paddedLength(offset)
             if (offset > body.size) return null
         }
+        var modifierMap: XkbSetMapModifierMap? = null
         if ((present and XXkb.MapPartModifierMap) != 0) {
+            val entriesOffset = offset
             if (!require(totalModMapKeys * 2)) return null
+            val entries = List(totalModMapKeys) { index ->
+                val entryOffset = entriesOffset + index * 2
+                (body[entryOffset].toInt() and 0xff) to (body[entryOffset + 1].toInt() and 0xff)
+            }
+            modifierMap = XkbSetMapModifierMap(
+                firstModMapKey = firstModMapKey,
+                nModMapKeys = nModMapKeys,
+                entries = entries,
+            )
             offset = paddedLength(offset)
             if (offset > body.size) return null
         }
@@ -2223,6 +2322,7 @@ internal class X11Connection(
         return XkbSetMapPayload(
             expectedSize = offset,
             keySyms = keySyms,
+            modifierMap = modifierMap,
         )
     }
 
@@ -10469,8 +10569,8 @@ internal class X11Connection(
         bytes[21] = 0
         bytes[22] = 0
         bytes[23] = 0
-        bytes[24] = 0
-        bytes[25] = 0
+        bytes[24] = event.firstModMapKey.toByte()
+        bytes[25] = event.nModMapKeys.toByte()
         bytes[26] = 0
         bytes[27] = 0
         byteOrder.put16(bytes, 28, 0)
