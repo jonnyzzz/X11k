@@ -29,7 +29,7 @@ class AwtPrimitiveDockerTest {
         assertContains(result.text, "RENDER supported=true")
         assertContains(result.text, "PutImage:")
         assertContains(result.text, "RENDER.")
-        assertContains(result.svg, """class="framebuffer-image"""")
+        assertTrue(result.svg.hasSvgClass("framebuffer-image"), "Expected framebuffer-image class in SVG")
         assertContains(result.svg, """href="data:image/png;base64,""")
         assertContains(result.html, "AWT Primitive Probe")
 
@@ -109,7 +109,7 @@ class AwtPrimitiveDockerTest {
                         currentText.contains(title) &&
                             currentText.contains(readinessText) &&
                             currentText.contains("RENDER.") &&
-                            httpGet(port, "/screen.svg").contains("""class="framebuffer-image"""")
+                            httpGet(port, "/screen.svg").hasSvgClass("framebuffer-image")
                     }
 
                     val text = httpGet(port, "/text.txt")
@@ -134,6 +134,11 @@ class AwtPrimitiveDockerTest {
             .findAll(svg)
             .map { EmbeddedPng(it.groupValues[1], Base64.getDecoder().decode(it.groupValues[2])) }
             .toList()
+
+    private fun String.hasSvgClass(className: String): Boolean =
+        Regex("""\bclass="([^"]*)"""")
+            .findAll(this)
+            .any { match -> match.groupValues[1].split(' ').any { it == className } }
 
     private fun imageStats(id: String, bytes: ByteArray): ImageStats {
         val image = ImageIO.read(ByteArrayInputStream(bytes)) ?: return ImageStats(id, 0, 0, 0, emptyList())
