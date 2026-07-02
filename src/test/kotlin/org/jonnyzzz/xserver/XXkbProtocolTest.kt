@@ -442,6 +442,42 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetState normalizes group fields to advertised group count`() {
+        withServer { socket, port ->
+            val out = socket.getOutputStream()
+            out.write(getControlsRequest())
+            out.write(
+                latchLockStateRequest(
+                    modLocks = 0,
+                    groupLock = 255,
+                    latchGroup = true,
+                    groupLatch = -1,
+                    affectModLocks = 0,
+                    affectModLatches = 0,
+                    modLatches = 0,
+                ),
+            )
+            out.write(getStateRequest())
+            out.flush()
+
+            val controls = readReply(socket.getInputStream())
+            assertGetControls(controls, sequence = 1, enabledControls = XXkb.BoolCtrlRepeatKeys)
+            assertEquals(1, XXkb.DefaultGroupCount)
+
+            val state = readReply(socket.getInputStream())
+            assertEquals(3, u16le(state, 2))
+            assertEquals(0, state[12].toInt() and 0xff)
+            assertEquals(0, state[13].toInt() and 0xff)
+            assertEquals(0, u16le(state, 14))
+            assertEquals(0, u16le(state, 16))
+
+            val json = httpGet(port, "/state.json")
+            assertContains(json, """"xkbLockedGroup":255""")
+            assertContains(json, """"xkbLatchedGroup":-1""")
+        }
+    }
+
+    @Test
     fun `XKEYBOARD LatchLockState validates fixed request length and recovers stream`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()

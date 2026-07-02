@@ -10080,7 +10080,14 @@ internal data class XKeyboardPointerState(
     val pointerButtons: Int,
 ) {
     val effectiveModifiers: Int get() = baseModifiers or latchedModifiers or lockedModifiers
-    val effectiveGroup: Int get() = lockedGroup + latchedGroup
+    val normalizedLockedGroup: Int get() = normalizedXkbGroup(lockedGroup)
+    val normalizedLatchedGroup: Int get() = normalizedXkbGroup(latchedGroup)
+    val effectiveGroup: Int get() = normalizedXkbGroup(lockedGroup + latchedGroup)
+
+    private fun normalizedXkbGroup(group: Int): Int {
+        val groupCount = XXkb.DefaultGroupCount
+        return if (groupCount <= 0) 0 else Math.floorMod(group, groupCount)
+    }
 }
 
 internal data class XPointerStateSnapshot(
