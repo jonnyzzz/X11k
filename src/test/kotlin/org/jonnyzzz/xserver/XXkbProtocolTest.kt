@@ -618,6 +618,25 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetMap validates map part masks and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val unknownPart = 1 shl 8
+            out.write(getMapRequest(full = unknownPart, partial = 0))
+            out.write(getMapRequest(full = 0, partial = unknownPart))
+            out.write(getMapRequest(full = 0, partial = XXkb.MapPartModifierMap, firstModMapKey = 50, nModMapKeys = 1))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = unknownPart, sequence = 1, minorOpcode = XXkb.GetMap)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = unknownPart, sequence = 2, minorOpcode = XXkb.GetMap)
+            val map = readReply(socket.getInputStream())
+            assertEquals(3, u16le(map, 2))
+            assertEquals(XXkb.MapPartModifierMap, u16le(map, 12))
+            assertXkbModifierMap(map, 50 to 0x01)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetMap validates partial modifier map keycode ranges`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()

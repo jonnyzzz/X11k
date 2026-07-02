@@ -1712,6 +1712,10 @@ internal class X11Connection(
         if (body.size != 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetMap, badValue = 0)
         val full = byteOrder.u16(body, 2)
         val partial = byteOrder.u16(body, 4)
+        val unsupportedParts = (full or partial) and XXkb.AllMapParts.inv()
+        if (unsupportedParts != 0) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.GetMap, badValue = unsupportedParts)
+        }
         val keyTypesRequested = ((full or partial) and XXkb.MapPartKeyTypes) != 0
         val keySymsRequested = ((full or partial) and XXkb.MapPartKeySyms) != 0
         val modifierMapRequested = ((full or partial) and XXkb.MapPartModifierMap) != 0
