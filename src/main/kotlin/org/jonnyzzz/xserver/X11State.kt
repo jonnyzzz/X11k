@@ -104,6 +104,7 @@ internal class X11State(
     private val saveSets = linkedMapOf<XEventSink, LinkedHashMap<Int, XSaveSetEntry>>()
     private val retainedClients = linkedMapOf<Int, XRetainedClientResources>()
     private var nextRetainedClientId = 1
+    private var nextDrawableGeneration = 1L
     private var nextAtomId = 69
     private var focusWindowId: Int = X11Ids.RootWindow
     private var focusRevertTo: Int = 0
@@ -302,6 +303,9 @@ internal class X11State(
 
     @Synchronized
     fun putWindow(window: XWindow, owner: XEventSink? = null) {
+        if (window.generation == 0L) {
+            window.generation = nextDrawableGeneration++
+        }
         windows[window.id] = window
         if (owner != null) {
             windowOwners[window.id] = owner
@@ -2957,10 +2961,30 @@ internal class X11State(
                 renderShape = renderShape?.map { it.copy() },
             )
         }
-        fun matchingWindowIds(width: Int, height: Int): List<Int> =
+        fun sizeMatchingWindowIds(width: Int, height: Int): List<Int> =
             windowSnapshots
                 .filter { it.id != X11Ids.RootWindow && it.mapped && it.backingPixmapMatchWidth <= width && it.backingPixmapMatchHeight <= height }
                 .map { it.id }
+        data class DrawableIdentity(val id: Int, val generation: Long)
+        fun drawableIdentity(id: Int): DrawableIdentity? =
+            windows[id]?.let { DrawableIdentity(id, it.generation) }
+                ?: pixmaps[id]?.let { DrawableIdentity(id, it.generation) }
+        val framebufferWindowConsumersBySource = drawings
+            .filter { drawing ->
+                drawing.framebufferBacked &&
+                    drawing.sourceDrawableId != null &&
+                    drawing.sourceDrawableGeneration != null &&
+                    drawing.drawableGeneration != null &&
+                    windows[drawing.drawableId]?.generation == drawing.drawableGeneration
+            }
+            .groupBy { DrawableIdentity(it.sourceDrawableId!!, it.sourceDrawableGeneration!!) }
+            .mapValues { (_, drawings) -> drawings.map { it.drawableId }.distinct() }
+        fun matchingWindowIds(drawableId: Int, generation: Long?, width: Int, height: Int): List<Int> {
+            val sizeMatches = sizeMatchingWindowIds(width, height)
+            val sourceIdentity = generation?.let { DrawableIdentity(drawableId, it) } ?: drawableIdentity(drawableId)
+            val consumers = sourceIdentity?.let { framebufferWindowConsumersBySource[it] } ?: return sizeMatches
+            return sizeMatches.filter { it in consumers }
+        }
 
         val livePixmapSnapshots = pixmaps.values.map { pixmap ->
             XPixmapSnapshot(
@@ -2976,7 +3000,7 @@ internal class X11State(
                             (picture.retainedDrawableFramebuffer == null || picture.retainedDrawableFramebuffer === pixmap.framebuffer)
                     }
                     .map { it.id },
-                matchingWindowIds = matchingWindowIds(pixmap.width, pixmap.height),
+                matchingWindowIds = matchingWindowIds(pixmap.id, pixmap.generation, pixmap.width, pixmap.height),
             )
         }
         val retainedPictureSurfaceSnapshots = pictures.values.mapNotNull { picture ->
@@ -2991,7 +3015,7 @@ internal class X11State(
                 painted = framebuffer.hasPaintedContent(),
                 framebufferDataUri = framebuffer.toDataUri(),
                 pictureIds = listOf(picture.id),
-                matchingWindowIds = matchingWindowIds(framebuffer.width, framebuffer.height),
+                matchingWindowIds = matchingWindowIds(drawableId, picture.retainedDrawableGeneration, framebuffer.width, framebuffer.height),
                 retainedPictureId = picture.id,
             )
         }
@@ -4029,8 +4053,15 @@ internal class X11State(
 
     @Synchronized
     fun putPixmap(pixmap: XPixmap) {
+        if (pixmap.generation == 0L) {
+            pixmap.generation = nextDrawableGeneration++
+        }
         pixmaps[pixmap.id] = pixmap
     }
+
+    @Synchronized
+    fun drawableGeneration(id: Int): Long? =
+        windows[id]?.generation ?: pixmaps[id]?.generation
 
     @Synchronized
     fun pixmapImage(id: Int): XImagePixels? =
@@ -7419,7 +7450,10 @@ internal class X11State(
 
     @Synchronized
     fun draw(command: XDrawingCommand) {
-        drawings += command
+        drawings += command.copy(
+            drawableGeneration = command.drawableGeneration ?: drawableGeneration(command.drawableId),
+            sourceDrawableGeneration = command.sourceDrawableId?.let { command.sourceDrawableGeneration ?: drawableGeneration(it) },
+        )
         if (drawings.size > MaxDrawingCommands) {
             drawings.removeAt(0)
         }
@@ -9183,6 +9217,7 @@ internal object XStackMode {
 
 internal data class XWindow(
     val id: Int,
+    var generation: Long = 0,
     var parentId: Int,
     val windowClass: Int = XWindowClass.InputOutput,
     val depth: Int = X11Ids.RootDepth,
@@ -9224,6 +9259,7 @@ internal data class XWindowExposure(
 
 internal data class XPixmap(
     val id: Int,
+    var generation: Long = 0,
     val width: Int,
     val height: Int,
     val depth: Int,
@@ -9385,6 +9421,7 @@ internal data class XPicture(
     var filterValues: List<Int> = emptyList(),
     var retainedDrawableFramebuffer: XFramebuffer? = null,
     var retainedDrawableDepth: Int? = null,
+    var retainedDrawableGeneration: Long? = null,
 ) {
     var alphaMapPicture: XPicture? = null
 }
@@ -9539,6 +9576,8 @@ internal data class XDrawingCommand(
     val text: String = "",
     val imageDataUri: String? = null,
     val sourceDrawableId: Int? = null,
+    val drawableGeneration: Long? = null,
+    val sourceDrawableGeneration: Long? = null,
     val framebufferBacked: Boolean = false,
 )
 

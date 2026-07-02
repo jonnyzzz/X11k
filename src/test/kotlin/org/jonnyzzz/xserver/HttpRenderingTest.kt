@@ -321,6 +321,95 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `screen svg does not present copied backing pixmap on unrelated same size window`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val copiedWindow = 0x0020_0001
+                val unrelatedWindow = 0x0020_0002
+                val pixmap = 0x0020_0100
+                val gc = 0x0020_1001
+                out.write(createWindowRequest(copiedWindow, 10, 20, 64, 64))
+                out.write(changePropertyRequest(copiedWindow, "copied backing target"))
+                out.write(createWindowRequest(unrelatedWindow, 90, 20, 64, 64))
+                out.write(changePropertyRequest(unrelatedWindow, "unrelated same size target"))
+                out.write(createPixmapRequest(pixmap, width = 64, height = 64))
+                out.write(createGcRequest(gc, copiedWindow))
+                out.write(putImageRequest(pixmap, gc))
+                out.write(copyAreaRequest(pixmap, copiedWindow, gc))
+                out.write(mapWindowRequest(copiedWindow))
+                out.write(mapWindowRequest(unrelatedWindow))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "copied backing target")
+                assertContains(svg, "unrelated same size target")
+                assertContains(svg, """data-window-id="0x200001"""")
+                assertFalse(
+                    Regex("""<image\b(?=[^>]*\bdata-window-id="0x200002")(?=[^>]*\bdata-pixmap-id="0x200100")""").containsMatchIn(svg),
+                    "A pixmap copied into one window must not be reused as an unrelated same-size window backing surface",
+                )
+
+                val json = httpGet(server.localPort, "/state.json").body
+                assertContains(json, """"matchingWindows":["0x200001"]""")
+                assertFalse(json.contains(""""matchingWindows":["0x200001","0x200002"]"""))
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `screen svg uses size fallback for reused pixmap id without current consumers`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val oldConsumer = 0x0020_0001
+                val freshTarget = 0x0020_0002
+                val pixmap = 0x0020_0100
+                val gc = 0x0020_1001
+                out.write(createWindowRequest(oldConsumer, 10, 20, 64, 64))
+                out.write(changePropertyRequest(oldConsumer, "old copied target"))
+                out.write(createWindowRequest(freshTarget, 90, 20, 64, 64))
+                out.write(changePropertyRequest(freshTarget, "fresh reused target"))
+                out.write(createPixmapRequest(pixmap, width = 64, height = 64))
+                out.write(createGcRequest(gc, oldConsumer))
+                out.write(putImageRequest(pixmap, gc))
+                out.write(copyAreaRequest(pixmap, oldConsumer, gc))
+                out.write(freePixmapRequest(pixmap))
+                out.write(createPixmapRequest(pixmap, width = 64, height = 64))
+                out.write(putImageRequest(pixmap, gc))
+                out.write(mapWindowRequest(oldConsumer))
+                out.write(mapWindowRequest(freshTarget))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "fresh reused target")
+                assertContains(svg, """data-window-id="0x200002"""")
+                assertContains(svg, """data-pixmap-id="0x200100"""")
+                assertContains(svg, """data-source="matching-pixmap"""")
+
+                val json = httpGet(server.localPort, "/state.json").body
+                assertContains(json, """"matchingWindows":["0x200001","0x200002"]""")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `screen svg presents oversized painted backing pixmap that covers window`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -679,6 +768,104 @@ class HttpRenderingTest {
                     json,
                     """"id":"0x200100","width":64,"height":64,"depth":24,"painted":true,"pictures":["0x200200"],"matchingWindows":["0x200001"],"retainedPicture":"0x200200"""",
                 )
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `screen svg does not present retained render picture on unrelated same size window`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val compositedWindow = 0x0020_0001
+                val unrelatedWindow = 0x0020_0002
+                val pixmap = 0x0020_0100
+                val sourcePicture = 0x0020_0200
+                val destinationPicture = 0x0020_0201
+                out.write(createWindowRequest(compositedWindow, 10, 20, 64, 64))
+                out.write(changePropertyRequest(compositedWindow, "retained composited target"))
+                out.write(createWindowRequest(unrelatedWindow, 90, 20, 64, 64))
+                out.write(changePropertyRequest(unrelatedWindow, "unrelated retained target"))
+                out.write(createPixmapRequest(pixmap, width = 64, height = 64))
+                out.write(renderCreatePictureRequest(sourcePicture, pixmap, XRender.Rgb24Format))
+                out.write(renderCreatePictureRequest(destinationPicture, compositedWindow, XRender.Rgb24Format))
+                out.write(renderFillRectanglesRequest(sourcePicture))
+                out.write(renderCompositeRequest(sourcePicture, destinationPicture, width = 64, height = 64))
+                out.write(freePixmapRequest(pixmap))
+                out.write(mapWindowRequest(compositedWindow))
+                out.write(mapWindowRequest(unrelatedWindow))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "retained composited target")
+                assertContains(svg, "unrelated retained target")
+                assertContains(svg, """data-window-id="0x200001"""")
+                assertFalse(
+                    Regex("""<image\b(?=[^>]*\bdata-window-id="0x200002")(?=[^>]*\bdata-picture-id="0x200200")""").containsMatchIn(svg),
+                    "A retained pixmap source composited into one window must not be reused for an unrelated same-size window",
+                )
+
+                val json = httpGet(server.localPort, "/state.json").body
+                assertContains(json, """"id":"0x200100","width":64,"height":64,"depth":24,"painted":true,"pictures":["0x200200"],"matchingWindows":["0x200001"],"retainedPicture":"0x200200"""")
+                assertFalse(json.contains(""""matchingWindows":["0x200001","0x200002"],"retainedPicture":"0x200200""""))
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `screen svg keeps retained render picture provenance after pixmap id reuse before composite`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val compositedWindow = 0x0020_0001
+                val unrelatedWindow = 0x0020_0002
+                val pixmap = 0x0020_0100
+                val gc = 0x0020_1001
+                val sourcePicture = 0x0020_0200
+                val destinationPicture = 0x0020_0201
+                out.write(createWindowRequest(compositedWindow, 10, 20, 64, 64))
+                out.write(changePropertyRequest(compositedWindow, "retained reused composited target"))
+                out.write(createWindowRequest(unrelatedWindow, 90, 20, 64, 64))
+                out.write(changePropertyRequest(unrelatedWindow, "unrelated retained reused target"))
+                out.write(createPixmapRequest(pixmap, width = 64, height = 64))
+                out.write(renderCreatePictureRequest(sourcePicture, pixmap, XRender.Rgb24Format))
+                out.write(renderFillRectanglesRequest(sourcePicture))
+                out.write(freePixmapRequest(pixmap))
+                out.write(createPixmapRequest(pixmap, width = 64, height = 64))
+                out.write(createGcRequest(gc, pixmap))
+                out.write(putImageRequest(pixmap, gc))
+                out.write(renderCreatePictureRequest(destinationPicture, compositedWindow, XRender.Rgb24Format))
+                out.write(renderCompositeRequest(sourcePicture, destinationPicture, width = 64, height = 64))
+                out.write(mapWindowRequest(compositedWindow))
+                out.write(mapWindowRequest(unrelatedWindow))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "retained reused composited target")
+                assertContains(svg, "unrelated retained reused target")
+                assertFalse(
+                    Regex("""<image\b(?=[^>]*\bdata-window-id="0x200002")(?=[^>]*\bdata-picture-id="0x200200")""").containsMatchIn(svg),
+                    "A retained picture composited after pixmap XID reuse must keep the original source generation",
+                )
+
+                val json = httpGet(server.localPort, "/state.json").body
+                assertContains(json, """"id":"0x200100","width":64,"height":64,"depth":24,"painted":true,"pictures":["0x200200"],"matchingWindows":["0x200001"],"retainedPicture":"0x200200"""")
             }
 
             server.close()

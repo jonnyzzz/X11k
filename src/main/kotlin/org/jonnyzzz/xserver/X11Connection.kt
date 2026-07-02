@@ -2505,6 +2505,7 @@ internal class X11Connection(
         if (!validateRenderPictureValueLength(valueMask, body, valuesOffset = 16, minorOpcode = 4)) return
         val attributes = renderPictureAttributes(valueMask, body, valuesOffset = 16)
         if (!validateRenderPictureAttributes(attributes, minorOpcode = 4)) return
+        val drawablePixmap = state.pixmap(drawable)
         state.putPicture(
             XPicture(
                 id = id,
@@ -2527,8 +2528,9 @@ internal class X11Connection(
                 polyMode = attributes.polyMode ?: XRender.DefaultPolyMode,
                 dither = attributes.dither ?: 0,
                 componentAlpha = attributes.componentAlpha?.toXBool() ?: false,
-                retainedDrawableFramebuffer = state.pixmap(drawable)?.framebuffer,
-                retainedDrawableDepth = state.pixmap(drawable)?.depth,
+                retainedDrawableFramebuffer = drawablePixmap?.framebuffer,
+                retainedDrawableDepth = drawablePixmap?.depth,
+                retainedDrawableGeneration = drawablePixmap?.generation,
             ).also { picture ->
                 picture.alphaMapPicture = attributes.alphaMap
                     ?.takeIf { it != 0 }
@@ -2752,6 +2754,7 @@ internal class X11Connection(
                 rectangles = listOf(rectangle),
                 imageDataUri = XFramebuffer.imageDataUri(image),
                 sourceDrawableId = source.drawableId,
+                sourceDrawableGeneration = source.retainedDrawableGeneration,
                 framebufferBacked = true,
             ),
         )
@@ -2795,6 +2798,7 @@ internal class X11Connection(
                 rectangles = listOf(rectangle),
                 imageDataUri = XFramebuffer.imageDataUri(image),
                 sourceDrawableId = source.drawableId,
+                sourceDrawableGeneration = source.retainedDrawableGeneration,
                 framebufferBacked = true,
             ),
         )
@@ -3095,6 +3099,7 @@ internal class X11Connection(
                 kind = XDrawingKind.CopyArea,
                 foreground = source.solidPixel ?: 0,
                 sourceDrawableId = source.drawableId,
+                sourceDrawableGeneration = source.retainedDrawableGeneration,
                 points = destinationQuad.points.map { point ->
                     XPoint(point.x.fixedToInt(), point.y.fixedToInt())
                 },
