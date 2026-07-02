@@ -345,6 +345,7 @@ Read and follow $RELIABILITY_FILE before choosing tools.
 - Use MCP Steroid only when the prompt explicitly requires IDE semantic APIs.
 - Do not spawn nested review quorums or unbounded subagents.
 - Use bounded tests/builds and collect jps/jcmd/jstack diagnostics before terminating suspected JVM hangs.
+- Never run Gradle/Maven/IDE build/test/package commands in parallel in this repository; serialize build-directory-writing commands.
 
 This override supersedes older broad "prefer MCP Steroid" prompt text when they conflict.
 

@@ -56,9 +56,12 @@ The follow-up recurrence showed one remaining escape hatch: direct `./run-agent.
 
 The next recurrence risk was direct-runner preflight recovery itself. `run-agent.sh` started `watch-agents.sh` before the main run timeout loop existed, so a stuck watcher diagnostic/restart pulse could block the launch without producing a new run heartbeat. Direct preflight recovery is now bounded by `RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS` (default 180 seconds), and `ralph-loop.sh` passes its bounded recovery timeout through to direct-runner preflight.
 
+The 2026-07-03 review pass exposed another non-hang failure mode: an agent launched two Gradle test commands concurrently while reviewing one staged diff. Both commands used the same project build directory and binary test-result store, producing `EOFException` and missing `in-progress-results-generic.bin` failures despite the implementation being correct. Parallel shell reads are fine, but project builds, tests, package tasks, IDE builds, and any command that writes under `build/` or `.gradle/` must be serialized.
+
 ## Required Practice
 
 - Start long commands through `timeout` or with `RUN_AGENT_TIMEOUT_SECONDS` set.
+- Never run Gradle, Maven, IDE build, test, package, or other build-directory-writing commands in parallel for this repository. Queue them one at a time, using `--no-daemon --max-workers=1 -Dkotlin.incremental=false` for Gradle checks unless a task explicitly needs different settings.
 - Before killing a suspected stuck JVM workload, collect `jps -lm` plus `jcmd <pid> Thread.print` or `jstack <pid>`.
 - Before restarting a silent run-agent, inspect its `heartbeat.txt`, `run-info.txt`, any `DIAGNOSTICS=...` entries, and stdout/stderr sizes.
 - For agents that print startup text and then may idle, trust `OUTPUT_IDLE_SECONDS`, not total output size.
