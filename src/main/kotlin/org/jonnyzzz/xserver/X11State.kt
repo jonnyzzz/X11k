@@ -716,7 +716,7 @@ internal class X11State(
     }
 
     @Synchronized
-    fun circulateExposeWindows(result: XCirculateResult): List<XWindow> {
+    fun circulateExposeWindows(result: XCirculateResult): List<XWindowExposure> {
         val target = windows[result.window.id] ?: return emptyList()
         if (!target.mapped || target.windowClass != XWindowClass.InputOutput || !windowIsViewable(target.id)) return emptyList()
         val siblings = childrenOf(result.parentId)
@@ -728,7 +728,7 @@ internal class X11State(
     }
 
     @Synchronized
-    fun unmapExposeWindows(windowId: Int): List<XWindow> {
+    fun unmapExposeWindows(windowId: Int): List<XWindowExposure> {
         val target = windows[windowId] ?: return emptyList()
         if (!target.mapped || target.windowClass != XWindowClass.InputOutput || !windowIsViewable(target.id)) return emptyList()
         val exposedRegions = unmapExposedRootRegions(target)
@@ -737,7 +737,7 @@ internal class X11State(
             it.windowClass == XWindowClass.InputOutput && windowIsViewable(it.id)
         }
         val (parentRegions, lowerSiblingSubtrees) = lowerSiblingExposureAssignment(target, exposedRegions, childrenOf(target.parentId))
-        return listOfNotNull(parent?.takeIf { parentRegions.isNotEmpty() }) + lowerSiblingSubtrees
+        return parent?.let { exposedWindowRectangles(it, parentRegions) }.orEmpty() + lowerSiblingSubtrees
     }
 
     private fun unmapExposedRootRegions(target: XWindow): List<XRectangleCommand> =
@@ -772,16 +772,16 @@ internal class X11State(
         target: XWindow,
         regions: List<XRectangleCommand>,
         siblings: List<XWindow>,
-    ): List<XWindow> =
+    ): List<XWindowExposure> =
         lowerSiblingExposureAssignment(target, regions, siblings).second
 
     private fun lowerSiblingExposureAssignment(
         target: XWindow,
         regions: List<XRectangleCommand>,
         siblings: List<XWindow>,
-    ): Pair<List<XRectangleCommand>, List<XWindow>> {
+    ): Pair<List<XRectangleCommand>, List<XWindowExposure>> {
         var remainingRegions = regions
-        val lowerSiblingSubtrees = mutableListOf<XWindow>()
+        val lowerSiblingSubtrees = mutableListOf<XWindowExposure>()
         for (sibling in childrenBefore(siblings, target).asReversed()) {
             if (!sibling.mapped || sibling.windowClass != XWindowClass.InputOutput || !windowIsViewable(sibling.id)) continue
             val siblingBounds = windowBoundsInRoot(sibling)
@@ -793,9 +793,9 @@ internal class X11State(
         return remainingRegions to lowerSiblingSubtrees
     }
 
-    private fun exposedWindowsInSubtree(window: XWindow, regions: List<XRectangleCommand>): List<XWindow> {
+    private fun exposedWindowsInSubtree(window: XWindow, regions: List<XRectangleCommand>): List<XWindowExposure> {
         var ownRegions = regions
-        val childExposures = mutableListOf<XWindow>()
+        val childExposures = mutableListOf<XWindowExposure>()
         for (child in childrenOf(window.id).asReversed()) {
             if (!child.mapped || child.windowClass != XWindowClass.InputOutput || !windowIsViewable(child.id)) continue
             val childBounds = windowBoundsInRoot(child)
@@ -804,7 +804,24 @@ internal class X11State(
             ownRegions = subtractClips(ownRegions, listOf(childBounds))
             childExposures += exposedWindowsInSubtree(child, childRegions)
         }
-        return listOfNotNull(window.takeIf { ownRegions.isNotEmpty() }) + childExposures
+        return exposedWindowRectangles(window, ownRegions) + childExposures
+    }
+
+    private fun exposedWindowRectangles(window: XWindow, regions: List<XRectangleCommand>): List<XWindowExposure> {
+        if (regions.isEmpty()) return emptyList()
+        val absolute = absolutePosition(window)
+        val contentBounds = XRectangleCommand(absolute.first, absolute.second, window.width, window.height)
+        return intersectClipLists(regions, listOf(contentBounds)).map { region ->
+            XWindowExposure(
+                window = window,
+                rectangle = XRectangleCommand(
+                    x = region.x - absolute.first,
+                    y = region.y - absolute.second,
+                    width = region.width,
+                    height = region.height,
+                ),
+            )
+        }
     }
 
     private fun windowBoundsInRoot(window: XWindow): XRectangleCommand {
@@ -9148,6 +9165,11 @@ internal data class XWindow(
     var inputShape: List<XRectangleCommand>? = null,
     val properties: MutableMap<Int, XProperty> = linkedMapOf(),
     val framebuffer: XFramebuffer = XFramebuffer(width, height, backgroundPixel),
+)
+
+internal data class XWindowExposure(
+    val window: XWindow,
+    val rectangle: XRectangleCommand,
 )
 
 internal data class XPixmap(

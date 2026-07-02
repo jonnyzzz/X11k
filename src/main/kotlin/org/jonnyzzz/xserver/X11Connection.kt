@@ -4731,7 +4731,7 @@ internal class X11Connection(
             sendUnmapNotify(notifications)
             sendCrossing(unmapResult.pointerUngrabResult.crossingDispatches)
             sendCrossing(crossingEvents)
-            exposeWindows.forEach { sendExposeToSubscribers(it) }
+            sendExposeToSubscribers(exposeWindows)
             sendFocusEvents(unmapResult.focusDispatches)
         }
         val oldParentId = window.parentId
@@ -4801,7 +4801,7 @@ internal class X11Connection(
         sendUnmapNotify(notifications)
         sendCrossing(unmapResult.pointerUngrabResult.crossingDispatches)
         sendCrossing(crossingEvents)
-        exposeWindows.forEach { sendExposeToSubscribers(it) }
+        sendExposeToSubscribers(exposeWindows)
         sendFocusEvents(unmapResult.focusDispatches)
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
@@ -4840,13 +4840,13 @@ internal class X11Connection(
         val windowId = byteOrder.u32(body, 0)
         state.window(windowId) ?: return writeError(error = 3, opcode = 11, badValue = windowId)
         val previousCursor = state.displayedCursorSnapshot()
-        val exposeWindows = linkedMapOf<Int, XWindow>()
+        val exposeWindows = mutableListOf<XWindowExposure>()
         val focusDispatches = mutableListOf<XFocusDispatch>()
         for (child in state.childrenOf(windowId)) {
             if (child.mapped) {
                 val previousPointerPath = state.pointerCrossingPath()
                 val notifications = state.unmapNotifySinks(child)
-                state.unmapExposeWindows(child.id).forEach { exposeWindows[it.id] = it }
+                exposeWindows += state.unmapExposeWindows(child.id)
                 val unmapResult = state.unmapWindow(child.id)
                 val crossingEvents = if (unmapResult.pointerUngrabResult.released) {
                     emptyList()
@@ -4859,7 +4859,7 @@ internal class X11Connection(
                 sendCrossing(crossingEvents)
             }
         }
-        exposeWindows.values.forEach { sendExposeToSubscribers(it) }
+        sendExposeToSubscribers(exposeWindows)
         sendFocusEvents(focusDispatches)
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
@@ -4981,7 +4981,7 @@ internal class X11Connection(
         val crossingEvents = state.hierarchyCrossingEventDeliveries(previousPointerPath)
         sendCirculateNotify(state.circulateNotifySinks(result))
         sendCrossing(crossingEvents)
-        exposeWindows.forEach { sendExposeToSubscribers(it) }
+        sendExposeToSubscribers(exposeWindows)
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
 
@@ -9433,17 +9433,26 @@ internal class X11Connection(
         }
     }
 
-    private fun sendExposeToSubscribers(window: XWindow) {
-        sendExpose(state.exposureSinks(window.id), window.id, XRectangleCommand(0, 0, window.width, window.height))
+    private fun sendExposeToSubscribers(exposures: List<XWindowExposure>) {
+        exposures.forEachIndexed { index, exposure ->
+            val remainingForWindow = exposures.drop(index + 1).count { it.window.id == exposure.window.id }
+            sendExpose(
+                state.exposureSinks(exposure.window.id),
+                exposure.window.id,
+                exposure.rectangle,
+                count = remainingForWindow,
+            )
+        }
     }
 
-    private fun sendExpose(sinks: List<XEventSink>, windowId: Int, rectangle: XRectangleCommand) {
+    private fun sendExpose(sinks: List<XEventSink>, windowId: Int, rectangle: XRectangleCommand, count: Int = 0) {
         val event = XExposeEvent(
             windowId = windowId,
             x = rectangle.x,
             y = rectangle.y,
             width = rectangle.width,
             height = rectangle.height,
+            count = count,
         )
         for (sink in sinks) {
             runCatching { sink.sendExposeEvent(event) }

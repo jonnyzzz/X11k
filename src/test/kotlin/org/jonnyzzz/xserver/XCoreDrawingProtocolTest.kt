@@ -11016,8 +11016,9 @@ class XCoreDrawingProtocolTest {
                 assertMapAndExpose(input, lower)
                 assertSelectedMapAndExpose(input, top)
                 assertUnmapNotify(input.readExactly(32), sequence = 9, eventWindow = top, window = top)
-                assertExpose(input.readExactly(32), oldParent, sequence = 9, width = 60, height = 45, count = 0)
-                assertExpose(input.readExactly(32), lower, sequence = 9, width = 30, height = 30, count = 0)
+                assertExpose(input.readExactly(32), oldParent, sequence = 9, x = 10, y = 30, width = 30, height = 10, count = 1)
+                assertExpose(input.readExactly(32), oldParent, sequence = 9, x = 30, y = 10, width = 10, height = 20, count = 0)
+                assertExpose(input.readExactly(32), lower, sequence = 9, x = 10, y = 10, width = 20, height = 20, count = 0)
                 assertReparentNotify(
                     input.readExactly(32),
                     sequence = 9,
@@ -12807,9 +12808,46 @@ class XCoreDrawingProtocolTest {
                 assertMapAndExpose(input, lower)
                 assertMapAndExpose(input, top)
                 assertUnmapNotify(input.readExactly(32), sequence = 7, eventWindow = top, window = top)
-                assertExpose(input.readExactly(32), parent, sequence = 7, width = 60, height = 45, count = 0)
-                assertExpose(input.readExactly(32), lower, sequence = 7, width = 30, height = 30, count = 0)
+                assertExpose(input.readExactly(32), parent, sequence = 7, x = 10, y = 30, width = 30, height = 10, count = 1)
+                assertExpose(input.readExactly(32), parent, sequence = 7, x = 30, y = 10, width = 10, height = 20, count = 0)
+                assertExpose(input.readExactly(32), lower, sequence = 7, x = 10, y = 10, width = 20, height = 20, count = 0)
                 assertEquals(8, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UnmapWindow exposes precise lower sibling rectangle`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val parent = WindowId + 516
+                val lower = WindowId + 517
+                val top = WindowId + 518
+
+                out.write(createWindowRequest(parent, width = 60, height = 45))
+                out.write(createWindowRequest(lower, parent = parent, x = 0, y = 0, width = 30, height = 30, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(top, parent = parent, x = 10, y = 10, width = 30, height = 30, eventMask = XEventMasks.StructureNotify))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(top))
+                out.write(unmapWindowRequest(top))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, lower)
+                assertMapAndExpose(input, top)
+                val unmap = input.readExactly(32)
+                assertUnmapNotify(unmap, sequence = u16le(unmap, 2), eventWindow = top, window = top)
+                assertExpose(input.readExactly(32), lower, x = 10, y = 10, width = 20, height = 20, count = 0)
+                assertEquals(u16le(unmap, 2) + 1, u16le(readReply(input), 2))
             }
             server.close()
             serverThread.join(1_000)
@@ -12881,8 +12919,11 @@ class XCoreDrawingProtocolTest {
                 assertMapAndExpose(input, lowerChild)
                 assertMapAndExpose(input, top)
                 assertUnmapNotify(input.readExactly(32), sequence = 9, eventWindow = top, window = top)
-                assertExpose(input.readExactly(32), lower, sequence = 9, width = 40, height = 40, count = 0)
-                assertExpose(input.readExactly(32), lowerChild, sequence = 9, width = 10, height = 10, count = 0)
+                assertExpose(input.readExactly(32), lower, sequence = 9, x = 10, y = 10, width = 30, height = 5, count = 3)
+                assertExpose(input.readExactly(32), lower, sequence = 9, x = 10, y = 25, width = 30, height = 15, count = 2)
+                assertExpose(input.readExactly(32), lower, sequence = 9, x = 10, y = 15, width = 5, height = 10, count = 1)
+                assertExpose(input.readExactly(32), lower, sequence = 9, x = 25, y = 15, width = 15, height = 10, count = 0)
+                assertExpose(input.readExactly(32), lowerChild, sequence = 9, x = 0, y = 0, width = 10, height = 10, count = 0)
                 assertEquals(10, u16le(readReply(input), 2))
             }
             server.close()
@@ -13018,7 +13059,9 @@ class XCoreDrawingProtocolTest {
                 assertMapAndExpose(input, second)
                 assertUnmapNotify(input.readExactly(32), sequence = 7, eventWindow = first, window = first)
                 assertUnmapNotify(input.readExactly(32), sequence = 7, eventWindow = second, window = second)
-                assertExpose(input.readExactly(32), parent, sequence = 7, width = 60, height = 45, count = 0)
+                assertExpose(input.readExactly(32), parent, sequence = 7, x = 0, y = 0, width = 30, height = 10, count = 2)
+                assertExpose(input.readExactly(32), parent, sequence = 7, x = 0, y = 10, width = 10, height = 20, count = 1)
+                assertExpose(input.readExactly(32), parent, sequence = 7, x = 10, y = 10, width = 30, height = 30, count = 0)
                 assertEquals(8, u16le(readReply(input), 2))
             }
             server.close()
@@ -16133,7 +16176,7 @@ class XCoreDrawingProtocolTest {
 
                 assertMapAndExpose(input, first)
                 assertMapAndExpose(input, second)
-                assertExpose(input.readExactly(32), first, sequence = 5, width = 30, height = 30, count = 0)
+                assertExpose(input.readExactly(32), first, sequence = 5, x = 10, y = 10, width = 20, height = 20, count = 0)
                 assertEquals(listOf(second, first), treeChildren(readReply(input)))
             }
             server.close()
@@ -16167,7 +16210,7 @@ class XCoreDrawingProtocolTest {
                 assertMapAndExpose(input, first)
                 assertMapAndExpose(input, second)
                 assertMapAndExpose(input, third)
-                assertExpose(input.readExactly(32), second, sequence = 7, width = 30, height = 30, count = 0)
+                assertExpose(input.readExactly(32), second, sequence = 7, x = 2, y = 2, width = 10, height = 10, count = 0)
                 assertEquals(listOf(third, first, second), treeChildren(readReply(input)))
             }
             server.close()
@@ -16348,8 +16391,11 @@ class XCoreDrawingProtocolTest {
                 assertMapAndExpose(input, lower)
                 assertMapAndExpose(input, lowerChild)
                 assertMapAndExpose(input, top)
-                assertExpose(input.readExactly(32), lower, sequence = 7, width = 40, height = 40, count = 0)
-                assertExpose(input.readExactly(32), lowerChild, sequence = 7, width = 10, height = 10, count = 0)
+                assertExpose(input.readExactly(32), lower, sequence = 7, x = 10, y = 10, width = 30, height = 5, count = 3)
+                assertExpose(input.readExactly(32), lower, sequence = 7, x = 10, y = 25, width = 30, height = 15, count = 2)
+                assertExpose(input.readExactly(32), lower, sequence = 7, x = 10, y = 15, width = 5, height = 10, count = 1)
+                assertExpose(input.readExactly(32), lower, sequence = 7, x = 25, y = 15, width = 15, height = 10, count = 0)
+                assertExpose(input.readExactly(32), lowerChild, sequence = 7, x = 0, y = 0, width = 10, height = 10, count = 0)
                 assertEquals(listOf(top, lower), treeChildren(readReply(input)))
             }
             server.close()
@@ -16383,8 +16429,11 @@ class XCoreDrawingProtocolTest {
                 assertMapAndExpose(input, first)
                 assertMapAndExpose(input, child)
                 assertMapAndExpose(input, second)
-                assertExpose(input.readExactly(32), first, sequence = 7, width = 40, height = 40, count = 0)
-                assertExpose(input.readExactly(32), child, sequence = 7, width = 10, height = 10, count = 0)
+                assertExpose(input.readExactly(32), first, sequence = 7, x = 10, y = 10, width = 30, height = 5, count = 3)
+                assertExpose(input.readExactly(32), first, sequence = 7, x = 10, y = 25, width = 30, height = 15, count = 2)
+                assertExpose(input.readExactly(32), first, sequence = 7, x = 10, y = 15, width = 5, height = 10, count = 1)
+                assertExpose(input.readExactly(32), first, sequence = 7, x = 25, y = 15, width = 15, height = 10, count = 0)
+                assertExpose(input.readExactly(32), child, sequence = 7, x = 0, y = 0, width = 10, height = 10, count = 0)
                 assertEquals(listOf(second, first), treeChildren(readReply(input)))
             }
             server.close()
