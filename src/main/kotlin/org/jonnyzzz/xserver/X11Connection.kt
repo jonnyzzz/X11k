@@ -1625,6 +1625,15 @@ internal class X11Connection(
                 selected = details.indicatorMapNotifySelected,
             )
         }
+        if ((affectWhich and XXkb.EventCompatMapNotify) != 0) {
+            state.selectXkbCompatMapNotifyInput(
+                owner = this,
+                clear = (clear and XXkb.EventCompatMapNotify) != 0,
+                selectAll = (selectAll and XXkb.EventCompatMapNotify) != 0,
+                affect = details.compatMapNotifyAffect,
+                selected = details.compatMapNotifySelected,
+            )
+        }
         if ((affectWhich and XXkb.EventBellNotify) != 0) {
             state.selectXkbBellNotifyInput(
                 owner = this,
@@ -1653,6 +1662,8 @@ internal class X11Connection(
         var indicatorStateNotifySelected = 0
         var indicatorMapNotifyAffect: Int? = null
         var indicatorMapNotifySelected = 0
+        var compatMapNotifyAffect: Int? = null
+        var compatMapNotifySelected = 0
         var bellNotifyAffect: Int? = null
         var bellNotifySelected = 0
 
@@ -1711,7 +1722,11 @@ internal class X11Connection(
             return true
         }
 
-        fun details8(mask: Int, captureBellNotify: Boolean = false): Boolean {
+        fun details8(
+            mask: Int,
+            captureCompatMapNotify: Boolean = false,
+            captureBellNotify: Boolean = false,
+        ): Boolean {
             if ((detailsMask and mask) == 0) return true
             if (!require(2)) return false
             val affect = body[offset - 2].toInt() and 0xff
@@ -1719,6 +1734,10 @@ internal class X11Connection(
             if ((selected and affect.inv()) != 0) {
                 writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
                 return false
+            }
+            if (captureCompatMapNotify) {
+                compatMapNotifyAffect = affect
+                compatMapNotifySelected = selected
             }
             if (captureBellNotify) {
                 bellNotifyAffect = affect
@@ -1733,7 +1752,7 @@ internal class X11Connection(
         if (!details32(XXkb.EventIndicatorStateNotify, captureIndicatorStateNotify = true)) return null
         if (!details32(XXkb.EventIndicatorMapNotify, captureIndicatorMapNotify = true)) return null
         if (!details16(XXkb.EventNamesNotify)) return null
-        if (!details8(XXkb.EventCompatMapNotify)) return null
+        if (!details8(XXkb.EventCompatMapNotify, captureCompatMapNotify = true)) return null
         if (!details8(XXkb.EventBellNotify, captureBellNotify = true)) return null
         if (!details8(XXkb.EventActionMessage)) return null
         if (!details16(XXkb.EventAccessXNotify)) return null
@@ -1752,6 +1771,8 @@ internal class X11Connection(
             indicatorStateNotifySelected = indicatorStateNotifySelected,
             indicatorMapNotifyAffect = indicatorMapNotifyAffect,
             indicatorMapNotifySelected = indicatorMapNotifySelected,
+            compatMapNotifyAffect = compatMapNotifyAffect,
+            compatMapNotifySelected = compatMapNotifySelected,
             bellNotifyAffect = bellNotifyAffect,
             bellNotifySelected = bellNotifySelected,
         )
@@ -1846,6 +1867,8 @@ internal class X11Connection(
         val indicatorStateNotifySelected: Int,
         val indicatorMapNotifyAffect: Int?,
         val indicatorMapNotifySelected: Int,
+        val compatMapNotifyAffect: Int?,
+        val compatMapNotifySelected: Int,
         val bellNotifyAffect: Int?,
         val bellNotifySelected: Int,
     )
@@ -2132,9 +2155,24 @@ internal class X11Connection(
     private fun xkbSetCompatMap(body: ByteArray, majorOpcode: Int) {
         if (body.size < 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetCompatMap, badValue = 0)
         val groups = body[5].toInt() and 0xff
+        val firstSI = byteOrder.u16(body, 6)
         val nSI = byteOrder.u16(body, 8)
         val expectedSize = 12 + nSI * 16 + Integer.bitCount(groups) * 4
         if (body.size != expectedSize) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetCompatMap, badValue = 0)
+        val changed = (if (nSI > 0) XXkb.CompatMapSymInterpret else 0) or
+            (if (groups != 0) XXkb.CompatMapGroupCompat else 0)
+        sendXkbCompatMapNotify(
+            state.xkbCompatMapNotifyDispatches(
+                XXkbCompatMapNotifyEvent(
+                    timestamp = state.syncServerTime(),
+                    changedGroups = groups,
+                    firstSI = firstSI,
+                    nSI = nSI,
+                    nTotalSI = nSI,
+                    changed = changed,
+                ),
+            ),
+        )
     }
 
     private fun xkbGetIndicatorState(body: ByteArray, majorOpcode: Int) {
@@ -10361,6 +10399,24 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendXkbCompatMapNotifyEvent(event: XXkbCompatMapNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = XXkb.FirstEvent.toByte()
+        bytes[1] = XXkb.CompatMapNotify.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.timestamp)
+        bytes[8] = 0
+        bytes[9] = event.changedGroups.toByte()
+        byteOrder.put16(bytes, 10, event.firstSI)
+        byteOrder.put16(bytes, 12, event.nSI)
+        byteOrder.put16(bytes, 14, event.nTotalSI)
+        byteOrder.put32(bytes, 16, 0)
+        byteOrder.put32(bytes, 20, 0)
+        byteOrder.put32(bytes, 24, 0)
+        byteOrder.put32(bytes, 28, 0)
+        write(bytes)
+    }
+
     override fun sendXkbBellNotifyEvent(event: XXkbBellNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = XXkb.FirstEvent.toByte()
@@ -11730,6 +11786,12 @@ internal class X11Connection(
     private fun sendXkbIndicatorMapNotify(notifications: List<XXkbIndicatorMapNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendXkbIndicatorMapNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendXkbCompatMapNotify(notifications: List<XXkbCompatMapNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendXkbCompatMapNotifyEvent(notification.event) }
         }
     }
 

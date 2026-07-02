@@ -105,6 +105,7 @@ internal class X11State(
     private val xkbControlsNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbIndicatorStateNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbIndicatorMapNotifyInputs = linkedMapOf<XEventSink, Int>()
+    private val xkbCompatMapNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbBellNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val screenSaverInputs = linkedMapOf<XEventSink, Int>()
     private val windowOwners = linkedMapOf<Int, XEventSink>()
@@ -686,6 +687,20 @@ internal class X11State(
             xkbIndicatorMapNotifyInputs.remove(owner)
         } else {
             xkbIndicatorMapNotifyInputs[owner] = eventMask
+        }
+    }
+
+    @Synchronized
+    fun selectXkbCompatMapNotifyInput(owner: XEventSink, clear: Boolean, selectAll: Boolean, affect: Int?, selected: Int) {
+        var eventMask = xkbCompatMapNotifyInputs[owner] ?: 0
+        if (clear) eventMask = 0
+        if (selectAll) eventMask = XXkb.AllCompatMapMask
+        if (affect != null) eventMask = (eventMask and affect.inv()) or (selected and affect)
+
+        if (eventMask == 0) {
+            xkbCompatMapNotifyInputs.remove(owner)
+        } else {
+            xkbCompatMapNotifyInputs[owner] = eventMask
         }
     }
 
@@ -1604,6 +1619,18 @@ internal class X11State(
     }
 
     @Synchronized
+    fun xkbCompatMapNotifyDispatches(event: XXkbCompatMapNotifyEvent): List<XXkbCompatMapNotifyDispatch> {
+        if (event.changed == 0) return emptyList()
+        return xkbCompatMapNotifyInputs.mapNotNull { (sink, selected) ->
+            if ((selected and event.changed) == 0) {
+                null
+            } else {
+                XXkbCompatMapNotifyDispatch(sink = sink, event = event)
+            }
+        }
+    }
+
+    @Synchronized
     fun xkbIndicatorState(): Int = xkbIndicatorState
 
     @Synchronized
@@ -2456,6 +2483,7 @@ internal class X11State(
         xkbControlsNotifyInputs.remove(sink)
         xkbIndicatorStateNotifyInputs.remove(sink)
         xkbIndicatorMapNotifyInputs.remove(sink)
+        xkbCompatMapNotifyInputs.remove(sink)
         xkbBellNotifyInputs.remove(sink)
         screenSaverInputs.remove(sink)
         if (screenSaverAttributes?.owner == sink) screenSaverAttributes = null

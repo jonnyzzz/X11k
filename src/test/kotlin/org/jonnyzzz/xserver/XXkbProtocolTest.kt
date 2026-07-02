@@ -1488,6 +1488,107 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD CompatMapNotify reports selected SetCompatMap changes`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventCompatMapNotify,
+                    details = selectEvents8Details(XXkb.AllCompatMapMask, XXkb.AllCompatMapMask),
+                ),
+            )
+            out.write(setCompatMapRequest(groups = 0x5, firstSI = 7, nSI = 2))
+            out.write(getCompatMapRequest(groups = 0, getAllSI = false, firstSI = 0, nSI = 0))
+            out.flush()
+
+            assertCompatMapNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 2,
+                changedGroups = 0x5,
+                firstSI = 7,
+                nSI = 2,
+                nTotalSI = 2,
+            )
+            val compatMap = readReply(socket.getInputStream())
+            assertEquals(3, u16le(compatMap, 2))
+            assertEquals(0, u16le(compatMap, 10))
+            assertEquals(0, u16le(compatMap, 12))
+            assertEquals(0, u16le(compatMap, 14))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD CompatMapNotify is suppressed when selected details do not intersect changes`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventCompatMapNotify,
+                    details = selectEvents8Details(XXkb.CompatMapSymInterpret, XXkb.CompatMapSymInterpret),
+                ),
+            )
+            out.write(setCompatMapRequest(groups = 0x2, nSI = 0))
+            out.write(getCompatMapRequest(groups = 0, getAllSI = false, firstSI = 0, nSI = 0))
+            out.flush()
+
+            val compatMap = readReply(socket.getInputStream())
+            assertEquals(3, u16le(compatMap, 2))
+            assertEquals(0, u16le(compatMap, 10))
+            assertEquals(0, u16le(compatMap, 12))
+            assertEquals(0, u16le(compatMap, 14))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SelectEvents clear removes CompatMapNotify selection`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventCompatMapNotify,
+                    selectAll = XXkb.EventCompatMapNotify,
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventCompatMapNotify,
+                    clear = XXkb.EventCompatMapNotify,
+                ),
+            )
+            out.write(setCompatMapRequest(groups = 0, nSI = 1))
+            out.write(getCompatMapRequest(groups = 0, getAllSI = false, firstSI = 0, nSI = 0))
+            out.flush()
+
+            val compatMap = readReply(socket.getInputStream())
+            assertEquals(4, u16le(compatMap, 2))
+            assertEquals(0, u16le(compatMap, 10))
+            assertEquals(0, u16le(compatMap, 12))
+            assertEquals(0, u16le(compatMap, 14))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SelectEvents validates CompatMapNotify details and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventCompatMapNotify,
+                    details = selectEvents8Details(XXkb.CompatMapSymInterpret, XXkb.CompatMapGroupCompat),
+                ),
+            )
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SelectEvents)
+            val version = readReply(socket.getInputStream())
+            assertEquals(2, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+            assertEquals(XXkb.MajorVersion, u16le(version, 8))
+        }
+    }
+
+    @Test
     fun `XKEYBOARD SetCompatMap validates variable payload length and recovers stream`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -3045,12 +3146,18 @@ class XXkbProtocolTest {
         return request(XXkb.MajorOpcode, XXkb.GetCompatMap, body)
     }
 
-    private fun setCompatMapRequest(groups: Int, nSI: Int, bodySize: Int = 12 + nSI * 16 + Integer.bitCount(groups) * 4): ByteArray {
+    private fun setCompatMapRequest(
+        groups: Int,
+        firstSI: Int = 0,
+        nSI: Int,
+        bodySize: Int = 12 + nSI * 16 + Integer.bitCount(groups) * 4,
+    ): ByteArray {
         val body = ByteArray(bodySize)
         put16le(body, 0, 0x0100)
         if (body.size > 3) body[3] = 1
         if (body.size > 4) body[4] = 1
         if (body.size > 5) body[5] = groups.toByte()
+        if (body.size >= 8) put16le(body, 6, firstSI)
         if (body.size >= 10) put16le(body, 8, nSI)
         for (index in 0 until nSI) {
             val offset = 12 + index * 16
@@ -3633,6 +3740,21 @@ class XXkbProtocolTest {
         assertEquals(0, u16le(event, 10))
         assertEquals(state, u32le(event, 12))
         assertEquals(changed, u32le(event, 16))
+        assertEquals(0, u32le(event, 20))
+        assertEquals(0, u32le(event, 24))
+        assertEquals(0, u32le(event, 28))
+    }
+
+    private fun assertCompatMapNotify(event: ByteArray, sequence: Int, changedGroups: Int, firstSI: Int, nSI: Int, nTotalSI: Int) {
+        assertEquals(XXkb.FirstEvent, event[0].toInt() and 0xff)
+        assertEquals(XXkb.CompatMapNotify, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(0, event[8].toInt() and 0xff)
+        assertEquals(changedGroups, event[9].toInt() and 0xff)
+        assertEquals(firstSI, u16le(event, 10))
+        assertEquals(nSI, u16le(event, 12))
+        assertEquals(nTotalSI, u16le(event, 14))
+        assertEquals(0, u32le(event, 16))
         assertEquals(0, u32le(event, 20))
         assertEquals(0, u32le(event, 24))
         assertEquals(0, u32le(event, 28))
