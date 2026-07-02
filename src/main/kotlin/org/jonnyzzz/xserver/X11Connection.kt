@@ -1720,13 +1720,12 @@ internal class X11Connection(
             groupLatch = byteOrder.i16(body, 10),
         )
         val after = state.keyboardPointerState()
-        val changed = xkbChangedStateComponents(before, after)
         sendXkbStateNotify(
             state.xkbStateNotifyDispatches(
                 XXkbStateNotifyEvent(
                     timestamp = state.syncServerTime(),
                     state = after,
-                    changed = changed,
+                    changed = after.changedComponentsFrom(before),
                     requestMajor = majorOpcode,
                     requestMinor = XXkb.LatchLockState,
                 ),
@@ -1738,19 +1737,6 @@ internal class X11Connection(
         val stateNotifyAffect: Int?,
         val stateNotifySelected: Int,
     )
-
-    private fun xkbChangedStateComponents(before: XKeyboardPointerState, after: XKeyboardPointerState): Int {
-        var changed = 0
-        if (before.effectiveModifiers != after.effectiveModifiers) changed = changed or XXkb.ModifierStateMask
-        if (before.baseModifiers != after.baseModifiers) changed = changed or XXkb.ModifierBaseMask
-        if (before.latchedModifiers != after.latchedModifiers) changed = changed or XXkb.ModifierLatchMask
-        if (before.lockedModifiers != after.lockedModifiers) changed = changed or XXkb.ModifierLockMask
-        if (before.effectiveGroup != after.effectiveGroup) changed = changed or XXkb.GroupStateMask
-        if (before.normalizedLatchedGroup != after.normalizedLatchedGroup) changed = changed or XXkb.GroupLatchMask
-        if (before.normalizedLockedGroup != after.normalizedLockedGroup) changed = changed or XXkb.GroupLockMask
-        if (before.pointerButtons != after.pointerButtons) changed = changed or XXkb.PointerButtonMask
-        return changed
-    }
 
     private fun xkbGetControls(body: ByteArray, majorOpcode: Int) {
         if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetControls, badValue = 0)

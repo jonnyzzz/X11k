@@ -578,8 +578,8 @@ internal data class XXkbStateNotifyEvent(
     val timestamp: Int,
     val state: XKeyboardPointerState,
     val changed: Int,
-    val requestMajor: Int,
-    val requestMinor: Int,
+    val requestMajor: Int = 0,
+    val requestMinor: Int = 0,
 )
 
 internal data class XXkbStateNotifyDispatch(

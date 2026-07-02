@@ -539,6 +539,93 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD StateNotify reports selected pointer button changes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(
+                    selectEventsRequest(
+                        affectWhich = XXkb.EventStateNotify,
+                        details = selectEvents16Details(
+                            affect = XXkb.PointerButtonMask,
+                            selected = XXkb.PointerButtonMask,
+                        ),
+                    ),
+                )
+                out.write(getStateRequest())
+                out.flush()
+                readReply(socket.getInputStream())
+
+                server.input.pointerDown(10, 10, button = 1)
+                val pressed = socket.getInputStream().readExactly(32)
+                assertEquals(XXkb.FirstEvent, pressed[0].toInt() and 0xff)
+                assertEquals(XXkb.StateNotify, pressed[1].toInt() and 0xff)
+                assertEquals(2, u16le(pressed, 2))
+                assertEquals(0x100, u16le(pressed, 24))
+                assertEquals(XXkb.PointerButtonMask, u16le(pressed, 26))
+                assertEquals(0, pressed[30].toInt() and 0xff)
+                assertEquals(0, pressed[31].toInt() and 0xff)
+
+                server.input.pointerUp(10, 10, button = 1)
+                val released = socket.getInputStream().readExactly(32)
+                assertEquals(XXkb.FirstEvent, released[0].toInt() and 0xff)
+                assertEquals(XXkb.StateNotify, released[1].toInt() and 0xff)
+                assertEquals(0, u16le(released, 24))
+                assertEquals(XXkb.PointerButtonMask, u16le(released, 26))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD StateNotify reports selected base modifier changes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(
+                    selectEventsRequest(
+                        affectWhich = XXkb.EventStateNotify,
+                        details = selectEvents16Details(
+                            affect = XXkb.ModifierStateMask or XXkb.ModifierBaseMask,
+                            selected = XXkb.ModifierStateMask or XXkb.ModifierBaseMask,
+                        ),
+                    ),
+                )
+                out.write(getStateRequest())
+                out.flush()
+                readReply(socket.getInputStream())
+
+                server.input.keyDown(XKeyboard.MinKeycode, modifiers = 5)
+                val pressed = socket.getInputStream().readExactly(32)
+                assertEquals(XXkb.FirstEvent, pressed[0].toInt() and 0xff)
+                assertEquals(XXkb.StateNotify, pressed[1].toInt() and 0xff)
+                assertEquals(5, pressed[9].toInt() and 0xff)
+                assertEquals(5, pressed[10].toInt() and 0xff)
+                assertEquals(XXkb.ModifierStateMask or XXkb.ModifierBaseMask, u16le(pressed, 26))
+                assertEquals(0, pressed[30].toInt() and 0xff)
+                assertEquals(0, pressed[31].toInt() and 0xff)
+
+                server.input.keyUp(XKeyboard.MinKeycode, modifiers = 0)
+                val released = socket.getInputStream().readExactly(32)
+                assertEquals(XXkb.FirstEvent, released[0].toInt() and 0xff)
+                assertEquals(XXkb.StateNotify, released[1].toInt() and 0xff)
+                assertEquals(0, released[9].toInt() and 0xff)
+                assertEquals(0, released[10].toInt() and 0xff)
+                assertEquals(XXkb.ModifierStateMask or XXkb.ModifierBaseMask, u16le(released, 26))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD LatchLockState rejects invalid modifier masks without changing XKB state`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()

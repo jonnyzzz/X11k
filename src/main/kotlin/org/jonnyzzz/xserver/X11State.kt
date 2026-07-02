@@ -2324,11 +2324,13 @@ internal class X11State(
         val crossingDeliveries = mutableListOf<Pair<XEventSink, XCrossingEvent>>()
         val ungrabCrossingDeliveries = mutableListOf<Pair<XEventSink, XCrossingEvent>>()
         val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
+        val xkbStateNotifyDispatches = mutableListOf<XXkbStateNotifyDispatch>()
         val targetId: Int?
         val finalRootX: Int
         val finalRootY: Int
         synchronized(this) {
             val previousCursor = displayedCursorIdentity()
+            val previousKeyboardPointerState = keyboardPointerState()
             val previousX = pointerX
             val previousY = pointerY
             val frozenOwner = frozenPointerOwner
@@ -2467,6 +2469,14 @@ internal class X11State(
                 clearFrozenPointer(grab?.owner)
             }
             xfixesCursorNotifyDispatches += xfixesCursorNotifyDispatchesIfChanged(previousCursor, timestamp = time)
+            val keyboardPointerState = keyboardPointerState()
+            xkbStateNotifyDispatches += xkbStateNotifyDispatches(
+                XXkbStateNotifyEvent(
+                    timestamp = time,
+                    state = keyboardPointerState,
+                    changed = keyboardPointerState.changedComponentsFrom(previousKeyboardPointerState),
+                ),
+            )
             if (targetId != null) focusWindowId = targetId
         }
 
@@ -2480,6 +2490,7 @@ internal class X11State(
             sink.sendCrossingEvent(event)
         }
         sendXFixesCursorNotify(xfixesCursorNotifyDispatches)
+        sendXkbStateNotify(xkbStateNotifyDispatches)
         return XPointerDispatch(
             targetWindowId = targetId,
             deliveredEvents = crossingDeliveries.size + deliveries.size + ungrabCrossingDeliveries.size,
@@ -2497,8 +2508,10 @@ internal class X11State(
 
     fun keyboardKey(keycode: Int, modifiers: Int, pressed: Boolean): XKeyDispatch {
         val deliveries = mutableListOf<Pair<XEventSink, XKeyEvent>>()
+        val xkbStateNotifyDispatches = mutableListOf<XXkbStateNotifyDispatch>()
         val targetId: Int?
         synchronized(this) {
+            val previousKeyboardPointerState = keyboardPointerState()
             targetId = sendEventInputFocusWindowId()
             val type = if (pressed) XKeyEventType.KeyPress else XKeyEventType.KeyRelease
             val mask = XEventMasks.forKeyType(type)
@@ -2581,11 +2594,20 @@ internal class X11State(
             if (!pressed && activeKeyboardGrab?.activatedByPassiveGrab == true && activeKeyboardGrab?.passiveGrabKey == keycode) {
                 activeKeyboardGrab = null
             }
+            val keyboardPointerState = keyboardPointerState()
+            xkbStateNotifyDispatches += xkbStateNotifyDispatches(
+                XXkbStateNotifyEvent(
+                    timestamp = time,
+                    state = keyboardPointerState,
+                    changed = keyboardPointerState.changedComponentsFrom(previousKeyboardPointerState),
+                ),
+            )
         }
 
         for ((sink, event) in deliveries) {
             sink.sendKeyEvent(event)
         }
+        sendXkbStateNotify(xkbStateNotifyDispatches)
         return XKeyDispatch(targetWindowId = targetId, deliveredEvents = deliveries.size)
     }
 
@@ -8768,6 +8790,12 @@ internal class X11State(
         }
     }
 
+    private fun sendXkbStateNotify(notifications: List<XXkbStateNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendXkbStateNotifyEvent(notification.event) }
+        }
+    }
+
     private fun destroyNotifySinksInDestroyOrder(rootId: Int, excludedSink: XEventSink?): List<XDestroyNotifyDispatch> =
         windowsInDestroyNotifyOrder(rootId).flatMap { window ->
             destroyNotifySinks(window).filter { dispatch -> dispatch.sink != excludedSink }
@@ -10111,6 +10139,19 @@ internal data class XKeyboardPointerState(
     val normalizedLockedGroup: Int get() = normalizedXkbGroup(lockedGroup)
     val normalizedLatchedGroup: Int get() = normalizedXkbGroup(latchedGroup)
     val effectiveGroup: Int get() = normalizedXkbGroup(lockedGroup + latchedGroup)
+
+    fun changedComponentsFrom(before: XKeyboardPointerState): Int {
+        var changed = 0
+        if (before.effectiveModifiers != effectiveModifiers) changed = changed or XXkb.ModifierStateMask
+        if (before.baseModifiers != baseModifiers) changed = changed or XXkb.ModifierBaseMask
+        if (before.latchedModifiers != latchedModifiers) changed = changed or XXkb.ModifierLatchMask
+        if (before.lockedModifiers != lockedModifiers) changed = changed or XXkb.ModifierLockMask
+        if (before.effectiveGroup != effectiveGroup) changed = changed or XXkb.GroupStateMask
+        if (before.normalizedLatchedGroup != normalizedLatchedGroup) changed = changed or XXkb.GroupLatchMask
+        if (before.normalizedLockedGroup != normalizedLockedGroup) changed = changed or XXkb.GroupLockMask
+        if (before.pointerButtons != pointerButtons) changed = changed or XXkb.PointerButtonMask
+        return changed
+    }
 
     private fun normalizedXkbGroup(group: Int): Int {
         val groupCount = XXkb.DefaultGroupCount
