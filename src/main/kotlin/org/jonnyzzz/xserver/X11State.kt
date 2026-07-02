@@ -2922,6 +2922,7 @@ internal class X11State(
             val renderShape = intersectClips(window.boundingShape, window.clipShape)
             XWindowSnapshot(
                 id = window.id,
+                generation = window.generation,
                 parentId = window.parentId,
                 x = absolute.first,
                 y = absolute.second,
@@ -2969,26 +2970,33 @@ internal class X11State(
         fun drawableIdentity(id: Int): DrawableIdentity? =
             windows[id]?.let { DrawableIdentity(id, it.generation) }
                 ?: pixmaps[id]?.let { DrawableIdentity(id, it.generation) }
-        val framebufferWindowConsumersBySource = drawings
-            .filter { drawing ->
-                drawing.framebufferBacked &&
-                    drawing.sourceDrawableId != null &&
-                    drawing.sourceDrawableGeneration != null &&
-                    drawing.drawableGeneration != null &&
-                    windows[drawing.drawableId]?.generation == drawing.drawableGeneration
-            }
+        val framebufferWindowConsumerDrawings = drawings.filter { drawing ->
+            drawing.framebufferBacked &&
+                drawing.sourceDrawableId != null &&
+                drawing.sourceDrawableGeneration != null &&
+                drawing.drawableGeneration != null
+        }
+        val framebufferWindowSourcesWithProvenance = framebufferWindowConsumerDrawings
+            .map { DrawableIdentity(it.sourceDrawableId!!, it.sourceDrawableGeneration!!) }
+            .toSet()
+        val framebufferWindowConsumersBySource = framebufferWindowConsumerDrawings
+            .filter { drawing -> windows[drawing.drawableId]?.generation == drawing.drawableGeneration }
             .groupBy { DrawableIdentity(it.sourceDrawableId!!, it.sourceDrawableGeneration!!) }
             .mapValues { (_, drawings) -> drawings.map { it.drawableId }.distinct() }
         fun matchingWindowIds(drawableId: Int, generation: Long?, width: Int, height: Int): List<Int> {
             val sizeMatches = sizeMatchingWindowIds(width, height)
             val sourceIdentity = generation?.let { DrawableIdentity(drawableId, it) } ?: drawableIdentity(drawableId)
-            val consumers = sourceIdentity?.let { framebufferWindowConsumersBySource[it] } ?: return sizeMatches
+            if (sourceIdentity == null) return sizeMatches
+            val consumers = framebufferWindowConsumersBySource[sourceIdentity]
+            if (consumers == null && sourceIdentity in framebufferWindowSourcesWithProvenance) return emptyList()
+            if (consumers == null) return sizeMatches
             return sizeMatches.filter { it in consumers }
         }
 
         val livePixmapSnapshots = pixmaps.values.map { pixmap ->
             XPixmapSnapshot(
                 id = pixmap.id,
+                generation = pixmap.generation,
                 width = pixmap.width,
                 height = pixmap.height,
                 depth = pixmap.depth,
@@ -3009,6 +3017,7 @@ internal class X11State(
             if (pixmaps[drawableId]?.framebuffer === framebuffer) return@mapNotNull null
             XPixmapSnapshot(
                 id = drawableId,
+                generation = picture.retainedDrawableGeneration ?: 0L,
                 width = framebuffer.width,
                 height = framebuffer.height,
                 depth = picture.retainedDrawableDepth ?: (XRender.formatDepth(picture.format) ?: 0),
@@ -10258,6 +10267,7 @@ private fun pointHex(point: XFixedPoint): String =
 
 internal data class XPixmapSnapshot(
     val id: Int,
+    val generation: Long,
     val width: Int,
     val height: Int,
     val depth: Int,
@@ -10485,6 +10495,7 @@ private fun rgb16Hex(red: Int, green: Int, blue: Int): String =
 
 internal data class XWindowSnapshot(
     val id: Int,
+    val generation: Long,
     val parentId: Int,
     val x: Int,
     val y: Int,

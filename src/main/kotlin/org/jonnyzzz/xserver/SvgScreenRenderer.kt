@@ -633,7 +633,11 @@ internal object SvgScreenRenderer {
         val subtreeIds = subtreeWindows(snapshot, window).map { it.id }.toSet()
         val recentPaintByDrawable = snapshot.drawings
             .mapIndexedNotNull { index, drawing ->
-                if (drawing.framebufferBacked) drawing.drawableId to index else null
+                if (drawing.framebufferBacked && drawing.drawableGeneration != null) {
+                    (drawing.drawableId to drawing.drawableGeneration) to index
+                } else {
+                    null
+                }
             }
             .toMap()
         return snapshot.pixmaps
@@ -654,7 +658,7 @@ internal object SvgScreenRenderer {
                         }
                     }
                     // If the bounded drawing log no longer contains a pixmap paint, fall back to stable id ordering.
-                    .thenByDescending { recentPaintByDrawable[it.id] ?: -1 }
+                    .thenByDescending { recentPaintByDrawable[it.id to it.generation] ?: -1 }
                     .thenBy { it.retained }
                     .thenBy { it.id },
             )
@@ -956,8 +960,8 @@ internal object SvgScreenRenderer {
             .firstOrNull { window.id in it.matchingWindowIds }
         val pixmapSurface = pixmap?.let(::pixmapDisplaySurface)
         if (pixmapSurface != null) {
-            val windowPaintIndex = snapshot.latestFramebufferPaintIndex(window.id)
-            val pixmapPaintIndex = snapshot.latestFramebufferPaintIndex(pixmap.id)
+            val windowPaintIndex = snapshot.latestFramebufferPaintIndex(window.id, window.generation)
+            val pixmapPaintIndex = snapshot.latestFramebufferPaintIndex(pixmap.id, pixmap.generation)
             if (windowPaintIndex < 0 || pixmapPaintIndex > windowPaintIndex) return pixmapSurface
         }
         window.framebufferDataUri?.let {
@@ -987,8 +991,12 @@ internal object SvgScreenRenderer {
 
     // Covering pixmap matching is a presentation heuristic for IDE backing stores;
     // exact-size candidates stay ahead of oversized surfaces, then recent paints win.
-    private fun XScreenSnapshot.latestFramebufferPaintIndex(drawableId: Int): Int =
-        drawings.indexOfLast { it.drawableId == drawableId && it.framebufferBacked }
+    private fun XScreenSnapshot.latestFramebufferPaintIndex(drawableId: Int, generation: Long): Int =
+        drawings.indexOfLast {
+            it.drawableId == drawableId &&
+                it.drawableGeneration == generation &&
+                it.framebufferBacked
+        }
 
     private fun renderFilledRectangles(
         builder: XmlDom,

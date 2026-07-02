@@ -2749,6 +2749,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = destinationDrawableId,
+                drawableGeneration = destination.retainedOrLiveDrawableGeneration(),
                 kind = if (source.isGeneratedSource()) XDrawingKind.FillRectangle else XDrawingKind.CopyArea,
                 foreground = source.solidPixel ?: 0,
                 rectangles = listOf(rectangle),
@@ -2793,6 +2794,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = destinationDrawableId,
+                drawableGeneration = destination.retainedOrLiveDrawableGeneration(),
                 kind = if (source.isGeneratedSource()) XDrawingKind.FillRectangle else XDrawingKind.CopyArea,
                 foreground = source.solidPixel ?: 0,
                 rectangles = listOf(rectangle),
@@ -2850,6 +2852,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = destinationDrawableId,
+                drawableGeneration = destination.retainedOrLiveDrawableGeneration(),
                 kind = XDrawingKind.FillPoly,
                 foreground = source.solidPixel ?: 0,
                 points = trapezoids.flatMap { trapezoid ->
@@ -2888,6 +2891,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = destinationDrawableId,
+                drawableGeneration = destination.retainedOrLiveDrawableGeneration(),
                 kind = XDrawingKind.FillPoly,
                 foreground = trapezoids.firstOrNull()?.top?.leftColor?.toPixel() ?: 0,
                 points = trapezoids.flatMap { trapezoid ->
@@ -2943,6 +2947,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = destinationDrawableId,
+                drawableGeneration = destination.retainedOrLiveDrawableGeneration(),
                 kind = XDrawingKind.FillPoly,
                 foreground = source.solidPixel ?: 0,
                 points = triangles.flatMap { triangle ->
@@ -3010,6 +3015,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = destinationDrawableId,
+                drawableGeneration = destination.retainedOrLiveDrawableGeneration(),
                 kind = XDrawingKind.FillPoly,
                 foreground = source.solidPixel ?: 0,
                 points = triangles.flatMap { triangle ->
@@ -3047,6 +3053,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = destinationDrawableId,
+                drawableGeneration = destination.retainedOrLiveDrawableGeneration(),
                 kind = XDrawingKind.FillPoly,
                 foreground = triangles.firstOrNull()?.p1?.color?.toPixel() ?: 0,
                 points = triangles.flatMap { triangle ->
@@ -3096,6 +3103,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = destinationDrawableId,
+                drawableGeneration = destination.retainedOrLiveDrawableGeneration(),
                 kind = XDrawingKind.CopyArea,
                 foreground = source.solidPixel ?: 0,
                 sourceDrawableId = source.drawableId,
@@ -3117,6 +3125,9 @@ internal class X11Connection(
             XRender.LegacyTransformFilterBest -> XRender.FilterBilinear
             else -> null
         }
+
+    private fun XPicture.retainedOrLiveDrawableGeneration(): Long? =
+        retainedDrawableGeneration ?: drawableId?.let { state.drawableGeneration(it) }
 
     private fun renderCreateGlyphSet(body: ByteArray) {
         if (body.size != 8) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 17, badValue = 0)
@@ -3306,6 +3317,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = destinationDrawableId,
+                drawableGeneration = destination.retainedOrLiveDrawableGeneration(),
                 kind = XDrawingKind.Text,
                 foreground = 0,
                 points = listOf(XPoint(byteOrder.i16(body, 20), byteOrder.i16(body, 22))),
@@ -3393,6 +3405,7 @@ internal class X11Connection(
             state.draw(
                 XDrawingCommand(
                     drawableId = destinationDrawableId,
+                    drawableGeneration = destination.retainedOrLiveDrawableGeneration(),
                     kind = XDrawingKind.FillRectangle,
                     foreground = targetPixel,
                     rectangles = rectangles,

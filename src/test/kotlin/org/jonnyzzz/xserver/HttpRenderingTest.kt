@@ -410,6 +410,46 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `screen svg does not match copied backing pixmap to reused destination window id`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val window = 0x0020_0001
+                val pixmap = 0x0020_0100
+                val gc = 0x0020_1001
+                out.write(createWindowRequest(window, 10, 20, 64, 64))
+                out.write(createPixmapRequest(pixmap, width = 64, height = 64))
+                out.write(createGcRequest(gc, window))
+                out.write(putImageRequest(pixmap, gc))
+                out.write(copyAreaRequest(pixmap, window, gc))
+                out.write(destroyWindowRequest(window))
+                out.write(createWindowRequest(window, 90, 20, 64, 64))
+                out.write(changePropertyRequest(window, "reused destination xid"))
+                out.write(mapWindowRequest(window))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "reused destination xid")
+                assertFalse(
+                    Regex("""<image\b(?=[^>]*\bdata-window-id="0x200001")(?=[^>]*\bdata-pixmap-id="0x200100")""").containsMatchIn(svg),
+                    "A stale draw command for an old window generation must not make the pixmap match a reused window XID",
+                )
+
+                val json = httpGet(server.localPort, "/state.json").body
+                assertContains(json, """"matchingWindows":[]""")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `screen svg presents oversized painted backing pixmap that covers window`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -866,6 +906,49 @@ class HttpRenderingTest {
 
                 val json = httpGet(server.localPort, "/state.json").body
                 assertContains(json, """"id":"0x200100","width":64,"height":64,"depth":24,"painted":true,"pictures":["0x200200"],"matchingWindows":["0x200001"],"retainedPicture":"0x200200"""")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `screen svg keeps retained destination picture recency after drawable id reuse`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val targetWindow = 0x0020_0001
+                val pixmap = 0x0020_0100
+                val picture = 0x0020_0200
+                val gc = 0x0020_1001
+                out.write(createWindowRequest(targetWindow, 10, 20, 64, 64))
+                out.write(changePropertyRequest(targetWindow, "retained destination recency target"))
+                out.write(createPixmapRequest(pixmap, width = 64, height = 64))
+                out.write(renderCreatePictureRequest(picture, pixmap, XRender.Rgb24Format))
+                out.write(freePixmapRequest(pixmap))
+                out.write(createPixmapRequest(pixmap, width = 64, height = 64))
+                out.write(createGcRequest(gc, pixmap))
+                out.write(putImageRequest(pixmap, gc))
+                out.write(renderFillRectanglesRequest(picture))
+                out.write(mapWindowRequest(targetWindow))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "retained destination recency target")
+                assertContains(svg, """data-window-id="0x200001"""")
+                assertContains(svg, """data-pixmap-id="0x200100"""")
+                assertContains(svg, """data-picture-id="0x200200"""")
+                assertContains(svg, """data-source="retained-picture"""")
+                assertFalse(
+                    Regex("""<image\b(?=[^>]*\bdata-window-id="0x200001")(?=[^>]*\bdata-source="matching-pixmap")""").containsMatchIn(svg),
+                    "A retained destination paint after pixmap XID reuse must not update the live pixmap generation recency",
+                )
             }
 
             server.close()
@@ -1668,6 +1751,14 @@ class HttpRenderingTest {
     private fun unmapWindowRequest(id: Int): ByteArray {
         val bytes = ByteArray(8)
         bytes[0] = 10
+        put16le(bytes, 2, 2)
+        put32le(bytes, 4, id)
+        return bytes
+    }
+
+    private fun destroyWindowRequest(id: Int): ByteArray {
+        val bytes = ByteArray(8)
+        bytes[0] = 4
         put16le(bytes, 2, 2)
         put32le(bytes, 4, id)
         return bytes
