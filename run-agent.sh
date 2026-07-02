@@ -107,6 +107,9 @@ Configuration (env variables):
                       (default: RUN_AGENT_STALE_SECONDS or 900)
   RUN_AGENT_PREFLIGHT_WATCH_LIMIT
                       Number of recent runs scanned by preflight watch (default: 40)
+  RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS
+                      Wall-clock timeout for the preflight watch/recovery pulse
+                      (default: 180, 0 disables)
 
 Exported to agent process:
   RUNS_DIR            Absolute path to the runs directory
@@ -195,12 +198,27 @@ RUN_AGENT_PREFLIGHT_WATCH="${RUN_AGENT_PREFLIGHT_WATCH:-1}"
 RUN_AGENT_PREFLIGHT_RECOVER_STALE="${RUN_AGENT_PREFLIGHT_RECOVER_STALE:-1}"
 RUN_AGENT_PREFLIGHT_STALE_SECONDS="${RUN_AGENT_PREFLIGHT_STALE_SECONDS:-${RUN_AGENT_STALE_SECONDS:-900}}"
 RUN_AGENT_PREFLIGHT_WATCH_LIMIT="${RUN_AGENT_PREFLIGHT_WATCH_LIMIT:-40}"
+RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS="${RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS:-180}"
+
+run_preflight_bounded() {
+  local seconds="$1"
+  shift
+  if [ "$seconds" = "0" ]; then
+    "$@"
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$seconds" "$@"
+  else
+    "$@"
+  fi
+}
 
 if [ "$RUN_AGENT_PREFLIGHT_WATCH" != "0" ] && \
    [ -x "$BASE_DIR/watch-agents.sh" ] && \
    [ "${RUN_AGENT_IN_PREFLIGHT_WATCH:-0}" != "1" ]; then
   echo "RUN_AGENT_PREFLIGHT_WATCH=1"
-  env \
+  run_preflight_bounded "$RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS" env \
     RUN_AGENT_IN_PREFLIGHT_WATCH=1 \
     RUN_AGENT_WATCH_ONCE=1 \
     RUN_AGENT_WATCH_LIMIT="$RUN_AGENT_PREFLIGHT_WATCH_LIMIT" \

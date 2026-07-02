@@ -54,6 +54,8 @@ The later 2026-07-02 repeat showed that recovery itself also needs a hard bounda
 
 The follow-up recurrence showed one remaining escape hatch: direct `./run-agent.sh ...` invocations still inherited the upstream one-hour wall-clock default and disabled output-idle termination unless the caller set overrides. Direct runner calls now use the same operational defaults as `ralph-loop.sh`: 900 seconds wall clock, diagnostics after 180 seconds without new stdout/stderr bytes, and termination after 300 output-idle seconds. Claude text-mode still keeps the output-idle kill disabled unless `RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT=1`, because it may legitimately produce no text until completion; the wall-clock timeout and diagnostics still apply.
 
+The next recurrence risk was direct-runner preflight recovery itself. `run-agent.sh` started `watch-agents.sh` before the main run timeout loop existed, so a stuck watcher diagnostic/restart pulse could block the launch without producing a new run heartbeat. Direct preflight recovery is now bounded by `RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS` (default 180 seconds), and `ralph-loop.sh` passes its bounded recovery timeout through to direct-runner preflight.
+
 ## Required Practice
 
 - Start long commands through `timeout` or with `RUN_AGENT_TIMEOUT_SECONDS` set.
@@ -95,6 +97,7 @@ The follow-up recurrence showed one remaining escape hatch: direct `./run-agent.
   ```
 
 - Use `./ralph-loop.sh <role>` for routine research/implementation/review/test agent work. It runs the recovery watcher before the agent, applies the standard wall-clock/no-output diagnostics settings, and wraps `run-agent.sh` in an outer process timeout.
+- Keep direct-runner preflight recovery bounded with `RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS` (default 180 seconds). If that fires, inspect `runs/agent-watch.log` before retrying.
 
 ## Runner Timeout Knobs
 
