@@ -72,6 +72,11 @@ internal data class XClientSetupResourceIds(
     val mask: Int,
 )
 
+internal data class XXkbVirtualModifierBindings(
+    val mask: Int,
+    val realModifiers: List<Int>,
+)
+
 internal class X11State(
     val width: Int,
     val height: Int,
@@ -174,6 +179,8 @@ internal class X11State(
     private val randrUserMonitors = linkedMapOf<Int, XRandrMonitor>()
     private val xkbButtonActions = linkedMapOf<Int, ByteArray>()
     private var modifierMapping = XModifierMapping.Default
+    private var xkbVirtualModifierMask = 0
+    private val xkbVirtualModifierRealMods = IntArray(16)
     private var keyboardMapping = XKeyboardMapping.Default
     private var keyboardControl = XKeyboardControlSettings.Default
     private var xkbIndicatorState = 0
@@ -1534,6 +1541,28 @@ internal class X11State(
     @Synchronized
     fun setModifierMapping(mapping: List<Int>) {
         modifierMapping = mapping.toList()
+    }
+
+    @Synchronized
+    fun xkbVirtualModifierBindings(requestedMask: Int): XXkbVirtualModifierBindings {
+        val mask = xkbVirtualModifierMask and requestedMask and 0xffff
+        return XXkbVirtualModifierBindings(
+            mask = mask,
+            realModifiers = (0 until 16).mapNotNull { bit ->
+                if ((mask and (1 shl bit)) == 0) null else xkbVirtualModifierRealMods[bit]
+            },
+        )
+    }
+
+    @Synchronized
+    fun setXkbVirtualModifierBindings(mask: Int, realModifiers: List<Int>) {
+        var index = 0
+        for (bit in 0 until 16) {
+            if ((mask and (1 shl bit)) != 0) {
+                xkbVirtualModifierRealMods[bit] = realModifiers[index++] and 0xff
+            }
+        }
+        xkbVirtualModifierMask = xkbVirtualModifierMask or (mask and 0xffff)
     }
 
     private fun modifierKeycodes(mapping: List<Int>, keycodesPerModifier: Int, modifier: Int): Set<Int> {

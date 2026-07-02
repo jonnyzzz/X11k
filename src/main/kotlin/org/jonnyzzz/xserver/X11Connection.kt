@@ -1957,6 +1957,7 @@ internal class X11Connection(
         val keySymsRequested = ((full or partial) and XXkb.MapPartKeySyms) != 0
         val modifierMapRequested = ((full or partial) and XXkb.MapPartModifierMap) != 0
         val virtualModsRequested = ((full or partial) and XXkb.MapPartVirtualMods) != 0
+        val requestedVirtualMods = if ((full and XXkb.MapPartVirtualMods) != 0) 0xffff else byteOrder.u16(body, 14)
         val keySymFirst = if ((full and XXkb.MapPartKeySyms) != 0) XKeyboard.MinKeycode else body[8].toInt() and 0xff
         val keySymCount = if ((full and XXkb.MapPartKeySyms) != 0) {
             XKeyboard.MaxKeycode - XKeyboard.MinKeycode + 1
@@ -2007,7 +2008,13 @@ internal class X11Connection(
             emptyList()
         }
         val modifierMapPayloadBytes = paddedLength(modifierMapEntries.size * 2)
-        val payloadBytes = keyTypesPayloadBytes + keySymPayloadBytes + modifierMapPayloadBytes
+        val virtualModifierBindings = if (virtualModsRequested) {
+            state.xkbVirtualModifierBindings(requestedVirtualMods)
+        } else {
+            XXkbVirtualModifierBindings(mask = 0, realModifiers = emptyList())
+        }
+        val virtualModsPayloadBytes = if (virtualModsRequested) paddedLength(virtualModifierBindings.realModifiers.size) else 0
+        val payloadBytes = keyTypesPayloadBytes + keySymPayloadBytes + virtualModsPayloadBytes + modifierMapPayloadBytes
         val reply = reply(extra = 0, payloadUnits = 2 + payloadBytes / 4)
         var present = 0
         if (keyTypesRequested) present = present or XXkb.MapPartKeyTypes
@@ -2032,6 +2039,9 @@ internal class X11Connection(
             reply[32] = modifierMapCount.toByte()
             reply[33] = modifierMapEntries.size.toByte()
         }
+        if (virtualModsRequested) {
+            byteOrder.put16(reply, 38, virtualModifierBindings.mask)
+        }
 
         var offset = 40
         if (keyTypesRequested) {
@@ -2049,6 +2059,12 @@ internal class X11Connection(
                     offset += 4
                 }
             }
+        }
+        if (virtualModsRequested) {
+            for (realModifiers in virtualModifierBindings.realModifiers) {
+                reply[offset++] = realModifiers.toByte()
+            }
+            offset = paddedLength(offset)
         }
         if (modifierMapRequested) {
             for ((keycode, modifiers) in modifierMapEntries) {
@@ -2111,6 +2127,7 @@ internal class X11Connection(
         var nKeySyms = 0
         var firstModMapKey = 0
         var nModMapKeys = 0
+        var changedVirtualMods = 0
         val keySyms = payload.keySyms
         if (keySyms != null && keySyms.rows.isNotEmpty()) {
             if (keySyms.firstKeySym !in XKeyboard.MinKeycode..XKeyboard.MaxKeycode) {
@@ -2136,6 +2153,7 @@ internal class X11Connection(
             }
             updatedModifierMapping = xkbUpdatedModifierMapping(modifierMap)
         }
+        val virtualMods = payload.virtualMods
         if (modifierMap != null && updatedModifierMapping != null) {
             state.setModifierMapping(updatedModifierMapping)
             changed = changed or XXkb.MapPartModifierMap
@@ -2152,6 +2170,11 @@ internal class X11Connection(
             firstKeySym = keySyms.firstKeySym
             nKeySyms = keySyms.rows.size
         }
+        if (virtualMods != null && virtualMods.mask != 0) {
+            state.setXkbVirtualModifierBindings(virtualMods.mask, virtualMods.realModifiers)
+            changed = changed or XXkb.MapPartVirtualMods
+            changedVirtualMods = virtualMods.mask
+        }
         if (changed != 0) {
             sendXkbMapNotify(
                 state.xkbMapNotifyDispatches(
@@ -2164,6 +2187,7 @@ internal class X11Connection(
                         nKeySyms = nKeySyms,
                         firstModMapKey = firstModMapKey,
                         nModMapKeys = nModMapKeys,
+                        virtualMods = changedVirtualMods,
                     ),
                 ),
             )
@@ -2180,6 +2204,7 @@ internal class X11Connection(
         val expectedSize: Int,
         val keySyms: XkbSetMapKeySyms?,
         val modifierMap: XkbSetMapModifierMap?,
+        val virtualMods: XkbSetMapVirtualMods?,
     )
 
     private data class XkbSetMapKeySyms(
@@ -2191,6 +2216,11 @@ internal class X11Connection(
         val firstModMapKey: Int,
         val nModMapKeys: Int,
         val entries: List<Pair<Int, Int>>,
+    )
+
+    private data class XkbSetMapVirtualMods(
+        val mask: Int,
+        val realModifiers: List<Int>,
     )
 
     private fun xkbUpdatedModifierMapping(modifierMap: XkbSetMapModifierMap): List<Int> {
@@ -2290,8 +2320,15 @@ internal class X11Connection(
         if ((present and XXkb.MapPartKeyBehaviors) != 0) {
             if (!require(totalKeyBehaviors * 4)) return null
         }
+        var virtualModBindings: XkbSetMapVirtualMods? = null
         if ((present and XXkb.MapPartVirtualMods) != 0) {
-            if (!require(Integer.bitCount(virtualMods))) return null
+            val bindingsOffset = offset
+            val bindingCount = Integer.bitCount(virtualMods)
+            if (!require(bindingCount)) return null
+            virtualModBindings = XkbSetMapVirtualMods(
+                mask = virtualMods,
+                realModifiers = List(bindingCount) { index -> body[bindingsOffset + index].toInt() and 0xff },
+            )
             offset = paddedLength(offset)
             if (offset > body.size) return null
         }
@@ -2323,6 +2360,7 @@ internal class X11Connection(
             expectedSize = offset,
             keySyms = keySyms,
             modifierMap = modifierMap,
+            virtualMods = virtualModBindings,
         )
     }
 
@@ -10573,7 +10611,7 @@ internal class X11Connection(
         bytes[25] = event.nModMapKeys.toByte()
         bytes[26] = 0
         bytes[27] = 0
-        byteOrder.put16(bytes, 28, 0)
+        byteOrder.put16(bytes, 28, event.virtualMods)
         byteOrder.put16(bytes, 30, 0)
         write(bytes)
     }

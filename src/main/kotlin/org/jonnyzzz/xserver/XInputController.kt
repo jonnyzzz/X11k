@@ -590,6 +590,7 @@ internal data class XXkbMapNotifyEvent(
     val nKeySyms: Int = 0,
     val firstModMapKey: Int = 0,
     val nModMapKeys: Int = 0,
+    val virtualMods: Int = 0,
 )
 
 internal data class XXkbMapNotifyDispatch(
