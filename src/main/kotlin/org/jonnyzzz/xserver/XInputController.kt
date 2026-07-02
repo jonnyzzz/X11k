@@ -219,6 +219,7 @@ internal interface XEventSink {
     fun sendRandrOutputChangeNotifyEvent(event: XRandrOutputChangeNotifyEvent)
     fun sendRandrOutputPropertyNotifyEvent(event: XRandrOutputPropertyNotifyEvent)
     fun sendXkbStateNotifyEvent(event: XXkbStateNotifyEvent)
+    fun sendXkbControlsNotifyEvent(event: XXkbControlsNotifyEvent)
     fun sendSyncCounterNotifyEvent(event: XSyncCounterNotifyEvent)
     fun sendSyncAlarmNotifyEvent(event: XSyncAlarmNotifyEvent)
     fun sendSyntheticEvent(event: XSyntheticEvent)
@@ -585,6 +586,20 @@ internal data class XXkbStateNotifyEvent(
 internal data class XXkbStateNotifyDispatch(
     val sink: XEventSink,
     val event: XXkbStateNotifyEvent,
+)
+
+internal data class XXkbControlsNotifyEvent(
+    val timestamp: Int,
+    val changedControls: Int,
+    val enabledControls: Int,
+    val enabledControlChanges: Int,
+    val requestMajor: Int = 0,
+    val requestMinor: Int = 0,
+)
+
+internal data class XXkbControlsNotifyDispatch(
+    val sink: XEventSink,
+    val event: XXkbControlsNotifyEvent,
 )
 
 internal data class XShapeNotifyEvent(

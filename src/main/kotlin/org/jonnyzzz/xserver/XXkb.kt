@@ -35,6 +35,7 @@ internal object XXkb {
     const val SetDebuggingFlags = 101
 
     const val StateNotify = 2
+    const val ControlsNotify = 3
 
     const val EventNewKeyboardNotify = 1 shl 0
     const val EventMapNotify = 1 shl 1
@@ -79,6 +80,8 @@ internal object XXkb {
     const val AllStateComponentsMask = 0x3fff
 
     const val BoolCtrlRepeatKeys = 1 shl 0
+    const val ControlEnabledMask = 1 shl 31
+    const val AllControlsMask = -0x07ffe001
     const val MapPartKeyTypes = 1 shl 0
     const val MapPartKeySyms = 1 shl 1
     const val MapPartModifierMap = 1 shl 2

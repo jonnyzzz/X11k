@@ -1589,6 +1589,15 @@ internal class X11Connection(
                 selected = details.stateNotifySelected,
             )
         }
+        if ((affectWhich and XXkb.EventControlsNotify) != 0) {
+            state.selectXkbControlsNotifyInput(
+                owner = this,
+                clear = (clear and XXkb.EventControlsNotify) != 0,
+                selectAll = (selectAll and XXkb.EventControlsNotify) != 0,
+                affect = details.controlsNotifyAffect,
+                selected = details.controlsNotifySelected,
+            )
+        }
     }
 
     private fun validateXkbSelectEventDetails(
@@ -1602,6 +1611,8 @@ internal class X11Connection(
         var offset = 12
         var stateNotifyAffect: Int? = null
         var stateNotifySelected = 0
+        var controlsNotifyAffect: Int? = null
+        var controlsNotifySelected = 0
 
         fun require(bytes: Int): Boolean {
             val next = offset + bytes
@@ -1629,7 +1640,7 @@ internal class X11Connection(
             return true
         }
 
-        fun details32(mask: Int): Boolean {
+        fun details32(mask: Int, captureControlsNotify: Boolean = false): Boolean {
             if ((detailsMask and mask) == 0) return true
             if (!require(8)) return false
             val affect = byteOrder.u32(body, offset - 8)
@@ -1637,6 +1648,10 @@ internal class X11Connection(
             if ((selected and affect.inv()) != 0) {
                 writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
                 return false
+            }
+            if (captureControlsNotify) {
+                controlsNotifyAffect = affect
+                controlsNotifySelected = selected
             }
             return true
         }
@@ -1655,7 +1670,7 @@ internal class X11Connection(
 
         if (!details16(XXkb.EventNewKeyboardNotify)) return null
         if (!details16(XXkb.EventStateNotify, captureStateNotify = true)) return null
-        if (!details32(XXkb.EventControlsNotify)) return null
+        if (!details32(XXkb.EventControlsNotify, captureControlsNotify = true)) return null
         if (!details32(XXkb.EventIndicatorStateNotify)) return null
         if (!details32(XXkb.EventIndicatorMapNotify)) return null
         if (!details16(XXkb.EventNamesNotify)) return null
@@ -1669,7 +1684,12 @@ internal class X11Connection(
             writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
             return null
         }
-        return XkbSelectEventDetails(stateNotifyAffect = stateNotifyAffect, stateNotifySelected = stateNotifySelected)
+        return XkbSelectEventDetails(
+            stateNotifyAffect = stateNotifyAffect,
+            stateNotifySelected = stateNotifySelected,
+            controlsNotifyAffect = controlsNotifyAffect,
+            controlsNotifySelected = controlsNotifySelected,
+        )
     }
 
     private fun xkbBell(body: ByteArray, majorOpcode: Int) {
@@ -1736,6 +1756,8 @@ internal class X11Connection(
     private data class XkbSelectEventDetails(
         val stateNotifyAffect: Int?,
         val stateNotifySelected: Int,
+        val controlsNotifyAffect: Int?,
+        val controlsNotifySelected: Int,
     )
 
     private fun xkbGetControls(body: ByteArray, majorOpcode: Int) {
@@ -1754,6 +1776,7 @@ internal class X11Connection(
     private fun xkbSetControls(body: ByteArray, majorOpcode: Int) {
         if (body.size != 96) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetControls, badValue = 0)
         val affectEnabledControls = byteOrder.u32(body, 20)
+        val before = state.keyboardControl()
         if ((affectEnabledControls and XXkb.BoolCtrlRepeatKeys) != 0) {
             val enabledControls = byteOrder.u32(body, 24)
             state.updateKeyboardControl(
@@ -1763,6 +1786,24 @@ internal class X11Connection(
                     } else {
                         XKeyboardAutoRepeatMode.Off
                     },
+                ),
+            )
+        }
+        val after = state.keyboardControl()
+        val beforeEnabledControls = if (before.globalAutoRepeat) XXkb.BoolCtrlRepeatKeys else 0
+        val afterEnabledControls = if (after.globalAutoRepeat) XXkb.BoolCtrlRepeatKeys else 0
+        val enabledControlChanges = beforeEnabledControls xor afterEnabledControls
+        if (enabledControlChanges != 0) {
+            sendXkbControlsNotify(
+                state.xkbControlsNotifyDispatches(
+                    XXkbControlsNotifyEvent(
+                        timestamp = state.syncServerTime(),
+                        changedControls = XXkb.ControlEnabledMask,
+                        enabledControls = afterEnabledControls,
+                        enabledControlChanges = enabledControlChanges,
+                        requestMajor = majorOpcode,
+                        requestMinor = XXkb.SetControls,
+                    ),
                 ),
             )
         }
@@ -10108,6 +10149,26 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendXkbControlsNotifyEvent(event: XXkbControlsNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = XXkb.FirstEvent.toByte()
+        bytes[1] = XXkb.ControlsNotify.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.timestamp)
+        bytes[8] = 0
+        bytes[9] = XXkb.DefaultGroupCount.toByte()
+        byteOrder.put16(bytes, 10, 0)
+        byteOrder.put32(bytes, 12, event.changedControls)
+        byteOrder.put32(bytes, 16, event.enabledControls)
+        byteOrder.put32(bytes, 20, event.enabledControlChanges)
+        bytes[24] = 0
+        bytes[25] = 0
+        bytes[26] = event.requestMajor.toByte()
+        bytes[27] = event.requestMinor.toByte()
+        byteOrder.put32(bytes, 28, 0)
+        write(bytes)
+    }
+
     override fun sendSyncCounterNotifyEvent(event: XSyncCounterNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = (XSync.FirstEvent + 0).toByte()
@@ -11432,6 +11493,12 @@ internal class X11Connection(
     private fun sendXkbStateNotify(notifications: List<XXkbStateNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendXkbStateNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendXkbControlsNotify(notifications: List<XXkbControlsNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendXkbControlsNotifyEvent(notification.event) }
         }
     }
 

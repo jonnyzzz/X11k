@@ -11,7 +11,7 @@ This repository intentionally targets X11 first. Wayland, Projector-style remote
 
 ## Current Status
 
-The current server accepts X11 TCP connections, returns a deterministic one-screen setup reply, and implements a small core request subset for atoms/properties, root/window queries, simple window lifecycle, colors, cursors, fonts, and no-op drawing requests.
+The current server accepts X11 TCP connections, returns a deterministic one-screen setup reply, and implements the core request surface exercised by the smoke matrix: atoms/properties, root/window queries, window lifecycle, input/focus/grabs, colors, cursors, fonts, framebuffer-backed drawing, text, and Render compositing.
 
 It can run the first Docker smoke matrix against real X clients:
 
@@ -43,7 +43,11 @@ The HTML/SVG view is also an input surface: moving or clicking over the window m
 
 ![IntelliJ IDEA Community rendered through the X server HTTP/SVG view](docs/images/intellij-demo-renderer.png)
 
-Refresh this screenshot after visible renderer changes so the README tracks the current IntelliJ parity state.
+Refresh this screenshot after visible renderer changes so the README tracks the current IntelliJ parity state:
+
+```bash
+ALLOW_NPX_PLAYWRIGHT=1 scripts/update-intellij-readme-screenshot.sh
+```
 
 The test suite starts with:
 

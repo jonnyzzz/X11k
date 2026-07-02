@@ -799,6 +799,124 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD ControlsNotify reports selected RepeatKeys enabled changes`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventControlsNotify,
+                    details = selectEvents32Details(
+                        affect = XXkb.ControlEnabledMask,
+                        selected = XXkb.ControlEnabledMask,
+                    ),
+                ),
+            )
+            out.write(setControlsRequest(affectEnabledControls = XXkb.BoolCtrlRepeatKeys, enabledControls = 0))
+            out.write(getControlsRequest())
+            out.flush()
+
+            assertControlsNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 2,
+                changedControls = XXkb.ControlEnabledMask,
+                enabledControls = 0,
+                enabledControlChanges = XXkb.BoolCtrlRepeatKeys,
+            )
+            assertGetControls(readReply(socket.getInputStream()), sequence = 3, enabledControls = 0)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD ControlsNotify selectAll reports RepeatKeys enabled changes`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventControlsNotify,
+                    selectAll = XXkb.EventControlsNotify,
+                ),
+            )
+            out.write(setControlsRequest(affectEnabledControls = XXkb.BoolCtrlRepeatKeys, enabledControls = 0))
+            out.write(getControlsRequest())
+            out.flush()
+
+            assertControlsNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 2,
+                changedControls = XXkb.ControlEnabledMask,
+                enabledControls = 0,
+                enabledControlChanges = XXkb.BoolCtrlRepeatKeys,
+            )
+            assertGetControls(readReply(socket.getInputStream()), sequence = 3, enabledControls = 0)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD ControlsNotify suppresses unchanged or unselected RepeatKeys changes`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventControlsNotify,
+                    details = selectEvents32Details(
+                        affect = XXkb.ControlEnabledMask,
+                        selected = XXkb.ControlEnabledMask,
+                    ),
+                ),
+            )
+            out.write(setControlsRequest(affectEnabledControls = XXkb.BoolCtrlRepeatKeys, enabledControls = 0))
+            out.write(setControlsRequest(affectEnabledControls = XXkb.BoolCtrlRepeatKeys, enabledControls = 0))
+            out.write(getControlsRequest())
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventControlsNotify,
+                    details = selectEvents32Details(
+                        affect = XXkb.ControlEnabledMask or XXkb.BoolCtrlRepeatKeys,
+                        selected = XXkb.BoolCtrlRepeatKeys,
+                    ),
+                ),
+            )
+            out.write(setControlsRequest(affectEnabledControls = XXkb.BoolCtrlRepeatKeys, enabledControls = XXkb.BoolCtrlRepeatKeys))
+            out.write(getControlsRequest())
+            out.flush()
+
+            assertControlsNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 2,
+                changedControls = XXkb.ControlEnabledMask,
+                enabledControls = 0,
+                enabledControlChanges = XXkb.BoolCtrlRepeatKeys,
+            )
+            assertGetControls(readReply(socket.getInputStream()), sequence = 4, enabledControls = 0)
+            assertGetControls(readReply(socket.getInputStream()), sequence = 7, enabledControls = XXkb.BoolCtrlRepeatKeys)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SelectEvents clear removes ControlsNotify selection`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventControlsNotify,
+                    selectAll = XXkb.EventControlsNotify,
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventControlsNotify,
+                    clear = XXkb.EventControlsNotify,
+                ),
+            )
+            out.write(setControlsRequest(affectEnabledControls = XXkb.BoolCtrlRepeatKeys, enabledControls = 0))
+            out.write(getControlsRequest())
+            out.flush()
+
+            assertGetControls(readReply(socket.getInputStream()), sequence = 4, enabledControls = 0)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD SetControls ignores unsupported controls and validates fixed length`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -2256,6 +2374,12 @@ class XXkbProtocolTest {
             put16le(it, 2, selected)
         }
 
+    private fun selectEvents32Details(affect: Int, selected: Int): ByteArray =
+        ByteArray(8).also {
+            put32le(it, 0, affect)
+            put32le(it, 4, selected)
+        }
+
     private fun selectEvents8Details(affect: Int, selected: Int): ByteArray =
         byteArrayOf(affect.toByte(), selected.toByte())
 
@@ -2954,6 +3078,29 @@ class XXkbProtocolTest {
         assertEquals(0, u32le(reply, 52))
         assertEquals(enabledControls, u32le(reply, 56))
         assertEquals(92, reply.size)
+    }
+
+    private fun assertControlsNotify(
+        event: ByteArray,
+        sequence: Int,
+        changedControls: Int,
+        enabledControls: Int,
+        enabledControlChanges: Int,
+    ) {
+        assertEquals(XXkb.FirstEvent, event[0].toInt() and 0xff)
+        assertEquals(XXkb.ControlsNotify, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(0, event[8].toInt() and 0xff)
+        assertEquals(XXkb.DefaultGroupCount, event[9].toInt() and 0xff)
+        assertEquals(0, u16le(event, 10))
+        assertEquals(changedControls, u32le(event, 12))
+        assertEquals(enabledControls, u32le(event, 16))
+        assertEquals(enabledControlChanges, u32le(event, 20))
+        assertEquals(0, event[24].toInt() and 0xff)
+        assertEquals(0, event[25].toInt() and 0xff)
+        assertEquals(XXkb.MajorOpcode, event[26].toInt() and 0xff)
+        assertEquals(XXkb.SetControls, event[27].toInt() and 0xff)
+        assertEquals(0, u32le(event, 28))
     }
 
     private fun assertXkbKeySymMap(reply: ByteArray, offset: Int, width: Int, vararg keysyms: Int) {
