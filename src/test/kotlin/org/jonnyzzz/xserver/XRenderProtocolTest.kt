@@ -85,6 +85,80 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `root GetImage composes child subtrees below higher siblings`() {
+        XServer(ServerOptions(port = 0, width = 16, height = 16)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val lowerParent = WindowId
+                val higherSibling = WindowId + 1
+                val lateChild = WindowId + 2
+                val parentGc = PutImageGcId
+                val siblingGc = PutImageGcId + 1
+                val childGc = PutImageGcId + 2
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(lowerParent, x = 0, y = 0, width = 4, height = 4, borderWidth = 0))
+                out.write(createWindowRequest(higherSibling, x = 1, y = 1, width = 2, height = 2, borderWidth = 0))
+                out.write(createWindowRequest(lateChild, parent = lowerParent, x = 1, y = 1, width = 2, height = 2, borderWidth = 0))
+                out.write(mapWindowRequest(lowerParent))
+                out.write(mapWindowRequest(higherSibling))
+                out.write(mapWindowRequest(lateChild))
+                out.write(createGcRequest(parentGc, lowerParent, foreground = 0x0000ff))
+                out.write(createGcRequest(siblingGc, higherSibling, foreground = 0x00ff00))
+                out.write(createGcRequest(childGc, lateChild, foreground = 0xff0000))
+                out.write(polyFillRectangle(lowerParent, parentGc, listOf(XRectangleCommand(0, 0, 4, 4))))
+                out.write(polyFillRectangle(higherSibling, siblingGc, listOf(XRectangleCommand(0, 0, 2, 2))))
+                out.write(polyFillRectangle(lateChild, childGc, listOf(XRectangleCommand(0, 0, 2, 2))))
+                out.write(getImageRequest(X11Ids.RootWindow, x = 1, y = 1, width = 1, height = 1))
+                out.flush()
+
+                val image = readReplySkippingEvents(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `root GetImage clips child pixels by ancestor window clip shape`() {
+        XServer(ServerOptions(port = 0, width = 16, height = 16)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val parent = WindowId
+                val child = WindowId + 1
+                val parentGc = PutImageGcId
+                val childGc = PutImageGcId + 1
+                val clipRegion = RegionId
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent, x = 0, y = 0, width = 4, height = 1, borderWidth = 0))
+                out.write(createWindowRequest(child, parent = parent, x = 2, y = 0, width = 2, height = 1, borderWidth = 0))
+                out.write(xfixesCreateRegion(clipRegion, listOf(XRectangleCommand(0, 0, 2, 1))))
+                out.write(xfixesSetWindowShapeRegion(parent, XFixes.ShapeClip, xOffset = 0, yOffset = 0, region = clipRegion))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(createGcRequest(parentGc, parent, foreground = 0x0000ff))
+                out.write(createGcRequest(childGc, child, foreground = 0xff0000))
+                out.write(polyFillRectangle(parent, parentGc, listOf(XRectangleCommand(0, 0, 4, 1))))
+                out.write(polyFillRectangle(child, childGc, listOf(XRectangleCommand(0, 0, 2, 1))))
+                out.write(getImageRequest(X11Ids.RootWindow, x = 0, y = 0, width = 4, height = 1))
+                out.flush()
+
+                val image = readReplySkippingEvents(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 0, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, imageWidth = 4, x = 3, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER FillRectangles honors explicit empty destination picture clip rectangles`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2709,6 +2783,62 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER Composite OpOver treats ARGB32 drawable samples as premultiplied`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 1, height = 1, red = 0xe600, green = 0x3200, blue = 0x2c00, alpha = 0xffff))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 1, height = 1))
+                out.write(createGcRequest(PutImageGcId, PixmapId))
+                out.write(putImage32OnlyRequest(PixmapId, width = 1, height = 1, pixels = intArrayOf(0x8014_6e2d.toInt())))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(renderComposite(PixmapPictureId, PictureId, width = 1, height = 1, operation = XRender.OpOver, destinationX = 0, destinationY = 0))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff87_8743.toInt(), u32le(image, 32))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER Composite component alpha mask treats ARGB32 drawable samples as premultiplied`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 1, height = 1, red = 0xe600, green = 0x3200, blue = 0x2c00, alpha = 0xffff))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 1, height = 1))
+                out.write(createGcRequest(PutImageGcId, PixmapId))
+                out.write(putImage32OnlyRequest(PixmapId, width = 1, height = 1, pixels = intArrayOf(0x8014_6e2d.toInt())))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 32, width = 1, height = 1))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.Argb32Format))
+                out.write(renderFillRectangles(MaskPictureId, x = 0, y = 0, width = 1, height = 1, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(renderChangePictureComponentAlpha(MaskPictureId, componentAlpha = true))
+                out.write(renderComposite(PixmapPictureId, PictureId, mask = MaskPictureId, width = 1, height = 1, operation = XRender.OpOver, destinationX = 0, destinationY = 0))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff87_8743.toInt(), u32le(image, 32))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER Composite snapshots same drawable mask before destination writes`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2944,7 +3074,7 @@ class XRenderProtocolTest {
                 out.flush()
 
                 val image = readReply(socket.getInputStream())
-                assertEquals(0x80ff_0000.toInt(), pixelAt(image, imageWidth = 2, x = 0, y = 0))
+                assertEquals(0x8080_0000.toInt(), pixelAt(image, imageWidth = 2, x = 0, y = 0))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 2, x = 1, y = 0))
             }
             server.close()
@@ -14766,6 +14896,23 @@ class XRenderProtocolTest {
         put16le(body, 8, width)
         put16le(body, 10, height)
         body[17] = 8
+        data.copyInto(body, 20)
+        return request(72, 2, body)
+    }
+
+    private fun putImage32OnlyRequest(drawable: Int, width: Int, height: Int, pixels: IntArray): ByteArray {
+        require(pixels.size == width * height)
+        val stride = width * 4
+        val data = ByteArray(stride * height)
+        for (index in pixels.indices) {
+            put32le(data, index * 4, pixels[index])
+        }
+        val body = ByteArray(20 + data.size)
+        put32le(body, 0, drawable)
+        put32le(body, 4, PutImageGcId)
+        put16le(body, 8, width)
+        put16le(body, 10, height)
+        body[17] = 32
         data.copyInto(body, 20)
         return request(72, 2, body)
     }

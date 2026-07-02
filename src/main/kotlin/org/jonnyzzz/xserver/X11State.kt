@@ -4221,6 +4221,7 @@ internal class X11State(
                 maskX = maskX,
                 maskY = maskY,
                 maskPixelAt = maskPixelAt,
+                sourcePremultiplied = source.drawableId != null,
             ) { x, y ->
                 sourcePixelAt(x, y)
             }
@@ -4241,6 +4242,7 @@ internal class X11State(
                 maskX = maskX,
                 maskY = maskY,
                 maskAlphaAt = maskAlphaAt,
+                sourcePremultiplied = source.drawableId != null,
             ) { x, y ->
                 sourcePixelAt(x, y)
             }
@@ -4261,6 +4263,7 @@ internal class X11State(
                 maskX = maskX,
                 maskY = maskY,
                 maskAlphaAt = maskAlphaAt,
+                sourcePremultiplied = source.drawableId != null,
             ) { x, y ->
                 sourcePixelAt(x, y)
             }
@@ -5060,6 +5063,7 @@ internal class X11State(
                 maskX = maskX,
                 maskY = maskY,
                 maskAlphaAt = maskAlphaAt,
+                sourcePremultiplied = true,
             ) { x, y ->
                 sourcePixelAt(x, y)
             }
@@ -5079,15 +5083,16 @@ internal class X11State(
             maskX = maskX,
             maskY = maskY,
             maskAlphaAt = maskAlphaAt,
+            sourcePremultiplied = true,
         ) { x, y ->
             if (sourceSnapshot != null) {
                 if (x in 0 until sourceSnapshot.width && y in 0 until sourceSnapshot.height) {
-                    source.withAlphaMap(sourceSnapshot.pixels[y * sourceSnapshot.width + x], x + 0.5, y + 0.5) ?: 0
+                    source.withAlphaMap(sourceSnapshot.pixels[y * sourceSnapshot.width + x], x + 0.5, y + 0.5, sourcePremultiplied = true) ?: 0
                 } else {
                     0
                 }
             } else {
-                sourceFramebuffer.pixelAt(x, y)?.let { source.withAlphaMap(it, x + 0.5, y + 0.5) } ?: 0
+                sourceFramebuffer.pixelAt(x, y)?.let { source.withAlphaMap(it, x + 0.5, y + 0.5, sourcePremultiplied = true) } ?: 0
             }
         }
     }
@@ -5298,7 +5303,7 @@ internal class X11State(
         if (alphaMapClipsBaseDrawable(sample.first, sample.second, framebuffer.width, framebuffer.height)) return null
         val pixel = framebuffer.samplePixelAt(sample.first, sample.second, repeat, effectiveFilterName)
             ?: return if (alphaMap == 0) 0 else null
-        return withAlphaMap(pixel, sample.first, sample.second)
+        return withAlphaMap(pixel, sample.first, sample.second, sourcePremultiplied = true)
     }
 
     private fun XPicture.sampleDrawablePixel(
@@ -5314,7 +5319,7 @@ internal class X11State(
         if (alphaMapClipsBaseDrawable(sample.first, sample.second, snapshot.width, snapshot.height)) return null
         val pixel = snapshot.samplePixelAt(sample.first, sample.second, repeat, effectiveFilterName)
             ?: return if (alphaMap == 0) 0 else null
-        return withAlphaMap(pixel, sample.first, sample.second)
+        return withAlphaMap(pixel, sample.first, sample.second, sourcePremultiplied = true)
     }
 
     private fun XPicture.sampleMaskDrawablePixel(
@@ -5330,7 +5335,7 @@ internal class X11State(
         if (alphaMapClipsBaseDrawable(sample.first, sample.second, framebuffer.width, framebuffer.height)) return null
         val pixel = framebuffer.samplePixelAt(sample.first, sample.second, repeat, effectiveFilterName)
             ?: return if (alphaMap == 0) 0 else null
-        return withAlphaMap(pixel, sample.first, sample.second)
+        return withAlphaMap(pixel, sample.first, sample.second, sourcePremultiplied = true)
     }
 
     private fun XPicture.sampleMaskDrawablePixel(
@@ -5346,7 +5351,7 @@ internal class X11State(
         if (alphaMapClipsBaseDrawable(sample.first, sample.second, snapshot.width, snapshot.height)) return null
         val pixel = snapshot.samplePixelAt(sample.first, sample.second, repeat, effectiveFilterName)
             ?: return if (alphaMap == 0) 0 else null
-        return withAlphaMap(pixel, sample.first, sample.second)
+        return withAlphaMap(pixel, sample.first, sample.second, sourcePremultiplied = true)
     }
 
     private fun XPicture.alphaMapClipsBaseDrawable(x: Double, y: Double, width: Int, height: Int): Boolean =
@@ -5354,7 +5359,7 @@ internal class X11State(
             repeat == XRender.RepeatNone &&
             (x < 0.0 || x >= width || y < 0.0 || y >= height)
 
-    private fun XPicture.withAlphaMap(pixel: Int, x: Double, y: Double): Int? {
+    private fun XPicture.withAlphaMap(pixel: Int, x: Double, y: Double, sourcePremultiplied: Boolean = false): Int? {
         val alphaMapId = alphaMap
         if (alphaMapId == 0) return pixel
         val alphaPicture = alphaMapPicture ?: pictures[alphaMapId] ?: return null
@@ -5365,6 +5370,13 @@ internal class X11State(
         val alphaPixel = alphaFramebuffer.samplePixelAt(mapX, mapY, XRender.RepeatNone, filterName = null)
             ?: return null
         val alpha = (alphaPixel ushr 24) and 0xff
+        if (sourcePremultiplied) {
+            val sourceAlpha = (pixel ushr 24) and 0xff
+            if (sourceAlpha == 0 || alpha == 0) return 0
+            fun channel(shift: Int): Int =
+                ((((pixel ushr shift) and 0xff) * alpha + sourceAlpha / 2) / sourceAlpha).coerceIn(0, alpha)
+            return (alpha shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+        }
         return (pixel and 0x00ff_ffff) or (alpha shl 24)
     }
 
@@ -5903,6 +5915,7 @@ internal class X11State(
     ): XImagePixels? {
         if (width <= 0 || height <= 0) return XImagePixels(0, 0, IntArray(0))
         if (width.toLong() * height.toLong() > MaxGetImagePixels) return null
+        if (drawableId == X11Ids.RootWindow) return compositedRootImage(x, y, width, height)
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return null
         val pixels = IntArray(width * height)
         for (row in 0 until height) {
@@ -5912,6 +5925,97 @@ internal class X11State(
         }
         return XImagePixels(width, height, pixels)
     }
+
+    private fun compositedRootImage(x: Int, y: Int, width: Int, height: Int): XImagePixels {
+        val root = windows[X11Ids.RootWindow] ?: return XImagePixels(width, height, IntArray(width * height))
+        val pixels = IntArray(width * height)
+        for (row in 0 until height) {
+            for (column in 0 until width) {
+                pixels[row * width + column] = root.framebuffer.pixelAt(x + column, y + row) ?: 0
+            }
+        }
+        val requestedClip = listOf(
+            XRectangleCommand(
+                x = x.coerceIn(0, this.width),
+                y = y.coerceIn(0, this.height),
+                width = (x + width).coerceIn(0, this.width) - x.coerceIn(0, this.width),
+                height = (y + height).coerceIn(0, this.height) - y.coerceIn(0, this.height),
+            ),
+        ).filter { it.width > 0 && it.height > 0 }
+        paintRootChildrenIntoImage(root.id, requestedClip, x, y, width, height, pixels)
+        return XImagePixels(width, height, pixels)
+    }
+
+    private fun paintRootChildrenIntoImage(
+        parentId: Int,
+        parentClip: List<XRectangleCommand>,
+        imageX: Int,
+        imageY: Int,
+        imageWidth: Int,
+        imageHeight: Int,
+        pixels: IntArray,
+    ) {
+        if (parentClip.isEmpty()) return
+        for (window in childrenOf(parentId)) {
+            if (!window.mapped || !windowIsViewable(window.id)) continue
+            val absolute = absolutePosition(window)
+            val windowClip = intersectClipLists(parentClip, rootSpaceWindowRenderClip(window, absolute.first, absolute.second))
+            if (windowClip.isEmpty()) continue
+            if (window.windowClass == XWindowClass.InputOutput) {
+                paintWindowIntoRootImage(window, absolute.first, absolute.second, windowClip, imageX, imageY, imageWidth, imageHeight, pixels)
+            }
+            paintRootChildrenIntoImage(window.id, windowClip, imageX, imageY, imageWidth, imageHeight, pixels)
+        }
+    }
+
+    private fun paintWindowIntoRootImage(
+        window: XWindow,
+        absoluteX: Int,
+        absoluteY: Int,
+        clip: List<XRectangleCommand>,
+        imageX: Int,
+        imageY: Int,
+        imageWidth: Int,
+        imageHeight: Int,
+        pixels: IntArray,
+    ) {
+        for (rectangle in clip) {
+            val left = maxOf(imageX, rectangle.x)
+            val top = maxOf(imageY, rectangle.y)
+            val right = minOf(imageX + imageWidth, rectangle.x + rectangle.width)
+            val bottom = minOf(imageY + imageHeight, rectangle.y + rectangle.height)
+            if (right <= left || bottom <= top) continue
+            for (rootY in top until bottom) {
+                for (rootX in left until right) {
+                    val localX = rootX - absoluteX
+                    val localY = rootY - absoluteY
+                    val pixel = window.framebuffer.pixelAt(localX, localY) ?: continue
+                    pixels[(rootY - imageY) * imageWidth + (rootX - imageX)] = pixel
+                }
+            }
+        }
+    }
+
+    private fun rootSpaceWindowRenderClip(window: XWindow, absoluteX: Int, absoluteY: Int): List<XRectangleCommand> {
+        val bounding = window.boundingShape ?: defaultWindowShapeRegion(window, XFixes.ShapeBounding)
+        val clip = window.clipShape ?: defaultWindowShapeRegion(window, XFixes.ShapeClip)
+        return intersectClipLists(bounding, clip).map { rectangle ->
+            XRectangleCommand(
+                x = absoluteX + rectangle.x,
+                y = absoluteY + rectangle.y,
+                width = rectangle.width,
+                height = rectangle.height,
+            )
+        }
+    }
+
+    private fun insideClip(x: Int, y: Int, clipRectangles: List<XRectangleCommand>?): Boolean =
+        clipRectangles == null || clipRectangles.any { rectangle ->
+            x >= rectangle.x &&
+                y >= rectangle.y &&
+                x < rectangle.x + rectangle.width &&
+                y < rectangle.y + rectangle.height
+        }
 
     @Synchronized
     fun fillRectangles(
@@ -7140,6 +7244,7 @@ internal class X11State(
                 clipMask = destinationClipMask,
                 mask = mask,
                 componentMask = glyphSet.format == XRender.Argb32Format || glyphSet.format == XRender.Rgb24Format,
+                sourcePremultiplied = source.drawableId != null,
                 sourcePixelAt = sourcePixelAt,
             ) || painted
         }
@@ -7231,6 +7336,7 @@ internal class X11State(
             clipMask = destination.clipMaskPredicate(),
             mask = temporaryMask,
             componentMask = maskFormat == XRender.Argb32Format || maskFormat == XRender.Rgb24Format,
+            sourcePremultiplied = source.drawableId != null,
             sourcePixelAt = sourcePixelAt,
         )
     }

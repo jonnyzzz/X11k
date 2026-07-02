@@ -50,6 +50,8 @@ The 2026-07-01 Gemini scout stall was a runner progress-accounting bug layered o
 
 The 2026-07-02 recurrence exposed a root-agent tooling failure rather than a repo runner failure. A bounded `wait_agent` returned completed results for several old built-in subagents, but a later `close_agent` call against a non-responsive old subagent blocked the whole root turn for more than an hour. Do not use built-in subagent lifecycle tools as part of the Ralph loop. For repo work, start agents only through `run-agent.sh`, and recover them only through `watch-agents.sh` so every timeout has persisted stdout/stderr, `run-info.txt`, heartbeat state, process lists, and JVM thread dumps.
 
+The later 2026-07-02 repeat showed that recovery itself also needs a hard boundary. `ralph-loop.sh` now defaults `RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300`, wraps its stale-agent recovery pulse in `RUN_AGENT_RECOVER_TIMEOUT_SECONDS=180`, and `watch-agents.sh` restarts inherit a 300-second output-idle kill threshold. The kill path still writes diagnostics before termination; the practical change is that restarted or newly launched agents no longer return to an unbounded silent wait by default. Claude text-mode runs still suppress no-output termination unless `RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT=1`, so use Codex/Gemini for bounded quorum slots when prompt latency matters.
+
 ## Required Practice
 
 - Start long commands through `timeout` or with `RUN_AGENT_TIMEOUT_SECONDS` set.
@@ -99,11 +101,12 @@ Use these defaults unless a specific run justifies changing them:
 ```bash
 RUN_AGENT_TIMEOUT_SECONDS=900 \
 RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS=180 \
+RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300 \
 RUN_AGENT_AGENTS=claude \
 timeout 990 ./ralph-loop.sh review claude
 ```
 
-For short scout prompts that should either answer quickly or fail with evidence, add:
+For short scout prompts that should either answer quickly or fail with evidence, keep or lower:
 
 ```bash
 RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300
