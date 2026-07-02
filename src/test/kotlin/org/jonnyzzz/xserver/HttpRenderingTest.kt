@@ -13,7 +13,11 @@ class HttpRenderingTest {
         XServer(ServerOptions(port = 0, width = 3840, height = 2160, dpi = 100)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             createMappedWindow(server.localPort, 0x0020_0001, "one", x = 20, y = 30, width = 120, height = 90).use {
-                createMappedWindow(server.localPort, 0x0020_0002, "two", x = 80, y = 70, width = 140, height = 100).use {
+                createMappedWindow(server.localPort, 0x0020_0002, "two", x = 80, y = 70, width = 140, height = 100).use { focused ->
+                    focused.getOutputStream().write(setInputFocusRequest(0x0020_0002, revertTo = 2))
+                    focused.getOutputStream().flush()
+                    waitUntil { httpGet(server.localPort, "/text.txt").body.contains("Focus: 0x200002") }
+
                     val html = httpGet(server.localPort, "/")
                     assertContains(html.headers, "${RenderCredit.HeaderName}: ${RenderCredit.Text}")
                     assertContains(html.body, "<!--${RenderCredit.Text}-->")
@@ -1074,6 +1078,16 @@ class HttpRenderingTest {
         out.flush()
         Thread.sleep(100)
         return socket
+    }
+
+    private fun setInputFocusRequest(window: Int, revertTo: Int): ByteArray {
+        val bytes = ByteArray(12)
+        bytes[0] = 42
+        bytes[1] = revertTo.toByte()
+        put16le(bytes, 2, 3)
+        put32le(bytes, 4, window)
+        put32le(bytes, 8, 0)
+        return bytes
     }
 
     private fun createWindowRequest(

@@ -13770,6 +13770,38 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `MapWindow does not steal explicit input focus`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val first = WindowId
+                val second = WindowId + 1
+                out.write(createWindowRequest(first))
+                out.write(createWindowRequest(second))
+                out.write(mapWindowRequest(first))
+                out.write(setInputFocusRequest(first, revertTo = 2))
+                out.write(mapWindowRequest(second))
+                out.write(getInputFocusRequest())
+                out.flush()
+
+                assertMapAndExpose(input, first)
+                assertMapAndExpose(input, second)
+                val focus = readReply(input)
+                assertEquals(1, focus[0].toInt())
+                assertEquals(2, focus[1].toInt() and 0xff)
+                assertEquals(6, u16le(focus, 2))
+                assertEquals(first, u32le(focus, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SetInputFocus updates GetInputFocus reply`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

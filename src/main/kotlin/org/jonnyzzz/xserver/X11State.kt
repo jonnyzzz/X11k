@@ -821,7 +821,6 @@ internal class X11State(
     fun mapWindow(id: Int): XWindow? {
         val window = windows[id] ?: return null
         window.mapped = true
-        if (windowIsViewable(id)) focusWindowId = id
         return window
     }
 
