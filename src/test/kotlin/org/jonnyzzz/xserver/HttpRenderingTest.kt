@@ -572,6 +572,72 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `screen svg presents radial and conical gradient framebuffer pixels`() {
+        XServer(ServerOptions(port = 0, width = 220, height = 120)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val radialWindow = 0x0020_0001
+                val conicalWindow = 0x0020_0002
+                val radialPicture = 0x0020_0201
+                val conicalPicture = 0x0020_0202
+                val radialGradient = 0x0020_0301
+                val conicalGradient = 0x0020_0302
+
+                out.write(createWindowRequest(radialWindow, 10, 10, 64, 64))
+                out.write(changePropertyRequest(radialWindow, "radial gradient target"))
+                out.write(createWindowRequest(conicalWindow, 90, 10, 64, 64))
+                out.write(changePropertyRequest(conicalWindow, "conical gradient target"))
+                out.write(renderCreatePictureRequest(radialPicture, radialWindow, XRender.Rgb24Format))
+                out.write(renderCreatePictureRequest(conicalPicture, conicalWindow, XRender.Rgb24Format))
+                out.write(
+                    renderCreateRadialGradientRequest(
+                        radialGradient,
+                        innerCenter = 32 to 32,
+                        innerRadius = 0,
+                        outerCenter = 32 to 32,
+                        outerRadius = 32,
+                    ),
+                )
+                out.write(
+                    renderCreateConicalGradientRequest(
+                        conicalGradient,
+                        center = 32 to 32,
+                        angle = 0,
+                    ),
+                )
+                out.write(renderCompositeRequest(radialGradient, radialPicture, width = 64, height = 64))
+                out.write(renderCompositeRequest(conicalGradient, conicalPicture, width = 64, height = 64))
+                out.write(mapWindowRequest(radialWindow))
+                out.write(mapWindowRequest(conicalWindow))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "radial gradient target")
+                assertContains(svg, "conical gradient target")
+                assertContains(svg, """class="framebuffer-image"""")
+                assertContains(svg, """data-window-id="0x200001"""")
+                assertContains(svg, """data-window-id="0x200002"""")
+                assertContains(svg, """data-source="window-framebuffer"""")
+                assertContains(svg, """href="data:image/png;base64,""")
+
+                val json = httpGet(server.localPort, "/state.json").body
+                assertContains(json, """"kind":"radial-gradient"""")
+                assertContains(json, """"kind":"conical-gradient"""")
+                assertContains(json, """"radialGradient"""")
+                assertContains(json, """"conicalGradient"""")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `screen svg presents retained render picture surface after FreePixmap`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1197,6 +1263,74 @@ class HttpRenderingTest {
         put16le(bytes, 24, 64)
         put16le(bytes, 26, 64)
         return bytes
+    }
+
+    private fun renderCompositeRequest(source: Int, destination: Int, width: Int, height: Int): ByteArray {
+        val bytes = ByteArray(36)
+        bytes[0] = XRender.MajorOpcode.toByte()
+        bytes[1] = 8
+        put16le(bytes, 2, bytes.size / 4)
+        bytes[4] = XRender.OpSrc.toByte()
+        put32le(bytes, 8, source)
+        put32le(bytes, 16, destination)
+        put16le(bytes, 32, width)
+        put16le(bytes, 34, height)
+        return bytes
+    }
+
+    private fun renderCreateRadialGradientRequest(
+        picture: Int,
+        innerCenter: Pair<Int, Int>,
+        innerRadius: Int,
+        outerCenter: Pair<Int, Int>,
+        outerRadius: Int,
+    ): ByteArray {
+        val stops = listOf(0x0000_0000, 0x0001_0000)
+        val colors = listOf(0xffff_0000.toInt(), 0xff00_00ff.toInt())
+        val bytes = ByteArray(4 + 32 + stops.size * 4 + colors.size * 8)
+        bytes[0] = XRender.MajorOpcode.toByte()
+        bytes[1] = 35
+        put16le(bytes, 2, bytes.size / 4)
+        put32le(bytes, 4, picture)
+        putFixedPoint(bytes, 8, innerCenter.first, innerCenter.second)
+        putFixedPoint(bytes, 16, outerCenter.first, outerCenter.second)
+        put32le(bytes, 24, innerRadius shl 16)
+        put32le(bytes, 28, outerRadius shl 16)
+        put32le(bytes, 32, stops.size)
+        stops.forEachIndexed { index, stop -> put32le(bytes, 36 + index * 4, stop) }
+        writeRenderColors(bytes, 36 + stops.size * 4, colors)
+        return bytes
+    }
+
+    private fun renderCreateConicalGradientRequest(picture: Int, center: Pair<Int, Int>, angle: Int): ByteArray {
+        val stops = listOf(0x0000_0000, 0x0001_0000)
+        val colors = listOf(0xffff_ff00.toInt(), 0xff00_00ff.toInt())
+        val bytes = ByteArray(4 + 20 + stops.size * 4 + colors.size * 8)
+        bytes[0] = XRender.MajorOpcode.toByte()
+        bytes[1] = 36
+        put16le(bytes, 2, bytes.size / 4)
+        put32le(bytes, 4, picture)
+        putFixedPoint(bytes, 8, center.first, center.second)
+        put32le(bytes, 16, angle shl 16)
+        put32le(bytes, 20, stops.size)
+        stops.forEachIndexed { index, stop -> put32le(bytes, 24 + index * 4, stop) }
+        writeRenderColors(bytes, 24 + stops.size * 4, colors)
+        return bytes
+    }
+
+    private fun writeRenderColors(bytes: ByteArray, offset: Int, colors: List<Int>) {
+        colors.forEachIndexed { index, color ->
+            val colorOffset = offset + index * 8
+            put16le(bytes, colorOffset, ((color ushr 16) and 0xff) * 0x101)
+            put16le(bytes, colorOffset + 2, ((color ushr 8) and 0xff) * 0x101)
+            put16le(bytes, colorOffset + 4, (color and 0xff) * 0x101)
+            put16le(bytes, colorOffset + 6, ((color ushr 24) and 0xff) * 0x101)
+        }
+    }
+
+    private fun putFixedPoint(bytes: ByteArray, offset: Int, x: Int, y: Int) {
+        put32le(bytes, offset, x shl 16)
+        put32le(bytes, offset + 4, y shl 16)
     }
 
     private fun copyAreaRequest(source: Int, destination: Int, gc: Int): ByteArray {
