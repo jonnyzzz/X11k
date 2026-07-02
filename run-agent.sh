@@ -101,7 +101,10 @@ Configuration (env variables):
                       stale diagnostics enabled (default: 1, set 0 to disable)
   RUN_AGENT_PREFLIGHT_RECOVER_STALE
                       During preflight watch, terminate and restart stale runs after
-                      diagnostics are captured (default: 0, set 1 to enable)
+                      diagnostics are captured (default: 1, set 0 to disable)
+  RUN_AGENT_PREFLIGHT_STALE_SECONDS
+                      Stale-output threshold for preflight recovery
+                      (default: RUN_AGENT_STALE_SECONDS or 900)
   RUN_AGENT_PREFLIGHT_WATCH_LIMIT
                       Number of recent runs scanned by preflight watch (default: 40)
 
@@ -189,7 +192,8 @@ unset CLAUDECODE
 RUN_AGENT_CLAUDE_SAFE_MODE="${RUN_AGENT_CLAUDE_SAFE_MODE:-1}"
 RUN_AGENT_CODEX_ISOLATED="${RUN_AGENT_CODEX_ISOLATED:-1}"
 RUN_AGENT_PREFLIGHT_WATCH="${RUN_AGENT_PREFLIGHT_WATCH:-1}"
-RUN_AGENT_PREFLIGHT_RECOVER_STALE="${RUN_AGENT_PREFLIGHT_RECOVER_STALE:-0}"
+RUN_AGENT_PREFLIGHT_RECOVER_STALE="${RUN_AGENT_PREFLIGHT_RECOVER_STALE:-1}"
+RUN_AGENT_PREFLIGHT_STALE_SECONDS="${RUN_AGENT_PREFLIGHT_STALE_SECONDS:-${RUN_AGENT_STALE_SECONDS:-900}}"
 RUN_AGENT_PREFLIGHT_WATCH_LIMIT="${RUN_AGENT_PREFLIGHT_WATCH_LIMIT:-40}"
 
 if [ "$RUN_AGENT_PREFLIGHT_WATCH" != "0" ] && \
@@ -200,6 +204,7 @@ if [ "$RUN_AGENT_PREFLIGHT_WATCH" != "0" ] && \
     RUN_AGENT_IN_PREFLIGHT_WATCH=1 \
     RUN_AGENT_WATCH_ONCE=1 \
     RUN_AGENT_WATCH_LIMIT="$RUN_AGENT_PREFLIGHT_WATCH_LIMIT" \
+    RUN_AGENT_STALE_SECONDS="$RUN_AGENT_PREFLIGHT_STALE_SECONDS" \
     RUN_AGENT_DIAGNOSE_STALE=1 \
     RUN_AGENT_TERMINATE_STALE="$RUN_AGENT_PREFLIGHT_RECOVER_STALE" \
     RUN_AGENT_RESTART_STALE="$RUN_AGENT_PREFLIGHT_RECOVER_STALE" \
@@ -390,6 +395,8 @@ run_bounded() {
   shift
   if command -v timeout >/dev/null 2>&1; then
     timeout "$seconds" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$seconds" "$@"
   else
     "$@"
   fi

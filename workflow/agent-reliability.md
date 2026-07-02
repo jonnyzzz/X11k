@@ -83,18 +83,14 @@ The 2026-07-02 recurrence exposed a root-agent tooling failure rather than a rep
 - When a run times out, inspect the generated `DIAGNOSTICS=...` file in `run-info.txt` before retrying.
 - On macOS, install GNU coreutils or make sure `gtimeout` is available if you need hard time limits around watcher diagnostics. Without either `timeout` or `gtimeout`, the watcher still runs but cannot bound individual `jps`/`jcmd`/`jstack` calls.
 - Treat built-in subagents as scarce stateful resources. After a bounded `wait_agent`, close only agents that have returned a final status, and close them individually. Do not call `close_agent` for a non-responsive agent and do not wrap `close_agent` calls in a parallel tool batch; one blocked close can stall the whole root agent.
-- Run a one-shot diagnostic watcher before every new implementation/review batch:
-
-  ```bash
-  RUN_AGENT_WATCH_ONCE=1 RUN_AGENT_DIAGNOSE_STALE=1 ./watch-agents.sh
-  ```
-
-  If it reports stale active runs, rerun the same watcher with recovery enabled so diagnostics are captured before termination/restart:
+- Run a one-shot diagnostic/recovery watcher before every new implementation/review batch. This is now the default `run-agent.sh` preflight (`RUN_AGENT_PREFLIGHT_RECOVER_STALE=1`); use the explicit command when recovering outside a new agent launch:
 
   ```bash
   RUN_AGENT_WATCH_ONCE=1 RUN_AGENT_DIAGNOSE_STALE=1 \
   RUN_AGENT_TERMINATE_STALE=1 RUN_AGENT_RESTART_STALE=1 ./watch-agents.sh
   ```
+
+- Use `./ralph-loop.sh <role>` for routine research/implementation/review/test agent work. It runs the recovery watcher before the agent, applies the standard wall-clock/no-output diagnostics settings, and wraps `run-agent.sh` in an outer process timeout.
 
 ## Runner Timeout Knobs
 
@@ -104,7 +100,7 @@ Use these defaults unless a specific run justifies changing them:
 RUN_AGENT_TIMEOUT_SECONDS=900 \
 RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS=180 \
 RUN_AGENT_AGENTS=claude \
-timeout 960 ./run-agent.sh claude "$PWD" "$PWD/THE_PROMPT_v5_review.md"
+timeout 990 ./ralph-loop.sh review claude
 ```
 
 For short scout prompts that should either answer quickly or fail with evidence, add:
