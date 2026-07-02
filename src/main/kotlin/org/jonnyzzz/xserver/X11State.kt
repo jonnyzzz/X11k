@@ -319,7 +319,6 @@ internal class X11State(
         }
         // Build focus events before windows and their event selections are removed.
         val focusDispatches = saveSetProcessing.focusDispatches + revertFocusIfWindowRemoved(removed)
-        val pointerUngrabResult = releaseInputGrabsForResources(removed)
         for (windowId in removed) {
             windows.remove(windowId)
             windowOwners.remove(windowId)
@@ -353,6 +352,7 @@ internal class X11State(
         saveSets.values.forEach { saveSet -> removed.forEach { saveSet.remove(it) } }
         saveSets.entries.removeIf { it.value.isEmpty() }
         removeEventSelections(removed)
+        val pointerUngrabResult = releaseInputGrabsForResources(removed)
         val removedResources = removed + removedGlxWindows
         discardRetainedResourceIds(removedResources)
         return XWindowRemoval(
@@ -1389,17 +1389,40 @@ internal class X11State(
         }
         val previousCursor = displayedCursorIdentity()
         val effectiveTime = if (grab.time == 0) serverTime else grab.time
+        val previousWindowId = windowAt(pointerX, pointerY)?.id
+        val previousPath = previousWindowId?.let { windowPathToRoot(it) }.orEmpty()
+        val previousState = pointerMask()
+        val confinedPosition = grab.confineTo?.let { confinedPointerPositionForWindow(pointerX, pointerY, it) }
+        val normalCrossingDispatches = if (confinedPosition != null && confinedPosition != (pointerX to pointerY)) {
+            pointerX = confinedPosition.first
+            pointerY = confinedPosition.second
+            recordMotionHistory(effectiveTime, pointerX, pointerY)
+            val targetId = windowAt(pointerX, pointerY)?.id
+            val targetPath = targetId?.let { windowPathToRoot(it) }.orEmpty()
+            crossingEventDeliveries(
+                previousPath = previousPath,
+                targetPath = targetPath,
+                absoluteById = windows.values.associate { window -> window.id to absolutePosition(window) },
+                rootX = pointerX,
+                rootY = pointerY,
+                state = previousState,
+                time = effectiveTime,
+            )
+        } else {
+            emptyList()
+        }
         lastPointerGrabTime = effectiveTime
         clearFrozenPointer(grab.owner)
         activePointerGrab = grab.copy(time = effectiveTime)
         return XPointerGrabResult(
             status = XGrabStatus.Success,
-            crossingDispatches = pointerGrabCrossingEventDeliveries(
-                grabWindowId = grab.windowId,
-                mode = XNotifyMode.Grab,
-                time = effectiveTime,
-                activating = true,
-            ),
+            crossingDispatches = normalCrossingDispatches +
+                pointerGrabCrossingEventDeliveries(
+                    grabWindowId = grab.windowId,
+                    mode = XNotifyMode.Grab,
+                    time = effectiveTime,
+                    activating = true,
+                ),
             cursorNotifyDispatches = xfixesCursorNotifyDispatchesIfChanged(previousCursor),
         )
     }
@@ -1682,6 +1705,15 @@ internal class X11State(
             activeKeyboardGrab = null
         }
         return pointerUngrabResult
+    }
+
+    private fun reconfinePointerToActiveGrab() {
+        activePointerGrab?.confineTo ?: return
+        val confinedPosition = confinedPointerPosition(pointerX, pointerY)
+        if (confinedPosition == (pointerX to pointerY)) return
+        pointerX = confinedPosition.first
+        pointerY = confinedPosition.second
+        recordMotionHistory(inputTime++, pointerX, pointerY)
     }
 
     private fun validUngrabTime(requestTime: Int, grabTime: Int): Boolean =
@@ -2692,6 +2724,7 @@ internal class X11State(
         }
         val changed = geometryChanged || stackChanged
         val pointerUngrabResult = if (changed) releaseActiveGrabsForVisibilityChanges() else XPointerUngrabResult()
+        if (changed && !pointerUngrabResult.released) reconfinePointerToActiveGrab()
         return XConfigureWindowResult(
             window = window,
             changed = changed,
@@ -8395,10 +8428,13 @@ internal class X11State(
             localY < sourceY + effectiveHeight
     }
 
-    private fun confinedPointerPosition(x: Int, y: Int): Pair<Int, Int> {
+    private fun confinedPointerPosition(x: Int, y: Int): Pair<Int, Int> =
+        confinedPointerPositionForWindow(x, y, activePointerGrab?.confineTo)
+
+    private fun confinedPointerPositionForWindow(x: Int, y: Int, confineWindowId: Int?): Pair<Int, Int> {
         var clampedX = x.coerceIn(0, width - 1)
         var clampedY = y.coerceIn(0, height - 1)
-        val confineWindow = activePointerGrab?.confineTo?.let { windows[it] } ?: return clampedX to clampedY
+        val confineWindow = confineWindowId?.let { windows[it] } ?: return clampedX to clampedY
         val absolute = absolutePosition(confineWindow)
         // Match the grab validity rule: a viewable confine window remains active while it intersects root.
         val left = maxOf(absolute.first, 0)
