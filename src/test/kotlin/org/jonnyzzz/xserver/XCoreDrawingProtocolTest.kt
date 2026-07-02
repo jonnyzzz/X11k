@@ -1342,6 +1342,54 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `client disconnect emits VisibilityNotify when destroyed window reveals sibling`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { observer ->
+                Socket("127.0.0.1", server.localPort).use { owner ->
+                    observer.soTimeout = 2_000
+                    owner.soTimeout = 2_000
+                    setup(observer)
+                    setup(owner)
+
+                    val lower = WindowId + 561
+                    val top = WindowId + 562
+                    val observerInput = observer.getInputStream()
+                    val observerOut = observer.getOutputStream()
+                    observerOut.write(createWindowRequest(lower, width = 20, height = 20, eventMask = XEventMasks.VisibilityChange))
+                    observerOut.write(mapWindowRequest(lower))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+
+                    assertVisibilityNotify(observerInput.readExactly(32), sequence = 2, window = lower, state = XVisibilityState.Unobscured)
+                    assertExpose(observerInput.readExactly(32), lower, sequence = 2, width = 20, height = 20)
+                    assertEquals(3, u16le(readReply(observerInput), 2))
+
+                    val ownerInput = owner.getInputStream()
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(top, width = 20, height = 20))
+                    ownerOut.write(mapWindowRequest(top))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    assertExpose(ownerInput.readExactly(32), top, sequence = 2, width = 20, height = 20)
+                    assertEquals(3, u16le(readReply(ownerInput), 2))
+                    assertVisibilityNotify(observerInput.readExactly(32), sequence = 3, window = lower, state = XVisibilityState.FullyObscured)
+
+                    closeClientAndWait(owner)
+
+                    assertVisibilityNotify(observerInput.readExactly(32), sequence = 3, window = lower, state = XVisibilityState.Unobscured)
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(4, u16le(readReply(observerInput), 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XFIXES cursor notify tracks window cursor changes recolor and GetCursorImage serial`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -10265,6 +10313,39 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `DestroyWindow emits VisibilityNotify when destroyed window reveals sibling`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val lower = WindowId + 559
+                val top = WindowId + 560
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(lower, width = 20, height = 20, eventMask = XEventMasks.VisibilityChange))
+                out.write(createWindowRequest(top, width = 20, height = 20, eventMask = XEventMasks.StructureNotify))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(top))
+                out.write(destroyWindowRequest(top))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertVisibilityNotify(input.readExactly(32), sequence = 3, window = lower, state = XVisibilityState.Unobscured)
+                assertExpose(input.readExactly(32), lower, sequence = 3, width = 20, height = 20)
+                assertMapNotify(input.readExactly(32), sequence = 4, eventWindow = top, window = top)
+                assertVisibilityNotify(input.readExactly(32), sequence = 4, window = lower, state = XVisibilityState.FullyObscured)
+                assertExpose(input.readExactly(32), top, sequence = 4, width = 20, height = 20)
+                assertDestroyNotify(input.readExactly(32), sequence = 5, eventWindow = top, window = top)
+                assertVisibilityNotify(input.readExactly(32), sequence = 5, window = lower, state = XVisibilityState.Unobscured)
+                assertEquals(6, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `DestroyWindow delivers StructureNotify and parent SubstructureNotify`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -12000,6 +12081,251 @@ class XCoreDrawingProtocolTest {
                 val pointer = readReply(input)
                 assertEquals(1, pointer[0].toInt())
                 assertEquals(5, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `MapWindow and UnmapWindow emit VisibilityNotify for partially obscured sibling`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val lower = WindowId + 550
+                val upper = WindowId + 551
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(lower, width = 40, height = 40, eventMask = XEventMasks.VisibilityChange or XEventMasks.Exposure))
+                out.write(createWindowRequest(upper, x = 10, y = 10, width = 20, height = 20))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(upper))
+                out.write(unmapWindowRequest(upper))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertVisibilityNotify(input.readExactly(32), sequence = 3, window = lower, state = XVisibilityState.Unobscured)
+                assertExpose(input.readExactly(32), lower, sequence = 3, width = 40, height = 40)
+                assertVisibilityNotify(input.readExactly(32), sequence = 4, window = lower, state = XVisibilityState.PartiallyObscured)
+                assertExpose(input.readExactly(32), upper, sequence = 4, width = 20, height = 20)
+                assertVisibilityNotify(input.readExactly(32), sequence = 5, window = lower, state = XVisibilityState.Unobscured)
+                assertExpose(input.readExactly(32), lower, sequence = 5, x = 10, y = 10, width = 20, height = 20, count = 0)
+                assertEquals(6, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `MapWindow emits VisibilityNotify for fully obscured sibling`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val lower = WindowId + 552
+                val upper = WindowId + 553
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(lower, width = 20, height = 20, eventMask = XEventMasks.VisibilityChange))
+                out.write(createWindowRequest(upper, width = 20, height = 20))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(upper))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertVisibilityNotify(input.readExactly(32), sequence = 3, window = lower, state = XVisibilityState.Unobscured)
+                assertExpose(input.readExactly(32), lower, sequence = 3, width = 20, height = 20)
+                assertVisibilityNotify(input.readExactly(32), sequence = 4, window = lower, state = XVisibilityState.FullyObscured)
+                assertExpose(input.readExactly(32), upper, sequence = 4, width = 20, height = 20)
+                assertEquals(5, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `MapWindow VisibilityNotify includes border obscuration`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val lower = WindowId + 554
+                val upper = WindowId + 555
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(lower, x = 10, y = 10, width = 20, height = 20, borderWidth = 5, eventMask = XEventMasks.VisibilityChange))
+                out.write(createWindowRequest(upper, x = 5, y = 5, width = 5, height = 5))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(upper))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertVisibilityNotify(input.readExactly(32), sequence = 3, window = lower, state = XVisibilityState.Unobscured)
+                assertExpose(input.readExactly(32), lower, sequence = 3, width = 20, height = 20)
+                assertVisibilityNotify(input.readExactly(32), sequence = 4, window = lower, state = XVisibilityState.PartiallyObscured)
+                assertExpose(input.readExactly(32), upper, sequence = 4, width = 5, height = 5)
+                assertEquals(5, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `MapWindow VisibilityNotify ignores descendants of lower siblings`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val lower = WindowId + 556
+                val upper = WindowId + 557
+                val lowerChild = WindowId + 558
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(lower, width = 40, height = 40))
+                out.write(createWindowRequest(upper, x = 10, y = 10, width = 20, height = 20, eventMask = XEventMasks.VisibilityChange))
+                out.write(createWindowRequest(lowerChild, parent = lower, x = 10, y = 10, width = 20, height = 20))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(upper))
+                out.write(mapWindowRequest(lowerChild))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertExpose(input.readExactly(32), lower, sequence = 4, width = 40, height = 40)
+                assertVisibilityNotify(input.readExactly(32), sequence = 5, window = upper, state = XVisibilityState.Unobscured)
+                assertExpose(input.readExactly(32), upper, sequence = 5, width = 20, height = 20)
+                assertExpose(input.readExactly(32), lowerChild, sequence = 6, width = 20, height = 20)
+                assertEquals(7, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `MapWindow VisibilityNotify honors bounding shape of obscuring sibling`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val lower = WindowId + 563
+                val upper = WindowId + 564
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(lower, width = 20, height = 20, eventMask = XEventMasks.VisibilityChange))
+                out.write(createWindowRequest(upper, width = 20, height = 20))
+                out.write(shapeRectanglesRequest(upper, XFixes.ShapeBounding, XShape.OpSet, listOf(XRectangleCommand(30, 30, 1, 1))))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(upper))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertVisibilityNotify(input.readExactly(32), sequence = 4, window = lower, state = XVisibilityState.Unobscured)
+                assertExpose(input.readExactly(32), lower, sequence = 4, width = 20, height = 20)
+                assertExpose(input.readExactly(32), upper, sequence = 5, width = 20, height = 20)
+                assertEquals(6, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SHAPE bounding mutation emits VisibilityNotify when revealing sibling`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val lower = WindowId + 565
+                val upper = WindowId + 566
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(lower, width = 20, height = 20, eventMask = XEventMasks.VisibilityChange))
+                out.write(createWindowRequest(upper, width = 20, height = 20))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(upper))
+                out.write(shapeRectanglesRequest(upper, XFixes.ShapeBounding, XShape.OpSet, listOf(XRectangleCommand(30, 30, 1, 1))))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertVisibilityNotify(input.readExactly(32), sequence = 3, window = lower, state = XVisibilityState.Unobscured)
+                assertExpose(input.readExactly(32), lower, sequence = 3, width = 20, height = 20)
+                assertVisibilityNotify(input.readExactly(32), sequence = 4, window = lower, state = XVisibilityState.FullyObscured)
+                assertExpose(input.readExactly(32), upper, sequence = 4, width = 20, height = 20)
+                assertVisibilityNotify(input.readExactly(32), sequence = 5, window = lower, state = XVisibilityState.Unobscured)
+                assertEquals(6, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SHAPE ancestor bounding mutation emits VisibilityNotify when clipping selected child`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId + 567
+                val child = WindowId + 568
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(parent, width = 40, height = 40))
+                out.write(createWindowRequest(child, parent = parent, x = 20, y = 20, width = 10, height = 10, eventMask = XEventMasks.VisibilityChange))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(shapeRectanglesRequest(parent, XFixes.ShapeBounding, XShape.OpSet, listOf(XRectangleCommand(0, 0, 5, 5))))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertExpose(input.readExactly(32), parent, sequence = 3, width = 40, height = 40)
+                assertVisibilityNotify(input.readExactly(32), sequence = 4, window = child, state = XVisibilityState.Unobscured)
+                assertExpose(input.readExactly(32), child, sequence = 4, width = 10, height = 10)
+                assertVisibilityNotify(input.readExactly(32), sequence = 5, window = child, state = XVisibilityState.FullyObscured)
+                assertEquals(6, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `MapWindow VisibilityNotify clips obscuring child by shaped ancestor`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val lower = WindowId + 569
+                val upperParent = WindowId + 570
+                val upperChild = WindowId + 571
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(lower, x = 20, y = 20, width = 10, height = 10, eventMask = XEventMasks.VisibilityChange))
+                out.write(createWindowRequest(upperParent, width = 40, height = 40))
+                out.write(createWindowRequest(upperChild, parent = upperParent, x = 20, y = 20, width = 10, height = 10))
+                out.write(shapeRectanglesRequest(upperParent, XFixes.ShapeBounding, XShape.OpSet, listOf(XRectangleCommand(0, 0, 5, 5))))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(upperParent))
+                out.write(mapWindowRequest(upperChild))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertVisibilityNotify(input.readExactly(32), sequence = 5, window = lower, state = XVisibilityState.Unobscured)
+                assertExpose(input.readExactly(32), lower, sequence = 5, width = 10, height = 10)
+                assertExpose(input.readExactly(32), upperParent, sequence = 6, width = 40, height = 40)
+                assertExpose(input.readExactly(32), upperChild, sequence = 7, width = 10, height = 10)
+                assertEquals(8, u16le(readReply(input), 2))
             }
             server.close()
             serverThread.join(1_000)
@@ -16826,6 +17152,61 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `XFIXES save-set unmap emits VisibilityNotify before expose when owner closes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { appSocket ->
+                appSocket.soTimeout = 2_000
+                setup(appSocket)
+                val lower = WindowId + 572
+                val top = WindowId + 573
+                val appOut = appSocket.getOutputStream()
+                val appInput = appSocket.getInputStream()
+                appOut.write(createWindowRequest(lower, width = 20, height = 20, eventMask = XEventMasks.VisibilityChange or XEventMasks.Exposure))
+                appOut.write(createWindowRequest(top, width = 20, height = 20, eventMask = XEventMasks.StructureNotify))
+                appOut.write(mapWindowRequest(lower))
+                appOut.write(mapWindowRequest(top))
+                appOut.write(queryPointerRequest())
+                appOut.flush()
+
+                assertVisibilityNotify(appInput.readExactly(32), sequence = 3, window = lower, state = XVisibilityState.Unobscured)
+                assertExpose(appInput.readExactly(32), lower, sequence = 3, width = 20, height = 20)
+                assertMapNotify(appInput.readExactly(32), sequence = 4, eventWindow = top, window = top)
+                assertVisibilityNotify(appInput.readExactly(32), sequence = 4, window = lower, state = XVisibilityState.FullyObscured)
+                assertExpose(appInput.readExactly(32), top, sequence = 4, width = 20, height = 20)
+                assertEquals(5, u16le(readReply(appInput), 2))
+
+                Socket("127.0.0.1", server.localPort).use { managerSocket ->
+                    managerSocket.soTimeout = 2_000
+                    setup(managerSocket)
+                    val managerOut = managerSocket.getOutputStream()
+                    managerOut.write(
+                        xfixesChangeSaveSetRequest(
+                            mode = 0,
+                            target = XFixes.SaveSetNearest,
+                            map = XFixes.SaveSetUnmap,
+                            window = top,
+                        ),
+                    )
+                    managerOut.write(queryPointerRequest())
+                    managerOut.flush()
+                    assertEquals(2, u16le(readReply(managerSocket.getInputStream()), 2))
+                    closeClientAndWait(managerSocket)
+                }
+
+                assertUnmapNotify(appInput.readExactly(32), sequence = 5, eventWindow = top, window = top)
+                assertVisibilityNotify(appInput.readExactly(32), sequence = 5, window = lower, state = XVisibilityState.Unobscured)
+                assertExpose(appInput.readExactly(32), lower, sequence = 5, x = 0, y = 0, width = 20, height = 20, count = 0)
+                appOut.write(queryPointerRequest())
+                appOut.flush()
+                assertEquals(6, u16le(readReply(appInput), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ChangeSaveSet delete removes saved window from close processing`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -17169,14 +17550,14 @@ class XCoreDrawingProtocolTest {
                 val top = WindowId + 424
                 val observerInput = observer.getInputStream()
                 val observerOut = observer.getOutputStream()
-                observerOut.write(createWindowRequest(lower, x = 10, y = 10, width = 30, height = 30))
+                observerOut.write(createWindowRequest(lower, x = 10, y = 10, width = 30, height = 30, eventMask = XEventMasks.EnterWindow or XEventMasks.VisibilityChange))
                 observerOut.write(mapWindowRequest(lower))
-                observerOut.write(changeWindowEventMaskRequest(lower, XEventMasks.EnterWindow))
                 observerOut.write(queryPointerRequest())
                 observerOut.flush()
 
-                assertMapAndExpose(observerInput, lower)
-                assertEquals(4, u16le(readReply(observerInput), 2))
+                assertVisibilityNotify(observerInput.readExactly(32), sequence = 2, window = lower, state = XVisibilityState.Unobscured)
+                assertExpose(observerInput.readExactly(32), lower, sequence = 2, width = 30, height = 30)
+                assertEquals(3, u16le(readReply(observerInput), 2))
 
                 Socket("127.0.0.1", server.localPort).use { retained ->
                     retained.soTimeout = 2_000
@@ -17194,6 +17575,7 @@ class XCoreDrawingProtocolTest {
                     val retainedPointer = readReply(retainedInput)
                     assertEquals(1, retainedPointer[0].toInt())
                     assertEquals(top, u32le(retainedPointer, 12))
+                    assertVisibilityNotify(observerInput.readExactly(32), sequence = 3, window = lower, state = XVisibilityState.FullyObscured)
                     closeClientAndWait(retained)
                 }
 
@@ -17203,6 +17585,7 @@ class XCoreDrawingProtocolTest {
                 observerOut.write(queryPointerRequest())
                 observerOut.flush()
 
+                assertVisibilityNotify(observerInput.readExactly(32), sequence = 4, window = lower, state = XVisibilityState.Unobscured)
                 assertCrossingEvent(
                     observerInput.readExactly(32),
                     type = 7,
@@ -21510,6 +21893,15 @@ class XCoreDrawingProtocolTest {
         width?.let { assertEquals(it, u16le(expose, 12)) }
         height?.let { assertEquals(it, u16le(expose, 14)) }
         count?.let { assertEquals(it, u16le(expose, 16)) }
+    }
+
+    private fun assertVisibilityNotify(event: ByteArray, sequence: Int, window: Int, state: Int) {
+        assertEquals(15, event[0].toInt() and 0xff)
+        assertEquals(0, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(window, u32le(event, 4))
+        assertEquals(state, event[8].toInt() and 0xff)
+        assertZeroBytes(event, 9, 32)
     }
 
     private fun assertNoExposure(event: ByteArray, sequence: Int, drawable: Int, majorOpcode: Int, minorOpcode: Int = 0) {

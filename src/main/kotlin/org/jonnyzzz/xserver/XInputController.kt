@@ -195,6 +195,7 @@ internal interface XEventSink {
     fun sendKeyEvent(event: XKeyEvent)
     fun sendMappingNotifyEvent(event: XMappingNotifyEvent)
     fun sendExposeEvent(event: XExposeEvent)
+    fun sendVisibilityNotifyEvent(event: XVisibilityNotifyEvent)
     fun sendMapNotifyEvent(event: XMapNotifyEvent)
     fun sendMapRequestEvent(event: XMapRequestEvent)
     fun sendFocusEvent(event: XFocusEvent)
@@ -346,6 +347,22 @@ internal data class XExposeEvent(
     val height: Int,
     val count: Int = 0,
 )
+
+internal data class XVisibilityNotifyEvent(
+    val windowId: Int,
+    val state: Int,
+)
+
+internal data class XVisibilityNotifyDispatch(
+    val sink: XEventSink,
+    val event: XVisibilityNotifyEvent,
+)
+
+internal object XVisibilityState {
+    const val Unobscured = 0
+    const val PartiallyObscured = 1
+    const val FullyObscured = 2
+}
 
 internal data class XMapNotifyEvent(
     val eventWindowId: Int,
@@ -668,6 +685,7 @@ internal object XEventMasks {
     const val Button5Motion = 1 shl 12
     const val ButtonMotion = 1 shl 13
     const val Exposure = 1 shl 15
+    const val VisibilityChange = 1 shl 16
     const val StructureNotify = 1 shl 17
     const val ResizeRedirect = 1 shl 18
     const val SubstructureNotify = 1 shl 19

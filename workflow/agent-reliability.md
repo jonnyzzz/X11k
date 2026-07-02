@@ -52,6 +52,8 @@ The 2026-07-02 recurrence exposed a root-agent tooling failure rather than a rep
 
 The later 2026-07-02 repeat showed that recovery itself also needs a hard boundary. `ralph-loop.sh` now defaults `RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300`, wraps its stale-agent recovery pulse in `RUN_AGENT_RECOVER_TIMEOUT_SECONDS=180`, and `watch-agents.sh` restarts inherit a 300-second output-idle kill threshold. The kill path still writes diagnostics before termination; the practical change is that restarted or newly launched agents no longer return to an unbounded silent wait by default. Claude text-mode runs still suppress no-output termination unless `RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT=1`, so use Codex/Gemini for bounded quorum slots when prompt latency matters.
 
+The follow-up recurrence showed one remaining escape hatch: direct `./run-agent.sh ...` invocations still inherited the upstream one-hour wall-clock default and disabled output-idle termination unless the caller set overrides. Direct runner calls now use the same operational defaults as `ralph-loop.sh`: 900 seconds wall clock, diagnostics after 180 seconds without new stdout/stderr bytes, and termination after 300 output-idle seconds. Claude text-mode still keeps the output-idle kill disabled unless `RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT=1`, because it may legitimately produce no text until completion; the wall-clock timeout and diagnostics still apply.
+
 ## Required Practice
 
 - Start long commands through `timeout` or with `RUN_AGENT_TIMEOUT_SECONDS` set.
@@ -102,8 +104,7 @@ Use these defaults unless a specific run justifies changing them:
 RUN_AGENT_TIMEOUT_SECONDS=900 \
 RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS=180 \
 RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300 \
-RUN_AGENT_AGENTS=claude \
-timeout 990 ./ralph-loop.sh review claude
+timeout 990 ./ralph-loop.sh review codex
 ```
 
 For short scout prompts that should either answer quickly or fail with evidence, keep or lower:

@@ -1451,9 +1451,14 @@ internal class X11Connection(
 
     private fun applyWindowShapeMutation(kind: Int, mutate: () -> List<XShapeNotifyDispatch>) {
         val affectsPointerWindow = kind == XFixes.ShapeBounding || kind == XFixes.ShapeInput
+        val affectsVisibility = kind == XFixes.ShapeBounding || kind == XFixes.ShapeClip
         val previousCursor = if (affectsPointerWindow) state.displayedCursorSnapshot() else null
         val previousPointerPath = if (affectsPointerWindow) state.pointerCrossingPath() else emptyList()
+        val visibilityBefore = if (affectsVisibility) state.visibilitySnapshotForSelectedWindows() else emptyMap()
         sendShapeNotify(mutate())
+        if (affectsVisibility) {
+            sendVisibilityNotify(state.visibilityNotifySinks(visibilityBefore))
+        }
         if (affectsPointerWindow) {
             sendCrossing(state.hierarchyCrossingEventDeliveries(previousPointerPath))
             sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
@@ -4673,6 +4678,7 @@ internal class X11Connection(
         if (windowId == X11Ids.RootWindow) return
         state.window(windowId) ?: return writeError(error = 3, opcode = 4, badValue = windowId)
         val previousPointerPath = state.pointerCrossingPath()
+        val visibilityBefore = state.visibilitySnapshotForSelectedWindows()
         val removal = state.removeWindowWithDestroyNotify(windowId)
         val crossingEvents = if (removal.pointerUngrabResult.released) {
             emptyList()
@@ -4683,6 +4689,7 @@ internal class X11Connection(
         sendSaveSetSideEffects(removal.saveSetSideEffects)
         sendFocusEvents(removal.focusDispatches)
         sendDestroyNotify(removal.destroyNotifyDispatches)
+        sendVisibilityNotify(state.visibilityNotifySinks(removal.visibilityBeforeRemoval ?: visibilityBefore))
         sendCrossing(removal.pointerUngrabResult.crossingDispatches)
         sendCrossing(crossingEvents)
         sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
@@ -4695,6 +4702,7 @@ internal class X11Connection(
         state.window(windowId) ?: return writeError(error = 3, opcode = 5, badValue = windowId)
         for (child in state.childrenOf(windowId)) {
             val previousPointerPath = state.pointerCrossingPath()
+            val visibilityBefore = state.visibilitySnapshotForSelectedWindows()
             val removal = state.removeWindowWithDestroyNotify(child.id)
             val crossingEvents = if (removal.pointerUngrabResult.released) {
                 emptyList()
@@ -4705,6 +4713,7 @@ internal class X11Connection(
             sendSaveSetSideEffects(removal.saveSetSideEffects)
             sendFocusEvents(removal.focusDispatches)
             sendDestroyNotify(removal.destroyNotifyDispatches)
+            sendVisibilityNotify(state.visibilityNotifySinks(removal.visibilityBeforeRemoval ?: visibilityBefore))
             sendCrossing(removal.pointerUngrabResult.crossingDispatches)
             sendCrossing(crossingEvents)
             sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
@@ -4739,6 +4748,7 @@ internal class X11Connection(
         val previousCursor = state.displayedCursorSnapshot()
         val wasMapped = window.mapped
         if (wasMapped) {
+            val visibilityBefore = state.visibilitySnapshotForSelectedWindows()
             val previousPointerPath = state.pointerCrossingPath()
             val notifications = state.unmapNotifySinks(window)
             val exposeWindows = state.unmapExposeWindows(windowId)
@@ -4749,6 +4759,7 @@ internal class X11Connection(
                 state.hierarchyCrossingEventDeliveries(previousPointerPath)
             }
             sendUnmapNotify(notifications)
+            sendVisibilityNotify(state.visibilityNotifySinks(visibilityBefore))
             sendCrossing(unmapResult.pointerUngrabResult.crossingDispatches)
             sendCrossing(crossingEvents)
             sendExposeToSubscribers(exposeWindows)
@@ -4763,6 +4774,7 @@ internal class X11Connection(
         ) ?: return
         sendReparentNotify(state.reparentNotifySinks(reparented, oldParentId))
         if (wasMapped) {
+            val visibilityBefore = state.visibilitySnapshotForSelectedWindows()
             val previousPointerPath = state.pointerCrossingPath()
             val notifications = state.mapNotifySinks(reparented)
             val mapped = state.mapWindow(windowId) ?: return
@@ -4771,6 +4783,7 @@ internal class X11Connection(
                 state.paintWindowBackground(mapped.id)
             }
             sendMapNotify(notifications)
+            sendVisibilityNotify(state.visibilityNotifySinks(visibilityBefore))
             sendCrossing(crossingEvents)
             sendExposeForViewableMappedSubtree(mapped)
         }
@@ -4790,6 +4803,7 @@ internal class X11Connection(
             }
         }
         val previousCursor = state.displayedCursorSnapshot()
+        val visibilityBefore = state.visibilitySnapshotForSelectedWindows()
         val previousPointerPath = state.pointerCrossingPath()
         val notifications = state.mapNotifySinks(current)
         val window = state.mapWindow(windowId) ?: return
@@ -4798,6 +4812,7 @@ internal class X11Connection(
             state.paintWindowBackground(window.id)
         }
         sendMapNotify(notifications)
+        sendVisibilityNotify(state.visibilityNotifySinks(visibilityBefore))
         sendCrossing(crossingEvents)
         sendExposeForViewableMappedSubtree(window)
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
@@ -4809,6 +4824,7 @@ internal class X11Connection(
         val window = state.window(windowId) ?: return writeError(error = 3, opcode = 10, badValue = windowId)
         if (!window.mapped) return
         val previousCursor = state.displayedCursorSnapshot()
+        val visibilityBefore = state.visibilitySnapshotForSelectedWindows()
         val previousPointerPath = state.pointerCrossingPath()
         val notifications = state.unmapNotifySinks(window)
         val exposeWindows = state.unmapExposeWindows(windowId)
@@ -4819,6 +4835,7 @@ internal class X11Connection(
             state.hierarchyCrossingEventDeliveries(previousPointerPath)
         }
         sendUnmapNotify(notifications)
+        sendVisibilityNotify(state.visibilityNotifySinks(visibilityBefore))
         sendCrossing(unmapResult.pointerUngrabResult.crossingDispatches)
         sendCrossing(crossingEvents)
         sendExposeToSubscribers(exposeWindows)
@@ -4840,6 +4857,7 @@ internal class X11Connection(
                         continue
                     }
                 }
+                val visibilityBefore = state.visibilitySnapshotForSelectedWindows()
                 val previousPointerPath = state.pointerCrossingPath()
                 val notifications = state.mapNotifySinks(child)
                 val mapped = state.mapWindow(child.id) ?: continue
@@ -4848,6 +4866,7 @@ internal class X11Connection(
                     state.paintWindowBackground(mapped.id)
                 }
                 sendMapNotify(notifications)
+                sendVisibilityNotify(state.visibilityNotifySinks(visibilityBefore))
                 sendCrossing(crossingEvents)
                 sendExposeForViewableMappedSubtree(mapped)
             }
@@ -4860,6 +4879,7 @@ internal class X11Connection(
         val windowId = byteOrder.u32(body, 0)
         state.window(windowId) ?: return writeError(error = 3, opcode = 11, badValue = windowId)
         val previousCursor = state.displayedCursorSnapshot()
+        val visibilityBefore = state.visibilitySnapshotForSelectedWindows()
         val exposeWindows = mutableListOf<XWindowExposure>()
         val focusDispatches = mutableListOf<XFocusDispatch>()
         for (child in state.childrenOf(windowId)) {
@@ -4879,6 +4899,7 @@ internal class X11Connection(
                 sendCrossing(crossingEvents)
             }
         }
+        sendVisibilityNotify(state.visibilityNotifySinks(visibilityBefore))
         sendExposeToSubscribers(exposeWindows)
         sendFocusEvents(focusDispatches)
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
@@ -4956,6 +4977,7 @@ internal class X11Connection(
             sendResizeRequest(resizeRequests)
         }
         val previousCursor = state.displayedCursorSnapshot()
+        val visibilityBefore = state.visibilitySnapshotForSelectedWindows()
         val previousPointerPath = state.pointerCrossingPath()
         val configured = state.configureWindow(
             window.id,
@@ -4974,6 +4996,7 @@ internal class X11Connection(
         }
         if (configured.changed) {
             sendConfigureNotify(state.configureNotifySinks(configured))
+            sendVisibilityNotify(state.visibilityNotifySinks(visibilityBefore))
             sendCrossing(configured.pointerUngrabResult.crossingDispatches)
             sendCrossing(crossingEvents)
             if (configured.sizeChanged) sendExposeIfViewable(configured.window)
@@ -4995,11 +5018,13 @@ internal class X11Connection(
             return
         }
         val previousCursor = state.displayedCursorSnapshot()
+        val visibilityBefore = state.visibilitySnapshotForSelectedWindows()
         val previousPointerPath = state.pointerCrossingPath()
         val exposeWindows = state.circulateExposeWindows(target)
         val result = state.circulateWindow(windowId, direction) ?: return
         val crossingEvents = state.hierarchyCrossingEventDeliveries(previousPointerPath)
         sendCirculateNotify(state.circulateNotifySinks(result))
+        sendVisibilityNotify(state.visibilityNotifySinks(visibilityBefore))
         sendCrossing(crossingEvents)
         sendExposeToSubscribers(exposeWindows)
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
@@ -9348,8 +9373,9 @@ internal class X11Connection(
         }
         if (!state.hasResource(resource)) return writeError(error = 2, opcode = 113, badValue = resource)
         val previousPointerPath = state.pointerCrossingPath()
+        val visibilityBefore = state.visibilitySnapshotForSelectedWindows()
         state.destroyRetainedClientByResource(resource)?.let { removal ->
-            sendRetainedResourceRemoval(previousPointerPath) { removal }
+            sendRetainedResourceRemoval(previousPointerPath, visibilityBefore) { removal }
             return
         }
         val client = state.liveClientOwningResource(resource)
@@ -9734,6 +9760,15 @@ internal class X11Connection(
         byteOrder.put16(bytes, 12, event.width)
         byteOrder.put16(bytes, 14, event.height)
         byteOrder.put16(bytes, 16, event.count)
+        write(bytes)
+    }
+
+    override fun sendVisibilityNotifyEvent(event: XVisibilityNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 15
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.windowId)
+        bytes[8] = event.state.toByte()
         write(bytes)
     }
 
@@ -11225,6 +11260,12 @@ internal class X11Connection(
         }
     }
 
+    private fun sendVisibilityNotify(notifications: List<XVisibilityNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendVisibilityNotifyEvent(notification.event) }
+        }
+    }
+
     private fun sendMapRequest(notifications: List<XMapRequestDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendMapRequestEvent(notification.event) }
@@ -11318,10 +11359,14 @@ internal class X11Connection(
         sendRandrScreenChangeNotify(change.screenChangeNotifyDispatches)
     }
 
-    private fun sendResourceRemoval(removal: XResourceRemoval) {
+    private fun sendResourceRemoval(removal: XResourceRemoval, visibilityBefore: Map<Int, Int>? = null) {
         sendSaveSetSideEffects(removal.saveSetSideEffects)
         sendFocusEvents(removal.focusDispatches)
         sendDestroyNotify(removal.destroyNotifyDispatches)
+        val effectiveVisibilityBefore = removal.visibilityBeforeRemoval ?: visibilityBefore
+        if (effectiveVisibilityBefore != null) {
+            sendVisibilityNotify(state.visibilityNotifySinks(effectiveVisibilityBefore))
+        }
         sendCrossing(removal.pointerUngrabResult.crossingDispatches)
         sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
         sendXFixesCursorNotify(removal.xfixesCursorNotifyDispatches)
@@ -11335,6 +11380,7 @@ internal class X11Connection(
                 is XSaveSetSideEffect.ReparentNotify -> sendReparentNotify(sideEffect.dispatches)
                 is XSaveSetSideEffect.UnmapNotify -> sendUnmapNotify(sideEffect.dispatches)
                 is XSaveSetSideEffect.MapNotify -> sendMapNotify(sideEffect.dispatches)
+                is XSaveSetSideEffect.VisibilityNotify -> sendVisibilityNotify(sideEffect.dispatches)
                 is XSaveSetSideEffect.Crossing -> sendCrossing(sideEffect.dispatches)
                 is XSaveSetSideEffect.Expose -> sendExposeToSubscribers(sideEffect.windows)
                 is XSaveSetSideEffect.Focus -> sendFocusEvents(sideEffect.dispatches)
@@ -11342,9 +11388,13 @@ internal class X11Connection(
         }
     }
 
-    private fun sendRetainedResourceRemoval(previousPointerPath: List<XWindow>, remove: () -> XResourceRemoval) {
+    private fun sendRetainedResourceRemoval(
+        previousPointerPath: List<XWindow>,
+        visibilityBefore: Map<Int, Int> = state.visibilitySnapshotForSelectedWindows(),
+        remove: () -> XResourceRemoval,
+    ) {
         val removal = remove()
-        sendResourceRemoval(removal)
+        sendResourceRemoval(removal, visibilityBefore)
         if (!removal.pointerUngrabResult.released) {
             sendCrossing(state.hierarchyCrossingEventDeliveries(previousPointerPath))
         }
@@ -11439,6 +11489,7 @@ internal class X11Connection(
         state.releaseServerGrab(this)
         state.releaseClientResourceReservations(this)
         val previousPointerPath = if (mode == XCloseDownMode.Destroy) state.pointerCrossingPath() else emptyList()
+        val visibilityBefore = if (mode == XCloseDownMode.Destroy) state.visibilitySnapshotForSelectedWindows() else null
         val resourceRemoval = when (mode) {
             XCloseDownMode.Destroy -> state.removeClientResources(this, resources)
             else -> {
@@ -11451,7 +11502,7 @@ internal class X11Connection(
         } else {
             emptyList()
         }
-        sendResourceRemoval(resourceRemoval)
+        sendResourceRemoval(resourceRemoval, visibilityBefore)
         sendCrossing(closeDownCrossings)
         val sinkRemoval = state.unregisterEventSink(this)
         sendCrossing(sinkRemoval.pointerUngrabResult.crossingDispatches)

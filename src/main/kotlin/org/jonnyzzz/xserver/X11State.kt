@@ -13,6 +13,7 @@ internal data class XWindowRemoval(
     val destroyNotifyDispatches: List<XDestroyNotifyDispatch>,
     val focusDispatches: List<XFocusDispatch> = emptyList(),
     val saveSetSideEffects: List<XSaveSetSideEffect> = emptyList(),
+    val visibilityBeforeRemoval: Map<Int, Int>? = null,
     val pointerUngrabResult: XPointerUngrabResult = XPointerUngrabResult(),
     val xfixesSelectionNotifyDispatches: List<XXFixesSelectionNotifyDispatch> = emptyList(),
     val xfixesCursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
@@ -23,6 +24,7 @@ internal data class XResourceRemoval(
     val xfixesSelectionNotifyDispatches: List<XXFixesSelectionNotifyDispatch>,
     val focusDispatches: List<XFocusDispatch> = emptyList(),
     val saveSetSideEffects: List<XSaveSetSideEffect> = emptyList(),
+    val visibilityBeforeRemoval: Map<Int, Int>? = null,
     val pointerUngrabResult: XPointerUngrabResult = XPointerUngrabResult(),
     val xfixesCursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
     val syncAlarmNotifyDispatches: List<XSyncAlarmNotifyDispatch> = emptyList(),
@@ -33,6 +35,7 @@ internal sealed class XSaveSetSideEffect {
     data class ReparentNotify(val dispatches: List<XReparentNotifyDispatch>) : XSaveSetSideEffect()
     data class UnmapNotify(val dispatches: List<XUnmapNotifyDispatch>) : XSaveSetSideEffect()
     data class MapNotify(val dispatches: List<XMapNotifyDispatch>) : XSaveSetSideEffect()
+    data class VisibilityNotify(val dispatches: List<XVisibilityNotifyDispatch>) : XSaveSetSideEffect()
     data class Crossing(val dispatches: List<Pair<XEventSink, XCrossingEvent>>) : XSaveSetSideEffect()
     data class Expose(val windows: List<XWindowExposure>) : XSaveSetSideEffect()
     data class Focus(val dispatches: List<XFocusDispatch>) : XSaveSetSideEffect()
@@ -327,6 +330,7 @@ internal class X11State(
         val previousCursor = displayedCursorIdentity()
         val removed = windowSubtreeIds(id)
         if (removed.isEmpty()) return XWindowRemoval(removedResources = emptySet(), destroyNotifyDispatches = emptyList())
+        val visibilityBeforeRemoval = visibilitySnapshotForSelectedWindows()
         val destroyNotifyDispatches = if (sendDestroyNotify) {
             destroyNotifySinksInDestroyOrder(id, excludedSink)
         } else {
@@ -375,6 +379,7 @@ internal class X11State(
             destroyNotifyDispatches = destroyNotifyDispatches,
             focusDispatches = focusDispatches,
             saveSetSideEffects = saveSetProcessing.sideEffects,
+            visibilityBeforeRemoval = visibilityBeforeRemoval,
             pointerUngrabResult = pointerUngrabResult,
             xfixesSelectionNotifyDispatches = xfixesSelectionNotifyDispatches,
             xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatches + xfixesCursorNotifyDispatchesIfChanged(previousCursor),
@@ -385,19 +390,24 @@ internal class X11State(
     fun removeClientResources(owner: XEventSink, resourceIds: Set<Int>): XResourceRemoval {
         val currentResourceIds = currentResourceIdsOwnedBy(owner, resourceIds)
         val saveSetProcessing = processSaveSet(owner, currentResourceIds)
+        val visibilityBeforeRemoval = visibilitySnapshotForSelectedWindows()
         val removal = removeClientResources(currentResourceIds, excludedSink = owner)
         saveSets.remove(owner)
         val inputGrabRelease = releaseInputGrabs(owner)
         return removal.copy(
             saveSetSideEffects = saveSetProcessing.sideEffects + removal.saveSetSideEffects,
+            visibilityBeforeRemoval = visibilityBeforeRemoval,
             pointerUngrabResult = removal.pointerUngrabResult + inputGrabRelease,
             xfixesCursorNotifyDispatches = saveSetProcessing.xfixesCursorNotifyDispatches + removal.xfixesCursorNotifyDispatches + inputGrabRelease.cursorNotifyDispatches,
         )
     }
 
     @Synchronized
-    fun removeClientResources(resourceIds: Set<Int>): XResourceRemoval =
-        removeClientResources(resourceIds, excludedSink = null)
+    fun removeClientResources(resourceIds: Set<Int>): XResourceRemoval {
+        val visibilityBeforeRemoval = visibilitySnapshotForSelectedWindows()
+        return removeClientResources(resourceIds, excludedSink = null)
+            .copy(visibilityBeforeRemoval = visibilityBeforeRemoval)
+    }
 
     private fun removeClientResources(resourceIds: Set<Int>, excludedSink: XEventSink?): XResourceRemoval {
         if (resourceIds.isEmpty()) {
@@ -855,6 +865,113 @@ internal class X11State(
             height = window.height + window.borderWidth * 2,
         )
     }
+
+    @Synchronized
+    fun visibilitySnapshotForSelectedWindows(): Map<Int, Int> =
+        windows.values.mapNotNull { window ->
+            if (window.id == X11Ids.RootWindow) return@mapNotNull null
+            if (eventSelectionsForWindow(window.id, XEventMasks.VisibilityChange).isEmpty()) return@mapNotNull null
+            visibilityState(window)?.let { state -> window.id to state }
+        }.toMap(linkedMapOf())
+
+    @Synchronized
+    fun visibilityNotifySinks(previous: Map<Int, Int>): List<XVisibilityNotifyDispatch> =
+        visibilitySnapshotForSelectedWindows().flatMap { (windowId, state) ->
+            if (previous[windowId] == state) {
+                emptyList()
+            } else {
+                eventSelectionsForWindow(windowId, XEventMasks.VisibilityChange).map { sink ->
+                    XVisibilityNotifyDispatch(
+                        sink = sink,
+                        event = XVisibilityNotifyEvent(windowId = windowId, state = state),
+                    )
+                }
+            }
+        }
+
+    private fun visibilityState(window: XWindow): Int? {
+        if (!window.mapped || window.windowClass != XWindowClass.InputOutput || !windowIsViewable(window.id)) return null
+        val regions = visibilityRegionsInRoot(window)
+        val unobscuredArea = regions.sumOf { rectangleArea(it) }
+        if (unobscuredArea <= 0L) return XVisibilityState.FullyObscured
+
+        val obscuringRegions = obscuringWindowsAbove(window).asSequence()
+            .flatMap { other ->
+                visibilityRegionsInRoot(other).asSequence()
+            }
+            .toList()
+
+        val remainingArea = subtractClips(regions, obscuringRegions).sumOf { rectangleArea(it) }
+        return when {
+            remainingArea <= 0L -> XVisibilityState.FullyObscured
+            remainingArea == unobscuredArea -> XVisibilityState.Unobscured
+            else -> XVisibilityState.PartiallyObscured
+        }
+    }
+
+    private fun visibilityRegionsInRoot(window: XWindow): List<XRectangleCommand> {
+        if (!window.mapped || !windowIsViewable(window.id)) return emptyList()
+        var regions = rootSpaceWindowVisibilityRegions(window)
+        var parentId = window.parentId
+        val visited = mutableSetOf(window.id)
+        while (parentId != 0 && visited.add(parentId)) {
+            val parent = windows[parentId] ?: return emptyList()
+            if (!parent.mapped) return emptyList()
+            val parentClip = if (parent.id == X11Ids.RootWindow) {
+                listOf(XRectangleCommand(0, 0, width, height))
+            } else {
+                val parentAbsolute = absolutePosition(parent)
+                rootSpaceWindowRenderClip(parent, parentAbsolute.first, parentAbsolute.second)
+            }
+            regions = intersectClipLists(regions, parentClip)
+            if (regions.isEmpty()) return emptyList()
+            if (parent.id == X11Ids.RootWindow) return regions
+            parentId = parent.parentId
+        }
+        return intersectClipLists(regions, listOf(XRectangleCommand(0, 0, width, height)))
+    }
+
+    private fun rootSpaceWindowVisibilityRegions(window: XWindow): List<XRectangleCommand> {
+        val absolute = absolutePosition(window)
+        val bounding = window.boundingShape ?: defaultWindowShapeRegion(window, XFixes.ShapeBounding)
+        val visible = window.clipShape?.let { clip -> intersectClipLists(bounding, clip) } ?: bounding
+        return visible.map { rectangle ->
+            XRectangleCommand(
+                x = absolute.first + rectangle.x,
+                y = absolute.second + rectangle.y,
+                width = rectangle.width,
+                height = rectangle.height,
+            )
+        }
+    }
+
+    private fun obscuringWindowsAbove(window: XWindow): List<XWindow> {
+        val obscurers = linkedMapOf<Int, XWindow>()
+        var current = window
+        val visited = mutableSetOf<Int>()
+        while (current.parentId != 0 && visited.add(current.id)) {
+            val siblings = childrenOf(current.parentId)
+            val index = siblings.indexOfFirst { it.id == current.id }
+            if (index >= 0) {
+                siblings.drop(index + 1).forEach { sibling ->
+                    collectVisibleSubtreeWindows(sibling, obscurers)
+                }
+            }
+            current = windows[current.parentId] ?: break
+        }
+        return obscurers.values.toList()
+    }
+
+    private fun collectVisibleSubtreeWindows(window: XWindow, result: LinkedHashMap<Int, XWindow>) {
+        if (!window.mapped || !windowIsViewable(window.id)) return
+        if (window.windowClass == XWindowClass.InputOutput) result[window.id] = window
+        for (child in childrenOf(window.id)) {
+            collectVisibleSubtreeWindows(child, result)
+        }
+    }
+
+    private fun rectangleArea(rectangle: XRectangleCommand): Long =
+        rectangle.width.toLong().coerceAtLeast(0L) * rectangle.height.toLong().coerceAtLeast(0L)
 
     private fun intersectClipLists(first: List<XRectangleCommand>, second: List<XRectangleCommand>): List<XRectangleCommand> =
         first.flatMap { left -> second.mapNotNull { right -> intersectRectangles(left, right) } }
@@ -8229,6 +8346,7 @@ internal class X11State(
             val window = windows[windowId] ?: continue
             val absolute = absolutePosition(window)
             if (isInferiorOfAny(windowId, ownedWindows)) {
+                val visibilityBefore = if (window.mapped) visibilitySnapshotForSelectedWindows() else emptyMap()
                 val parentId = if (entry.target == XSaveSetTarget.Root) {
                     X11Ids.RootWindow
                 } else {
@@ -8240,25 +8358,32 @@ internal class X11State(
                 window.x = absolute.first - parentAbsolute.first
                 window.y = absolute.second - parentAbsolute.second
                 sideEffects += XSaveSetSideEffect.ReparentNotify(reparentNotifySinks(window, oldParentId))
+                if (window.mapped) {
+                    sideEffects += XSaveSetSideEffect.VisibilityNotify(visibilityNotifySinks(visibilityBefore))
+                }
             }
             if (entry.map == XSaveSetMap.Map && !window.mapped) {
                 val previousPointerPath = pointerCrossingPath()
+                val visibilityBefore = visibilitySnapshotForSelectedWindows()
                 val notifications = mapNotifySinks(window)
                 mapWindow(windowId)
                 if (window.windowClass == XWindowClass.InputOutput) {
                     paintWindowBackground(window.id)
                 }
                 sideEffects += XSaveSetSideEffect.MapNotify(notifications)
+                sideEffects += XSaveSetSideEffect.VisibilityNotify(visibilityNotifySinks(visibilityBefore))
                 sideEffects += XSaveSetSideEffect.Crossing(hierarchyCrossingEventDeliveries(previousPointerPath))
                 if (window.windowClass == XWindowClass.InputOutput && windowIsViewable(window.id)) {
                     sideEffects += XSaveSetSideEffect.Expose(exposedWindowsInSubtree(window, listOf(windowBoundsInRoot(window))))
                 }
             } else if (entry.map == XSaveSetMap.Unmap && window.mapped) {
                 val previousPointerPath = pointerCrossingPath()
+                val visibilityBefore = visibilitySnapshotForSelectedWindows()
                 val notifications = unmapNotifySinks(window)
                 val exposeWindows = unmapExposeWindows(windowId)
                 val unmapResult = unmapWindow(windowId)
                 sideEffects += XSaveSetSideEffect.UnmapNotify(notifications)
+                sideEffects += XSaveSetSideEffect.VisibilityNotify(visibilityNotifySinks(visibilityBefore))
                 sideEffects += XSaveSetSideEffect.Crossing(unmapResult.pointerUngrabResult.crossingDispatches)
                 if (!unmapResult.pointerUngrabResult.released) {
                     sideEffects += XSaveSetSideEffect.Crossing(hierarchyCrossingEventDeliveries(previousPointerPath))

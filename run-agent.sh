@@ -66,13 +66,13 @@ Configuration (env variables):
   RUNS_DIR            Runs output directory (default: ./runs)
   RUN_AGENT_AGENTS    Comma-separated list of available agents (default: all built-in)
   RUN_AGENT_TIMEOUT_SECONDS
-                      Wall-clock timeout for the agent process (default: 3600, 0 disables)
+                      Wall-clock timeout for the agent process (default: 900, 0 disables)
   RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS
                       Dump diagnostics once after this many seconds with no new stdout/stderr bytes
                       (default: 180, 0 disables)
   RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS
                       Terminate after this many seconds with no new stdout/stderr bytes
-                      (default: 0, disabled)
+                      (default: 300, 0 disables)
   RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT
                       Set to 1 to allow RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS for
                       claude -p text-mode runs. By default those runs only emit
@@ -341,9 +341,9 @@ fi
 
 CMDLINE="${_quoted_cmd}< $(printf '%q' "$PROMPT")"
 
-RUN_AGENT_TIMEOUT_SECONDS="${RUN_AGENT_TIMEOUT_SECONDS:-3600}"
+RUN_AGENT_TIMEOUT_SECONDS="${RUN_AGENT_TIMEOUT_SECONDS:-900}"
 RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS="${RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS:-180}"
-RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS="${RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS:-0}"
+RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS="${RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS:-300}"
 RUN_AGENT_HEARTBEAT_SECONDS="${RUN_AGENT_HEARTBEAT_SECONDS:-30}"
 RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS="${RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS:-20}"
 RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS="${RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS:-5}"
