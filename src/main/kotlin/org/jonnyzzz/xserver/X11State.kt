@@ -100,6 +100,7 @@ internal class X11State(
     private val xfixesCursorInputs = linkedMapOf<XEventSink, LinkedHashMap<Int, Int>>()
     private val shapeInputs = linkedMapOf<XEventSink, LinkedHashSet<Int>>()
     private val randrInputs = linkedMapOf<XEventSink, LinkedHashMap<Int, Int>>()
+    private val xkbStateNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val screenSaverInputs = linkedMapOf<XEventSink, Int>()
     private val windowOwners = linkedMapOf<Int, XEventSink>()
     private val resourceOwners = linkedMapOf<Int, XEventSink>()
@@ -608,6 +609,20 @@ internal class X11State(
             if (randrInputs[owner]?.isEmpty() == true) randrInputs.remove(owner)
         } else {
             randrInputs.getOrPut(owner) { linkedMapOf() }[windowId] = eventMask
+        }
+    }
+
+    @Synchronized
+    fun selectXkbStateNotifyInput(owner: XEventSink, clear: Boolean, selectAll: Boolean, affect: Int?, selected: Int) {
+        var eventMask = xkbStateNotifyInputs[owner] ?: 0
+        if (clear) eventMask = 0
+        if (selectAll) eventMask = XXkb.AllStateComponentsMask
+        if (affect != null) eventMask = (eventMask and affect.inv()) or (selected and affect)
+
+        if (eventMask == 0) {
+            xkbStateNotifyInputs.remove(owner)
+        } else {
+            xkbStateNotifyInputs[owner] = eventMask
         }
     }
 
@@ -1452,6 +1467,18 @@ internal class X11State(
     }
 
     @Synchronized
+    fun xkbStateNotifyDispatches(event: XXkbStateNotifyEvent): List<XXkbStateNotifyDispatch> {
+        if (event.changed == 0) return emptyList()
+        return xkbStateNotifyInputs.mapNotNull { (sink, selected) ->
+            if ((selected and event.changed) == 0) {
+                null
+            } else {
+                XXkbStateNotifyDispatch(sink = sink, event = event)
+            }
+        }
+    }
+
+    @Synchronized
     fun queryKeymap(): ByteArray {
         val keys = ByteArray(32)
         for (keycode in pressedKeycodes) {
@@ -2255,6 +2282,7 @@ internal class X11State(
         xfixesCursorInputs.remove(sink)
         shapeInputs.remove(sink)
         randrInputs.remove(sink)
+        xkbStateNotifyInputs.remove(sink)
         screenSaverInputs.remove(sink)
         if (screenSaverAttributes?.owner == sink) screenSaverAttributes = null
         screenSaverSuspensions.remove(sink)

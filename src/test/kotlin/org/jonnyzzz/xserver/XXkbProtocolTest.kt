@@ -396,6 +396,149 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD StateNotify reports selected latch and lock changes`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventStateNotify,
+                    details = selectEvents16Details(
+                        affect = XXkb.ModifierStateMask or
+                            XXkb.ModifierLatchMask or
+                            XXkb.ModifierLockMask or
+                            XXkb.GroupLatchMask or
+                            XXkb.GroupLockMask,
+                        selected = XXkb.ModifierStateMask or
+                            XXkb.ModifierLatchMask or
+                            XXkb.ModifierLockMask or
+                            XXkb.GroupLatchMask or
+                            XXkb.GroupLockMask,
+                    ),
+                ),
+            )
+            out.write(
+                latchLockStateRequest(
+                    modLocks = 0x05,
+                    groupLock = 255,
+                    latchGroup = true,
+                    groupLatch = -1,
+                    affectModLocks = 0x05,
+                    affectModLatches = 0x02,
+                    modLatches = 0x02,
+                ),
+            )
+            out.write(getStateRequest())
+            out.flush()
+
+            val event = socket.getInputStream().readExactly(32)
+            assertEquals(XXkb.FirstEvent, event[0].toInt() and 0xff)
+            assertEquals(XXkb.StateNotify, event[1].toInt() and 0xff)
+            assertEquals(2, u16le(event, 2))
+            assertEquals(0, event[8].toInt() and 0xff)
+            assertEquals(0x07, event[9].toInt() and 0xff)
+            assertEquals(0x00, event[10].toInt() and 0xff)
+            assertEquals(0x02, event[11].toInt() and 0xff)
+            assertEquals(0x05, event[12].toInt() and 0xff)
+            assertEquals(0, event[13].toInt() and 0xff)
+            assertEquals(0, u16le(event, 14))
+            assertEquals(0, u16le(event, 16))
+            assertEquals(0, event[18].toInt() and 0xff)
+            assertEquals(0x07, event[19].toInt() and 0xff)
+            assertEquals(0x07, event[20].toInt() and 0xff)
+            assertEquals(0x07, event[21].toInt() and 0xff)
+            assertEquals(0x07, event[22].toInt() and 0xff)
+            assertEquals(0x07, event[23].toInt() and 0xff)
+            assertEquals(0, u16le(event, 24))
+            assertEquals(
+                XXkb.ModifierStateMask or
+                    XXkb.ModifierLatchMask or
+                    XXkb.ModifierLockMask,
+                u16le(event, 26),
+            )
+            assertEquals(0, event[28].toInt() and 0xff)
+            assertEquals(0, event[29].toInt() and 0xff)
+            assertEquals(XXkb.MajorOpcode, event[30].toInt() and 0xff)
+            assertEquals(XXkb.LatchLockState, event[31].toInt() and 0xff)
+
+            val state = readReply(socket.getInputStream())
+            assertEquals(3, u16le(state, 2))
+            assertEquals(0x07, state[8].toInt() and 0xff)
+            assertEquals(0x02, state[10].toInt() and 0xff)
+            assertEquals(0x05, state[11].toInt() and 0xff)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD StateNotify is suppressed when selected details do not intersect changes`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventStateNotify,
+                    details = selectEvents16Details(
+                        affect = XXkb.ModifierBaseMask,
+                        selected = XXkb.ModifierBaseMask,
+                    ),
+                ),
+            )
+            out.write(
+                latchLockStateRequest(
+                    modLocks = 0x04,
+                    groupLock = 0,
+                    latchGroup = false,
+                    groupLatch = 0,
+                    affectModLocks = 0x04,
+                    affectModLatches = 0x08,
+                    modLatches = 0x08,
+                ),
+            )
+            out.write(getStateRequest())
+            out.flush()
+
+            val state = readReply(socket.getInputStream())
+            assertEquals(3, u16le(state, 2))
+            assertEquals(0x0c, state[8].toInt() and 0xff)
+            assertEquals(0x08, state[10].toInt() and 0xff)
+            assertEquals(0x04, state[11].toInt() and 0xff)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SelectEvents clear removes StateNotify selection`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventStateNotify,
+                    selectAll = XXkb.EventStateNotify,
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventStateNotify,
+                    clear = XXkb.EventStateNotify,
+                ),
+            )
+            out.write(
+                latchLockStateRequest(
+                    modLocks = 0x01,
+                    groupLock = 0,
+                    latchGroup = false,
+                    groupLatch = 0,
+                    affectModLocks = 0x01,
+                ),
+            )
+            out.write(getStateRequest())
+            out.flush()
+
+            val state = readReply(socket.getInputStream())
+            assertEquals(4, u16le(state, 2))
+            assertEquals(0x01, state[8].toInt() and 0xff)
+            assertEquals(0x01, state[11].toInt() and 0xff)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD LatchLockState rejects invalid modifier masks without changing XKB state`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()

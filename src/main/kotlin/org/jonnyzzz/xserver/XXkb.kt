@@ -34,6 +34,8 @@ internal object XXkb {
     const val SetDeviceInfo = 25
     const val SetDebuggingFlags = 101
 
+    const val StateNotify = 2
+
     const val EventNewKeyboardNotify = 1 shl 0
     const val EventMapNotify = 1 shl 1
     const val EventStateNotify = 1 shl 2
@@ -59,6 +61,22 @@ internal object XXkb {
             EventActionMessage or
             EventAccessXNotify or
             EventExtensionDeviceNotify
+
+    const val ModifierStateMask = 1 shl 0
+    const val ModifierBaseMask = 1 shl 1
+    const val ModifierLatchMask = 1 shl 2
+    const val ModifierLockMask = 1 shl 3
+    const val GroupStateMask = 1 shl 4
+    const val GroupBaseMask = 1 shl 5
+    const val GroupLatchMask = 1 shl 6
+    const val GroupLockMask = 1 shl 7
+    const val CompatStateMask = 1 shl 8
+    const val GrabModsMask = 1 shl 9
+    const val CompatGrabModsMask = 1 shl 10
+    const val LookupModsMask = 1 shl 11
+    const val CompatLookupModsMask = 1 shl 12
+    const val PointerButtonMask = 1 shl 13
+    const val AllStateComponentsMask = 0x3fff
 
     const val BoolCtrlRepeatKeys = 1 shl 0
     const val MapPartKeyTypes = 1 shl 0

@@ -1579,7 +1579,16 @@ internal class X11Connection(
         if ((clear and selectAll) != 0 || ((clear or selectAll) and affectWhich.inv()) != 0 || (map and affectMap.inv()) != 0) {
             return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
         }
-        if (!validateXkbSelectEventDetails(body, affectWhich, clear, selectAll, majorOpcode)) return
+        val details = validateXkbSelectEventDetails(body, affectWhich, clear, selectAll, majorOpcode) ?: return
+        if ((affectWhich and XXkb.EventStateNotify) != 0) {
+            state.selectXkbStateNotifyInput(
+                owner = this,
+                clear = (clear and XXkb.EventStateNotify) != 0,
+                selectAll = (selectAll and XXkb.EventStateNotify) != 0,
+                affect = details.stateNotifyAffect,
+                selected = details.stateNotifySelected,
+            )
+        }
     }
 
     private fun validateXkbSelectEventDetails(
@@ -1588,9 +1597,11 @@ internal class X11Connection(
         clear: Int,
         selectAll: Int,
         majorOpcode: Int,
-    ): Boolean {
+    ): XkbSelectEventDetails? {
         val detailsMask = affectWhich and clear.inv() and selectAll.inv()
         var offset = 12
+        var stateNotifyAffect: Int? = null
+        var stateNotifySelected = 0
 
         fun require(bytes: Int): Boolean {
             val next = offset + bytes
@@ -1602,7 +1613,7 @@ internal class X11Connection(
             return true
         }
 
-        fun details16(mask: Int): Boolean {
+        fun details16(mask: Int, captureStateNotify: Boolean = false): Boolean {
             if ((detailsMask and mask) == 0) return true
             if (!require(4)) return false
             val affect = byteOrder.u16(body, offset - 4)
@@ -1610,6 +1621,10 @@ internal class X11Connection(
             if ((selected and affect.inv()) != 0) {
                 writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
                 return false
+            }
+            if (captureStateNotify) {
+                stateNotifyAffect = affect
+                stateNotifySelected = selected
             }
             return true
         }
@@ -1638,23 +1653,23 @@ internal class X11Connection(
             return true
         }
 
-        if (!details16(XXkb.EventNewKeyboardNotify)) return false
-        if (!details16(XXkb.EventStateNotify)) return false
-        if (!details32(XXkb.EventControlsNotify)) return false
-        if (!details32(XXkb.EventIndicatorStateNotify)) return false
-        if (!details32(XXkb.EventIndicatorMapNotify)) return false
-        if (!details16(XXkb.EventNamesNotify)) return false
-        if (!details8(XXkb.EventCompatMapNotify)) return false
-        if (!details8(XXkb.EventBellNotify)) return false
-        if (!details8(XXkb.EventActionMessage)) return false
-        if (!details16(XXkb.EventAccessXNotify)) return false
-        if (!details16(XXkb.EventExtensionDeviceNotify)) return false
+        if (!details16(XXkb.EventNewKeyboardNotify)) return null
+        if (!details16(XXkb.EventStateNotify, captureStateNotify = true)) return null
+        if (!details32(XXkb.EventControlsNotify)) return null
+        if (!details32(XXkb.EventIndicatorStateNotify)) return null
+        if (!details32(XXkb.EventIndicatorMapNotify)) return null
+        if (!details16(XXkb.EventNamesNotify)) return null
+        if (!details8(XXkb.EventCompatMapNotify)) return null
+        if (!details8(XXkb.EventBellNotify)) return null
+        if (!details8(XXkb.EventActionMessage)) return null
+        if (!details16(XXkb.EventAccessXNotify)) return null
+        if (!details16(XXkb.EventExtensionDeviceNotify)) return null
 
         if (paddedLength(offset) != body.size) {
             writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
-            return false
+            return null
         }
-        return true
+        return XkbSelectEventDetails(stateNotifyAffect = stateNotifyAffect, stateNotifySelected = stateNotifySelected)
     }
 
     private fun xkbBell(body: ByteArray, majorOpcode: Int) {
@@ -1693,6 +1708,7 @@ internal class X11Connection(
         if ((modLocks and affectModLocks.inv()) != 0 || (modLatches and affectModLatches.inv()) != 0) {
             return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.LatchLockState, badValue = 0)
         }
+        val before = state.keyboardPointerState()
         state.latchLockXkbState(
             affectModLocks = affectModLocks,
             modLocks = modLocks,
@@ -1703,6 +1719,37 @@ internal class X11Connection(
             latchGroup = body[9].toInt() != 0,
             groupLatch = byteOrder.i16(body, 10),
         )
+        val after = state.keyboardPointerState()
+        val changed = xkbChangedStateComponents(before, after)
+        sendXkbStateNotify(
+            state.xkbStateNotifyDispatches(
+                XXkbStateNotifyEvent(
+                    timestamp = state.syncServerTime(),
+                    state = after,
+                    changed = changed,
+                    requestMajor = majorOpcode,
+                    requestMinor = XXkb.LatchLockState,
+                ),
+            ),
+        )
+    }
+
+    private data class XkbSelectEventDetails(
+        val stateNotifyAffect: Int?,
+        val stateNotifySelected: Int,
+    )
+
+    private fun xkbChangedStateComponents(before: XKeyboardPointerState, after: XKeyboardPointerState): Int {
+        var changed = 0
+        if (before.effectiveModifiers != after.effectiveModifiers) changed = changed or XXkb.ModifierStateMask
+        if (before.baseModifiers != after.baseModifiers) changed = changed or XXkb.ModifierBaseMask
+        if (before.latchedModifiers != after.latchedModifiers) changed = changed or XXkb.ModifierLatchMask
+        if (before.lockedModifiers != after.lockedModifiers) changed = changed or XXkb.ModifierLockMask
+        if (before.effectiveGroup != after.effectiveGroup) changed = changed or XXkb.GroupStateMask
+        if (before.normalizedLatchedGroup != after.normalizedLatchedGroup) changed = changed or XXkb.GroupLatchMask
+        if (before.normalizedLockedGroup != after.normalizedLockedGroup) changed = changed or XXkb.GroupLockMask
+        if (before.pointerButtons != after.pointerButtons) changed = changed or XXkb.PointerButtonMask
+        return changed
     }
 
     private fun xkbGetControls(body: ByteArray, majorOpcode: Int) {
@@ -10044,6 +10091,37 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendXkbStateNotifyEvent(event: XXkbStateNotifyEvent) {
+        val bytes = ByteArray(32)
+        val keyboardState = event.state
+        val effectiveModifiers = keyboardState.effectiveModifiers
+        bytes[0] = XXkb.FirstEvent.toByte()
+        bytes[1] = XXkb.StateNotify.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.timestamp)
+        bytes[8] = 0
+        bytes[9] = effectiveModifiers.toByte()
+        bytes[10] = keyboardState.baseModifiers.toByte()
+        bytes[11] = keyboardState.latchedModifiers.toByte()
+        bytes[12] = keyboardState.lockedModifiers.toByte()
+        bytes[13] = keyboardState.effectiveGroup.toByte()
+        byteOrder.put16(bytes, 14, 0)
+        byteOrder.put16(bytes, 16, keyboardState.normalizedLatchedGroup)
+        bytes[18] = keyboardState.normalizedLockedGroup.toByte()
+        bytes[19] = effectiveModifiers.toByte()
+        bytes[20] = effectiveModifiers.toByte()
+        bytes[21] = effectiveModifiers.toByte()
+        bytes[22] = effectiveModifiers.toByte()
+        bytes[23] = effectiveModifiers.toByte()
+        byteOrder.put16(bytes, 24, keyboardState.pointerButtons)
+        byteOrder.put16(bytes, 26, event.changed)
+        bytes[28] = 0
+        bytes[29] = 0
+        bytes[30] = event.requestMajor.toByte()
+        bytes[31] = event.requestMinor.toByte()
+        write(bytes)
+    }
+
     override fun sendSyncCounterNotifyEvent(event: XSyncCounterNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = (XSync.FirstEvent + 0).toByte()
@@ -11362,6 +11440,12 @@ internal class X11Connection(
     private fun sendRandrScreenChangeNotify(notifications: List<XRandrScreenChangeNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendRandrScreenChangeNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendXkbStateNotify(notifications: List<XXkbStateNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendXkbStateNotifyEvent(notification.event) }
         }
     }
 
