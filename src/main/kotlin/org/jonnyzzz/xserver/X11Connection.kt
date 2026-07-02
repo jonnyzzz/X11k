@@ -2097,16 +2097,59 @@ internal class X11Connection(
 
     private fun xkbSetMap(body: ByteArray, majorOpcode: Int) {
         if (body.size < 32) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetMap, badValue = 0)
-        val expectedSize = xkbSetMapPayloadSize(body)
-        if (expectedSize == null || body.size != expectedSize) {
+        val payload = xkbSetMapPayload(body)
+        if (payload == null || body.size != payload.expectedSize) {
             return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetMap, badValue = 0)
+        }
+        val present = byteOrder.u16(body, 2)
+        val unsupportedParts = present and XXkb.AllMapParts.inv()
+        if (unsupportedParts != 0) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.SetMap, badValue = unsupportedParts)
+        }
+        val keySyms = payload.keySyms
+        if (keySyms != null && keySyms.rows.isNotEmpty()) {
+            if (keySyms.firstKeySym !in XKeyboard.MinKeycode..XKeyboard.MaxKeycode) {
+                return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SetMap, badValue = keySyms.firstKeySym)
+            }
+            if (keySyms.firstKeySym + keySyms.rows.size - 1 > XKeyboard.MaxKeycode) {
+                return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SetMap, badValue = keySyms.firstKeySym)
+            }
+            val keysymsPerKeycode = maxOf(1, keySyms.rows.maxOf { it.size })
+            val flattened = keySyms.rows.flatMap { row ->
+                List(keysymsPerKeycode) { index -> row.getOrElse(index) { 0 } }
+            }
+            state.setKeyboardMapping(keySyms.firstKeySym, keysymsPerKeycode, flattened)
+            sendXkbMapNotify(
+                state.xkbMapNotifyDispatches(
+                    XXkbMapNotifyEvent(
+                        timestamp = state.syncServerTime(),
+                        changed = XXkb.MapPartKeySyms,
+                        minKeycode = XKeyboard.MinKeycode,
+                        maxKeycode = XKeyboard.MaxKeycode,
+                        firstKeySym = keySyms.firstKeySym,
+                        nKeySyms = keySyms.rows.size,
+                    ),
+                ),
+            )
         }
     }
 
-    private fun xkbSetMapPayloadSize(body: ByteArray): Int? {
+    private data class XkbSetMapPayload(
+        val expectedSize: Int,
+        val keySyms: XkbSetMapKeySyms?,
+    )
+
+    private data class XkbSetMapKeySyms(
+        val firstKeySym: Int,
+        val rows: List<List<Int>>,
+    )
+
+    private fun xkbSetMapPayload(body: ByteArray): XkbSetMapPayload? {
         val present = byteOrder.u16(body, 2)
         val nTypes = body[9].toInt() and 0xff
+        val firstKeySym = body[10].toInt() and 0xff
         val nKeySyms = body[11].toInt() and 0xff
+        val totalSyms = byteOrder.u16(body, 12)
         val nKeyActions = body[15].toInt() and 0xff
         val totalActions = byteOrder.u16(body, 16)
         val totalKeyBehaviors = body[20].toInt() and 0xff
@@ -2132,12 +2175,23 @@ internal class X11Connection(
                 if (!require(keyTypeSize)) return null
             }
         }
+        var keySyms: XkbSetMapKeySyms? = null
         if ((present and XXkb.MapPartKeySyms) != 0) {
+            val rows = mutableListOf<List<Int>>()
+            var actualTotalSyms = 0
             repeat(nKeySyms) {
                 if (offset + 8 > body.size) return null
                 val nSyms = byteOrder.u16(body, offset + 6)
+                val symbolsOffset = offset + 8
                 if (!require(8 + nSyms * 4)) return null
+                rows += List(nSyms) { index -> byteOrder.u32(body, symbolsOffset + index * 4) }
+                actualTotalSyms += nSyms
             }
+            if (actualTotalSyms != totalSyms) return null
+            keySyms = XkbSetMapKeySyms(
+                firstKeySym = firstKeySym,
+                rows = rows,
+            )
         }
         if ((present and XXkb.MapPartKeyActions) != 0) {
             if (!require(nKeyActions)) return null
@@ -2166,7 +2220,10 @@ internal class X11Connection(
         if ((present and XXkb.MapPartVirtualModMap) != 0) {
             if (!require(totalVModMapKeys * 4)) return null
         }
-        return offset
+        return XkbSetMapPayload(
+            expectedSize = offset,
+            keySyms = keySyms,
+        )
     }
 
     private fun xkbGetCompatMap(body: ByteArray, majorOpcode: Int) {
