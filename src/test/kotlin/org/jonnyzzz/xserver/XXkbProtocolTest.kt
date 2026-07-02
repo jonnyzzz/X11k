@@ -1579,6 +1579,94 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD IndicatorMapNotify reports selected SetIndicatorMap changes`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventIndicatorMapNotify,
+                    details = selectEvents32Details(0x3, 0x3),
+                ),
+            )
+            out.write(setIndicatorMapRequest(which = 0x3))
+            out.write(getIndicatorMapRequest(which = 0x3))
+            out.flush()
+
+            assertIndicatorMapNotify(socket.getInputStream().readExactly(32), sequence = 2, state = 0, changed = 0x3)
+            val map = readReply(socket.getInputStream())
+            assertEquals(3, u16le(map, 2))
+            assertEquals(0, u32le(map, 8))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD IndicatorMapNotify is suppressed when selected details do not intersect changed indicators`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventIndicatorMapNotify,
+                    details = selectEvents32Details(0x4, 0x4),
+                ),
+            )
+            out.write(setIndicatorMapRequest(which = 0x3))
+            out.write(getIndicatorMapRequest(which = 0x3))
+            out.flush()
+
+            val map = readReply(socket.getInputStream())
+            assertEquals(3, u16le(map, 2))
+            assertEquals(0, u32le(map, 8))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SelectEvents clear removes IndicatorMapNotify selection`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventIndicatorMapNotify,
+                    selectAll = XXkb.EventIndicatorMapNotify,
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventIndicatorMapNotify,
+                    clear = XXkb.EventIndicatorMapNotify,
+                ),
+            )
+            out.write(setIndicatorMapRequest(which = 0x2))
+            out.write(getIndicatorMapRequest(which = 0x2))
+            out.flush()
+
+            val map = readReply(socket.getInputStream())
+            assertEquals(4, u16le(map, 2))
+            assertEquals(0, u32le(map, 8))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SelectEvents validates IndicatorMapNotify details and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventIndicatorMapNotify,
+                    details = selectEvents32Details(0x1, 0x2),
+                ),
+            )
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SelectEvents)
+            val version = readReply(socket.getInputStream())
+            assertEquals(2, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+            assertEquals(XXkb.MajorVersion, u16le(version, 8))
+        }
+    }
+
+    @Test
     fun `XKEYBOARD SetIndicatorMap validates variable map length and recovers stream`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -3395,6 +3483,20 @@ class XXkbProtocolTest {
         for (index in 7 until 32) {
             assertEquals(0, event[index].toInt() and 0xff)
         }
+    }
+
+    private fun assertIndicatorMapNotify(event: ByteArray, sequence: Int, state: Int, changed: Int) {
+        assertEquals(XXkb.FirstEvent, event[0].toInt() and 0xff)
+        assertEquals(XXkb.IndicatorMapNotify, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(0, event[8].toInt() and 0xff)
+        assertEquals(0, event[9].toInt() and 0xff)
+        assertEquals(0, u16le(event, 10))
+        assertEquals(state, u32le(event, 12))
+        assertEquals(changed, u32le(event, 16))
+        assertEquals(0, u32le(event, 20))
+        assertEquals(0, u32le(event, 24))
+        assertEquals(0, u32le(event, 28))
     }
 
     private fun assertXkbKeySymMap(reply: ByteArray, offset: Int, width: Int, vararg keysyms: Int) {

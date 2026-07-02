@@ -37,6 +37,7 @@ internal object XXkb {
     const val MapNotify = 1
     const val StateNotify = 2
     const val ControlsNotify = 3
+    const val IndicatorMapNotify = 5
     const val BellNotify = 8
 
     const val EventNewKeyboardNotify = 1 shl 0
@@ -84,6 +85,7 @@ internal object XXkb {
     const val BoolCtrlRepeatKeys = 1 shl 0
     const val ControlEnabledMask = 1 shl 31
     const val AllControlsMask = -0x07ffe001
+    const val AllIndicatorEventsMask = -1
     const val AllBellEventsMask = 1 shl 0
     const val MapPartKeyTypes = 1 shl 0
     const val MapPartKeySyms = 1 shl 1

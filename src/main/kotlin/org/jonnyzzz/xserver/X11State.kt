@@ -103,6 +103,7 @@ internal class X11State(
     private val xkbMapNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbStateNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbControlsNotifyInputs = linkedMapOf<XEventSink, Int>()
+    private val xkbIndicatorMapNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbBellNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val screenSaverInputs = linkedMapOf<XEventSink, Int>()
     private val windowOwners = linkedMapOf<Int, XEventSink>()
@@ -654,6 +655,20 @@ internal class X11State(
             xkbControlsNotifyInputs.remove(owner)
         } else {
             xkbControlsNotifyInputs[owner] = eventMask
+        }
+    }
+
+    @Synchronized
+    fun selectXkbIndicatorMapNotifyInput(owner: XEventSink, clear: Boolean, selectAll: Boolean, affect: Int?, selected: Int) {
+        var eventMask = xkbIndicatorMapNotifyInputs[owner] ?: 0
+        if (clear) eventMask = 0
+        if (selectAll) eventMask = XXkb.AllIndicatorEventsMask
+        if (affect != null) eventMask = (eventMask and affect.inv()) or (selected and affect)
+
+        if (eventMask == 0) {
+            xkbIndicatorMapNotifyInputs.remove(owner)
+        } else {
+            xkbIndicatorMapNotifyInputs[owner] = eventMask
         }
     }
 
@@ -1548,6 +1563,18 @@ internal class X11State(
     }
 
     @Synchronized
+    fun xkbIndicatorMapNotifyDispatches(event: XXkbIndicatorMapNotifyEvent): List<XXkbIndicatorMapNotifyDispatch> {
+        if (event.changed == 0) return emptyList()
+        return xkbIndicatorMapNotifyInputs.mapNotNull { (sink, selected) ->
+            if ((selected and event.changed) == 0) {
+                null
+            } else {
+                XXkbIndicatorMapNotifyDispatch(sink = sink, event = event)
+            }
+        }
+    }
+
+    @Synchronized
     fun xkbBellNotifyDispatches(event: XXkbBellNotifyEvent): List<XXkbBellNotifyDispatch> =
         xkbBellNotifyInputs.mapNotNull { (sink, selected) ->
             if ((selected and XXkb.AllBellEventsMask) == 0) {
@@ -2364,6 +2391,7 @@ internal class X11State(
         xkbMapNotifyInputs.remove(sink)
         xkbStateNotifyInputs.remove(sink)
         xkbControlsNotifyInputs.remove(sink)
+        xkbIndicatorMapNotifyInputs.remove(sink)
         xkbBellNotifyInputs.remove(sink)
         screenSaverInputs.remove(sink)
         if (screenSaverAttributes?.owner == sink) screenSaverAttributes = null

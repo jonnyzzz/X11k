@@ -1607,6 +1607,15 @@ internal class X11Connection(
                 selected = details.controlsNotifySelected,
             )
         }
+        if ((affectWhich and XXkb.EventIndicatorMapNotify) != 0) {
+            state.selectXkbIndicatorMapNotifyInput(
+                owner = this,
+                clear = (clear and XXkb.EventIndicatorMapNotify) != 0,
+                selectAll = (selectAll and XXkb.EventIndicatorMapNotify) != 0,
+                affect = details.indicatorMapNotifyAffect,
+                selected = details.indicatorMapNotifySelected,
+            )
+        }
         if ((affectWhich and XXkb.EventBellNotify) != 0) {
             state.selectXkbBellNotifyInput(
                 owner = this,
@@ -1631,6 +1640,8 @@ internal class X11Connection(
         var stateNotifySelected = 0
         var controlsNotifyAffect: Int? = null
         var controlsNotifySelected = 0
+        var indicatorMapNotifyAffect: Int? = null
+        var indicatorMapNotifySelected = 0
         var bellNotifyAffect: Int? = null
         var bellNotifySelected = 0
 
@@ -1660,7 +1671,7 @@ internal class X11Connection(
             return true
         }
 
-        fun details32(mask: Int, captureControlsNotify: Boolean = false): Boolean {
+        fun details32(mask: Int, captureControlsNotify: Boolean = false, captureIndicatorMapNotify: Boolean = false): Boolean {
             if ((detailsMask and mask) == 0) return true
             if (!require(8)) return false
             val affect = byteOrder.u32(body, offset - 8)
@@ -1672,6 +1683,10 @@ internal class X11Connection(
             if (captureControlsNotify) {
                 controlsNotifyAffect = affect
                 controlsNotifySelected = selected
+            }
+            if (captureIndicatorMapNotify) {
+                indicatorMapNotifyAffect = affect
+                indicatorMapNotifySelected = selected
             }
             return true
         }
@@ -1696,7 +1711,7 @@ internal class X11Connection(
         if (!details16(XXkb.EventStateNotify, captureStateNotify = true)) return null
         if (!details32(XXkb.EventControlsNotify, captureControlsNotify = true)) return null
         if (!details32(XXkb.EventIndicatorStateNotify)) return null
-        if (!details32(XXkb.EventIndicatorMapNotify)) return null
+        if (!details32(XXkb.EventIndicatorMapNotify, captureIndicatorMapNotify = true)) return null
         if (!details16(XXkb.EventNamesNotify)) return null
         if (!details8(XXkb.EventCompatMapNotify)) return null
         if (!details8(XXkb.EventBellNotify, captureBellNotify = true)) return null
@@ -1713,6 +1728,8 @@ internal class X11Connection(
             stateNotifySelected = stateNotifySelected,
             controlsNotifyAffect = controlsNotifyAffect,
             controlsNotifySelected = controlsNotifySelected,
+            indicatorMapNotifyAffect = indicatorMapNotifyAffect,
+            indicatorMapNotifySelected = indicatorMapNotifySelected,
             bellNotifyAffect = bellNotifyAffect,
             bellNotifySelected = bellNotifySelected,
         )
@@ -1803,6 +1820,8 @@ internal class X11Connection(
         val stateNotifySelected: Int,
         val controlsNotifyAffect: Int?,
         val controlsNotifySelected: Int,
+        val indicatorMapNotifyAffect: Int?,
+        val indicatorMapNotifySelected: Int,
         val bellNotifyAffect: Int?,
         val bellNotifySelected: Int,
     )
@@ -2111,6 +2130,15 @@ internal class X11Connection(
         val which = byteOrder.u32(body, 4)
         val expectedSize = 8 + Integer.bitCount(which) * 12
         if (body.size != expectedSize) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetIndicatorMap, badValue = 0)
+        sendXkbIndicatorMapNotify(
+            state.xkbIndicatorMapNotifyDispatches(
+                XXkbIndicatorMapNotifyEvent(
+                    timestamp = state.syncServerTime(),
+                    state = 0,
+                    changed = which,
+                ),
+            ),
+        )
     }
 
     private fun xkbGetNamedIndicator(body: ByteArray, majorOpcode: Int) {
@@ -10258,6 +10286,23 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendXkbIndicatorMapNotifyEvent(event: XXkbIndicatorMapNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = XXkb.FirstEvent.toByte()
+        bytes[1] = XXkb.IndicatorMapNotify.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.timestamp)
+        bytes[8] = 0
+        bytes[9] = 0
+        byteOrder.put16(bytes, 10, 0)
+        byteOrder.put32(bytes, 12, event.state)
+        byteOrder.put32(bytes, 16, event.changed)
+        byteOrder.put32(bytes, 20, 0)
+        byteOrder.put32(bytes, 24, 0)
+        byteOrder.put32(bytes, 28, 0)
+        write(bytes)
+    }
+
     override fun sendXkbBellNotifyEvent(event: XXkbBellNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = XXkb.FirstEvent.toByte()
@@ -11615,6 +11660,12 @@ internal class X11Connection(
     private fun sendXkbControlsNotify(notifications: List<XXkbControlsNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendXkbControlsNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendXkbIndicatorMapNotify(notifications: List<XXkbIndicatorMapNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendXkbIndicatorMapNotifyEvent(notification.event) }
         }
     }
 
