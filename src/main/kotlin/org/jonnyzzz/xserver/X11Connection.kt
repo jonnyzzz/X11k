@@ -1625,6 +1625,15 @@ internal class X11Connection(
                 selected = details.indicatorMapNotifySelected,
             )
         }
+        if ((affectWhich and XXkb.EventNamesNotify) != 0) {
+            state.selectXkbNamesNotifyInput(
+                owner = this,
+                clear = (clear and XXkb.EventNamesNotify) != 0,
+                selectAll = (selectAll and XXkb.EventNamesNotify) != 0,
+                affect = details.namesNotifyAffect,
+                selected = details.namesNotifySelected,
+            )
+        }
         if ((affectWhich and XXkb.EventCompatMapNotify) != 0) {
             state.selectXkbCompatMapNotifyInput(
                 owner = this,
@@ -1662,6 +1671,8 @@ internal class X11Connection(
         var indicatorStateNotifySelected = 0
         var indicatorMapNotifyAffect: Int? = null
         var indicatorMapNotifySelected = 0
+        var namesNotifyAffect: Int? = null
+        var namesNotifySelected = 0
         var compatMapNotifyAffect: Int? = null
         var compatMapNotifySelected = 0
         var bellNotifyAffect: Int? = null
@@ -1677,7 +1688,11 @@ internal class X11Connection(
             return true
         }
 
-        fun details16(mask: Int, captureStateNotify: Boolean = false): Boolean {
+        fun details16(
+            mask: Int,
+            captureStateNotify: Boolean = false,
+            captureNamesNotify: Boolean = false,
+        ): Boolean {
             if ((detailsMask and mask) == 0) return true
             if (!require(4)) return false
             val affect = byteOrder.u16(body, offset - 4)
@@ -1689,6 +1704,10 @@ internal class X11Connection(
             if (captureStateNotify) {
                 stateNotifyAffect = affect
                 stateNotifySelected = selected
+            }
+            if (captureNamesNotify) {
+                namesNotifyAffect = affect
+                namesNotifySelected = selected
             }
             return true
         }
@@ -1751,7 +1770,7 @@ internal class X11Connection(
         if (!details32(XXkb.EventControlsNotify, captureControlsNotify = true)) return null
         if (!details32(XXkb.EventIndicatorStateNotify, captureIndicatorStateNotify = true)) return null
         if (!details32(XXkb.EventIndicatorMapNotify, captureIndicatorMapNotify = true)) return null
-        if (!details16(XXkb.EventNamesNotify)) return null
+        if (!details16(XXkb.EventNamesNotify, captureNamesNotify = true)) return null
         if (!details8(XXkb.EventCompatMapNotify, captureCompatMapNotify = true)) return null
         if (!details8(XXkb.EventBellNotify, captureBellNotify = true)) return null
         if (!details8(XXkb.EventActionMessage)) return null
@@ -1771,6 +1790,8 @@ internal class X11Connection(
             indicatorStateNotifySelected = indicatorStateNotifySelected,
             indicatorMapNotifyAffect = indicatorMapNotifyAffect,
             indicatorMapNotifySelected = indicatorMapNotifySelected,
+            namesNotifyAffect = namesNotifyAffect,
+            namesNotifySelected = namesNotifySelected,
             compatMapNotifyAffect = compatMapNotifyAffect,
             compatMapNotifySelected = compatMapNotifySelected,
             bellNotifyAffect = bellNotifyAffect,
@@ -1867,6 +1888,8 @@ internal class X11Connection(
         val indicatorStateNotifySelected: Int,
         val indicatorMapNotifyAffect: Int?,
         val indicatorMapNotifySelected: Int,
+        val namesNotifyAffect: Int?,
+        val namesNotifySelected: Int,
         val compatMapNotifyAffect: Int?,
         val compatMapNotifySelected: Int,
         val bellNotifyAffect: Int?,
@@ -2266,20 +2289,24 @@ internal class X11Connection(
 
     private fun xkbSetNames(body: ByteArray, majorOpcode: Int) {
         if (body.size < 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetNames, badValue = 0)
-        val expectedSize = xkbSetNamesPayloadSize(body)
-        if (expectedSize == null || body.size != expectedSize) {
+        val parsed = xkbSetNamesPayload(body)
+        if (parsed == null || body.size != parsed.expectedSize) {
             return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetNames, badValue = 0)
         }
+        sendXkbNamesNotify(state.xkbNamesNotifyDispatches(parsed.toEvent(timestamp = state.syncServerTime())))
     }
 
-    private fun xkbSetNamesPayloadSize(body: ByteArray): Int? {
+    private fun xkbSetNamesPayload(body: ByteArray): XkbSetNamesPayload? {
         val virtualMods = byteOrder.u16(body, 2)
         val which = byteOrder.u32(body, 4)
+        val firstType = body[8].toInt() and 0xff
         val nTypes = body[9].toInt() and 0xff
+        val firstKtLevel = body[10].toInt() and 0xff
         val nKtLevels = body[11].toInt() and 0xff
         val indicators = byteOrder.u32(body, 12)
         val groupNames = body[16].toInt() and 0xff
         val nRadioGroups = body[17].toInt() and 0xff
+        val firstKey = body[18].toInt() and 0xff
         val nKeys = body[19].toInt() and 0xff
         val nKeyAliases = body[20].toInt() and 0xff
         val totalKtLevelNames = byteOrder.u16(body, 22)
@@ -2311,7 +2338,56 @@ internal class X11Connection(
         if ((which and XXkb.NameDetailKeyNames) != 0 && !require(nKeys * 4)) return null
         if ((which and XXkb.NameDetailKeyAliases) != 0 && !require(nKeyAliases * 8)) return null
         if ((which and XXkb.NameDetailRgNames) != 0 && !require(nRadioGroups * 4)) return null
-        return offset
+        return XkbSetNamesPayload(
+            expectedSize = offset,
+            changed = which and XXkb.AllNameEventsMask,
+            firstType = firstType,
+            nTypes = nTypes,
+            firstLevelName = firstKtLevel,
+            nLevelNames = nKtLevels,
+            nRadioGroups = nRadioGroups,
+            nAliases = nKeyAliases,
+            changedGroupNames = groupNames,
+            changedVirtualMods = virtualMods,
+            firstKey = firstKey,
+            nKeys = nKeys,
+            changedIndicators = indicators,
+        )
+    }
+
+    private data class XkbSetNamesPayload(
+        val expectedSize: Int,
+        val changed: Int,
+        val firstType: Int,
+        val nTypes: Int,
+        val firstLevelName: Int,
+        val nLevelNames: Int,
+        val nRadioGroups: Int,
+        val nAliases: Int,
+        val changedGroupNames: Int,
+        val changedVirtualMods: Int,
+        val firstKey: Int,
+        val nKeys: Int,
+        val changedIndicators: Int,
+    ) {
+        fun toEvent(timestamp: Int): XXkbNamesNotifyEvent =
+            XXkbNamesNotifyEvent(
+                timestamp = timestamp,
+                changed = changed,
+                firstType = firstType.takeIf { hasChanged(XXkb.NameDetailKeyTypeNames) } ?: 0,
+                nTypes = nTypes.takeIf { hasChanged(XXkb.NameDetailKeyTypeNames) } ?: 0,
+                firstLevelName = firstLevelName.takeIf { hasChanged(XXkb.NameDetailKtLevelNames) } ?: 0,
+                nLevelNames = nLevelNames.takeIf { hasChanged(XXkb.NameDetailKtLevelNames) } ?: 0,
+                nRadioGroups = nRadioGroups.takeIf { hasChanged(XXkb.NameDetailRgNames) } ?: 0,
+                nAliases = nAliases.takeIf { hasChanged(XXkb.NameDetailKeyAliases) } ?: 0,
+                changedGroupNames = changedGroupNames.takeIf { hasChanged(XXkb.NameDetailGroupNames) } ?: 0,
+                changedVirtualMods = changedVirtualMods.takeIf { hasChanged(XXkb.NameDetailVirtualModNames) } ?: 0,
+                firstKey = firstKey.takeIf { hasChanged(XXkb.NameDetailKeyNames) } ?: 0,
+                nKeys = nKeys.takeIf { hasChanged(XXkb.NameDetailKeyNames) } ?: 0,
+                changedIndicators = changedIndicators.takeIf { hasChanged(XXkb.NameDetailIndicatorNames) } ?: 0,
+            )
+
+        private fun hasChanged(mask: Int): Boolean = (changed and mask) != 0
     }
 
     private fun xkbGetGeometry(body: ByteArray, majorOpcode: Int) {
@@ -10399,6 +10475,31 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendXkbNamesNotifyEvent(event: XXkbNamesNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = XXkb.FirstEvent.toByte()
+        bytes[1] = XXkb.NamesNotify.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.timestamp)
+        bytes[8] = 0
+        bytes[9] = 0
+        byteOrder.put16(bytes, 10, event.changed)
+        bytes[12] = event.firstType.toByte()
+        bytes[13] = event.nTypes.toByte()
+        bytes[14] = event.firstLevelName.toByte()
+        bytes[15] = event.nLevelNames.toByte()
+        bytes[16] = 0
+        bytes[17] = event.nRadioGroups.toByte()
+        bytes[18] = event.nAliases.toByte()
+        bytes[19] = event.changedGroupNames.toByte()
+        byteOrder.put16(bytes, 20, event.changedVirtualMods)
+        bytes[22] = event.firstKey.toByte()
+        bytes[23] = event.nKeys.toByte()
+        byteOrder.put32(bytes, 24, event.changedIndicators)
+        byteOrder.put32(bytes, 28, 0)
+        write(bytes)
+    }
+
     override fun sendXkbCompatMapNotifyEvent(event: XXkbCompatMapNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = XXkb.FirstEvent.toByte()
@@ -11786,6 +11887,12 @@ internal class X11Connection(
     private fun sendXkbIndicatorMapNotify(notifications: List<XXkbIndicatorMapNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendXkbIndicatorMapNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendXkbNamesNotify(notifications: List<XXkbNamesNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendXkbNamesNotifyEvent(notification.event) }
         }
     }
 

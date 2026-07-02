@@ -2194,6 +2194,148 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD NamesNotify reports selected SetNames changes`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventNamesNotify,
+                    details = selectEvents16Details(XXkb.AllNameEventsMask, XXkb.AllNameEventsMask),
+                ),
+            )
+            out.write(setNamesRequest(includeAllDetails = true))
+            out.write(getNamesRequest(which = 0))
+            out.flush()
+
+            assertNamesNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 2,
+                changed = XXkb.AllNameEventsMask,
+                firstType = 0,
+                nTypes = 2,
+                firstLevelName = 0,
+                nLevelNames = 3,
+                nRadioGroups = 2,
+                nAliases = 1,
+                changedGroupNames = 0x3,
+                changedVirtualMods = 0x3,
+                firstKey = XKeyboard.MinKeycode,
+                nKeys = 2,
+                changedIndicators = 0x3,
+            )
+            val reply = readReply(socket.getInputStream())
+            assertEquals(3, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 8))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD NamesNotify is suppressed when selected details do not intersect changes`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventNamesNotify,
+                    details = selectEvents16Details(XXkb.NameDetailKeycodes, XXkb.NameDetailKeycodes),
+                ),
+            )
+            out.write(setNamesGroupNamesRequest(groupNames = 0x2))
+            out.write(getNamesRequest(which = 0))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(3, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 8))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD NamesNotify zeros fields for unchanged name details`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventNamesNotify,
+                    selectAll = XXkb.EventNamesNotify,
+                ),
+            )
+            out.write(setNamesGroupNamesRequest(groupNames = 0x2))
+            out.write(getNamesRequest(which = 0))
+            out.flush()
+
+            assertNamesNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 2,
+                changed = XXkb.NameDetailGroupNames,
+                firstType = 0,
+                nTypes = 0,
+                firstLevelName = 0,
+                nLevelNames = 0,
+                nRadioGroups = 0,
+                nAliases = 0,
+                changedGroupNames = 0x2,
+                changedVirtualMods = 0,
+                firstKey = 0,
+                nKeys = 0,
+                changedIndicators = 0,
+            )
+            val reply = readReply(socket.getInputStream())
+            assertEquals(3, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 8))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SelectEvents clear removes NamesNotify selection`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventNamesNotify,
+                    selectAll = XXkb.EventNamesNotify,
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventNamesNotify,
+                    clear = XXkb.EventNamesNotify,
+                ),
+            )
+            out.write(setNamesRequest(includeAllDetails = true))
+            out.write(getNamesRequest(which = 0))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(4, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 8))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SelectEvents validates NamesNotify details and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventNamesNotify,
+                    details = selectEvents16Details(XXkb.NameDetailKeycodes, XXkb.NameDetailGeometry),
+                ),
+            )
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SelectEvents)
+            val version = readReply(socket.getInputStream())
+            assertEquals(2, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+            assertEquals(XXkb.MajorVersion, u16le(version, 8))
+        }
+    }
+
+    @Test
     fun `XKEYBOARD SetNames validates variable payload length and recovers stream`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -3323,6 +3465,19 @@ class XXkbProtocolTest {
         return request(XXkb.MajorOpcode, XXkb.SetNames, body)
     }
 
+    private fun setNamesGroupNamesRequest(groupNames: Int): ByteArray {
+        val body = ByteArray(24 + Integer.bitCount(groupNames) * 4)
+        put16le(body, 0, 0x0100)
+        put32le(body, 4, XXkb.NameDetailGroupNames)
+        body[16] = groupNames.toByte()
+        var offset = 24
+        repeat(Integer.bitCount(groupNames)) {
+            put32le(body, offset, 1)
+            offset += 4
+        }
+        return request(XXkb.MajorOpcode, XXkb.SetNames, body)
+    }
+
     private fun setNamesBodySize(includeAllDetails: Boolean): Int =
         if (includeAllDetails) 124 else 24
 
@@ -3757,6 +3912,43 @@ class XXkbProtocolTest {
         assertEquals(0, u32le(event, 16))
         assertEquals(0, u32le(event, 20))
         assertEquals(0, u32le(event, 24))
+        assertEquals(0, u32le(event, 28))
+    }
+
+    private fun assertNamesNotify(
+        event: ByteArray,
+        sequence: Int,
+        changed: Int,
+        firstType: Int,
+        nTypes: Int,
+        firstLevelName: Int,
+        nLevelNames: Int,
+        nRadioGroups: Int,
+        nAliases: Int,
+        changedGroupNames: Int,
+        changedVirtualMods: Int,
+        firstKey: Int,
+        nKeys: Int,
+        changedIndicators: Int,
+    ) {
+        assertEquals(XXkb.FirstEvent, event[0].toInt() and 0xff)
+        assertEquals(XXkb.NamesNotify, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(0, event[8].toInt() and 0xff)
+        assertEquals(0, event[9].toInt() and 0xff)
+        assertEquals(changed, u16le(event, 10))
+        assertEquals(firstType, event[12].toInt() and 0xff)
+        assertEquals(nTypes, event[13].toInt() and 0xff)
+        assertEquals(firstLevelName, event[14].toInt() and 0xff)
+        assertEquals(nLevelNames, event[15].toInt() and 0xff)
+        assertEquals(0, event[16].toInt() and 0xff)
+        assertEquals(nRadioGroups, event[17].toInt() and 0xff)
+        assertEquals(nAliases, event[18].toInt() and 0xff)
+        assertEquals(changedGroupNames, event[19].toInt() and 0xff)
+        assertEquals(changedVirtualMods, u16le(event, 20))
+        assertEquals(firstKey, event[22].toInt() and 0xff)
+        assertEquals(nKeys, event[23].toInt() and 0xff)
+        assertEquals(changedIndicators, u32le(event, 24))
         assertEquals(0, u32le(event, 28))
     }
 

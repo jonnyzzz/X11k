@@ -39,6 +39,7 @@ internal object XXkb {
     const val ControlsNotify = 3
     const val IndicatorStateNotify = 4
     const val IndicatorMapNotify = 5
+    const val NamesNotify = 6
     const val CompatMapNotify = 7
     const val BellNotify = 8
 
@@ -125,6 +126,7 @@ internal object XXkb {
     const val NameDetailVirtualModNames = 1 shl 11
     const val NameDetailGroupNames = 1 shl 12
     const val NameDetailRgNames = 1 shl 13
+    const val AllNameEventsMask = 0x3fff
     const val ComponentNameDetails =
         NameDetailKeycodes or
             NameDetailGeometry or

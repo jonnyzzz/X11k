@@ -223,6 +223,7 @@ internal interface XEventSink {
     fun sendXkbControlsNotifyEvent(event: XXkbControlsNotifyEvent)
     fun sendXkbIndicatorStateNotifyEvent(event: XXkbIndicatorStateNotifyEvent)
     fun sendXkbIndicatorMapNotifyEvent(event: XXkbIndicatorMapNotifyEvent)
+    fun sendXkbNamesNotifyEvent(event: XXkbNamesNotifyEvent)
     fun sendXkbCompatMapNotifyEvent(event: XXkbCompatMapNotifyEvent)
     fun sendXkbBellNotifyEvent(event: XXkbBellNotifyEvent)
     fun sendSyncCounterNotifyEvent(event: XSyncCounterNotifyEvent)
@@ -641,6 +642,27 @@ internal data class XXkbIndicatorMapNotifyEvent(
 internal data class XXkbIndicatorMapNotifyDispatch(
     val sink: XEventSink,
     val event: XXkbIndicatorMapNotifyEvent,
+)
+
+internal data class XXkbNamesNotifyEvent(
+    val timestamp: Int,
+    val changed: Int,
+    val firstType: Int,
+    val nTypes: Int,
+    val firstLevelName: Int,
+    val nLevelNames: Int,
+    val nRadioGroups: Int,
+    val nAliases: Int,
+    val changedGroupNames: Int,
+    val changedVirtualMods: Int,
+    val firstKey: Int,
+    val nKeys: Int,
+    val changedIndicators: Int,
+)
+
+internal data class XXkbNamesNotifyDispatch(
+    val sink: XEventSink,
+    val event: XXkbNamesNotifyEvent,
 )
 
 internal data class XXkbCompatMapNotifyEvent(
