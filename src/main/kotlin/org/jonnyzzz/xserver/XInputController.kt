@@ -218,6 +218,7 @@ internal interface XEventSink {
     fun sendRandrScreenChangeNotifyEvent(event: XRandrScreenChangeNotifyEvent)
     fun sendRandrOutputChangeNotifyEvent(event: XRandrOutputChangeNotifyEvent)
     fun sendRandrOutputPropertyNotifyEvent(event: XRandrOutputPropertyNotifyEvent)
+    fun sendXkbMapNotifyEvent(event: XXkbMapNotifyEvent)
     fun sendXkbStateNotifyEvent(event: XXkbStateNotifyEvent)
     fun sendXkbControlsNotifyEvent(event: XXkbControlsNotifyEvent)
     fun sendXkbBellNotifyEvent(event: XXkbBellNotifyEvent)
@@ -574,6 +575,20 @@ internal data class XXFixesCursorNotifyEvent(
 internal data class XXFixesCursorNotifyDispatch(
     val sink: XEventSink,
     val event: XXFixesCursorNotifyEvent,
+)
+
+internal data class XXkbMapNotifyEvent(
+    val timestamp: Int,
+    val changed: Int,
+    val minKeycode: Int,
+    val maxKeycode: Int,
+    val firstKeySym: Int = 0,
+    val nKeySyms: Int = 0,
+)
+
+internal data class XXkbMapNotifyDispatch(
+    val sink: XEventSink,
+    val event: XXkbMapNotifyEvent,
 )
 
 internal data class XXkbStateNotifyEvent(

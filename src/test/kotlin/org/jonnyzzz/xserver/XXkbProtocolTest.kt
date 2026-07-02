@@ -114,6 +114,14 @@ class XXkbProtocolTest {
             )
             out.write(
                 selectEventsRequest(
+                    affectWhich = XXkb.EventMapNotify,
+                    affectMap = XXkb.MapPartKeySyms,
+                    map = XXkb.MapPartKeySyms,
+                    details = selectEvents16Details(XXkb.MapPartKeySyms, XXkb.MapPartKeySyms),
+                ),
+            )
+            out.write(
+                selectEventsRequest(
                     affectWhich = XXkb.EventStateNotify,
                     details = selectEvents16Details(0x0001, 0x0002),
                 ),
@@ -148,10 +156,11 @@ class XXkbProtocolTest {
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SelectEvents)
             assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 1 shl 12, sequence = 2, minorOpcode = XXkb.SelectEvents)
             assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SelectEvents)
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.SelectEvents)
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 8, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 5, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 9, minorOpcode = XXkb.SelectEvents)
             val version = readReply(socket.getInputStream())
-            assertEquals(9, u16le(version, 2))
+            assertEquals(10, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
         }
@@ -1123,6 +1132,86 @@ class XXkbProtocolTest {
             assertXkbKeySymMap(map, offset = symsOffset, width = 2, 0x0061, 0x0041)
             assertXkbKeySymMap(map, offset = symsOffset + 16, width = 2, 0x0073, 0x0053)
             assertEquals(72, map.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD MapNotify reports selected core key symbol mapping changes`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventMapNotify,
+                    affectMap = XXkb.MapPartKeySyms,
+                    map = XXkb.MapPartKeySyms,
+                ),
+            )
+            out.write(changeKeyboardMappingRequest(38, 2, 0x0061, 0x0041, 0x0062, 0x0042))
+            out.write(getMapRequest(full = 0, partial = XXkb.MapPartKeySyms, firstKeySym = 38, nKeySyms = 2))
+            out.flush()
+
+            assertMapNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 2,
+                changed = XXkb.MapPartKeySyms,
+                firstKeySym = 38,
+                nKeySyms = 2,
+            )
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 2, request = 1, firstKeycode = 38, count = 2)
+            val map = readReply(socket.getInputStream())
+            assertEquals(3, u16le(map, 2))
+            assertEquals(XXkb.MapPartKeySyms, u16le(map, 12))
+            assertXkbKeySymMap(map, offset = xkbKeySymMapOffset(map, keycode = 38), width = 2, 0x0061, 0x0041)
+            assertXkbKeySymMap(map, offset = xkbKeySymMapOffset(map, keycode = 39), width = 2, 0x0062, 0x0042)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD MapNotify is suppressed when selected details do not intersect key symbol changes`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventMapNotify,
+                    affectMap = XXkb.MapPartModifierMap,
+                    map = XXkb.MapPartModifierMap,
+                ),
+            )
+            out.write(changeKeyboardMappingRequest(38, 1, 0x007a))
+            out.write(getMapRequest(full = 0, partial = XXkb.MapPartKeySyms, firstKeySym = 38, nKeySyms = 1))
+            out.flush()
+
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 2, request = 1, firstKeycode = 38, count = 1)
+            val map = readReply(socket.getInputStream())
+            assertEquals(3, u16le(map, 2))
+            assertXkbKeySymMap(map, offset = xkbKeySymMapOffset(map, keycode = 38), width = 1, 0x007a)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SelectEvents clear removes MapNotify selection`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventMapNotify,
+                    selectAll = XXkb.EventMapNotify,
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventMapNotify,
+                    clear = XXkb.EventMapNotify,
+                ),
+            )
+            out.write(changeKeyboardMappingRequest(38, 1, 0x0078))
+            out.write(getMapRequest(full = 0, partial = XXkb.MapPartKeySyms, firstKeySym = 38, nKeySyms = 1))
+            out.flush()
+
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 3, request = 1, firstKeycode = 38, count = 1)
+            val map = readReply(socket.getInputStream())
+            assertEquals(4, u16le(map, 2))
+            assertXkbKeySymMap(map, offset = xkbKeySymMapOffset(map, keycode = 38), width = 1, 0x0078)
         }
     }
 
@@ -2622,6 +2711,18 @@ class XXkbProtocolTest {
         return request(XXkb.MajorOpcode, XXkb.GetMap, body)
     }
 
+    private fun changeKeyboardMappingRequest(firstKeycode: Int, keysymsPerKeycode: Int, vararg keysyms: Int): ByteArray {
+        require(keysymsPerKeycode > 0)
+        require(keysyms.size % keysymsPerKeycode == 0)
+        val body = ByteArray(4 + keysyms.size * 4)
+        body[0] = firstKeycode.toByte()
+        body[1] = keysymsPerKeycode.toByte()
+        keysyms.forEachIndexed { index, keysym ->
+            put32le(body, 4 + index * 4, keysym)
+        }
+        return request(100, keysyms.size / keysymsPerKeycode, body)
+    }
+
     private fun setMapRequest(
         includeAllParts: Boolean,
         oddExplicitAndModifierMapCounts: Boolean = false,
@@ -3264,6 +3365,36 @@ class XXkbProtocolTest {
         assertEquals(0, event[25].toInt() and 0xff)
         assertEquals(0, u16le(event, 26))
         assertEquals(0, u32le(event, 28))
+    }
+
+    private fun assertMapNotify(event: ByteArray, sequence: Int, changed: Int, firstKeySym: Int, nKeySyms: Int) {
+        assertEquals(XXkb.FirstEvent, event[0].toInt() and 0xff)
+        assertEquals(XXkb.MapNotify, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(0, event[8].toInt() and 0xff)
+        assertEquals(0, event[9].toInt() and 0xff)
+        assertEquals(changed, u16le(event, 10))
+        assertEquals(XKeyboard.MinKeycode, event[12].toInt() and 0xff)
+        assertEquals(XKeyboard.MaxKeycode, event[13].toInt() and 0xff)
+        assertEquals(0, event[14].toInt() and 0xff)
+        assertEquals(0, event[15].toInt() and 0xff)
+        assertEquals(firstKeySym, event[16].toInt() and 0xff)
+        assertEquals(nKeySyms, event[17].toInt() and 0xff)
+        for (index in 18 until 32) {
+            assertEquals(0, event[index].toInt() and 0xff)
+        }
+    }
+
+    private fun assertMappingNotify(event: ByteArray, sequence: Int, request: Int, firstKeycode: Int, count: Int) {
+        assertEquals(34, event[0].toInt() and 0xff)
+        assertEquals(0, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(request, event[4].toInt() and 0xff)
+        assertEquals(firstKeycode, event[5].toInt() and 0xff)
+        assertEquals(count, event[6].toInt() and 0xff)
+        for (index in 7 until 32) {
+            assertEquals(0, event[index].toInt() and 0xff)
+        }
     }
 
     private fun assertXkbKeySymMap(reply: ByteArray, offset: Int, width: Int, vararg keysyms: Int) {

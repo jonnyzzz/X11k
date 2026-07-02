@@ -100,6 +100,7 @@ internal class X11State(
     private val xfixesCursorInputs = linkedMapOf<XEventSink, LinkedHashMap<Int, Int>>()
     private val shapeInputs = linkedMapOf<XEventSink, LinkedHashSet<Int>>()
     private val randrInputs = linkedMapOf<XEventSink, LinkedHashMap<Int, Int>>()
+    private val xkbMapNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbStateNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbControlsNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbBellNotifyInputs = linkedMapOf<XEventSink, Int>()
@@ -625,6 +626,20 @@ internal class X11State(
             xkbStateNotifyInputs.remove(owner)
         } else {
             xkbStateNotifyInputs[owner] = eventMask
+        }
+    }
+
+    @Synchronized
+    fun selectXkbMapNotifyInput(owner: XEventSink, clear: Boolean, selectAll: Boolean, affect: Int?, selected: Int) {
+        var eventMask = xkbMapNotifyInputs[owner] ?: 0
+        if (clear) eventMask = 0
+        if (selectAll) eventMask = XXkb.AllMapParts
+        if (affect != null) eventMask = (eventMask and affect.inv()) or (selected and affect)
+
+        if (eventMask == 0) {
+            xkbMapNotifyInputs.remove(owner)
+        } else {
+            xkbMapNotifyInputs[owner] = eventMask
         }
     }
 
@@ -1509,6 +1524,18 @@ internal class X11State(
     }
 
     @Synchronized
+    fun xkbMapNotifyDispatches(event: XXkbMapNotifyEvent): List<XXkbMapNotifyDispatch> {
+        if (event.changed == 0) return emptyList()
+        return xkbMapNotifyInputs.mapNotNull { (sink, selected) ->
+            if ((selected and event.changed) == 0) {
+                null
+            } else {
+                XXkbMapNotifyDispatch(sink = sink, event = event)
+            }
+        }
+    }
+
+    @Synchronized
     fun xkbControlsNotifyDispatches(event: XXkbControlsNotifyEvent): List<XXkbControlsNotifyDispatch> {
         if (event.changedControls == 0) return emptyList()
         return xkbControlsNotifyInputs.mapNotNull { (sink, selected) ->
@@ -2334,6 +2361,7 @@ internal class X11State(
         xfixesCursorInputs.remove(sink)
         shapeInputs.remove(sink)
         randrInputs.remove(sink)
+        xkbMapNotifyInputs.remove(sink)
         xkbStateNotifyInputs.remove(sink)
         xkbControlsNotifyInputs.remove(sink)
         xkbBellNotifyInputs.remove(sink)

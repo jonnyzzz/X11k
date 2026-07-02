@@ -1589,6 +1589,15 @@ internal class X11Connection(
                 selected = details.stateNotifySelected,
             )
         }
+        if ((affectWhich and XXkb.EventMapNotify) != 0) {
+            state.selectXkbMapNotifyInput(
+                owner = this,
+                clear = (clear and XXkb.EventMapNotify) != 0,
+                selectAll = (selectAll and XXkb.EventMapNotify) != 0,
+                affect = affectMap.takeIf { it != 0 },
+                selected = map,
+            )
+        }
         if ((affectWhich and XXkb.EventControlsNotify) != 0) {
             state.selectXkbControlsNotifyInput(
                 owner = this,
@@ -9562,6 +9571,18 @@ internal class X11Connection(
         val keysymCount = keycodeCount * keysymsPerKeycode
         val keysyms = List(keysymCount) { index -> byteOrder.u32(body, 4 + index * 4) }
         state.setKeyboardMapping(firstKeycode, keysymsPerKeycode, keysyms)
+        sendXkbMapNotify(
+            state.xkbMapNotifyDispatches(
+                XXkbMapNotifyEvent(
+                    timestamp = state.syncServerTime(),
+                    changed = XXkb.MapPartKeySyms,
+                    minKeycode = XKeyboard.MinKeycode,
+                    maxKeycode = XKeyboard.MaxKeycode,
+                    firstKeySym = firstKeycode,
+                    nKeySyms = keycodeCount,
+                ),
+            ),
+        )
         val event = XMappingNotifyEvent(request = 1, firstKeycode = firstKeycode, count = keycodeCount)
         for (sink in state.mappingNotifySinks()) {
             runCatching { sink.sendMappingNotifyEvent(event) }
@@ -10184,6 +10205,36 @@ internal class X11Connection(
         bytes[29] = 0
         bytes[30] = event.requestMajor.toByte()
         bytes[31] = event.requestMinor.toByte()
+        write(bytes)
+    }
+
+    override fun sendXkbMapNotifyEvent(event: XXkbMapNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = XXkb.FirstEvent.toByte()
+        bytes[1] = XXkb.MapNotify.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.timestamp)
+        bytes[8] = 0
+        bytes[9] = 0
+        byteOrder.put16(bytes, 10, event.changed)
+        bytes[12] = event.minKeycode.toByte()
+        bytes[13] = event.maxKeycode.toByte()
+        bytes[14] = 0
+        bytes[15] = 0
+        bytes[16] = event.firstKeySym.toByte()
+        bytes[17] = event.nKeySyms.toByte()
+        bytes[18] = 0
+        bytes[19] = 0
+        bytes[20] = 0
+        bytes[21] = 0
+        bytes[22] = 0
+        bytes[23] = 0
+        bytes[24] = 0
+        bytes[25] = 0
+        bytes[26] = 0
+        bytes[27] = 0
+        byteOrder.put16(bytes, 28, 0)
+        byteOrder.put16(bytes, 30, 0)
         write(bytes)
     }
 
@@ -11552,6 +11603,12 @@ internal class X11Connection(
     private fun sendXkbStateNotify(notifications: List<XXkbStateNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendXkbStateNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendXkbMapNotify(notifications: List<XXkbMapNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendXkbMapNotifyEvent(notification.event) }
         }
     }
 

@@ -34,6 +34,7 @@ internal object XXkb {
     const val SetDeviceInfo = 25
     const val SetDebuggingFlags = 101
 
+    const val MapNotify = 1
     const val StateNotify = 2
     const val ControlsNotify = 3
     const val BellNotify = 8
