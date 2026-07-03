@@ -2424,6 +2424,10 @@ internal class X11Connection(
     private fun xkbGetIndicatorMap(body: ByteArray, majorOpcode: Int) {
         if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetIndicatorMap, badValue = 0)
         val maps = state.xkbIndicatorMaps(byteOrder.u32(body, 4))
+        write(xkbIndicatorMapReply(maps))
+    }
+
+    private fun xkbIndicatorMapReply(maps: XXkbIndicatorMaps): ByteArray {
         val reply = reply(extra = 0, payloadUnits = maps.maps.size * 3)
         byteOrder.put32(reply, 8, maps.which)
         reply[16] = maps.maps.size.toByte()
@@ -2432,7 +2436,7 @@ internal class X11Connection(
             map.copyInto(reply, offset)
             offset += 12
         }
-        write(reply)
+        return reply
     }
 
     private fun xkbSetIndicatorMap(body: ByteArray, majorOpcode: Int) {
@@ -3028,13 +3032,19 @@ internal class X11Connection(
         val want = byteOrder.u16(body, 4) and XXkb.GbnAllComponents
         val compat = state.xkbCompatGroupMaps(XXkb.AllGroupsMask)
             .takeIf { it.maps.isNotEmpty() && xkbGetKbdByNameCompatSpecMatches(componentSpecs[3]) }
+        val indicatorMaps = state.xkbIndicatorMaps(-1)
+            .takeIf { it.maps.isNotEmpty() && xkbGetKbdByNameCompatSpecMatches(componentSpecs[3]) }
         val geometry = state.xkbGeometry(0)?.takeIf { xkbGetKbdByNameGeometrySpecMatches(componentSpecs[5]) }
         val found = (if (compat != null) XXkb.GbnCompatMap else 0) or
+            (if (indicatorMaps != null) XXkb.GbnIndicatorMap else 0) or
             (if (geometry != null) XXkb.GbnGeometry else 0)
         val reported = if ((need and found.inv()) == 0) found and (need or want) else 0
         val payloadParts = mutableListOf<ByteArray>()
         if ((reported and XXkb.GbnCompatMap) != 0 && compat != null) {
             payloadParts += xkbCompatMapReply(compat)
+        }
+        if ((reported and XXkb.GbnIndicatorMap) != 0 && indicatorMaps != null) {
+            payloadParts += xkbIndicatorMapReply(indicatorMaps)
         }
         if ((reported and XXkb.GbnGeometry) != 0 && geometry != null) {
             payloadParts += xkbGeometryReply(geometry, requestedName = geometry.name)

@@ -3608,6 +3608,82 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetKbdByName reports stored indicator maps when requested`() {
+        withServer { socket, _ ->
+            val records = listOf(indicatorMapRecord(1), indicatorMapRecord(2))
+            val out = socket.getOutputStream()
+            out.write(setIndicatorMapRequest(which = 0x3, maps = records))
+            out.write(getKbdByNameRequest(need = 0, want = XXkb.GbnIndicatorMap, load = false))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            val indicatorSize = 32 + records.size * 12
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(indicatorSize / 4, u32le(reply, 4))
+            assertEquals(XXkb.GbnIndicatorMap, u16le(reply, 12))
+            assertEquals(XXkb.GbnIndicatorMap, u16le(reply, 14))
+            assertIndicatorMapReply(reply.copyOfRange(32, reply.size), sequence = 2, which = 0x3, maps = records)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName reports stored indicator maps for matching compat expression`() {
+        withServer { socket, _ ->
+            val records = listOf(indicatorMapRecord(1), indicatorMapRecord(2))
+            val matchingComponents = xkbComponentSpecs("", "", "", "comp*")
+            val out = socket.getOutputStream()
+            out.write(setIndicatorMapRequest(which = 0x3, maps = records))
+            out.write(getKbdByNameRequest(need = 0, want = XXkb.GbnIndicatorMap, load = false, trailingNames = matchingComponents))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            val indicatorSize = 32 + records.size * 12
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(indicatorSize / 4, u32le(reply, 4))
+            assertEquals(XXkb.GbnIndicatorMap, u16le(reply, 12))
+            assertEquals(XXkb.GbnIndicatorMap, u16le(reply, 14))
+            assertIndicatorMapReply(reply.copyOfRange(32, reply.size), sequence = 2, which = 0x3, maps = records)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName does not report stored indicator maps for nonmatching compat expression`() {
+        withServer { socket, _ ->
+            val records = listOf(indicatorMapRecord(1), indicatorMapRecord(2))
+            val nonmatchingComponents = xkbComponentSpecs("", "", "", "does-not-match")
+            val out = socket.getOutputStream()
+            out.write(setIndicatorMapRequest(which = 0x3, maps = records))
+            out.write(getKbdByNameRequest(need = 0, want = XXkb.GbnIndicatorMap, load = false, trailingNames = nonmatchingComponents))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName with mandatory unsupported pieces suppresses indicator map report`() {
+        withServer { socket, _ ->
+            val records = listOf(indicatorMapRecord(1))
+            val out = socket.getOutputStream()
+            out.write(setIndicatorMapRequest(which = 0x1, maps = records))
+            out.write(getKbdByNameRequest(need = XXkb.GbnIndicatorMap or 1, want = XXkb.GbnIndicatorMap, load = false))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(XXkb.GbnIndicatorMap, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetKbdByName reports compat map before geometry when both are requested`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -3635,6 +3711,46 @@ class XXkbProtocolTest {
             assertEquals(reported, u16le(reply, 14))
             assertCompatMapReply(reply.copyOfRange(32, 32 + compatSize), sequence = 4, groups = 0x5, groupMaps = groupMaps)
             assertGeometryReply(reply.copyOfRange(32 + compatSize, reply.size), sequence = 4, geometryBody = geometryBody)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName reports compat map indicator maps and geometry in protocol order`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val groupMaps = listOf(
+                byteArrayOf(0x01, 0x02, 0x34, 0x12),
+                byteArrayOf(0x04, 0x08, 0x78, 0x56),
+            )
+            val indicatorMaps = listOf(indicatorMapRecord(1), indicatorMapRecord(2))
+            out.write(internAtomRequest("xkb-getkbd-compat-indicators-geometry"))
+            out.flush()
+            val geometryAtom = u32le(readReply(socket.getInputStream()), 8)
+            val geometryBody = setGeometryBody(name = geometryAtom)
+
+            out.write(setCompatMapRequest(groups = 0x5, nSI = 0, groupMaps = groupMaps))
+            out.write(setIndicatorMapRequest(which = 0x3, maps = indicatorMaps))
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, geometryBody))
+            out.write(getKbdByNameRequest(need = 0, want = XXkb.GbnCompatMap or XXkb.GbnIndicatorMap or XXkb.GbnGeometry, load = false))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            val compatSize = 32 + groupMaps.size * 4
+            val indicatorSize = 32 + indicatorMaps.size * 12
+            val geometrySize = geometryBody.copyOfRange(24, geometryBody.size).size + 32
+            val reported = XXkb.GbnCompatMap or XXkb.GbnIndicatorMap or XXkb.GbnGeometry
+            assertEquals(5, u16le(reply, 2))
+            assertEquals((compatSize + indicatorSize + geometrySize) / 4, u32le(reply, 4))
+            assertEquals(reported, u16le(reply, 12))
+            assertEquals(reported, u16le(reply, 14))
+            assertCompatMapReply(reply.copyOfRange(32, 32 + compatSize), sequence = 5, groups = 0x5, groupMaps = groupMaps)
+            assertIndicatorMapReply(
+                reply.copyOfRange(32 + compatSize, 32 + compatSize + indicatorSize),
+                sequence = 5,
+                which = 0x3,
+                maps = indicatorMaps,
+            )
+            assertGeometryReply(reply.copyOfRange(32 + compatSize + indicatorSize, reply.size), sequence = 5, geometryBody = geometryBody)
         }
     }
 
@@ -5444,6 +5560,16 @@ class XXkbProtocolTest {
             assertEquals(map.toList(), reply.copyOfRange(offset, offset + 12).toList())
         }
         assertZero(reply, 17, 32)
+    }
+
+    private fun assertIndicatorMapReply(reply: ByteArray, sequence: Int, which: Int, maps: List<ByteArray>) {
+        assertEquals(1, reply[0].toInt())
+        assertEquals(0, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(maps.size * 3, u32le(reply, 4))
+        assertEquals(which, u32le(reply, 8))
+        assertEquals(0, u32le(reply, 12))
+        assertIndicatorMaps(reply, maps)
     }
 
     private fun assertCompatMapNotify(event: ByteArray, sequence: Int, changedGroups: Int, firstSI: Int, nSI: Int, nTotalSI: Int) {
