@@ -212,8 +212,8 @@ class IntellijCommunitySmokeTest {
 
         val composedSvg = composeSvgLayers(actual.svgLayers, IntellijCaptureWidth, IntellijCaptureHeight)
         dumpIntellijParityArtifacts(reference = reference, actual = actual, composedSvg = composedSvg)
-        assertIntellijVisualClose(reference, actual.robot, "Kotlin Robot IntelliJ capture")
-        assertIntellijVisualClose(reference, visualCapture(composedSvg), "Kotlin SVG-composed IntelliJ framebuffer")
+        assertIntellijVisualClose(reference.robot, actual.robot, "Kotlin Robot IntelliJ capture")
+        assertIntellijVisualClose(reference.robot, visualCapture(composedSvg), "Kotlin SVG-composed IntelliJ framebuffer")
     }
 
     private fun projectRoot(): Path =
@@ -260,7 +260,7 @@ class IntellijCommunitySmokeTest {
         return lastSnapshot
     }
 
-    private fun runIntellijAgainstXvfb(image: String, url: String?): VisualCapture =
+    private fun runIntellijAgainstXvfb(image: String, url: String?): IntellijReferenceCapture =
         GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
             .withFileSystemBind(projectRoot().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
             .withCommand("sleep", "900")
@@ -314,8 +314,12 @@ class IntellijCommunitySmokeTest {
                     DISPLAY=:99 java -cp /tmp XIntellijRobotCapture
                     """.trimIndent(),
                 )
+                val logs = collectIntellijLogs(container, "intellij-xvfb", "/tmp/idea-run-xvfb.log")
                 assertEquals(0, result.exitCode, result.stderr + result.stdout)
-                visualCapture(result.stdout)
+                IntellijReferenceCapture(
+                    robot = visualCapture(result.stdout),
+                    logs = logs,
+                )
             }
 
     private fun runIntellijAgainstKotlinServer(port: Int, image: String, url: String?): IntellijKotlinCapture {
@@ -388,11 +392,13 @@ class IntellijCommunitySmokeTest {
                         )
                         assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
                         val svg = httpGet(port, "/screen.svg")
+                        val logs = collectIntellijLogs(container, "intellij-kotlin", "/tmp/idea-run-parity.log")
                         return IntellijKotlinCapture(
                             robot = visualCapture(capture.stdout),
                             text = snapshot.text,
                             svg = svg,
                             svgLayers = svgCompositionLayers(svg),
+                            logs = logs,
                         )
                     } finally {
                         container.execInContainer("sh", "-lc", "kill $(cat /tmp/idea-parity.pid 2>/dev/null || pgrep -f run-intellij) 2>/dev/null || true")
@@ -596,17 +602,46 @@ class IntellijCommunitySmokeTest {
     }
 
     private fun dumpIntellijParityArtifacts(
-        reference: VisualCapture,
+        reference: IntellijReferenceCapture,
         actual: IntellijKotlinCapture,
         composedSvg: BufferedImage,
     ) {
         val directory = File("build/tmp/intellij-community-smoke").also { it.mkdirs() }
-        ImageIO.write(reference.image, "png", File(directory, "intellij-xvfb-reference.png"))
+        ImageIO.write(reference.robot.image, "png", File(directory, "intellij-xvfb-reference.png"))
         ImageIO.write(actual.robot.image, "png", File(directory, "intellij-kotlin-robot.png"))
         ImageIO.write(composedSvg, "png", File(directory, "intellij-kotlin-svg-composed.png"))
         File(directory, "intellij-kotlin-screen.svg").writeText(actual.svg)
         File(directory, "intellij-kotlin-text.txt").writeText(actual.text)
         File(directory, "intellij-kotlin-svg-layers.txt").writeText(svgLayerInventory(actual.svgLayers))
+        (reference.logs + actual.logs).forEach { artifact ->
+            File(directory, artifact.fileName).writeText(artifact.text)
+        }
+    }
+
+    private fun collectIntellijLogs(
+        container: GenericContainer<*>,
+        prefix: String,
+        runLogPath: String,
+    ): List<IntellijLogArtifact> {
+        val paths = listOf(
+            runLogPath to "$prefix-run.log",
+            "/tmp/idea-log/idea.log" to "$prefix-idea.log",
+            "/tmp/idea-log/xawt-trace.log" to "$prefix-xawt-trace.log",
+            "/tmp/idea-log/jcef.log" to "$prefix-jcef.log",
+            "/tmp/idea-log/jcef_chromium.log" to "$prefix-jcef-chromium.log",
+        )
+        return paths.mapNotNull { (path, fileName) ->
+            val result = container.execInContainer(
+                "sh",
+                "-lc",
+                "if [ -f '$path' ]; then cat '$path'; fi",
+            )
+            if (result.exitCode == 0 && result.stdout.isNotEmpty()) {
+                IntellijLogArtifact(fileName = fileName, text = result.stdout)
+            } else {
+                null
+            }
+        }
     }
 
     private fun svgLayerInventory(layers: List<SvgLayer>): String =
@@ -724,11 +759,22 @@ class IntellijCommunitySmokeTest {
         val text: String,
     )
 
+    private data class IntellijReferenceCapture(
+        val robot: VisualCapture,
+        val logs: List<IntellijLogArtifact>,
+    )
+
     private data class IntellijKotlinCapture(
         val robot: VisualCapture,
         val text: String,
         val svg: String,
         val svgLayers: List<SvgLayer>,
+        val logs: List<IntellijLogArtifact>,
+    )
+
+    private data class IntellijLogArtifact(
+        val fileName: String,
+        val text: String,
     )
 
     private data class SvgLayer(

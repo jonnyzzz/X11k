@@ -116,7 +116,7 @@ scripts/run-gradle-bounded.sh test --tests org.jonnyzzz.xserver.IntellijCommunit
 
 The parity probe writes its current Xvfb reference, Kotlin Robot capture,
 Kotlin SVG-composed capture, raw `/screen.svg`, `/text.txt`, and SVG layer
-inventory under `build/tmp/intellij-community-smoke/`.
+inventory plus IntelliJ client logs under `build/tmp/intellij-community-smoke/`.
 
 Run the prototype server:
 
