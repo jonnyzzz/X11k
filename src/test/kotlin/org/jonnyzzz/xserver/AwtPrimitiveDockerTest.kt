@@ -447,6 +447,11 @@ class AwtPrimitiveDockerTest {
             actual = actual.robot,
             label = "Kotlin desktop-pane Robot screenshot",
         )
+        assertExportedFramebufferClose(
+            expected = reference,
+            exportedFramebuffers = actual.exportedFramebuffers,
+            label = "Kotlin desktop-pane SVG exported framebuffer",
+        )
     }
 
     @Test
