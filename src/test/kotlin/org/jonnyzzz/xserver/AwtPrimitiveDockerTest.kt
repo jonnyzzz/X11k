@@ -379,6 +379,11 @@ class AwtPrimitiveDockerTest {
             actual = actual.robot,
             label = "Kotlin Swing form-controls Robot screenshot",
         )
+        assertExportedFramebufferClose(
+            expected = reference,
+            exportedFramebuffers = actual.exportedFramebuffers,
+            label = "Kotlin Swing form-controls SVG exported framebuffer",
+        )
     }
 
     @Test
