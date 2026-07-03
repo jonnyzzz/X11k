@@ -45,6 +45,7 @@ internal data class XEventSinkRemoval(
     val xfixesSelectionNotifyDispatches: List<XXFixesSelectionNotifyDispatch>,
     val pointerUngrabResult: XPointerUngrabResult = XPointerUngrabResult(),
     val xfixesCursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
+    val xkbControlsNotifyDispatches: List<XXkbControlsNotifyDispatch> = emptyList(),
 )
 
 internal data class XUnmapWindowResult(
@@ -156,6 +157,7 @@ internal class X11State(
     private val xkbCompatMapNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbBellNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbExtensionDeviceNotifyInputs = linkedMapOf<XEventSink, Int>()
+    private val xkbPerClientFlags = linkedMapOf<XEventSink, XXkbPerClientFlagsState>()
     private val screenSaverInputs = linkedMapOf<XEventSink, Int>()
     private val windowOwners = linkedMapOf<Int, XEventSink>()
     private val resourceOwners = linkedMapOf<Int, XEventSink>()
@@ -800,6 +802,63 @@ internal class X11State(
         } else {
             xkbExtensionDeviceNotifyInputs[owner] = eventMask
         }
+    }
+
+    @Synchronized
+    fun setXkbPerClientFlags(
+        owner: XEventSink,
+        change: Int,
+        value: Int,
+        ctrlsToChange: Int,
+        autoCtrls: Int,
+        autoCtrlValues: Int,
+    ): XXkbPerClientFlagsState {
+        val current = xkbPerClientFlags[owner] ?: XXkbPerClientFlagsState()
+        val flags = (current.value and change.inv()) or (value and change)
+        val autoResetEnabled = (change and XXkb.PcfAutoResetControls) != 0 && (value and XXkb.PcfAutoResetControls) != 0
+        val updated = if ((change and XXkb.PcfAutoResetControls) == 0) {
+            current.copy(value = flags)
+        } else if (autoResetEnabled) {
+            current.copy(
+                value = flags,
+                autoCtrls = (current.autoCtrls and ctrlsToChange.inv()) or (autoCtrls and ctrlsToChange),
+                autoCtrlValues = (current.autoCtrlValues and ctrlsToChange.inv()) or (autoCtrlValues and ctrlsToChange),
+            )
+        } else {
+            current.copy(value = flags, autoCtrls = 0, autoCtrlValues = 0)
+        }
+        if (updated == XXkbPerClientFlagsState()) {
+            xkbPerClientFlags.remove(owner)
+        } else {
+            xkbPerClientFlags[owner] = updated
+        }
+        return updated
+    }
+
+    @Synchronized
+    fun xkbPerClientFlags(owner: XEventSink): XXkbPerClientFlagsState =
+        xkbPerClientFlags[owner] ?: XXkbPerClientFlagsState()
+
+    private fun xkbPerClientAutoResetControlsDispatches(owner: XEventSink): List<XXkbControlsNotifyDispatch> {
+        val flags = xkbPerClientFlags[owner] ?: return emptyList()
+        val autoCtrls = flags.autoCtrls and XXkb.BoolCtrlRepeatKeys
+        if ((flags.value and XXkb.PcfAutoResetControls) == 0 || autoCtrls == 0) return emptyList()
+        val beforeEnabledControls = if (keyboardControl.globalAutoRepeat) XXkb.BoolCtrlRepeatKeys else 0
+        val afterEnabledControls = (beforeEnabledControls and autoCtrls.inv()) or (flags.autoCtrlValues and autoCtrls)
+        val enabledControlChanges = beforeEnabledControls xor afterEnabledControls
+        if (enabledControlChanges == 0) return emptyList()
+
+        keyboardControl = keyboardControl.copy(globalAutoRepeat = (afterEnabledControls and XXkb.BoolCtrlRepeatKeys) != 0)
+        return xkbControlsNotifyDispatches(
+            XXkbControlsNotifyEvent(
+                timestamp = syncServerTime(),
+                changedControls = XXkb.ControlEnabledMask,
+                enabledControls = afterEnabledControls,
+                enabledControlChanges = enabledControlChanges,
+                requestMajor = XXkb.MajorOpcode,
+                requestMinor = XXkb.PerClientFlags,
+            ),
+        )
     }
 
     @Synchronized
@@ -2754,6 +2813,7 @@ internal class X11State(
                     subtype = XFixes.SelectionClientCloseNotify,
                 )
             }
+        val xkbControlsNotifyDispatches = xkbPerClientAutoResetControlsDispatches(sink)
         eventSinks.remove(sink)
         selectionOwners.entries.removeIf { it.value.sink == sink }
         xfixesSelectionInputs.remove(sink)
@@ -2769,6 +2829,7 @@ internal class X11State(
         xkbCompatMapNotifyInputs.remove(sink)
         xkbBellNotifyInputs.remove(sink)
         xkbExtensionDeviceNotifyInputs.remove(sink)
+        xkbPerClientFlags.remove(sink)
         screenSaverInputs.remove(sink)
         if (screenSaverAttributes?.owner == sink) screenSaverAttributes = null
         screenSaverSuspensions.remove(sink)
@@ -2781,6 +2842,7 @@ internal class X11State(
             xfixesSelectionNotifyDispatches = xfixesSelectionNotifyDispatches,
             pointerUngrabResult = inputGrabRelease,
             xfixesCursorNotifyDispatches = inputGrabRelease.cursorNotifyDispatches,
+            xkbControlsNotifyDispatches = xkbControlsNotifyDispatches,
         )
     }
 
@@ -11330,6 +11392,12 @@ internal data class XkbNamedIndicator(
     val index: Int,
     val on: Boolean,
     val map: ByteArray?,
+)
+
+internal data class XXkbPerClientFlagsState(
+    val value: Int = 0,
+    val autoCtrls: Int = 0,
+    val autoCtrlValues: Int = 0,
 )
 
 internal data class XWindowSnapshot(

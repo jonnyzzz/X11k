@@ -3047,7 +3047,35 @@ internal class X11Connection(
 
     private fun xkbPerClientFlags(body: ByteArray, majorOpcode: Int) {
         if (body.size != 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.PerClientFlags, badValue = 0)
+        val change = byteOrder.u32(body, 4)
+        val value = byteOrder.u32(body, 8)
+        val ctrlsToChange = byteOrder.u32(body, 12)
+        val autoCtrls = byteOrder.u32(body, 16)
+        val autoCtrlValues = byteOrder.u32(body, 20)
+        val badChangeBits = change and XXkb.PcfAllFlags.inv()
+        if (badChangeBits != 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.PerClientFlags, badValue = badChangeBits)
+        val badValueBits = value and XXkb.PcfAllFlags.inv()
+        if (badValueBits != 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.PerClientFlags, badValue = badValueBits)
+        if ((value and change.inv()) != 0) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.PerClientFlags, badValue = 0)
+        val badControlBits = (ctrlsToChange or autoCtrls or autoCtrlValues) and XXkb.AllBooleanControlsMask.inv()
+        if (badControlBits != 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.PerClientFlags, badValue = badControlBits)
+        if ((autoCtrlValues and autoCtrls.inv()) != 0 || (autoCtrls and ctrlsToChange.inv()) != 0) {
+            return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.PerClientFlags, badValue = 0)
+        }
+        val supported = XXkb.PcfAllFlags
+        val current = state.setXkbPerClientFlags(
+            owner = this,
+            change = change,
+            value = value,
+            ctrlsToChange = ctrlsToChange,
+            autoCtrls = autoCtrls,
+            autoCtrlValues = autoCtrlValues,
+        )
         val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, supported)
+        byteOrder.put32(reply, 12, current.value)
+        byteOrder.put32(reply, 16, current.autoCtrls)
+        byteOrder.put32(reply, 20, current.autoCtrlValues)
         write(reply)
     }
 
@@ -12943,6 +12971,7 @@ internal class X11Connection(
         sendCrossing(sinkRemoval.pointerUngrabResult.crossingDispatches)
         sendXFixesSelectionNotify(sinkRemoval.xfixesSelectionNotifyDispatches)
         sendXFixesCursorNotify(sinkRemoval.xfixesCursorNotifyDispatches)
+        sendXkbControlsNotify(sinkRemoval.xkbControlsNotifyDispatches)
     }
 
     private companion object {

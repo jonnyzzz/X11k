@@ -3211,20 +3211,159 @@ class XXkbProtocolTest {
     }
 
     @Test
-    fun `XKEYBOARD PerClientFlags reports no supported per-client flags`() {
+    fun `XKEYBOARD PerClientFlags stores per-client flags`() {
         withServer { socket, _ ->
+            val flags = XXkb.PcfDetectableAutoRepeat or
+                XXkb.PcfGrabsUseXkbState or
+                XXkb.PcfLookupStateWhenGrabbed or
+                XXkb.PcfSendEventUsesXkbState
             val out = socket.getOutputStream()
-            out.write(perClientFlagsRequest(change = -1, value = -1, ctrlsToChange = -1, autoCtrls = -1, autoCtrlsValues = -1))
+            out.write(perClientFlagsRequest(change = 0, value = 0, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = 0))
+            out.write(perClientFlagsRequest(change = flags, value = flags, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = 0))
+            out.write(perClientFlagsRequest(change = 0, value = 0, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = 0))
+            out.write(perClientFlagsRequest(change = flags, value = 0, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = 0))
+            out.write(perClientFlagsRequest(change = 0, value = 0, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = 0))
             out.flush()
 
-            val reply = readReply(socket.getInputStream())
-            assertEquals(0, reply[1].toInt() and 0xff)
-            assertEquals(1, u16le(reply, 2))
-            assertEquals(0, u32le(reply, 4))
-            assertEquals(0, u32le(reply, 8))
-            assertEquals(0, u32le(reply, 12))
-            assertEquals(0, u32le(reply, 16))
-            assertEquals(0, u32le(reply, 20))
+            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 1, value = 0)
+            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 2, value = flags)
+            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 3, value = flags)
+            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 4, value = 0)
+            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 5, value = 0)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD PerClientFlags state is isolated between clients`() {
+        withServer { socket, port ->
+            val out = socket.getOutputStream()
+            out.write(perClientFlagsRequest(change = XXkb.PcfDetectableAutoRepeat, value = XXkb.PcfDetectableAutoRepeat, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = 0))
+            out.flush()
+            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 1, value = XXkb.PcfDetectableAutoRepeat)
+
+            Socket("127.0.0.1", port).use { second ->
+                second.soTimeout = 2_000
+                setup(second)
+                val secondOut = second.getOutputStream()
+                secondOut.write(perClientFlagsRequest(change = 0, value = 0, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = 0))
+                secondOut.flush()
+
+                assertPerClientFlagsReply(readReply(second.getInputStream()), sequence = 1, value = 0)
+            }
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD PerClientFlags stores auto reset controls`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                perClientFlagsRequest(
+                    change = XXkb.PcfAutoResetControls,
+                    value = XXkb.PcfAutoResetControls,
+                    ctrlsToChange = XXkb.BoolCtrlRepeatKeys,
+                    autoCtrls = XXkb.BoolCtrlRepeatKeys,
+                    autoCtrlsValues = 0,
+                ),
+            )
+            out.write(perClientFlagsRequest(change = 0, value = 0, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = 0))
+            out.write(
+                perClientFlagsRequest(
+                    change = XXkb.PcfAutoResetControls,
+                    value = XXkb.PcfAutoResetControls,
+                    ctrlsToChange = XXkb.BoolCtrlRepeatKeys,
+                    autoCtrls = XXkb.BoolCtrlRepeatKeys,
+                    autoCtrlsValues = XXkb.BoolCtrlRepeatKeys,
+                ),
+            )
+            out.write(perClientFlagsRequest(change = XXkb.PcfAutoResetControls, value = 0, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = 0))
+            out.flush()
+
+            assertPerClientFlagsReply(
+                readReply(socket.getInputStream()),
+                sequence = 1,
+                value = XXkb.PcfAutoResetControls,
+                autoCtrls = XXkb.BoolCtrlRepeatKeys,
+            )
+            assertPerClientFlagsReply(
+                readReply(socket.getInputStream()),
+                sequence = 2,
+                value = XXkb.PcfAutoResetControls,
+                autoCtrls = XXkb.BoolCtrlRepeatKeys,
+            )
+            assertPerClientFlagsReply(
+                readReply(socket.getInputStream()),
+                sequence = 3,
+                value = XXkb.PcfAutoResetControls,
+                autoCtrls = XXkb.BoolCtrlRepeatKeys,
+                autoCtrlValues = XXkb.BoolCtrlRepeatKeys,
+            )
+            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 4, value = 0)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD PerClientFlags auto reset controls apply when client disconnects`() {
+        withServer { socket, port ->
+            val input = socket.getInputStream()
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventControlsNotify,
+                    details = selectEvents32Details(
+                        affect = XXkb.ControlEnabledMask,
+                        selected = XXkb.ControlEnabledMask,
+                    ),
+                ),
+            )
+            out.write(setControlsRequest(affectEnabledControls = XXkb.BoolCtrlRepeatKeys, enabledControls = 0))
+            out.write(getControlsRequest())
+            out.flush()
+
+            assertControlsNotify(
+                input.readExactly(32),
+                sequence = 2,
+                changedControls = XXkb.ControlEnabledMask,
+                enabledControls = 0,
+                enabledControlChanges = XXkb.BoolCtrlRepeatKeys,
+            )
+            assertGetControls(readReply(input), sequence = 3, enabledControls = 0)
+
+            Socket("127.0.0.1", port).use { owner ->
+                owner.soTimeout = 2_000
+                setup(owner)
+                val ownerOut = owner.getOutputStream()
+                ownerOut.write(
+                    perClientFlagsRequest(
+                        change = XXkb.PcfAutoResetControls,
+                        value = XXkb.PcfAutoResetControls,
+                        ctrlsToChange = XXkb.BoolCtrlRepeatKeys,
+                        autoCtrls = XXkb.BoolCtrlRepeatKeys,
+                        autoCtrlsValues = XXkb.BoolCtrlRepeatKeys,
+                    ),
+                )
+                ownerOut.flush()
+
+                assertPerClientFlagsReply(
+                    readReply(owner.getInputStream()),
+                    sequence = 1,
+                    value = XXkb.PcfAutoResetControls,
+                    autoCtrls = XXkb.BoolCtrlRepeatKeys,
+                    autoCtrlValues = XXkb.BoolCtrlRepeatKeys,
+                )
+            }
+
+            assertControlsNotify(
+                input.readExactly(32),
+                sequence = 3,
+                changedControls = XXkb.ControlEnabledMask,
+                enabledControls = XXkb.BoolCtrlRepeatKeys,
+                enabledControlChanges = XXkb.BoolCtrlRepeatKeys,
+                requestMinor = XXkb.PerClientFlags,
+            )
+            out.write(getControlsRequest())
+            out.flush()
+            assertGetControls(readReply(input), sequence = 4, enabledControls = XXkb.BoolCtrlRepeatKeys)
         }
     }
 
@@ -3233,16 +3372,31 @@ class XXkbProtocolTest {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
             out.write(request(XXkb.MajorOpcode, XXkb.PerClientFlags, ByteArray(20)))
-            out.write(perClientFlagsRequest(change = 1, value = 1, ctrlsToChange = XXkb.BoolCtrlRepeatKeys, autoCtrls = 0, autoCtrlsValues = 0))
+            out.write(perClientFlagsRequest(change = 0x20, value = 0, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = 0))
+            out.write(perClientFlagsRequest(change = 0, value = 0x20, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = 0))
+            out.write(perClientFlagsRequest(change = 0, value = XXkb.PcfDetectableAutoRepeat, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = 0))
+            out.write(perClientFlagsRequest(change = XXkb.PcfDetectableAutoRepeat, value = XXkb.PcfDetectableAutoRepeat or XXkb.PcfGrabsUseXkbState, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = 0))
+            out.write(perClientFlagsRequest(change = XXkb.PcfAutoResetControls, value = XXkb.PcfAutoResetControls, ctrlsToChange = XXkb.ControlEnabledMask, autoCtrls = 0, autoCtrlsValues = 0))
+            out.write(perClientFlagsRequest(change = XXkb.PcfAutoResetControls, value = XXkb.PcfAutoResetControls, ctrlsToChange = 0, autoCtrls = XXkb.ControlEnabledMask, autoCtrlsValues = 0))
+            out.write(perClientFlagsRequest(change = XXkb.PcfAutoResetControls, value = XXkb.PcfAutoResetControls, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = XXkb.ControlEnabledMask))
+            out.write(perClientFlagsRequest(change = XXkb.PcfAutoResetControls, value = XXkb.PcfAutoResetControls, ctrlsToChange = 0, autoCtrls = XXkb.BoolCtrlRepeatKeys, autoCtrlsValues = 0))
+            out.write(perClientFlagsRequest(change = XXkb.PcfAutoResetControls, value = XXkb.PcfAutoResetControls, ctrlsToChange = XXkb.BoolCtrlRepeatKeys, autoCtrls = 0, autoCtrlsValues = XXkb.BoolCtrlRepeatKeys))
+            out.write(perClientFlagsRequest(change = XXkb.PcfDetectableAutoRepeat, value = XXkb.PcfDetectableAutoRepeat, ctrlsToChange = XXkb.BoolCtrlRepeatKeys, autoCtrls = 0, autoCtrlsValues = 0))
+            out.write(getControlsRequest())
             out.flush()
 
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.PerClientFlags)
-            val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
-            assertEquals(0, u32le(reply, 8))
-            assertEquals(0, u32le(reply, 12))
-            assertEquals(0, u32le(reply, 16))
-            assertEquals(0, u32le(reply, 20))
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x20, sequence = 2, minorOpcode = XXkb.PerClientFlags)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x20, sequence = 3, minorOpcode = XXkb.PerClientFlags)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.PerClientFlags)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 5, minorOpcode = XXkb.PerClientFlags)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = XXkb.ControlEnabledMask, sequence = 6, minorOpcode = XXkb.PerClientFlags)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = XXkb.ControlEnabledMask, sequence = 7, minorOpcode = XXkb.PerClientFlags)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = XXkb.ControlEnabledMask, sequence = 8, minorOpcode = XXkb.PerClientFlags)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 9, minorOpcode = XXkb.PerClientFlags)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 10, minorOpcode = XXkb.PerClientFlags)
+            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 11, value = XXkb.PcfDetectableAutoRepeat)
+            assertGetControls(readReply(socket.getInputStream()), sequence = 12, enabledControls = XXkb.BoolCtrlRepeatKeys)
         }
     }
 
@@ -6172,12 +6326,25 @@ class XXkbProtocolTest {
         assertEquals(92, reply.size)
     }
 
+    private fun assertPerClientFlagsReply(reply: ByteArray, sequence: Int, value: Int, autoCtrls: Int = 0, autoCtrlValues: Int = 0) {
+        assertEquals(1, reply[0].toInt())
+        assertEquals(0, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(0, u32le(reply, 4))
+        assertEquals(XXkb.PcfAllFlags, u32le(reply, 8))
+        assertEquals(value, u32le(reply, 12))
+        assertEquals(autoCtrls, u32le(reply, 16))
+        assertEquals(autoCtrlValues, u32le(reply, 20))
+        assertEquals(32, reply.size)
+    }
+
     private fun assertControlsNotify(
         event: ByteArray,
         sequence: Int,
         changedControls: Int,
         enabledControls: Int,
         enabledControlChanges: Int,
+        requestMinor: Int = XXkb.SetControls,
     ) {
         assertEquals(XXkb.FirstEvent, event[0].toInt() and 0xff)
         assertEquals(XXkb.ControlsNotify, event[1].toInt() and 0xff)
@@ -6191,7 +6358,7 @@ class XXkbProtocolTest {
         assertEquals(0, event[24].toInt() and 0xff)
         assertEquals(0, event[25].toInt() and 0xff)
         assertEquals(XXkb.MajorOpcode, event[26].toInt() and 0xff)
-        assertEquals(XXkb.SetControls, event[27].toInt() and 0xff)
+        assertEquals(requestMinor, event[27].toInt() and 0xff)
         assertEquals(0, u32le(event, 28))
     }
 

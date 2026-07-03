@@ -87,6 +87,7 @@ internal object XXkb {
     const val AllStateComponentsMask = 0x3fff
 
     const val BoolCtrlRepeatKeys = 1 shl 0
+    const val AllBooleanControlsMask = 0x0000_1fff
     const val ControlEnabledMask = 1 shl 31
     const val AllControlsMask = -0x07ffe001
     const val AllIndicatorEventsMask = -1
@@ -155,6 +156,12 @@ internal object XXkb {
     const val XiFeatureAllFeatures = 0x001f
     const val XiFeatureAllDeviceFeatures = 0x001e
     const val AllExtensionDeviceEvents = 0x801f
+    const val PcfDetectableAutoRepeat = 1 shl 0
+    const val PcfGrabsUseXkbState = 1 shl 1
+    const val PcfAutoResetControls = 1 shl 2
+    const val PcfLookupStateWhenGrabbed = 1 shl 3
+    const val PcfSendEventUsesXkbState = 1 shl 4
+    const val PcfAllFlags = 0x1f
     const val DeviceSpecUseCoreKeyboard = 0x0100
     const val DeviceSpecUseCorePointer = 0x0200
     const val KbdFeedbackClass = 0
