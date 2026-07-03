@@ -19,6 +19,23 @@ import kotlin.test.assertTrue
 
 class IntellijCommunitySmokeTest {
     @Test
+    fun `intellij smoke svg png parser is attribute-order independent`() {
+        val svg =
+            """
+            <svg>
+              <image data-window-id="0x20" x="12" y="24" width="10" height="10" href="data:image/png;base64,aGVsbG8="/>
+              <image href="data:image/png;base64,d29ybGQ=" height="20" width="20" y="48" x="36" data-window-id="0x21"/>
+            </svg>
+            """.trimIndent()
+
+        val images = pngDataUris(svg)
+
+        assertEquals(listOf("0x20", "0x21"), images.map { it.id })
+        assertEquals("hello", images[0].bytes.decodeToString())
+        assertEquals("world", images[1].bytes.decodeToString())
+    }
+
+    @Test
     fun `intellij community from github releases starts against kotlin x server`() {
         assumeTrue(
             System.getProperty("x.intellijSmoke") == "true" || System.getenv("X_INTELLIJ_SMOKE") == "true",
@@ -175,9 +192,14 @@ class IntellijCommunitySmokeTest {
     }
 
     private fun pngDataUris(svg: String): List<EmbeddedPng> =
-        Regex("""<image\b[^>]*data-window-id="([^"]+)"[^>]*href="data:image/png;base64,([A-Za-z0-9+/=]+)"""")
+        Regex("""<image\b[^>]*>""")
             .findAll(svg)
-            .map { EmbeddedPng(it.groupValues[1], Base64.getDecoder().decode(it.groupValues[2])) }
+            .mapNotNull { match ->
+                val tag = match.value
+                val id = Regex("""\bdata-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1) ?: return@mapNotNull null
+                val encoded = Regex("""\bhref="data:image/png;base64,([A-Za-z0-9+/=]+)"""").find(tag)?.groupValues?.get(1) ?: return@mapNotNull null
+                EmbeddedPng(id, Base64.getDecoder().decode(encoded))
+            }
             .toList()
 
     private fun imageStats(id: String, bytes: ByteArray): ImageStats {
