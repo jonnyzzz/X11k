@@ -2960,10 +2960,10 @@ class XXkbProtocolTest {
     }
 
     @Test
-    fun `XKEYBOARD GetGeometry reports empty geometry`() {
+    fun `XKEYBOARD GetGeometry reports missing valid geometry`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
-            out.write(getGeometryRequest(name = 0x1122_3344))
+            out.write(getGeometryRequest(name = 0x40))
             out.flush()
 
             val reply = readReply(socket.getInputStream())
@@ -2971,7 +2971,7 @@ class XXkbProtocolTest {
             assertEquals(0, reply[1].toInt() and 0xff)
             assertEquals(1, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
-            assertEquals(0x1122_3344, u32le(reply, 8))
+            assertEquals(0x40, u32le(reply, 8))
             assertEquals(0, reply[12].toInt() and 0xff)
             assertEquals(0, reply[13].toInt() and 0xff)
             assertEquals(0, u16le(reply, 14))
@@ -2983,6 +2983,25 @@ class XXkbProtocolTest {
             assertEquals(0, u16le(reply, 26))
             assertEquals(0, reply[28].toInt() and 0xff)
             assertEquals(0, reply[29].toInt() and 0xff)
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetGeometry rejects invalid nonzero geometry atom and recovers stream`() {
+        withServer { socket, _ ->
+            val invalidAtom = 0x1122_3344
+            val out = socket.getOutputStream()
+            out.write(getGeometryRequest(name = invalidAtom))
+            out.write(getGeometryRequest(name = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 5, opcode = XXkb.MajorOpcode, badValue = invalidAtom, sequence = 1, minorOpcode = XXkb.GetGeometry)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u32le(reply, 8))
+            assertEquals(0, reply[12].toInt() and 0xff)
             assertEquals(32, reply.size)
         }
     }
@@ -3006,19 +3025,149 @@ class XXkbProtocolTest {
     }
 
     @Test
-    fun `XKEYBOARD SetGeometry accepts full geometry payload without changing empty geometry`() {
+    fun `XKEYBOARD SetGeometry persists named geometry payload`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
-            out.write(setGeometryRequest())
-            out.write(getGeometryRequest(name = 0x0102_0304))
+            out.write(internAtomRequest("xkb-geometry-round-trip"))
+            out.flush()
+            val geometryAtom = u32le(readReply(socket.getInputStream()), 8)
+            val geometryBody = setGeometryBody(name = geometryAtom)
+
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, geometryBody))
+            out.write(getGeometryRequest(name = geometryAtom))
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
-            assertEquals(0, u32le(reply, 4))
-            assertEquals(0x0102_0304, u32le(reply, 8))
-            assertEquals(0, reply[12].toInt() and 0xff)
-            assertEquals(32, reply.size)
+            assertGeometryReply(reply, sequence = 3, geometryBody = geometryBody)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetGeometry updates geometry component name and selected NamesNotify`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(internAtomRequest("xkb-geometry-selected"))
+            out.flush()
+            val geometryAtom = u32le(readReply(socket.getInputStream()), 8)
+            val geometryBody = setGeometryBody(name = geometryAtom)
+
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventNamesNotify,
+                    details = selectEvents16Details(XXkb.NameDetailGeometry, XXkb.NameDetailGeometry),
+                ),
+            )
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, geometryBody))
+            out.write(getNamesRequest(which = XXkb.NameDetailGeometry))
+            out.flush()
+
+            assertNamesNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 3,
+                changed = XXkb.NameDetailGeometry,
+                firstType = 0,
+                nTypes = 0,
+                firstLevelName = 0,
+                nLevelNames = 0,
+                nRadioGroups = 0,
+                nAliases = 0,
+                changedGroupNames = 0,
+                changedVirtualMods = 0,
+                firstKey = 0,
+                nKeys = 0,
+                changedIndicators = 0,
+            )
+            val reply = readReply(socket.getInputStream())
+            assertEquals(4, u16le(reply, 2))
+            assertEquals(1, u32le(reply, 4))
+            assertEquals(XXkb.NameDetailGeometry, u32le(reply, 8))
+            assertEquals(geometryAtom, u32le(reply, 32))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetGeometry rejects invalid name atom without replacing geometry`() {
+        withServer { socket, _ ->
+            val invalidAtom = 0x0102_0304
+            val out = socket.getOutputStream()
+            out.write(internAtomRequest("xkb-geometry-valid"))
+            out.flush()
+            val geometryAtom = u32le(readReply(socket.getInputStream()), 8)
+            val geometryBody = setGeometryBody(name = geometryAtom)
+
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, geometryBody))
+            out.write(setGeometryRequest(name = invalidAtom))
+            out.write(getGeometryRequest(name = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 5, opcode = XXkb.MajorOpcode, badValue = invalidAtom, sequence = 3, minorOpcode = XXkb.SetGeometry)
+            val reply = readReply(socket.getInputStream())
+            assertGeometryReply(reply, sequence = 4, geometryBody = geometryBody)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetGeometry rejects invalid color and shape counts without replacing geometry`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(internAtomRequest("xkb-geometry-counts"))
+            out.flush()
+            val geometryAtom = u32le(readReply(socket.getInputStream()), 8)
+            val geometryBody = setGeometryBody(name = geometryAtom)
+
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, geometryBody))
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, minimalGeometryBody(name = geometryAtom, nColors = 1)))
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, minimalGeometryBody(name = geometryAtom, nShapes = 0)))
+            out.write(getGeometryRequest(name = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 1, sequence = 3, minorOpcode = XXkb.SetGeometry)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.SetGeometry)
+            val reply = readReply(socket.getInputStream())
+            assertGeometryReply(reply, sequence = 5, geometryBody = geometryBody)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetGeometry rejects invalid color indexes without replacing geometry`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(internAtomRequest("xkb-geometry-color-indexes"))
+            out.flush()
+            val geometryAtom = u32le(readReply(socket.getInputStream()), 8)
+            val geometryBody = setGeometryBody(name = geometryAtom)
+
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, geometryBody))
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, minimalGeometryBody(name = geometryAtom, baseColor = 0, labelColor = 0)))
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, minimalGeometryBody(name = geometryAtom, baseColor = 2, labelColor = 1)))
+            out.write(getGeometryRequest(name = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetGeometry)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 2, sequence = 4, minorOpcode = XXkb.SetGeometry)
+            val reply = readReply(socket.getInputStream())
+            assertGeometryReply(reply, sequence = 5, geometryBody = geometryBody)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetGeometry rejects invalid shape name atom without replacing geometry`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(internAtomRequest("xkb-geometry-shape-atom"))
+            out.flush()
+            val geometryAtom = u32le(readReply(socket.getInputStream()), 8)
+            val geometryBody = setGeometryBody(name = geometryAtom)
+            val invalidAtom = 0x7fff_fffd
+
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, geometryBody))
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, minimalGeometryBody(name = geometryAtom, shapeName = invalidAtom)))
+            out.write(getGeometryRequest(name = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 5, opcode = XXkb.MajorOpcode, badValue = invalidAtom, sequence = 3, minorOpcode = XXkb.SetGeometry)
+            val reply = readReply(socket.getInputStream())
+            assertGeometryReply(reply, sequence = 4, geometryBody = geometryBody)
         }
     }
 
@@ -3037,11 +3186,7 @@ class XXkbProtocolTest {
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetGeometry)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetGeometry)
             val reply = readReply(socket.getInputStream())
-            assertEquals(5, u16le(reply, 2))
-            assertEquals(0, u32le(reply, 4))
-            assertEquals(0, u32le(reply, 8))
-            assertEquals(0, reply[12].toInt() and 0xff)
-            assertEquals(32, reply.size)
+            assertGeometryReply(reply, sequence = 5, geometryBody = setGeometryBody(name = 0x40))
         }
     }
 
@@ -4582,12 +4727,20 @@ class XXkbProtocolTest {
         return request(XXkb.MajorOpcode, XXkb.GetGeometry, body)
     }
 
-    private fun setGeometryRequest(bodySize: Int = setGeometryBodySize()): ByteArray {
+    private fun setGeometryRequest(name: Int = 0x40, bodySize: Int = setGeometryBodySize()): ByteArray {
+        val full = setGeometryBody(name)
+        val body = if (bodySize == full.size) full else ByteArray(bodySize).also {
+            full.copyInto(it, endIndex = minOf(full.size, bodySize))
+        }
+        return request(XXkb.MajorOpcode, XXkb.SetGeometry, body)
+    }
+
+    private fun setGeometryBody(name: Int = 0x40): ByteArray {
         val full = ByteArray(setGeometryBodySize())
         put16le(full, 0, 0x0100)
         full[2] = 1
         full[3] = 0
-        put32le(full, 4, 0x0102_0304)
+        put32le(full, 4, name)
         put16le(full, 8, 320)
         put16le(full, 10, 240)
         put16le(full, 12, 1)
@@ -4611,7 +4764,7 @@ class XXkbProtocolTest {
         writeCounted("black")
         writeCounted("white")
 
-        put32le(full, offset, 0x0203_0405)
+        put32le(full, offset, 0x40)
         full[offset + 4] = 1
         full[offset + 5] = 0
         full[offset + 6] = 0
@@ -4624,7 +4777,7 @@ class XXkbProtocolTest {
         put16le(full, offset + 6, 10)
         offset += 8
 
-        put32le(full, offset, 0x0304_0506)
+        put32le(full, offset, 0x40)
         full[offset + 4] = 3
         full[offset + 16] = 0
         offset += 20
@@ -4634,11 +4787,56 @@ class XXkbProtocolTest {
         "REALALIS".encodeToByteArray().copyInto(full, offset)
         offset += 8
         assertEquals(full.size, offset)
+        return full
+    }
 
-        val body = if (bodySize == full.size) full else ByteArray(bodySize).also {
-            full.copyInto(it, endIndex = minOf(full.size, bodySize))
+    private fun minimalGeometryBody(
+        name: Int,
+        nColors: Int = 2,
+        nShapes: Int = 1,
+        baseColor: Int = 0,
+        labelColor: Int = 1,
+        shapeName: Int = 0x40,
+    ): ByteArray {
+        val colors = List(nColors) { index -> if (index == 0) "black" else "white$index" }
+        val size = 24 +
+            countedGeometryStringSize("label") +
+            colors.sumOf(::countedGeometryStringSize) +
+            nShapes * (8 + 4 + 8)
+        val body = ByteArray(size)
+        put16le(body, 0, 0x0100)
+        body[2] = nShapes.toByte()
+        put32le(body, 4, name)
+        put16le(body, 8, 320)
+        put16le(body, 10, 240)
+        put16le(body, 14, nColors)
+        body[20] = baseColor.toByte()
+        body[21] = labelColor.toByte()
+
+        var offset = 24
+        fun writeCounted(value: String) {
+            val bytes = value.encodeToByteArray()
+            put16le(body, offset, bytes.size)
+            bytes.copyInto(body, offset + 2)
+            offset += countedGeometryStringSize(value)
         }
-        return request(XXkb.MajorOpcode, XXkb.SetGeometry, body)
+
+        writeCounted("label")
+        colors.forEach(::writeCounted)
+        repeat(nShapes) {
+            put32le(body, offset, shapeName)
+            body[offset + 4] = 1
+            offset += 8
+            body[offset] = 2
+            offset += 4
+            put16le(body, offset, 0)
+            put16le(body, offset + 2, 0)
+            put16le(body, offset + 4, 10)
+            put16le(body, offset + 6, 10)
+            offset += 8
+        }
+        assertEquals(body.size, offset)
+        return body
     }
 
     private fun setGeometryBodySize(): Int =
@@ -5046,6 +5244,28 @@ class XXkbProtocolTest {
         assertEquals(0, u32le(event, 20))
         assertEquals(0, u32le(event, 24))
         assertEquals(0, u32le(event, 28))
+    }
+
+    private fun assertGeometryReply(reply: ByteArray, sequence: Int, geometryBody: ByteArray, expectedName: Int = u32le(geometryBody, 4)) {
+        val payload = geometryBody.copyOfRange(24, geometryBody.size)
+        assertEquals(1, reply[0].toInt())
+        assertEquals(0, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(payload.size / 4, u32le(reply, 4))
+        assertEquals(expectedName, u32le(reply, 8))
+        assertEquals(1, reply[12].toInt() and 0xff)
+        assertEquals(0, reply[13].toInt() and 0xff)
+        assertEquals(u16le(geometryBody, 8), u16le(reply, 14))
+        assertEquals(u16le(geometryBody, 10), u16le(reply, 16))
+        assertEquals(u16le(geometryBody, 12), u16le(reply, 18))
+        assertEquals(u16le(geometryBody, 14), u16le(reply, 20))
+        assertEquals(geometryBody[2].toInt() and 0xff, u16le(reply, 22))
+        assertEquals(geometryBody[3].toInt() and 0xff, u16le(reply, 24))
+        assertEquals(u16le(geometryBody, 16), u16le(reply, 26))
+        assertEquals(u16le(geometryBody, 18), u16le(reply, 28))
+        assertEquals(geometryBody[20].toInt() and 0xff, reply[30].toInt() and 0xff)
+        assertEquals(geometryBody[21].toInt() and 0xff, reply[31].toInt() and 0xff)
+        assertEquals(payload.toList(), reply.copyOfRange(32, reply.size).toList())
     }
 
     private fun assertNamesNotify(

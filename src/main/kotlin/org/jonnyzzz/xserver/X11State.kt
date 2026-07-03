@@ -98,6 +98,21 @@ internal data class XXkbDeviceLedFeedback(
     val maps: List<ByteArray>,
 )
 
+internal data class XXkbGeometry(
+    val name: Int,
+    val widthMM: Int,
+    val heightMM: Int,
+    val nProperties: Int,
+    val nColors: Int,
+    val nShapes: Int,
+    val nSections: Int,
+    val nDoodads: Int,
+    val nKeyAliases: Int,
+    val baseColorIndex: Int,
+    val labelColorIndex: Int,
+    val payload: ByteArray,
+)
+
 internal data class XkbNamedIndicatorUpdate(
     val stateNotify: XXkbIndicatorStateNotifyEvent?,
     val mapChanged: Int,
@@ -216,6 +231,7 @@ internal class X11State(
     private val xkbComponentNameAtoms = linkedMapOf<Int, Int>()
     private val xkbCompatGroupMaps = linkedMapOf<Int, ByteArray>()
     private val xkbDeviceLedFeedbacks = linkedMapOf<Int, MutableList<XXkbDeviceLedFeedback>>()
+    private var xkbGeometry: XXkbGeometry? = null
     private var activePointerGrab: XInputGrab? = null
     private var frozenPointerOwner: XEventSink? = null
     private val frozenPointerButtons = mutableListOf<XQueuedPointerButton>()
@@ -1796,6 +1812,21 @@ internal class X11State(
                 existing += merged
             }
         }
+    }
+
+    @Synchronized
+    fun xkbGeometry(name: Int): XXkbGeometry? {
+        val geometry = xkbGeometry ?: return null
+        if (name != 0 && name != geometry.name) return null
+        return geometry.copy(payload = geometry.payload.copyOf())
+    }
+
+    @Synchronized
+    fun setXkbGeometry(geometry: XXkbGeometry): Boolean {
+        val changedName = xkbGeometry?.name != geometry.name
+        xkbGeometry = geometry.copy(payload = geometry.payload.copyOf())
+        xkbComponentNameAtoms[XXkb.NameDetailGeometry] = geometry.name
+        return changedName
     }
 
     @Synchronized

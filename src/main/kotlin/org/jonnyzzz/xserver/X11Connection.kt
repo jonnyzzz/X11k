@@ -2662,8 +2662,27 @@ internal class X11Connection(
     private fun xkbGetGeometry(body: ByteArray, majorOpcode: Int) {
         if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetGeometry, badValue = 0)
         val name = byteOrder.u32(body, 4)
-        val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put32(reply, 8, name)
+        if (name != 0 && state.atomName(name) == null) {
+            return writeError(error = 5, opcode = majorOpcode, minorOpcode = XXkb.GetGeometry, badValue = name)
+        }
+        val geometry = state.xkbGeometry(name)
+        val payload = geometry?.payload ?: ByteArray(0)
+        val reply = reply(extra = 0, payloadUnits = payload.size / 4)
+        byteOrder.put32(reply, 8, geometry?.name ?: name)
+        if (geometry != null) {
+            reply[12] = 1
+            byteOrder.put16(reply, 14, geometry.widthMM)
+            byteOrder.put16(reply, 16, geometry.heightMM)
+            byteOrder.put16(reply, 18, geometry.nProperties)
+            byteOrder.put16(reply, 20, geometry.nColors)
+            byteOrder.put16(reply, 22, geometry.nShapes)
+            byteOrder.put16(reply, 24, geometry.nSections)
+            byteOrder.put16(reply, 26, geometry.nDoodads)
+            byteOrder.put16(reply, 28, geometry.nKeyAliases)
+            reply[30] = geometry.baseColorIndex.toByte()
+            reply[31] = geometry.labelColorIndex.toByte()
+            payload.copyInto(reply, 32)
+        }
         write(reply)
     }
 
@@ -2673,7 +2692,54 @@ internal class X11Connection(
         if (expectedSize == null || body.size != expectedSize) {
             return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetGeometry, badValue = 0)
         }
+        val name = byteOrder.u32(body, 4)
+        if (name == 0 || state.atomName(name) == null) {
+            return writeError(error = 5, opcode = majorOpcode, minorOpcode = XXkb.SetGeometry, badValue = name)
+        }
+        xkbSetGeometryValidationError(body)?.let { validationError ->
+            return writeError(error = validationError.error, opcode = majorOpcode, minorOpcode = XXkb.SetGeometry, badValue = validationError.badValue)
+        }
+        val geometry = XXkbGeometry(
+            name = name,
+            widthMM = byteOrder.u16(body, 8),
+            heightMM = byteOrder.u16(body, 10),
+            nProperties = byteOrder.u16(body, 12),
+            nColors = byteOrder.u16(body, 14),
+            nShapes = body[2].toInt() and 0xff,
+            nSections = body[3].toInt() and 0xff,
+            nDoodads = byteOrder.u16(body, 16),
+            nKeyAliases = byteOrder.u16(body, 18),
+            baseColorIndex = body[20].toInt() and 0xff,
+            labelColorIndex = body[21].toInt() and 0xff,
+            payload = body.copyOfRange(24, body.size),
+        )
+        if (state.setXkbGeometry(geometry)) {
+            sendXkbNamesNotify(
+                state.xkbNamesNotifyDispatches(
+                    XXkbNamesNotifyEvent(
+                        timestamp = state.syncServerTime(),
+                        changed = XXkb.NameDetailGeometry,
+                        firstType = 0,
+                        nTypes = 0,
+                        firstLevelName = 0,
+                        nLevelNames = 0,
+                        nRadioGroups = 0,
+                        nAliases = 0,
+                        changedGroupNames = 0,
+                        changedVirtualMods = 0,
+                        firstKey = 0,
+                        nKeys = 0,
+                        changedIndicators = 0,
+                    ),
+                ),
+            )
+        }
     }
+
+    private data class XkbGeometryValidationError(
+        val error: Int,
+        val badValue: Int,
+    )
 
     private fun xkbSetGeometryPayloadSize(body: ByteArray): Int? {
         val nShapes = body[2].toInt() and 0xff
@@ -2773,6 +2839,139 @@ internal class X11Connection(
         if (!require(nKeyAliases * 8)) return null
         return offset
     }
+
+    private fun xkbSetGeometryValidationError(body: ByteArray): XkbGeometryValidationError? {
+        val nShapes = body[2].toInt() and 0xff
+        val nSections = body[3].toInt() and 0xff
+        val nProperties = byteOrder.u16(body, 12)
+        val nColors = byteOrder.u16(body, 14)
+        val nDoodads = byteOrder.u16(body, 16)
+        val nKeyAliases = byteOrder.u16(body, 18)
+        val baseColor = body[20].toInt() and 0xff
+        val labelColor = body[21].toInt() and 0xff
+        if (nColors < 2) return XkbGeometryValidationError(error = 2, badValue = nColors)
+        if (nShapes < 1) return XkbGeometryValidationError(error = 2, badValue = nShapes)
+        if (baseColor == labelColor) return XkbGeometryValidationError(error = 8, badValue = baseColor)
+        xkbGeometryColorError(baseColor, nColors)?.let { return it }
+        xkbGeometryColorError(labelColor, nColors)?.let { return it }
+
+        var offset = 24
+
+        fun require(bytes: Int) {
+            offset += bytes
+        }
+
+        fun countedString() {
+            val length = byteOrder.u16(body, offset)
+            offset += paddedLength(2 + length)
+        }
+
+        fun atomError(atom: Int): XkbGeometryValidationError? =
+            if (atom == 0 || state.atomName(atom) == null) XkbGeometryValidationError(error = 5, badValue = atom) else null
+
+        fun doodad(): XkbGeometryValidationError? {
+            val start = offset
+            atomError(byteOrder.u32(body, start))?.let { return it }
+            val type = body[start + 4].toInt() and 0xff
+            offset += 20
+            return when (type) {
+                1 -> xkbGeometryColorError(body[start + 12].toInt() and 0xff, nColors)
+                    ?: xkbGeometryShapeError(body[start + 13].toInt() and 0xff, nShapes)
+                2, 4 -> xkbGeometryShapeError(body[start + 12].toInt() and 0xff, nShapes)
+                    ?: xkbGeometryColorError(body[start + 13].toInt() and 0xff, nColors)
+                    ?: xkbGeometryColorError(body[start + 14].toInt() and 0xff, nColors)
+                3 -> {
+                    val colorError = xkbGeometryColorError(body[start + 16].toInt() and 0xff, nColors)
+                    countedString()
+                    countedString()
+                    colorError
+                }
+                5 -> {
+                    val indexError = xkbGeometryColorError(body[start + 12].toInt() and 0xff, nColors)
+                        ?: xkbGeometryShapeError(body[start + 13].toInt() and 0xff, nShapes)
+                    countedString()
+                    indexError
+                }
+                else -> XkbGeometryValidationError(error = 2, badValue = type)
+            }
+        }
+
+        fun shape(shapeNames: MutableSet<Int>): XkbGeometryValidationError? {
+            atomError(byteOrder.u32(body, offset))?.let { return it }
+            val name = byteOrder.u32(body, offset)
+            if (!shapeNames.add(name)) return XkbGeometryValidationError(error = 8, badValue = name)
+            val nOutlines = body[offset + 4].toInt() and 0xff
+            val primary = body[offset + 5].toInt() and 0xff
+            val approx = body[offset + 6].toInt() and 0xff
+            if (nOutlines > 0 && primary >= nOutlines) return XkbGeometryValidationError(error = 8, badValue = primary)
+            if (nOutlines > 0 && approx >= nOutlines) return XkbGeometryValidationError(error = 8, badValue = approx)
+            offset += 8
+            repeat(nOutlines) {
+                val nPoints = body[offset].toInt() and 0xff
+                offset += 4
+                require(nPoints * 4)
+            }
+            return null
+        }
+
+        fun section(): XkbGeometryValidationError? {
+            atomError(byteOrder.u32(body, offset))?.let { return it }
+            val nRows = body[offset + 15].toInt() and 0xff
+            val sectionDoodads = body[offset + 16].toInt() and 0xff
+            val nOverlays = body[offset + 17].toInt() and 0xff
+            offset += 20
+            repeat(nRows) {
+                val nKeys = body[offset + 4].toInt() and 0xff
+                offset += 8
+                repeat(nKeys) {
+                    xkbGeometryShapeError(body[offset + 6].toInt() and 0xff, nShapes)?.let { return it }
+                    xkbGeometryColorError(body[offset + 7].toInt() and 0xff, nColors)?.let { return it }
+                    offset += 8
+                }
+            }
+            repeat(sectionDoodads) {
+                doodad()?.let { return it }
+            }
+            repeat(nOverlays) {
+                atomError(byteOrder.u32(body, offset))?.let { return it }
+                val nRowsInOverlay = body[offset + 4].toInt() and 0xff
+                offset += 8
+                repeat(nRowsInOverlay) {
+                    val nKeys = body[offset + 1].toInt() and 0xff
+                    offset += 4
+                    require(nKeys * 8)
+                }
+            }
+            return null
+        }
+
+        countedString()
+        repeat(nProperties) {
+            countedString()
+            countedString()
+        }
+        repeat(nColors) {
+            countedString()
+        }
+        val shapeNames = mutableSetOf<Int>()
+        repeat(nShapes) {
+            shape(shapeNames)?.let { return it }
+        }
+        repeat(nSections) {
+            section()?.let { return it }
+        }
+        repeat(nDoodads) {
+            doodad()?.let { return it }
+        }
+        require(nKeyAliases * 8)
+        return null
+    }
+
+    private fun xkbGeometryColorError(index: Int, colorCount: Int): XkbGeometryValidationError? =
+        if (index >= colorCount) XkbGeometryValidationError(error = 8, badValue = index) else null
+
+    private fun xkbGeometryShapeError(index: Int, shapeCount: Int): XkbGeometryValidationError? =
+        if (index >= shapeCount) XkbGeometryValidationError(error = 8, badValue = index) else null
 
     private fun xkbPerClientFlags(body: ByteArray, majorOpcode: Int) {
         if (body.size != 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.PerClientFlags, badValue = 0)
