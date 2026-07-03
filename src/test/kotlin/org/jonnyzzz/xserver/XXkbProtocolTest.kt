@@ -3485,6 +3485,118 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetKbdByName reports stored geometry when requested`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(internAtomRequest("xkb-getkbd-geometry"))
+            out.flush()
+            val geometryAtom = u32le(readReply(socket.getInputStream()), 8)
+            val geometryBody = setGeometryBody(name = geometryAtom)
+
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, geometryBody))
+            out.write(getKbdByNameRequest(need = 0, want = XXkb.GbnGeometry, load = false))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            val geometryPayload = geometryBody.copyOfRange(24, geometryBody.size)
+            assertEquals(3, u16le(reply, 2))
+            assertEquals((32 + geometryPayload.size) / 4, u32le(reply, 4))
+            assertEquals(XKeyboard.MinKeycode, reply[8].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, reply[9].toInt() and 0xff)
+            assertEquals(0, reply[10].toInt() and 0xff)
+            assertEquals(0, reply[11].toInt() and 0xff)
+            assertEquals(XXkb.GbnGeometry, u16le(reply, 12))
+            assertEquals(XXkb.GbnGeometry, u16le(reply, 14))
+            assertGeometryReply(reply.copyOfRange(32, reply.size), sequence = 3, geometryBody = geometryBody)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName reports stored geometry for matching component expression`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(internAtomRequest("xkb-getkbd-geometry-matching"))
+            out.flush()
+            val geometryAtom = u32le(readReply(socket.getInputStream()), 8)
+            val geometryBody = setGeometryBody(name = geometryAtom)
+            val matchingComponents = xkbComponentSpecs("", "", "", "", "", "pc(*)")
+
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, geometryBody))
+            out.write(getKbdByNameRequest(need = 0, want = XXkb.GbnGeometry, load = false, trailingNames = matchingComponents))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            val geometryPayload = geometryBody.copyOfRange(24, geometryBody.size)
+            assertEquals(3, u16le(reply, 2))
+            assertEquals((32 + geometryPayload.size) / 4, u32le(reply, 4))
+            assertEquals(XXkb.GbnGeometry, u16le(reply, 12))
+            assertEquals(XXkb.GbnGeometry, u16le(reply, 14))
+            assertGeometryReply(reply.copyOfRange(32, reply.size), sequence = 3, geometryBody = geometryBody)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName does not report stored geometry for nonmatching component expression`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(internAtomRequest("xkb-getkbd-geometry-nonmatching"))
+            out.flush()
+            val geometryAtom = u32le(readReply(socket.getInputStream()), 8)
+            val geometryBody = setGeometryBody(name = geometryAtom)
+            val nonmatchingComponents = xkbComponentSpecs("", "", "", "", "", "does-not-match")
+
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, geometryBody))
+            out.write(getKbdByNameRequest(need = 0, want = XXkb.GbnGeometry, load = false, trailingNames = nonmatchingComponents))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(3, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName with mandatory unsupported pieces suppresses reports`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(internAtomRequest("xkb-getkbd-geometry-need"))
+            out.flush()
+            val geometryAtom = u32le(readReply(socket.getInputStream()), 8)
+            val geometryBody = setGeometryBody(name = geometryAtom)
+
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, geometryBody))
+            out.write(getKbdByNameRequest(need = 1, want = XXkb.GbnGeometry, load = false))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(3, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(XXkb.GbnGeometry, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName does not report geometry before one is stored`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getKbdByNameRequest(need = XXkb.GbnGeometry, want = XXkb.GbnGeometry, load = false))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetKbdByName validates component name lengths and recovers stream`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()

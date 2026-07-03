@@ -135,6 +135,8 @@ internal object XXkb {
             NameDetailPhysSymbols or
             NameDetailTypes or
             NameDetailCompat
+    const val GbnGeometry = 1 shl 6
+    const val GbnAllComponents = 0xff
     const val ListComponentDefault = 1 shl 1
     const val XiFeatureButtonActions = 1 shl 1
     const val XiFeatureIndicatorNames = 1 shl 2
