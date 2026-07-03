@@ -166,6 +166,36 @@ class AwtPrimitiveDockerTest {
         )
     }
 
+    @Test
+    fun `awt owned dialog robot screenshot roughly matches xvfb reference`() {
+        assumeDockerAndImage(CLIENT_IMAGE)
+        assumeDockerAndImage(REFERENCE_IMAGE)
+        val reference = runRobotProbeAgainstXvfb(
+            mainClass = "VisualDialogProbe",
+            source = VisualDialogProbeSource,
+        )
+        val actual = runRobotProbeAgainstKotlinServer(
+            port = 6216,
+            title = "AWT Dialog Parity Probe",
+            mainClass = "VisualDialogProbe",
+            source = VisualDialogProbeSource,
+        )
+
+        assertContains(actual.text, "AWT Dialog Parity Probe")
+        assertContains(actual.text, "RENDER.")
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected Kotlin SVG export to retain framebuffer images for the owned dialog probe")
+        assertTrue(
+            actual.exportedFramebuffers.any { it.width == 360 && it.height == 240 } &&
+                actual.exportedFramebuffers.any { it.width == 240 && it.height == 170 },
+            "Owned dialog windows should expose framebuffer-backed surfaces for both owner and dialog; exported=${actual.exportedFramebuffers}\n${actual.text}",
+        )
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin owned-dialog Robot screenshot",
+        )
+    }
+
     private fun assertVisualCaptureClose(
         expected: VisualProbeCapture,
         actual: VisualProbeCapture,
@@ -1060,6 +1090,121 @@ class AwtPrimitiveDockerTest {
                     g.drawString("popup", 22, 138);
                     g.setColor(Color.WHITE);
                     g.drawString("menu", 16, 22);
+                  } finally {
+                    g.dispose();
+                  }
+                }
+              }
+            }
+            """.trimIndent()
+
+        val VisualDialogProbeSource =
+            """
+            import java.awt.AlphaComposite;
+            import java.awt.Color;
+            import java.awt.Font;
+            import java.awt.Graphics;
+            import java.awt.Graphics2D;
+            import java.awt.Point;
+            import java.awt.Rectangle;
+            import java.awt.RenderingHints;
+            import java.awt.Robot;
+            import java.awt.image.BufferedImage;
+            import java.io.ByteArrayOutputStream;
+            import java.util.Base64;
+            import javax.imageio.ImageIO;
+            import javax.swing.JComponent;
+            import javax.swing.JDialog;
+            import javax.swing.JFrame;
+            import javax.swing.SwingUtilities;
+
+            public class VisualDialogProbe {
+              public static void main(String[] args) throws Exception {
+                final JFrame[] frameHolder = new JFrame[1];
+                final JDialog[] dialogHolder = new JDialog[1];
+                SwingUtilities.invokeAndWait(() -> {
+                  JFrame frame = new JFrame("AWT Dialog Parity Probe");
+                  frame.setUndecorated(true);
+                  frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+                  frame.setBounds(40, 40, 360, 240);
+                  frame.setContentPane(new OwnerComponent());
+                  frame.setVisible(true);
+                  ((JComponent) frame.getContentPane()).paintImmediately(0, 0, 360, 240);
+
+                  JDialog dialog = new JDialog(frame, "AWT Dialog Parity Probe dialog", false);
+                  dialog.setUndecorated(true);
+                  dialog.setBounds(120, 86, 240, 170);
+                  dialog.setContentPane(new DialogComponent());
+                  dialog.setVisible(true);
+                  dialog.toFront();
+                  ((JComponent) dialog.getContentPane()).paintImmediately(0, 0, 240, 170);
+
+                  frameHolder[0] = frame;
+                  dialogHolder[0] = dialog;
+                });
+                Thread.sleep(1000);
+                Point origin = frameHolder[0].getLocationOnScreen();
+                BufferedImage image = new Robot().createScreenCapture(new Rectangle(origin.x, origin.y, 360, 240));
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                ImageIO.write(image, "png", output);
+                System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
+                System.out.flush();
+                long holdMillis = Long.getLong("visualProbe.holdMillis", 0L);
+                if (holdMillis > 0L) {
+                  Thread.sleep(holdMillis);
+                }
+                SwingUtilities.invokeAndWait(() -> {
+                  dialogHolder[0].dispose();
+                  frameHolder[0].dispose();
+                });
+              }
+
+              static final class OwnerComponent extends JComponent {
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(new Color(20, 30, 50));
+                    g.fillRect(0, 0, getWidth(), getHeight());
+                    g.setColor(new Color(230, 50, 44));
+                    g.fillRect(18, 20, 104, 62);
+                    g.setComposite(AlphaComposite.SrcOver.derive(0.52f));
+                    g.setColor(new Color(42, 168, 255));
+                    g.fillRect(74, 50, 138, 96);
+                    g.setComposite(AlphaComposite.SrcOver);
+                    g.setColor(new Color(255, 225, 64));
+                    g.fillRect(24, 172, 312, 34);
+                    g.setColor(new Color(238, 244, 250));
+                    g.setFont(new Font("SansSerif", Font.BOLD, 22));
+                    g.drawString("owner", 26, 136);
+                  } finally {
+                    g.dispose();
+                  }
+                }
+              }
+
+              static final class DialogComponent extends JComponent {
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(new Color(245, 248, 252));
+                    g.fillRect(0, 0, getWidth(), getHeight());
+                    g.setColor(new Color(36, 52, 76));
+                    g.fillRect(0, 0, getWidth(), 34);
+                    g.setColor(new Color(64, 196, 125));
+                    g.fillRect(18, 54, 86, 66);
+                    g.setComposite(AlphaComposite.SrcOver.derive(0.76f));
+                    g.setColor(new Color(245, 142, 45));
+                    g.fillOval(86, 64, 106, 74);
+                    g.setComposite(AlphaComposite.SrcOver);
+                    g.setColor(new Color(20, 30, 50));
+                    g.setFont(new Font("SansSerif", Font.BOLD, 20));
+                    g.drawString("dialog", 22, 152);
+                    g.setColor(Color.WHITE);
+                    g.drawString("owned", 16, 24);
                   } finally {
                     g.dispose();
                   }
