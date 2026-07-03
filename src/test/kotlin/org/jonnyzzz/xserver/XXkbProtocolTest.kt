@@ -4085,6 +4085,45 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetDeviceInfo reports Match for illegal button action range`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 0, nButtons = 1))
+            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 255, nButtons = 2))
+            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = true, firstButton = 0, nButtons = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetDeviceInfo)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.GetDeviceInfo)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(3, u16le(reply, 2))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
+            assertEquals(1, reply[18].toInt() and 0xff)
+            assertEquals(255, reply[19].toInt() and 0xff)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetDeviceInfo accepts empty button action range`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 0, nButtons = 0))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(1, u32le(reply, 4))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 10))
+            assertEquals(0, u16le(reply, 12))
+            assertEquals(0, reply[18].toInt() and 0xff)
+            assertEquals(0, reply[19].toInt() and 0xff)
+            assertEquals(255, reply[20].toInt() and 0xff)
+            assertEquals(36, reply.size)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD SetDeviceInfo accepts button actions without changing empty LED device info`() {
         withServer { socket, _ ->
             val wanted = XXkb.XiFeatureButtonActions or XXkb.XiFeatureIndicatorNames or XXkb.XiFeatureIndicatorMaps
@@ -4110,6 +4149,35 @@ class XXkbProtocolTest {
             assertEquals(1, reply[44].toInt() and 0xff)
             assertEquals(true, reply.copyOfRange(45, 52).all { it == 0.toByte() })
             assertEquals(52, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetDeviceInfo reports Match for illegal button action range without partial LED update`() {
+        withServer { socket, _ ->
+            val wanted = XXkb.XiFeatureIndicatorState
+            val out = socket.getOutputStream()
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 1,
+                    nDeviceLedFeedbacks = 1,
+                    change = XXkb.XiFeatureButtonActions or XXkb.XiFeatureIndicatorState,
+                    firstButton = 0,
+                    ledNamesPresent = 0,
+                    ledMapsPresent = 0,
+                    ledState = 0x0000_0001,
+                ),
+            )
+            out.write(getDeviceInfoRequest(wanted = wanted, allButtons = false, firstButton = 0, nButtons = 0, ledClass = XXkb.DfltXIClass, ledId = XXkb.DfltXIId))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetDeviceInfo)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(0, u16le(reply, 8))
+            assertEquals(wanted, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(36, reply.size)
         }
     }
 
@@ -5420,6 +5488,7 @@ class XXkbProtocolTest {
         nButtons: Int,
         nDeviceLedFeedbacks: Int,
         change: Int = XXkb.XiFeatureButtonActions or XXkb.XiFeatureIndicatorNames or XXkb.XiFeatureIndicatorMaps,
+        firstButton: Int = 1,
         ledClass: Int = XXkb.DfltXIClass,
         ledId: Int = XXkb.DfltXIId,
         ledNamesPresent: Int = 0x0000_0001,
@@ -5433,7 +5502,7 @@ class XXkbProtocolTest {
     ): ByteArray {
         val body = ByteArray(bodySize)
         put16le(body, 0, deviceSpec)
-        if (body.size > 2) body[2] = 1
+        if (body.size > 2) body[2] = firstButton.toByte()
         if (body.size > 3) body[3] = nButtons.toByte()
         if (body.size >= 6) put16le(body, 4, change)
         if (body.size >= 8) put16le(body, 6, nDeviceLedFeedbacks)

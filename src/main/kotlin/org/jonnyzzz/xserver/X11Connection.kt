@@ -3240,6 +3240,9 @@ internal class X11Connection(
         val ledId = byteOrder.u16(body, 10)
         val corePointerDevice = deviceSpec == XXkb.DeviceSpecUseCorePointer
         val totalButtons = if (corePointerDevice) state.pointerMapping().size else 0
+        if (corePointerDevice && (wanted and XXkb.XiFeatureButtonActions) != 0 && !xkbDeviceInfoButtonRangeValid(allButtons, firstButton, buttonCount, totalButtons)) {
+            return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = 0)
+        }
         val allLedFeedbacks = if (corePointerDevice && (wanted and XXkb.XiFeatureIndicators) != 0) state.xkbDeviceLedFeedbacks(deviceSpec) else emptyList()
         val requestedLedFeedbacks = if (allLedFeedbacks.isNotEmpty()) {
             if (!xkbGetDeviceInfoLedClassValid(ledClass)) {
@@ -3307,6 +3310,10 @@ internal class X11Connection(
             val nextOffset = offset + nButtons * 8
             if (nextOffset > body.size) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
             if (deviceSpec == XXkb.DeviceSpecUseCorePointer) {
+                val totalButtons = state.pointerMapping().size
+                if (!xkbDeviceInfoButtonRangeValid(allButtons = false, firstButton = firstButton, buttonCount = nButtons, totalButtons = totalButtons)) {
+                    return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
+                }
                 repeat(nButtons) { index ->
                     buttonActions += body.copyOfRange(offset + index * 8, offset + (index + 1) * 8)
                 }
@@ -3368,6 +3375,14 @@ internal class X11Connection(
             state.setXkbButtonActions(firstButton, buttonActions)
         }
         state.setXkbDeviceLedFeedbacks(deviceSpec, ledFeedbacks, change)
+    }
+
+    private fun xkbDeviceInfoButtonRangeValid(allButtons: Boolean, firstButton: Int, buttonCount: Int, totalButtons: Int): Boolean {
+        if (totalButtons == 0) return false
+        if (allButtons) return true
+        if (buttonCount == 0) return true
+        if (firstButton !in 1..totalButtons) return false
+        return firstButton + buttonCount - 1 <= totalButtons
     }
 
     private fun xkbSetDeviceInfoLedClassValid(ledClass: Int): Boolean =
