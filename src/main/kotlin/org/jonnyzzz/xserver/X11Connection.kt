@@ -1704,11 +1704,19 @@ internal class X11Connection(
             captureStateNotify: Boolean = false,
             captureNamesNotify: Boolean = false,
             captureExtensionDeviceNotify: Boolean = false,
+            allowedMask: Int? = null,
         ): Boolean {
             if ((detailsMask and mask) == 0) return true
             if (!require(4)) return false
             val affect = byteOrder.u16(body, offset - 4)
             val selected = byteOrder.u16(body, offset - 2)
+            if (allowedMask != null) {
+                val badBits = (affect or selected) and allowedMask.inv()
+                if (badBits != 0) {
+                    writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = badBits)
+                    return false
+                }
+            }
             if ((selected and affect.inv()) != 0) {
                 writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
                 return false
@@ -1791,7 +1799,12 @@ internal class X11Connection(
         if (!details8(XXkb.EventBellNotify, captureBellNotify = true)) return null
         if (!details8(XXkb.EventActionMessage)) return null
         if (!details16(XXkb.EventAccessXNotify)) return null
-        if (!details16(XXkb.EventExtensionDeviceNotify, captureExtensionDeviceNotify = true)) return null
+        if (!details16(
+                XXkb.EventExtensionDeviceNotify,
+                captureExtensionDeviceNotify = true,
+                allowedMask = XXkb.AllExtensionDeviceEvents,
+            )
+        ) return null
 
         if (paddedLength(offset) != body.size) {
             writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
@@ -3324,6 +3337,11 @@ internal class X11Connection(
         val change = byteOrder.u16(body, 4)
         val nButtons = body[3].toInt() and 0xff
         val nDeviceLedFeedbacks = byteOrder.u16(body, 6)
+        val badChangeBits = change and XXkb.XiFeatureAllFeatures.inv()
+        if (badChangeBits != 0) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = badChangeBits)
+        }
+        val supportedFeatures = if (deviceSpec == XXkb.DeviceSpecUseCorePointer) XXkb.XiFeatureAllDeviceFeatures else 0
         var offset = 8
         val buttonActions = mutableListOf<ByteArray>()
         if (change and XXkb.XiFeatureButtonActions != 0) {
@@ -3341,6 +3359,7 @@ internal class X11Connection(
             offset = nextOffset
         }
         val ledFeedbacks = mutableListOf<XXkbDeviceLedFeedback>()
+        val requestedLedFeedbacks = mutableListOf<XXkbDeviceLedFeedback>()
         if (change and XXkb.XiFeatureIndicators != 0) {
             repeat(nDeviceLedFeedbacks) {
                 if (offset > body.size - 20) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
@@ -3375,22 +3394,25 @@ internal class X11Connection(
                     maps += body.copyOfRange(offset, offset + 12)
                     offset += 12
                 }
+                val feedback = XXkbDeviceLedFeedback(
+                    ledClass = ledClass,
+                    ledId = ledId,
+                    namesPresent = namesPresent,
+                    mapsPresent = mapsPresent,
+                    physIndicators = physIndicators,
+                    state = ledState,
+                    names = names,
+                    maps = maps,
+                )
+                requestedLedFeedbacks += feedback
                 if (deviceSpec == XXkb.DeviceSpecUseCorePointer) {
-                    ledFeedbacks += XXkbDeviceLedFeedback(
-                        ledClass = ledClass,
-                        ledId = ledId,
-                        namesPresent = namesPresent,
-                        mapsPresent = mapsPresent,
-                        physIndicators = physIndicators,
-                        state = ledState,
-                        names = names,
-                        maps = maps,
-                    )
+                    ledFeedbacks += feedback
                 }
                 offset = nextOffset.toInt()
             }
         }
         if (offset != body.size) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
+        val unsupportedFeatures = change and supportedFeatures.inv()
         if (buttonActions.isNotEmpty()) {
             state.setXkbButtonActions(firstButton, buttonActions)
             sendXkbExtensionDeviceNotify(
@@ -3423,6 +3445,37 @@ internal class X11Connection(
                     ),
                 )
             }
+        }
+        if (unsupportedFeatures != 0 && (unsupportedFeatures and XXkb.XiFeatureIndicators) != 0 && requestedLedFeedbacks.isNotEmpty()) {
+            for (feedback in requestedLedFeedbacks) {
+                sendXkbExtensionDeviceNotify(
+                    state.xkbExtensionDeviceNotifyDispatchFor(
+                        this,
+                        XXkbExtensionDeviceNotifyEvent(
+                            timestamp = state.syncServerTime(),
+                            deviceId = deviceSpec and 0xff,
+                            reason = XXkb.XiFeatureUnsupportedFeature,
+                            ledClass = feedback.ledClass,
+                            ledId = feedback.ledId,
+                            supported = supportedFeatures,
+                            unsupported = unsupportedFeatures,
+                        ),
+                    ),
+                )
+            }
+        } else if (unsupportedFeatures != 0) {
+            sendXkbExtensionDeviceNotify(
+                state.xkbExtensionDeviceNotifyDispatchFor(
+                    this,
+                    XXkbExtensionDeviceNotifyEvent(
+                        timestamp = state.syncServerTime(),
+                        deviceId = deviceSpec and 0xff,
+                        reason = XXkb.XiFeatureUnsupportedFeature,
+                        supported = supportedFeatures,
+                        unsupported = unsupportedFeatures,
+                    ),
+                ),
+            )
         }
     }
 

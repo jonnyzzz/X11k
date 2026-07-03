@@ -96,6 +96,26 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD SelectEvents validates ExtensionDeviceNotify detail mask`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventExtensionDeviceNotify,
+                    details = selectEvents16Details(XXkb.AllExtensionDeviceEvents or 0x0020, 0),
+                ),
+            )
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0020, sequence = 1, minorOpcode = XXkb.SelectEvents)
+            val version = readReply(socket.getInputStream())
+            assertEquals(2, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD SelectEvents validates variable details and recovers stream`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -4408,6 +4428,236 @@ class XXkbProtocolTest {
             val reply = readReply(socket.getInputStream())
             assertEquals(4, u16le(reply, 2))
             assertEquals(XXkb.XiFeatureIndicators, u16le(reply, 8))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetDeviceInfo emits requester-only unsupported feature notify for non-core device`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventExtensionDeviceNotify,
+                    details = selectEvents16Details(XXkb.XiFeatureUnsupportedFeature, XXkb.XiFeatureUnsupportedFeature),
+                ),
+            )
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 1,
+                    nDeviceLedFeedbacks = 0,
+                    change = XXkb.XiFeatureButtonActions,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                ),
+            )
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertXkbExtensionDeviceNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 2,
+                reason = XXkb.XiFeatureUnsupportedFeature,
+                supported = 0,
+                unsupported = XXkb.XiFeatureButtonActions,
+            )
+            val version = readReply(socket.getInputStream())
+            assertEquals(3, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetDeviceInfo rejects illegal change mask and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 0,
+                    nDeviceLedFeedbacks = 0,
+                    change = 0x0020,
+                ),
+            )
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0020, sequence = 1, minorOpcode = XXkb.SetDeviceInfo)
+            val version = readReply(socket.getInputStream())
+            assertEquals(2, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD unsupported indicator feature notify reports requested feedback identity`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventExtensionDeviceNotify,
+                    details = selectEvents16Details(XXkb.XiFeatureUnsupportedFeature, XXkb.XiFeatureUnsupportedFeature),
+                ),
+            )
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 0,
+                    nDeviceLedFeedbacks = 1,
+                    change = XXkb.XiFeatureIndicatorState,
+                    ledClass = XXkb.KbdFeedbackClass,
+                    ledId = 7,
+                    ledNamesPresent = 0,
+                    ledMapsPresent = 0,
+                    ledState = 0x0000_0001,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                ),
+            )
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertXkbExtensionDeviceNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 2,
+                reason = XXkb.XiFeatureUnsupportedFeature,
+                ledClass = XXkb.KbdFeedbackClass,
+                ledId = 7,
+                supported = 0,
+                unsupported = XXkb.XiFeatureIndicatorState,
+            )
+            val version = readReply(socket.getInputStream())
+            assertEquals(3, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD unsupported feature notify is not broadcast to other selected clients`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { requester ->
+                Socket("127.0.0.1", server.localPort).use { observer ->
+                    requester.soTimeout = 2_000
+                    observer.soTimeout = 2_000
+                    setup(requester)
+                    setup(observer)
+
+                    val requesterOut = requester.getOutputStream()
+                    requesterOut.write(
+                        selectEventsRequest(
+                            affectWhich = XXkb.EventExtensionDeviceNotify,
+                            details = selectEvents16Details(XXkb.XiFeatureUnsupportedFeature, XXkb.XiFeatureUnsupportedFeature),
+                        ),
+                    )
+                    requesterOut.flush()
+
+                    val observerOut = observer.getOutputStream()
+                    observerOut.write(
+                        selectEventsRequest(
+                            affectWhich = XXkb.EventExtensionDeviceNotify,
+                            details = selectEvents16Details(XXkb.XiFeatureUnsupportedFeature, XXkb.XiFeatureUnsupportedFeature),
+                        ),
+                    )
+                    observerOut.write(useExtensionRequest())
+                    observerOut.flush()
+                    val observerSelectionReply = observer.getInputStream().readExactly(32)
+                    assertEquals(1, observerSelectionReply[0].toInt() and 0xff)
+                    assertEquals(2, u16le(observerSelectionReply, 2))
+
+                    requesterOut.write(
+                        setDeviceInfoRequest(
+                            nButtons = 1,
+                            nDeviceLedFeedbacks = 0,
+                            change = XXkb.XiFeatureButtonActions,
+                            deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                        ),
+                    )
+                    requesterOut.flush()
+
+                    assertXkbExtensionDeviceNotify(
+                        requester.getInputStream().readExactly(32),
+                        sequence = 2,
+                        reason = XXkb.XiFeatureUnsupportedFeature,
+                        supported = 0,
+                        unsupported = XXkb.XiFeatureButtonActions,
+                    )
+                    observerOut.write(useExtensionRequest())
+                    observerOut.flush()
+                    val observerReply = observer.getInputStream().readExactly(32)
+                    assertEquals(1, observerReply[0].toInt() and 0xff)
+                    assertEquals(3, u16le(observerReply, 2))
+                    assertEquals(XXkb.MajorVersion, u16le(observerReply, 8))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetDeviceInfo reports unsupported feature after partial core pointer success`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventExtensionDeviceNotify,
+                    details = selectEvents16Details(
+                        XXkb.XiFeatureButtonActions or XXkb.XiFeatureUnsupportedFeature,
+                        XXkb.XiFeatureButtonActions or XXkb.XiFeatureUnsupportedFeature,
+                    ),
+                ),
+            )
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 1,
+                    nDeviceLedFeedbacks = 0,
+                    change = XXkb.XiFeatureButtonActions or XXkb.XiFeatureKeyboards,
+                ),
+            )
+            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 1, nButtons = 1))
+            out.flush()
+
+            assertXkbExtensionDeviceNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 2,
+                reason = XXkb.XiFeatureButtonActions,
+                firstButton = 1,
+                nButtons = 1,
+            )
+            assertXkbExtensionDeviceNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 2,
+                reason = XXkb.XiFeatureUnsupportedFeature,
+                unsupported = XXkb.XiFeatureKeyboards,
+            )
+            val reply = readReply(socket.getInputStream())
+            assertEquals(3, u16le(reply, 2))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
+            assertEquals(1, reply[18].toInt() and 0xff)
+            assertEquals(1, reply[19].toInt() and 0xff)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD unsupported feature notify requires selected detail`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventExtensionDeviceNotify,
+                    details = selectEvents16Details(XXkb.XiFeatureButtonActions, XXkb.XiFeatureButtonActions),
+                ),
+            )
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 1,
+                    nDeviceLedFeedbacks = 0,
+                    change = XXkb.XiFeatureButtonActions,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                ),
+            )
+            out.write(useExtensionRequest())
+            out.flush()
+
+            val version = readReply(socket.getInputStream())
+            assertEquals(3, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
         }
     }
 

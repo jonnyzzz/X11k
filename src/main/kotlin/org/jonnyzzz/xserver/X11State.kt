@@ -1949,6 +1949,14 @@ internal class X11State(
     }
 
     @Synchronized
+    fun xkbExtensionDeviceNotifyDispatchFor(owner: XEventSink, event: XXkbExtensionDeviceNotifyEvent): List<XXkbExtensionDeviceNotifyDispatch> {
+        if (event.reason == 0) return emptyList()
+        val selected = xkbExtensionDeviceNotifyInputs[owner] ?: return emptyList()
+        if ((selected and event.reason) == 0) return emptyList()
+        return listOf(XXkbExtensionDeviceNotifyDispatch(sink = owner, event = event))
+    }
+
+    @Synchronized
     fun queryKeymap(): ByteArray {
         val keys = ByteArray(32)
         for (keycode in pressedKeycodes) {
