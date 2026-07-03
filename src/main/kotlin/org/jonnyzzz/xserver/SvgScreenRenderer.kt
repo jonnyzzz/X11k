@@ -459,14 +459,17 @@ internal object SvgScreenRenderer {
     }
 
     private fun renderSvgContent(builder: XmlDom, snapshot: XScreenSnapshot) {
-        val visibleWindows = snapshot.windows.filter {
+        val windowsById = snapshot.windows.associateBy { it.id }
+        val screenWindows = windowsById[X11Ids.RootWindow]
+            ?.let { subtreeWindows(snapshot, it).drop(1) }
+            ?: snapshot.windows
+        val visibleWindows = screenWindows.filter {
             it.windowClass == XWindowClass.InputOutput &&
                 it.mapped &&
                 it.id != X11Ids.RootWindow &&
                 it.visibleWidth > 0 &&
                 it.visibleHeight > 0
         }
-        val windowsById = snapshot.windows.associateBy { it.id }
         with(builder) {
             comment(RenderCredit.Text)
             svgElement("defs") {
@@ -880,14 +883,14 @@ internal object SvgScreenRenderer {
     private fun subtreeWindows(snapshot: XScreenSnapshot, rootWindow: XWindowSnapshot): List<XWindowSnapshot> {
         val byParent = snapshot.windows.groupBy { it.parentId }
         val result = mutableListOf<XWindowSnapshot>()
-        val queue = ArrayDeque<XWindowSnapshot>()
-        queue += rootWindow
-        while (queue.isNotEmpty()) {
-            val window = queue.removeFirst()
+        fun visit(window: XWindowSnapshot) {
             result += window
-            byParent[window.id].orEmpty().forEach { queue += it }
+            byParent[window.id].orEmpty()
+                .sortedBy { it.stackingIndex }
+                .forEach(::visit)
         }
-        return result.sortedBy { it.stackingIndex }
+        visit(rootWindow)
+        return result
     }
 
     private fun renderPixmapSvg(builder: XmlDom, pixmap: XPixmapSnapshot) {

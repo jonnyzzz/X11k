@@ -1115,6 +1115,52 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `screen svg paints lower top-level subtree before higher sibling`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val lower = 0x0020_0001
+                val upper = 0x0020_0002
+                val lowerChild = 0x0020_0003
+                out.write(createWindowRequest(lower, x = 10, y = 20, width = 100, height = 90))
+                out.write(changePropertyRequest(lower, "lower parent"))
+                out.write(createWindowRequest(upper, x = 30, y = 40, width = 90, height = 80))
+                out.write(changePropertyRequest(upper, "upper sibling"))
+                out.write(createWindowRequest(lowerChild, parent = lower, x = 30, y = 20, width = 50, height = 40))
+                out.write(changePropertyRequest(lowerChild, "lower child framebuffer"))
+                out.write(createGcRequest(0x0020_1003, lowerChild))
+                out.write(putImageRequest(lowerChild, 0x0020_1003))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(upper))
+                out.write(mapWindowRequest(lowerChild))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                val childFramebuffer = svg.indexOf("""data-window-id="0x200003"""", svg.indexOf("""class="framebuffer-image""""))
+                val upperBackground = svg.indexOf("""<rect data-window-id="0x200002"""")
+                assertContains(svg, "lower parent")
+                assertContains(svg, "upper sibling")
+                assertContains(svg, "lower child framebuffer")
+                assertEquals(true, childFramebuffer >= 0, "Lower child framebuffer image must be present")
+                assertEquals(true, upperBackground >= 0, "Upper top-level background must be present")
+                assertEquals(
+                    true,
+                    childFramebuffer < upperBackground,
+                    "Lower top-level subtree must be emitted before the higher overlapping sibling",
+                )
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `screen svg hides mapped child while ancestor is unmapped`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
