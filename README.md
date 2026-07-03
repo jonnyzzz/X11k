@@ -70,6 +70,12 @@ Recent VSCode/Electron SVG-composition parity sample:
 | --- | --- |
 | ![VSCode Xvfb reference](docs/images/vscode-xvfb-reference.png) | ![VSCode Kotlin SVG-composed framebuffer](docs/images/vscode-kotlin-svg.png) |
 
+Refresh these screenshots after visible VSCode/Electron renderer changes:
+
+```bash
+scripts/update-vscode-readme-screenshots.sh
+```
+
 The test suite starts with:
 
 - raw socket protocol tests for the setup handshake,
