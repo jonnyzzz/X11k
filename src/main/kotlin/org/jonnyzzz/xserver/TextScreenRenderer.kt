@@ -182,6 +182,8 @@ internal object TextScreenRenderer {
                     append(context.screen)
                     append(" renderType=")
                     append(context.renderTypeHex)
+                    append(" profileMask=")
+                    append(context.profileMaskHex)
                     append(" direct=")
                     append(context.direct)
                     append(" draw=")

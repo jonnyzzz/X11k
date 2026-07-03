@@ -5125,6 +5125,7 @@ internal class X11Connection(
         }
         val attributes = glxAttributePairs(body, 24, attribCount.toInt())
         val renderType = attributes.lastOrNull { (attribute, _) -> attribute == XGlx.RenderType }?.second ?: XGlx.RgbaType
+        val profileMask = attributes.lastOrNull { (attribute, _) -> attribute == XGlx.ContextProfileMaskArb }?.second ?: 0
         if (renderType != XGlx.RgbaType) {
             return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = renderType)
         }
@@ -5134,6 +5135,7 @@ internal class X11Connection(
                 fbConfigId = fbConfig,
                 screen = screen,
                 renderType = renderType,
+                profileMask = profileMask,
                 direct = body[16].toInt() != 0,
             ),
         )
@@ -5323,7 +5325,7 @@ internal class X11Connection(
         val context = byteOrder.u32(body, 0)
         val glxContext = state.glxContext(context)
             ?: return writeError(error = XGlx.BadContext, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.QueryContext, badValue = context)
-        val attributes = intArrayOf(
+        val attributes = mutableListOf(
             XGlx.ShareContextExt,
             0,
             XGlx.VisualIdExt,
@@ -5335,9 +5337,13 @@ internal class X11Connection(
             XGlx.RenderType,
             glxContext.renderType,
         )
+        if (glxContext.profileMask != 0) {
+            attributes += XGlx.ContextProfileMaskArb
+            attributes += glxContext.profileMask
+        }
         val reply = reply(extra = 0, payloadUnits = attributes.size)
         byteOrder.put32(reply, 8, attributes.size / 2)
-        putIntArray(reply, 32, attributes)
+        putIntArray(reply, 32, attributes.toIntArray())
         write(reply)
     }
 

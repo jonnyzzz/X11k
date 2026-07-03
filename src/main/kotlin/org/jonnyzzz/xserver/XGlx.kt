@@ -16,6 +16,7 @@ internal object XGlx {
     const val BadWindow = FirstError + 12
     const val MajorVersion = 1
     const val MinorVersion = 4
+    const val Extensions = "GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es_profile"
 
     const val Render = 1
     const val RenderLarge = 2
@@ -65,9 +66,14 @@ internal object XGlx {
     const val DrawableType = 0x8010
     const val RenderType = 0x8011
     const val FbConfigId = 0x8013
+    const val MaxPbufferWidth = 0x8016
+    const val MaxPbufferHeight = 0x8017
+    const val MaxPbufferPixels = 0x8018
     const val Width = 0x801D
     const val Height = 0x801E
     const val EventMask = 0x801F
+    const val ContextProfileMaskArb = 0x9126
+    const val ContextEs2ProfileBitExt = 0x00000004
     const val WindowBit = 0x00000001
     const val PixmapBit = 0x00000002
     const val PbufferBit = 0x00000004
@@ -124,7 +130,7 @@ internal object XGlx {
         when (name) {
             VendorName -> "jonnyzzz/x"
             VersionName -> "$MajorVersion.$MinorVersion"
-            ExtensionsName -> ""
+            ExtensionsName -> Extensions
             else -> ""
         }
 
@@ -203,9 +209,9 @@ internal object XGlx {
             0x28 to 0,
             0x24 to 0,
             0x8010 to (WindowBit or PixmapBit or PbufferBit),
-            0x8016 to 0,
-            0x8017 to 0,
-            0x8018 to 0,
+            MaxPbufferWidth to 4096,
+            MaxPbufferHeight to 4096,
+            MaxPbufferPixels to 4096 * 4096,
             100001 to 0,
             100000 to 0,
         )

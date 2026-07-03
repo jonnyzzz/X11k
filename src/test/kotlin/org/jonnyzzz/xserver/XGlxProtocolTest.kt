@@ -37,7 +37,11 @@ class XGlxProtocolTest {
 
             assertEquals("jonnyzzz/x", queryServerString(socket, XGlx.VendorName))
             assertEquals("1.4", queryServerString(socket, XGlx.VersionName))
-            assertEquals("", queryServerString(socket, XGlx.ExtensionsName))
+            assertEquals(XGlx.Extensions, queryServerString(socket, XGlx.ExtensionsName))
+
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryExtensionsString, u32(0))
+            val extensions = readGlxStringReply(socket.getInputStream())
+            assertEquals(XGlx.Extensions, extensions)
 
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFBConfigs, u32(0))
             val fbConfigs = readReply(socket.getInputStream())
@@ -47,6 +51,9 @@ class XGlxProtocolTest {
             assertEquals(X11Ids.RootVisual, u32le(fbConfigs, 36))
             val fbConfigAttributes = attributeMap(fbConfigs, offset = 32, count = XGlx.FbConfigAttributePairs)
             assertEquals(XGlx.WindowBit or XGlx.PixmapBit or XGlx.PbufferBit, fbConfigAttributes.getValue(XGlx.DrawableType))
+            assertEquals(4096, fbConfigAttributes.getValue(XGlx.MaxPbufferWidth))
+            assertEquals(4096, fbConfigAttributes.getValue(XGlx.MaxPbufferHeight))
+            assertEquals(4096 * 4096, fbConfigAttributes.getValue(XGlx.MaxPbufferPixels))
 
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetVisualConfigs, u32(0))
             val visuals = readReply(socket.getInputStream())
@@ -111,7 +118,7 @@ class XGlxProtocolTest {
             assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.QueryExtensionsString, sequence = 11)
             val extensions = readReply(socket.getInputStream())
             assertEquals(12, u16le(extensions, 2))
-            assertEquals(0, u32le(extensions, 12))
+            assertEquals(XGlx.Extensions.length, u32le(extensions, 12))
         }
     }
 
@@ -325,7 +332,7 @@ class XGlxProtocolTest {
 
             val boundJson = httpGet(socket, "/state.json")
             assertTrue(
-                boundJson.contains(""""glxContexts":[{"id":"0x${contextId.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"renderType":"0x${XGlx.RgbaType.toString(16)}","direct":false,"currentDrawDrawable":"0x${X11Ids.RootWindow.toString(16)}","currentReadDrawable":"0x${X11Ids.RootWindow.toString(16)}"}]"""),
+                boundJson.contains(""""glxContexts":[{"id":"0x${contextId.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"renderType":"0x${XGlx.RgbaType.toString(16)}","profileMask":"0x0","direct":false,"currentDrawDrawable":"0x${X11Ids.RootWindow.toString(16)}","currentReadDrawable":"0x${X11Ids.RootWindow.toString(16)}"}]"""),
                 boundJson,
             )
 
@@ -980,7 +987,14 @@ class XGlxProtocolTest {
                 socket,
                 XGlx.MajorOpcode,
                 XGlx.CreateContextAttribsARB,
-                createContextAttribsBody(validContext, direct = false, attributes = listOf(XGlx.RenderType to XGlx.RgbaType)),
+                createContextAttribsBody(
+                    validContext,
+                    direct = false,
+                    attributes = listOf(
+                        XGlx.RenderType to XGlx.RgbaType,
+                        XGlx.ContextProfileMaskArb to XGlx.ContextEs2ProfileBitExt,
+                    ),
+                ),
             )
             writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryContext, u32(validContext))
 
@@ -988,9 +1002,13 @@ class XGlxProtocolTest {
             assertGlxError(socket.getInputStream(), error = XGlx.BadContext, badValue = badContext, minorOpcode = XGlx.QueryContext, sequence = 2)
             val query = readReply(socket.getInputStream())
             assertEquals(4, u16le(query, 2))
-            assertEquals(5, u32le(query, 8))
+            assertEquals(6, u32le(query, 8))
             val attributes = attributeMap(query, offset = 32, count = u32le(query, 8))
             assertEquals(XGlx.RgbaType, attributes.getValue(XGlx.RenderType))
+            assertEquals(XGlx.ContextEs2ProfileBitExt, attributes.getValue(XGlx.ContextProfileMaskArb))
+
+            val text = httpGet(socket, "/text.txt")
+            assertTrue(text.contains("profileMask=0x${XGlx.ContextEs2ProfileBitExt.toString(16)}"), text)
         }
     }
 
@@ -1591,7 +1609,11 @@ class XGlxProtocolTest {
 
     private fun queryServerString(socket: Socket, name: Int): String {
         writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryServerString, u32(0) + u32(name))
-        val reply = readReply(socket.getInputStream())
+        return readGlxStringReply(socket.getInputStream())
+    }
+
+    private fun readGlxStringReply(input: InputStream): String {
+        val reply = readReply(input)
         val length = u32le(reply, 12)
         return reply.copyOfRange(32, 32 + length).decodeToString()
     }

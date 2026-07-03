@@ -3891,6 +3891,7 @@ internal class X11State(
                     fbConfigId = context.fbConfigId,
                     screen = context.screen,
                     renderType = context.renderType,
+                    profileMask = context.profileMask,
                     direct = context.direct,
                     currentDrawDrawableId = context.currentDrawDrawableId,
                     currentReadDrawableId = context.currentReadDrawableId,
@@ -11115,6 +11116,7 @@ internal data class XGlxContext(
     val fbConfigId: Int,
     val screen: Int,
     val renderType: Int,
+    val profileMask: Int = 0,
     val direct: Boolean,
     val currentDrawDrawableId: Int = 0,
     val currentReadDrawableId: Int = 0,
@@ -11125,6 +11127,7 @@ internal data class XGlxContextSnapshot(
     val fbConfigId: Int,
     val screen: Int,
     val renderType: Int,
+    val profileMask: Int,
     val direct: Boolean,
     val currentDrawDrawableId: Int,
     val currentReadDrawableId: Int,
@@ -11132,6 +11135,7 @@ internal data class XGlxContextSnapshot(
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val fbConfigIdHex: String get() = "0x${fbConfigId.toUInt().toString(16)}"
     val renderTypeHex: String get() = "0x${renderType.toUInt().toString(16)}"
+    val profileMaskHex: String get() = "0x${profileMask.toUInt().toString(16)}"
     val currentDrawDrawableIdHex: String? get() = currentDrawDrawableId.takeIf { it != 0 }?.let { "0x${it.toUInt().toString(16)}" }
     val currentReadDrawableIdHex: String? get() = currentReadDrawableId.takeIf { it != 0 }?.let { "0x${it.toUInt().toString(16)}" }
 }
