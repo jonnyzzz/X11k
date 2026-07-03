@@ -7,6 +7,7 @@ set -eu
 : "${VSCODE_EXTENSIONS:=/tmp/vscode-extensions}"
 : "${VSCODE_LOG:=/tmp/vscode-log}"
 : "${VSCODE_PROJECT:=}"
+: "${VSCODE_OPEN_FILE:=}"
 : "${VSCODE_DISABLE_GPU:=true}"
 
 if [ -z "$VSCODE_PROJECT" ]; then
@@ -47,10 +48,18 @@ Running VSCode inside jonnyzzz/x X server.
 EOF
 fi
 
+if [ -z "$VSCODE_OPEN_FILE" ]; then
+  VSCODE_OPEN_FILE="$VSCODE_PROJECT/README.md"
+fi
+
 cat > "$VSCODE_USER_DATA/User/settings.json" <<'EOF'
 {
   "extensions.autoCheckUpdates": false,
   "extensions.autoUpdate": false,
+  "editor.cursorBlinking": "solid",
+  "editor.cursorSmoothCaretAnimation": "off",
+  "editor.scrollbar.horizontal": "visible",
+  "editor.scrollbar.vertical": "visible",
   "security.workspace.trust.enabled": false,
   "telemetry.telemetryLevel": "off",
   "update.mode": "none",
@@ -76,6 +85,11 @@ if [ "$VSCODE_DISABLE_GPU" = "true" ]; then
   gpu_flags="--disable-gpu --disable-software-rasterizer"
 fi
 
+set -- "$VSCODE_PROJECT"
+if [ -n "$VSCODE_OPEN_FILE" ]; then
+  set -- "$@" "$VSCODE_OPEN_FILE"
+fi
+
 # shellcheck disable=SC2086
 exec "$VSCODE_HOME/code" \
   --no-sandbox \
@@ -90,4 +104,4 @@ exec "$VSCODE_HOME/code" \
   --extensions-dir "$VSCODE_EXTENSIONS" \
   --logsPath "$VSCODE_LOG" \
   --new-window \
-  "$VSCODE_PROJECT"
+  "$@"
