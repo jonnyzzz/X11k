@@ -481,6 +481,11 @@ class AwtPrimitiveDockerTest {
             actual = actual.robot,
             label = "Kotlin layered-overlay Robot screenshot",
         )
+        assertExportedFramebufferClose(
+            expected = reference,
+            exportedFramebuffers = actual.exportedFramebuffers,
+            label = "Kotlin layered-overlay SVG exported framebuffer",
+        )
     }
 
     private fun assertVisualCaptureClose(
