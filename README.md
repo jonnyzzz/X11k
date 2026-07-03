@@ -121,7 +121,8 @@ not leak into the IDE project tree or visual comparison.
 The parity probe writes its current Xvfb reference, Kotlin Robot capture,
 Kotlin SVG-composed capture, raw `/screen.svg`, `/text.txt`, and SVG layer
 inventory plus visual diffs, metrics, and IntelliJ client logs under
-`build/tmp/intellij-community-smoke/`.
+`build/tmp/intellij-community-smoke/`, including a GLX/JCEF diagnostics summary
+when the opt-in parity path runs.
 Add `-Dx.intellijDebug=true` or `X_INTELLIJ_DEBUG=true` to the smoke or parity
 test to also enable the container's XAWT/JCEF trace logs; when present, they are
 copied into the same diagnostics directory, including pid-suffixed JCEF/Chromium

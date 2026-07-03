@@ -37,6 +37,7 @@ The IntelliJ smoke is excluded from default `test` because it downloads the curr
 Build `jonnyzzz-x/x11-client:latest` first with `scripts/run-gradle-bounded.sh dockerBuildX11Client`, then run the smoke explicitly with `-Dx.intellijSmoke=true`. Build both Docker images with `scripts/run-gradle-bounded.sh dockerBuildX11Images`, then run the rough parity probe explicitly with `-Dx.intellijParity=true`.
 Both IntelliJ paths mount a clean tracked-file project export from `build/tmp/intellij-community-smoke/project` so untracked orchestration files do not affect the visible IDE project tree.
 The parity probe writes PNG/SVG/text diagnostics, visual diffs/metrics, and IntelliJ client logs under `build/tmp/intellij-community-smoke/` so visual drift can be inspected without rerunning the heavyweight clients immediately.
+It also writes `intellij-glx-jcef-diagnostics.txt` from Xvfb/Kotlin `xdpyinfo -ext GLX` preflight logs and known JCEF/ANGLE signatures.
 Add `-Dx.intellijDebug=true` or `X_INTELLIJ_DEBUG=true` to the smoke or parity probe when XAWT/JCEF tracing is needed; optional trace files are copied into the same diagnostics directory.
 Debug mode also captures pid-suffixed JCEF/Chromium log files when JetBrains Runtime writes them and enables Mesa/EGL loader diagnostics in the IntelliJ run log.
 

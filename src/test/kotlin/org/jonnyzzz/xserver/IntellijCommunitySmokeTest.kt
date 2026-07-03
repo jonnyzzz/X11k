@@ -104,6 +104,54 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij glx jcef diagnostics summary extracts preflight and angle failures`() {
+        val summary = intellijGlxJcefDiagnosticsSummary(
+            logs = listOf(
+                IntellijLogArtifact(
+                    fileName = "intellij-xvfb-glx-xdpyinfo.log",
+                    text =
+                        """
+                        GLX version: 1.4
+                        GLX extensions:
+                            GLX_ARB_create_context, GLX_EXT_create_context_es_profile
+
+                        GLX visuals:
+                        """.trimIndent(),
+                ),
+                IntellijLogArtifact(
+                    fileName = "intellij-kotlin-glx-xdpyinfo.log",
+                    text =
+                        """
+                        GLX extension not supported by xdpyinfo
+                        number of extensions:    2
+                            GLX
+                            RENDER
+                        default screen number:    0
+                        GLX version: 1.4
+                        GLX extensions:
+                            GLX_ARB_create_context GLX_ARB_create_context_profile
+                            GLX_EXT_create_context_es_profile
+                        GLX visuals:
+                        """.trimIndent(),
+                ),
+                IntellijLogArtifact(
+                    fileName = "intellij-kotlin-run.log",
+                    text = "ANGLE Display::initialize error 12289: Could not create the initialization pbuffer.",
+                ),
+            ),
+        )
+
+        assertTrue(summary.contains("xvfbGlxExtensions=GLX_ARB_create_context GLX_EXT_create_context_es_profile"), summary)
+        assertTrue(
+            summary.contains("kotlinGlxExtensions=GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es_profile"),
+            summary,
+        )
+        assertTrue(summary.contains("kotlinListsGlxExtension=true"), summary)
+        assertTrue(summary.contains("kotlinXdpyinfoGlxDetailUnsupported=true"), summary)
+        assertTrue(summary.contains("kotlinAngleInitializationPbufferFailure=true"), summary)
+    }
+
+    @Test
     fun `intellij debug flag defaults from environment and honors system property`() {
         val previous = System.getProperty("x.intellijDebug")
         try {
@@ -394,6 +442,7 @@ class IntellijCommunitySmokeTest {
                       DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && break
                       sleep 0.25
                     done
+                    DISPLAY=:99 xdpyinfo -ext GLX >/tmp/xdpyinfo-glx-xvfb.log 2>&1 || true
                     DISPLAY=:99 xsetroot -solid white >/tmp/xsetroot.log 2>&1 || true
                     DISPLAY=:99 \
                     IDEA_X11_DEBUG=${intellijDebugValue()} \
@@ -424,7 +473,12 @@ class IntellijCommunitySmokeTest {
                     DISPLAY=:99 java -cp /tmp XIntellijRobotCapture
                     """.trimIndent(),
                 )
-                val logs = collectIntellijLogs(container, "intellij-xvfb", "/tmp/idea-run-xvfb.log")
+                val logs = collectIntellijLogs(
+                    container = container,
+                    prefix = "intellij-xvfb",
+                    runLogPath = "/tmp/idea-run-xvfb.log",
+                    extraLogs = listOf("/tmp/xdpyinfo-glx-xvfb.log" to "intellij-xvfb-glx-xdpyinfo.log"),
+                )
                 assertEquals(0, result.exitCode, result.stderr + result.stdout)
                 IntellijReferenceCapture(
                     robot = visualCapture(result.stdout),
@@ -459,6 +513,7 @@ class IntellijCommunitySmokeTest {
                         if [ -n "${url.orEmpty()}" ]; then
                           export IDEA_URL="${url.orEmpty()}"
                         fi
+                        DISPLAY=host.docker.internal:$display xdpyinfo -ext GLX >/tmp/xdpyinfo-glx-kotlin.log 2>&1 || true
                         DISPLAY=host.docker.internal:$display \
                         IDEA_X11_DEBUG=${intellijDebugValue()} \
                         IDEA_PROJECT=/workspace/jonnyzzz-x \
@@ -503,7 +558,12 @@ class IntellijCommunitySmokeTest {
                         )
                         assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
                         val svg = httpGet(port, "/screen.svg")
-                        val logs = collectIntellijLogs(container, "intellij-kotlin", "/tmp/idea-run-parity.log")
+                        val logs = collectIntellijLogs(
+                            container = container,
+                            prefix = "intellij-kotlin",
+                            runLogPath = "/tmp/idea-run-parity.log",
+                            extraLogs = listOf("/tmp/xdpyinfo-glx-kotlin.log" to "intellij-kotlin-glx-xdpyinfo.log"),
+                        )
                         return IntellijKotlinCapture(
                             robot = visualCapture(capture.stdout),
                             text = snapshot.text,
@@ -725,7 +785,9 @@ class IntellijCommunitySmokeTest {
         File(directory, "intellij-kotlin-screen.svg").writeText(actual.svg)
         File(directory, "intellij-kotlin-text.txt").writeText(actual.text)
         File(directory, "intellij-kotlin-svg-layers.txt").writeText(svgLayerInventory(actual.svgLayers))
-        dumpIntellijLogArtifacts(reference.logs + actual.logs)
+        val logs = reference.logs + actual.logs
+        dumpIntellijLogArtifacts(logs)
+        File(directory, "intellij-glx-jcef-diagnostics.txt").writeText(intellijGlxJcefDiagnosticsSummary(logs))
         dumpIntellijVisualDiff(directory, "intellij-kotlin-robot-vs-xvfb", reference.robot, actual.robot)
         dumpIntellijVisualDiff(directory, "intellij-kotlin-svg-vs-xvfb", reference.robot, composedSvgCapture)
     }
@@ -744,6 +806,7 @@ class IntellijCommunitySmokeTest {
         container: GenericContainer<*>,
         prefix: String,
         runLogPath: String,
+        extraLogs: List<Pair<String, String>> = emptyList(),
     ): List<IntellijLogArtifact> {
         val fixedPaths = listOf(
             runLogPath to "$prefix-run.log",
@@ -751,7 +814,7 @@ class IntellijCommunitySmokeTest {
             "/tmp/idea-log/xawt-trace.log" to "$prefix-xawt-trace.log",
             "/tmp/idea-log/jcef.log" to "$prefix-jcef.log",
             "/tmp/idea-log/jcef_chromium.log" to "$prefix-jcef-chromium.log",
-        )
+        ) + extraLogs
         val dynamicLogs = container.execInContainer(
             "sh",
             "-lc",
@@ -781,6 +844,57 @@ class IntellijCommunitySmokeTest {
                 null
             }
         }
+    }
+
+    private fun intellijGlxJcefDiagnosticsSummary(logs: List<IntellijLogArtifact>): String {
+        val xvfbGlx = logs.firstOrNull { it.fileName == "intellij-xvfb-glx-xdpyinfo.log" }?.text.orEmpty()
+        val kotlinGlx = logs.firstOrNull { it.fileName == "intellij-kotlin-glx-xdpyinfo.log" }?.text.orEmpty()
+        val kotlinText = logs.filter { it.fileName.startsWith("intellij-kotlin-") }.joinToString("\n") { it.text }
+        return buildString {
+            appendLine("xvfbListsGlxExtension=${listedExtensionsFromXdpyinfo(xvfbGlx).contains("GLX")}")
+            appendLine("kotlinListsGlxExtension=${listedExtensionsFromXdpyinfo(kotlinGlx).contains("GLX")}")
+            appendLine("xvfbXdpyinfoGlxDetailUnsupported=${xdpyinfoGlxDetailUnsupported(xvfbGlx)}")
+            appendLine("kotlinXdpyinfoGlxDetailUnsupported=${xdpyinfoGlxDetailUnsupported(kotlinGlx)}")
+            appendLine("xvfbGlxExtensions=${glxExtensionsFromXdpyinfo(xvfbGlx).joinToString(" ")}")
+            appendLine("kotlinGlxExtensions=${glxExtensionsFromXdpyinfo(kotlinGlx).joinToString(" ")}")
+            appendLine("kotlinAngleInitializationPbufferFailure=${kotlinText.contains("Could not create the initialization pbuffer")}")
+            appendLine(
+                "kotlinAngleMissingEsProfileMessage=${
+                    kotlinText.contains("Cannot create an OpenGL ES platform on GLX without the GLX_EXT_create_context_es_profile extension")
+                }",
+            )
+        }
+    }
+
+    private fun listedExtensionsFromXdpyinfo(text: String): List<String> {
+        val lines = text.lineSequence().toList()
+        val start = lines.indexOfFirst { it.trim().startsWith("number of extensions:") }
+        if (start < 0) return emptyList()
+        return lines
+            .asSequence()
+            .drop(start + 1)
+            .takeWhile { line -> line.isBlank() || line.firstOrNull()?.isWhitespace() == true }
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toList()
+    }
+
+    private fun xdpyinfoGlxDetailUnsupported(text: String): Boolean =
+        text.contains("GLX extension not supported by xdpyinfo")
+
+    private fun glxExtensionsFromXdpyinfo(text: String): List<String> {
+        val lines = text.lineSequence().toList()
+        val start = lines.indexOfFirst { it.trim() == "GLX extensions:" }
+        if (start < 0) return emptyList()
+        return lines
+            .asSequence()
+            .drop(start + 1)
+            .takeWhile { line -> line.isBlank() || line.firstOrNull()?.isWhitespace() == true }
+            .flatMap { line -> line.trim().split(Regex("""[,\s]+""")).asSequence() }
+            .filter { it.startsWith("GLX_") }
+            .distinct()
+            .sorted()
+            .toList()
     }
 
     private fun intellijLogArtifactName(prefix: String, path: String): String {
