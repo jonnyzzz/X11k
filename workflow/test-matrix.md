@@ -22,7 +22,7 @@ the `jonnyzzz-x/x11-reference:latest` comparison image; the normal
 | `xprop -root` | Atoms and properties | Passing |
 | `xwininfo -root` | Window tree and geometry | Passing |
 | `xset q` | Basic server state queries | Passing |
-| `xlogo` | Window, expose, drawing | Stays running |
+| `xlogo` | Window, expose, drawing | Passing rough Robot/composed-SVG parity probe |
 | `xclock` | Drawing, timer updates, events | Stays running |
 | `xeyes` | Pointer motion and drawing | Stays running |
 | `xcalc` | Widgets, cursors, fonts, text drawing | Stays running |
@@ -33,7 +33,7 @@ the `jonnyzzz-x/x11-reference:latest` comparison image; the normal
 
 `Stays running` means the app remains connected under `timeout` and does not exit early with an X protocol error. It does not imply complete rendering parity yet.
 
-The AWT/Swing Java2D probes compare client-side `Robot` captures against Xvfb for deterministic primitives, overlapping Swing windows, owned popup windows, owned dialog windows, heavyweight popup menus, menu dropdown popups, combo-box dropdowns, Swing tooltips, dense `JTable`/`JTree` scroll-pane content, standard form controls such as text fields, checkboxes, sliders, progress bars, buttons, and text areas, IDE-style tabbed split-pane layouts with lists and editor text, desktop-pane internal-frame layouts, and layered/glass-pane overlays. They also compare the Kotlin server's exported SVG framebuffer for the single-window primitive, dense Swing, form-controls, tabbed split-pane, desktop-pane, and layered-overlay probes, plus the composed SVG framebuffer stack for overlapping windows and heavyweight popup surfaces. IntelliJ still needs broader SVG/HTML parity coverage for larger retained surfaces and GL/JCEF-backed paths.
+The AWT/Swing Java2D probes compare client-side `Robot` captures against Xvfb for deterministic primitives, overlapping Swing windows, owned popup windows, owned dialog windows, heavyweight popup menus, menu dropdown popups, combo-box dropdowns, Swing tooltips, dense `JTable`/`JTree` scroll-pane content, standard form controls such as text fields, checkboxes, sliders, progress bars, buttons, and text areas, IDE-style tabbed split-pane layouts with lists and editor text, desktop-pane internal-frame layouts, and layered/glass-pane overlays. They also compare the Kotlin server's exported SVG framebuffer for the single-window primitive, dense Swing, form-controls, tabbed split-pane, desktop-pane, and layered-overlay probes, plus the composed SVG framebuffer stack for overlapping windows and heavyweight popup surfaces. The `xlogo` real-client probe now compares both Robot output and the composed SVG framebuffer stack against Xvfb with rough rasterization tolerance for core `FillPoly` edge coverage. IntelliJ still needs broader SVG/HTML parity coverage for larger retained surfaces and GL/JCEF-backed paths.
 
 The IntelliJ smoke is excluded from default `test` because it downloads the current GitHub release tarball.
 Build `jonnyzzz-x/x11-client:latest` first with `./gradlew dockerBuildX11Client`, then run it explicitly with `-Dx.intellijSmoke=true`.
