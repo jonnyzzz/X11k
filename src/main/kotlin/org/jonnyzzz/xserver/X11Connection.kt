@@ -3276,14 +3276,15 @@ internal class X11Connection(
         if (corePointerDevice && (wanted and XXkb.XiFeatureButtonActions) != 0 && !xkbDeviceInfoButtonRangeValid(allButtons, firstButton, buttonCount, totalButtons)) {
             return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = 0)
         }
-        val allLedFeedbacks = if (corePointerDevice && (wanted and XXkb.XiFeatureIndicators) != 0) state.xkbDeviceLedFeedbacks(deviceSpec) else emptyList()
+        val wantsIndicatorInfo = corePointerDevice && (wanted and XXkb.XiFeatureIndicators) != 0
+        if (wantsIndicatorInfo && !xkbGetDeviceInfoLedClassValid(ledClass)) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = ledClass)
+        }
+        if (wantsIndicatorInfo && !xkbGetDeviceInfoLedIdValid(ledId)) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = ledId)
+        }
+        val allLedFeedbacks = if (wantsIndicatorInfo) state.xkbDeviceLedFeedbacks(deviceSpec) else emptyList()
         val requestedLedFeedbacks = if (allLedFeedbacks.isNotEmpty()) {
-            if (!xkbGetDeviceInfoLedClassValid(ledClass)) {
-                return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = ledClass)
-            }
-            if (!xkbGetDeviceInfoLedIdValid(ledId)) {
-                return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = ledId)
-            }
             xkbDeviceInfoMatchingLedFeedbacks(allLedFeedbacks, ledClass, ledId).also { feedbacks ->
                 if (feedbacks.isEmpty()) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = 0)
             }

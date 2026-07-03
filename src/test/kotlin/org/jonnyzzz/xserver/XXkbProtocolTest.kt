@@ -4895,6 +4895,43 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetDeviceInfo rejects invalid LED selector before feedback is stored`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                getDeviceInfoRequest(
+                    wanted = XXkb.XiFeatureIndicatorState,
+                    allButtons = false,
+                    firstButton = 0,
+                    nButtons = 0,
+                    ledClass = 0x0700,
+                    ledId = XXkb.DfltXIId,
+                ),
+            )
+            out.write(
+                getDeviceInfoRequest(
+                    wanted = XXkb.XiFeatureIndicatorState,
+                    allButtons = false,
+                    firstButton = 0,
+                    nButtons = 0,
+                    ledClass = XXkb.KbdFeedbackClass,
+                    ledId = 0x0700,
+                ),
+            )
+            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 1, nButtons = 1))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 1, minorOpcode = XXkb.GetDeviceInfo)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 2, minorOpcode = XXkb.GetDeviceInfo)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(3, u16le(reply, 2))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
+            assertEquals(1, reply[18].toInt() and 0xff)
+            assertEquals(1, reply[19].toInt() and 0xff)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetDeviceInfo reports Match for legal unmatched LED selector`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
