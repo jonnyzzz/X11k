@@ -5239,7 +5239,12 @@ class XXkbProtocolTest {
 
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetDebuggingFlags)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetDebuggingFlags)
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetDebuggingFlags)
+            val overlongReply = readReply(socket.getInputStream())
+            assertEquals(3, u16le(overlongReply, 2))
+            assertEquals(0, u32le(overlongReply, 8))
+            assertEquals(0, u32le(overlongReply, 12))
+            assertEquals(0, u32le(overlongReply, 16))
+            assertEquals(0, u32le(overlongReply, 20))
             val reply = readReply(socket.getInputStream())
             assertEquals(4, u16le(reply, 2))
             assertEquals(0, u32le(reply, 8))
