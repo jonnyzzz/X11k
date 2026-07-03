@@ -102,8 +102,24 @@ class IntellijCommunitySmokeTest {
                         val text = snapshot.text
                         assertTrue(stats.isNotEmpty(), "IntelliJ smoke should expose embedded framebuffer PNGs\n$text")
                         assertTrue(
+                            text.contains("Content window"),
+                            "IntelliJ smoke should expose the rendered IDE content window in the HTTP report\n$text",
+                        )
+                        assertFalse(
+                            text.contains("Download SDK") || text.contains("Download JDK"),
+                            "IntelliJ smoke should not render an SDK/JDK modal in the target surface\n$text",
+                        )
+                        assertTrue(
+                            text.contains("Unsupported requests:\n- None."),
+                            "IntelliJ smoke should not leave unsupported protocol requests in the target-client trace\n$text",
+                        )
+                        assertTrue(
                             stats.any { it.hasVisibleContent() },
                             "IntelliJ screen SVG should contain non-white rendered pixels, got $stats\n$text",
+                        )
+                        assertTrue(
+                            stats.any { it.hasLargeVisibleSurface() },
+                            "IntelliJ screen SVG should contain a large rendered IDE surface, got $stats\n$text",
                         )
                     } finally {
                         container.execInContainer("sh", "-lc", "kill $(cat /tmp/idea-smoke.pid 2>/dev/null || pgrep -f run-intellij) 2>/dev/null || true")
@@ -144,7 +160,7 @@ class IntellijCommunitySmokeTest {
                 val stats = pngDataUris(svg).map { imageStats(it.id, it.bytes) }
                 val snapshot = VisualSnapshot(stats, text)
                 lastSnapshot = snapshot
-                if (stats.any { it.hasVisibleContent() }) return snapshot
+                if (text.contains("Content window") && stats.any { it.hasLargeVisibleSurface() }) return snapshot
             } catch (t: Throwable) {
                 lastFailure = t
             }
@@ -211,5 +227,11 @@ class IntellijCommunitySmokeTest {
     ) {
         fun hasVisibleContent(): Boolean =
             nonWhitePixels > 100 && distinctNonWhiteColors >= 3
+
+        fun hasLargeVisibleSurface(): Boolean =
+            width >= 640 &&
+                height >= 360 &&
+                nonWhitePixels > 10_000 &&
+                distinctNonWhiteColors >= 16
     }
 }
