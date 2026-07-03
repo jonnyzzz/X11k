@@ -3442,7 +3442,7 @@ class XXkbProtocolTest {
     }
 
     @Test
-    fun `XKEYBOARD GetKbdByName reports key range with no loaded components`() {
+    fun `XKEYBOARD GetKbdByName reports found map components but no descriptions when mandatory pieces are missing`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
             out.write(getKbdByNameRequest(need = -1, want = -1, load = true))
@@ -3457,7 +3457,7 @@ class XXkbProtocolTest {
             assertEquals(XKeyboard.MaxKeycode, reply[9].toInt() and 0xff)
             assertEquals(0, reply[10].toInt() and 0xff)
             assertEquals(0, reply[11].toInt() and 0xff)
-            assertEquals(0, u16le(reply, 12))
+            assertEquals(XXkb.GbnTypes or XXkb.GbnClientSymbols, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
             assertEquals(32, reply.size)
         }
@@ -3481,6 +3481,152 @@ class XXkbProtocolTest {
             assertEquals(0, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
             assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName reports key types and client symbols when requested`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getKbdByNameRequest(need = 0, want = XXkb.GbnTypes or XXkb.GbnClientSymbols, load = false))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            val map = reply.copyOfRange(32, reply.size)
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(map.size / 4, u32le(reply, 4))
+            assertEquals(XXkb.GbnTypes or XXkb.GbnClientSymbols, u16le(reply, 12))
+            assertEquals(XXkb.GbnTypes or XXkb.GbnClientSymbols, u16le(reply, 14))
+            assertMapReplyHeader(
+                map,
+                sequence = 1,
+                present = XXkb.MapPartKeyTypes or XXkb.MapPartKeySyms or XXkb.MapPartModifierMap,
+            )
+            assertEquals(XKeyboard.MinKeycode, map[17].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode - XKeyboard.MinKeycode + 1, map[20].toInt() and 0xff)
+            assertEquals(XKeyboard.MinKeycode, map[31].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode - XKeyboard.MinKeycode + 1, map[32].toInt() and 0xff)
+            assertEquals(9, map[33].toInt() and 0xff)
+            assertXkbDefaultKeyTypes(map, offset = 40)
+            assertXkbKeySymMap(map, offset = xkbKeySymMapOffset(map, keycode = 38), width = 2, 0x0061, 0x0041)
+            assertXkbModifierMap(
+                map,
+                37 to 0x04,
+                50 to 0x01,
+                62 to 0x01,
+                64 to 0x08,
+                66 to 0x02,
+                105 to 0x04,
+                108 to 0x08,
+                133 to 0x40,
+                134 to 0x40,
+            )
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName does not report key types for nonmatching type expression`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val nonmatchingComponents = xkbComponentSpecs("", "", "does-not-match", "", "does-not-match")
+            out.write(getKbdByNameRequest(need = XXkb.GbnTypes, want = XXkb.GbnTypes, load = false, trailingNames = nonmatchingComponents))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName does not report client symbols for nonmatching symbols expression`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val nonmatchingComponents = xkbComponentSpecs("", "", "", "", "does-not-match")
+            out.write(getKbdByNameRequest(need = 0, want = XXkb.GbnClientSymbols, load = false, trailingNames = nonmatchingComponents))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName does not report client symbols for nonmatching keycodes expression`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val nonmatchingComponents = xkbComponentSpecs("", "does-not-match", "", "", "")
+            out.write(getKbdByNameRequest(need = 0, want = XXkb.GbnClientSymbols, load = false, trailingNames = nonmatchingComponents))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName does not report client symbols for nonmatching types expression`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val nonmatchingComponents = xkbComponentSpecs("", "", "does-not-match", "", "")
+            out.write(getKbdByNameRequest(need = 0, want = XXkb.GbnClientSymbols, load = false, trailingNames = nonmatchingComponents))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName does not report server symbols until server side map pieces are modeled`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getKbdByNameRequest(need = 0, want = XXkb.GbnServerSymbols, load = false))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName reports map before compat map when both are requested`() {
+        withServer { socket, _ ->
+            val groupMaps = listOf(byteArrayOf(0x01, 0x02, 0x34, 0x12))
+            val out = socket.getOutputStream()
+            out.write(setCompatMapRequest(groups = 0x1, nSI = 0, groupMaps = groupMaps))
+            out.write(getKbdByNameRequest(need = 0, want = XXkb.GbnTypes or XXkb.GbnCompatMap, load = false))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            val reported = XXkb.GbnTypes or XXkb.GbnCompatMap
+            val mapSize = 96
+            val map = reply.copyOfRange(32, 32 + mapSize)
+            val compat = reply.copyOfRange(32 + mapSize, reply.size)
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(reported, u16le(reply, 12))
+            assertEquals(reported, u16le(reply, 14))
+            assertMapReplyHeader(map, sequence = 2, present = XXkb.MapPartKeyTypes)
+            assertCompatMapReply(compat, sequence = 2, groups = 0x1, groupMaps = groupMaps)
         }
     }
 
@@ -3595,7 +3741,7 @@ class XXkbProtocolTest {
                     groupMaps = listOf(byteArrayOf(0x01, 0x02, 0x34, 0x12)),
                 ),
             )
-            out.write(getKbdByNameRequest(need = XXkb.GbnCompatMap or 1, want = XXkb.GbnCompatMap, load = false))
+            out.write(getKbdByNameRequest(need = XXkb.GbnCompatMap or (1 shl 5), want = XXkb.GbnCompatMap, load = false))
             out.flush()
 
             val reply = readReply(socket.getInputStream())
@@ -3671,7 +3817,7 @@ class XXkbProtocolTest {
             val records = listOf(indicatorMapRecord(1))
             val out = socket.getOutputStream()
             out.write(setIndicatorMapRequest(which = 0x1, maps = records))
-            out.write(getKbdByNameRequest(need = XXkb.GbnIndicatorMap or 1, want = XXkb.GbnIndicatorMap, load = false))
+            out.write(getKbdByNameRequest(need = XXkb.GbnIndicatorMap or (1 shl 5), want = XXkb.GbnIndicatorMap, load = false))
             out.flush()
 
             val reply = readReply(socket.getInputStream())
@@ -3787,7 +3933,7 @@ class XXkbProtocolTest {
             val geometryBody = setGeometryBody(name = geometryAtom)
 
             out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, geometryBody))
-            out.write(getKbdByNameRequest(need = 1, want = XXkb.GbnGeometry, load = false))
+            out.write(getKbdByNameRequest(need = 1 shl 5, want = XXkb.GbnGeometry, load = false))
             out.flush()
 
             val reply = readReply(socket.getInputStream())
@@ -5607,6 +5753,16 @@ class XXkbProtocolTest {
         assertEquals(geometryBody[20].toInt() and 0xff, reply[30].toInt() and 0xff)
         assertEquals(geometryBody[21].toInt() and 0xff, reply[31].toInt() and 0xff)
         assertEquals(payload.toList(), reply.copyOfRange(32, reply.size).toList())
+    }
+
+    private fun assertMapReplyHeader(reply: ByteArray, sequence: Int, present: Int) {
+        assertEquals(1, reply[0].toInt())
+        assertEquals(0, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(reply.size, 32 + u32le(reply, 4) * 4)
+        assertEquals(XKeyboard.MinKeycode, reply[10].toInt() and 0xff)
+        assertEquals(XKeyboard.MaxKeycode, reply[11].toInt() and 0xff)
+        assertEquals(present, u16le(reply, 12))
     }
 
     private fun assertCompatMapReply(reply: ByteArray, sequence: Int, groups: Int, groupMaps: List<ByteArray>) {

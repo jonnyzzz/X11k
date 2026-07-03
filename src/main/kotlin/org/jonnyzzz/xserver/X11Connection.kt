@@ -1972,18 +1972,6 @@ internal class X11Connection(
                 return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.GetMap, badValue = keySymFirst)
             }
         }
-
-        val keySymMapping = if (keySymsRequested) state.keyboardMapping(keySymFirst, keySymCount) else null
-        val keySymRows = if (keySymMapping != null) {
-            (keySymFirst until keySymFirst + keySymCount).map { keycode ->
-                keySymMapping.keysymsFor(keycode).dropLastWhile { it == 0 }.ifEmpty { listOf(0) }
-            }
-        } else {
-            emptyList()
-        }
-        val totalKeySyms = keySymRows.sumOf { it.size }
-        val keyTypesPayloadBytes = if (keyTypesRequested) XkbDefaultKeyTypesPayloadBytes else 0
-        val keySymPayloadBytes = keySymRows.sumOf { 8 + it.size * 4 }
         val modifierMapFirst = if ((full and XXkb.MapPartModifierMap) != 0) {
             XKeyboard.MinKeycode
         } else {
@@ -2002,6 +1990,44 @@ internal class X11Connection(
                 return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.GetMap, badValue = modifierMapFirst)
             }
         }
+
+        write(
+            xkbMapReply(
+                keyTypesRequested = keyTypesRequested,
+                keySymsRequested = keySymsRequested,
+                modifierMapRequested = modifierMapRequested,
+                virtualModsRequested = virtualModsRequested,
+                requestedVirtualMods = requestedVirtualMods,
+                keySymFirst = keySymFirst,
+                keySymCount = keySymCount,
+                modifierMapFirst = modifierMapFirst,
+                modifierMapCount = modifierMapCount,
+            ),
+        )
+    }
+
+    private fun xkbMapReply(
+        keyTypesRequested: Boolean,
+        keySymsRequested: Boolean,
+        modifierMapRequested: Boolean,
+        virtualModsRequested: Boolean,
+        requestedVirtualMods: Int,
+        keySymFirst: Int,
+        keySymCount: Int,
+        modifierMapFirst: Int,
+        modifierMapCount: Int,
+    ): ByteArray {
+        val keySymMapping = if (keySymsRequested) state.keyboardMapping(keySymFirst, keySymCount) else null
+        val keySymRows = if (keySymMapping != null) {
+            (keySymFirst until keySymFirst + keySymCount).map { keycode ->
+                keySymMapping.keysymsFor(keycode).dropLastWhile { it == 0 }.ifEmpty { listOf(0) }
+            }
+        } else {
+            emptyList()
+        }
+        val totalKeySyms = keySymRows.sumOf { it.size }
+        val keyTypesPayloadBytes = if (keyTypesRequested) XkbDefaultKeyTypesPayloadBytes else 0
+        val keySymPayloadBytes = keySymRows.sumOf { 8 + it.size * 4 }
         val modifierMapEntries = if (modifierMapRequested) {
             xkbModifierMapEntries().filter { (keycode) -> keycode in modifierMapFirst until modifierMapFirst + modifierMapCount }
         } else {
@@ -2072,7 +2098,7 @@ internal class X11Connection(
                 reply[offset++] = modifiers.toByte()
             }
         }
-        write(reply)
+        return reply
     }
 
     private fun xkbWriteDefaultKeyTypes(reply: ByteArray, offset: Int): Int {
@@ -3030,16 +3056,42 @@ internal class X11Connection(
             ?: return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetKbdByName, badValue = 0)
         val need = byteOrder.u16(body, 2) and XXkb.GbnAllComponents
         val want = byteOrder.u16(body, 4) and XXkb.GbnAllComponents
+        val requested = need or want
+        val typesFound = if ((requested and XXkb.GbnTypes) != 0 && xkbGetKbdByNameTypesSpecMatches(componentSpecs[2])) XXkb.GbnTypes else 0
+        val clientSymbolsFound = if ((requested and XXkb.GbnClientSymbols) != 0 && xkbGetKbdByNameClientSymbolsSpecMatches(componentSpecs)) {
+            XXkb.GbnClientSymbols
+        } else {
+            0
+        }
+        val serverSymbolsFound = 0
         val compat = state.xkbCompatGroupMaps(XXkb.AllGroupsMask)
             .takeIf { it.maps.isNotEmpty() && xkbGetKbdByNameCompatSpecMatches(componentSpecs[3]) }
         val indicatorMaps = state.xkbIndicatorMaps(-1)
             .takeIf { it.maps.isNotEmpty() && xkbGetKbdByNameCompatSpecMatches(componentSpecs[3]) }
         val geometry = state.xkbGeometry(0)?.takeIf { xkbGetKbdByNameGeometrySpecMatches(componentSpecs[5]) }
-        val found = (if (compat != null) XXkb.GbnCompatMap else 0) or
+        val found = typesFound or
+            clientSymbolsFound or
+            serverSymbolsFound or
+            (if (compat != null) XXkb.GbnCompatMap else 0) or
             (if (indicatorMaps != null) XXkb.GbnIndicatorMap else 0) or
             (if (geometry != null) XXkb.GbnGeometry else 0)
         val reported = if ((need and found.inv()) == 0) found and (need or want) else 0
         val payloadParts = mutableListOf<ByteArray>()
+        val reportedMap = reported and (XXkb.GbnTypes or XXkb.GbnClientSymbols)
+        if (reportedMap != 0) {
+            val clientSymbolsReported = (reportedMap and XXkb.GbnClientSymbols) != 0
+            payloadParts += xkbMapReply(
+                keyTypesRequested = (reportedMap and XXkb.GbnTypes) != 0 || clientSymbolsReported,
+                keySymsRequested = clientSymbolsReported,
+                modifierMapRequested = clientSymbolsReported,
+                virtualModsRequested = false,
+                requestedVirtualMods = 0,
+                keySymFirst = XKeyboard.MinKeycode,
+                keySymCount = XKeyboard.MaxKeycode - XKeyboard.MinKeycode + 1,
+                modifierMapFirst = XKeyboard.MinKeycode,
+                modifierMapCount = if (clientSymbolsReported) XKeyboard.MaxKeycode - XKeyboard.MinKeycode + 1 else 0,
+            )
+        }
         if ((reported and XXkb.GbnCompatMap) != 0 && compat != null) {
             payloadParts += xkbCompatMapReply(compat)
         }
@@ -3063,6 +3115,20 @@ internal class X11Connection(
         payload.copyInto(reply, 32)
         write(reply)
     }
+
+    private fun xkbGetKbdByNameTypesSpecMatches(spec: String): Boolean =
+        xkbGetKbdByNameComponentSpecMatches(category = 2, spec)
+
+    private fun xkbGetKbdByNameClientSymbolsSpecMatches(specs: List<String>): Boolean =
+        xkbGetKbdByNameKeycodesSpecMatches(specs[1]) &&
+            xkbGetKbdByNameTypesSpecMatches(specs[2]) &&
+            xkbGetKbdByNameSymbolsSpecMatches(specs[4])
+
+    private fun xkbGetKbdByNameKeycodesSpecMatches(spec: String): Boolean =
+        xkbGetKbdByNameComponentSpecMatches(category = 1, spec)
+
+    private fun xkbGetKbdByNameSymbolsSpecMatches(spec: String): Boolean =
+        xkbGetKbdByNameComponentSpecMatches(category = 4, spec)
 
     private fun xkbGetKbdByNameCompatSpecMatches(spec: String): Boolean =
         xkbGetKbdByNameComponentSpecMatches(category = 3, spec)

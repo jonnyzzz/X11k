@@ -135,7 +135,11 @@ internal object XXkb {
             NameDetailPhysSymbols or
             NameDetailTypes or
             NameDetailCompat
+    const val GbnTypes = 1 shl 0
     const val GbnCompatMap = 1 shl 1
+    const val GbnClientSymbols = 1 shl 2
+    const val GbnServerSymbols = 1 shl 3
+    const val GbnSymbols = GbnClientSymbols or GbnServerSymbols
     const val GbnIndicatorMap = 1 shl 4
     const val GbnGeometry = 1 shl 6
     const val GbnAllComponents = 0xff
