@@ -10,7 +10,10 @@ SERVER_DPI="${SERVER_DPI:-100}"
 IMAGE="${X_INTELLIJ_IMAGE:-jonnyzzz-x/x11-client:latest}"
 OUT="${OUT:-$ROOT/docs/images/intellij-demo-renderer.png}"
 RUN_DIR="${RUN_DIR:-$ROOT/runs/intellij-readme-screenshot}"
+PROJECT_EXPORT_DIR="${PROJECT_EXPORT_DIR:-$RUN_DIR/project}"
+IDEA_PROJECT_CONTAINER="${IDEA_PROJECT_CONTAINER:-/workspace/jonnyzzz-x}"
 READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-180}"
+READY_SETTLE_SECONDS="${READY_SETTLE_SECONDS:-8}"
 CAPTURE_TIMEOUT_SECONDS="${CAPTURE_TIMEOUT_SECONDS:-120}"
 BUILD_TIMEOUT_SECONDS="${BUILD_TIMEOUT_SECONDS:-900}"
 ALLOW_NPX_PLAYWRIGHT="${ALLOW_NPX_PLAYWRIGHT:-0}"
@@ -54,11 +57,61 @@ run_timed() {
   "$TIMEOUT_BIN" "$seconds" "$@"
 }
 
+prepare_project_export() {
+  rm -rf "$PROJECT_EXPORT_DIR"
+  mkdir -p "$PROJECT_EXPORT_DIR"
+  while IFS= read -r -d '' path; do
+    mkdir -p "$PROJECT_EXPORT_DIR/$(dirname "$path")"
+    cp -pP "$ROOT/$path" "$PROJECT_EXPORT_DIR/$path"
+  done < <(git -C "$ROOT" ls-files -z)
+}
+
+diagnose_readiness_failure() {
+  {
+    echo "==== IntelliJ README screenshot diagnostics ===="
+    echo "Run dir: $RUN_DIR"
+    echo "Server log: $SERVER_LOG"
+    echo
+    echo "---- /text.txt snapshot ----"
+    curl -fsS "http://127.0.0.1:$PORT/text.txt" 2>/dev/null | sed -n '1,160p' || true
+    echo
+    echo "---- /screen.svg markers ----"
+    curl -fsS "http://127.0.0.1:$PORT/screen.svg" 2>/dev/null \
+      | grep -Eo 'class="[^"]*framebuffer-image[^"]*"|label="[^"]*"' \
+      | sed -n '1,120p' || true
+    echo
+    echo "---- server.log ----"
+    sed -n '1,220p' "$SERVER_LOG" 2>/dev/null || true
+    echo
+    echo "---- Docker container state ----"
+    docker ps -a --filter "name=$IDEA_CONTAINER" || true
+    docker inspect "$IDEA_CONTAINER" --format '{{json .State}}' 2>/dev/null || true
+    echo
+    echo "---- docker logs ----"
+    docker logs "$IDEA_CONTAINER" 2>&1 | tail -200 || true
+    echo
+    echo "---- IntelliJ run log ----"
+    docker exec "$IDEA_CONTAINER" sh -lc 'tail -200 /tmp/idea-run-readme.log 2>/dev/null || true' 2>/dev/null || true
+    echo
+    echo "---- IntelliJ idea.log ----"
+    docker exec "$IDEA_CONTAINER" sh -lc 'tail -240 /tmp/idea-log/idea.log 2>/dev/null || true' 2>/dev/null || true
+    echo
+    echo "---- IntelliJ JVM threads ----"
+    docker exec "$IDEA_CONTAINER" sh -lc 'pid=$(pgrep -f "com.intellij.idea.Main" | head -1); if [ -n "$pid" ]; then jcmd "$pid" Thread.print | sed -n "1,260p"; else jps -lm || true; fi' 2>/dev/null || true
+    echo
+    echo "---- X server JVM threads ----"
+    if [[ -n "$SERVER_PID" ]]; then
+      run_timed 30 jcmd "$SERVER_PID" Thread.print 2>/dev/null | sed -n '1,260p' || true
+    fi
+  } >&2
+}
+
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   run_timed "$BUILD_TIMEOUT_SECONDS" "$ROOT/gradlew" --no-daemon installDist dockerBuildX11Client
 fi
 
 docker rm -f "$IDEA_CONTAINER" >/dev/null 2>&1 || true
+prepare_project_export
 
 "$ROOT/build/install/x/bin/x" \
   --host 0.0.0.0 \
@@ -77,9 +130,9 @@ for _ in $(seq 1 60); do
 done
 
 docker run -d --name "$IDEA_CONTAINER" \
-  -v "$ROOT:/workspace/jonnyzzz-x" \
+  -v "$PROJECT_EXPORT_DIR:$IDEA_PROJECT_CONTAINER" \
   "$IMAGE" \
-  sh -lc "DISPLAY=host.docker.internal:$DISPLAY_NUMBER IDEA_PROJECT=/workspace/jonnyzzz-x IDEA_TRUST_PROJECT=true run-intellij >/tmp/idea-run-readme.log 2>&1" \
+  sh -lc "DISPLAY=host.docker.internal:$DISPLAY_NUMBER IDEA_PROJECT=$IDEA_PROJECT_CONTAINER IDEA_TRUST_PROJECT=true run-intellij >/tmp/idea-run-readme.log 2>&1" \
   >"$RUN_DIR/container.id"
 
 ready=0
@@ -87,7 +140,7 @@ deadline=$((SECONDS + READY_TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
   text="$(curl -fsS "http://127.0.0.1:$PORT/text.txt" 2>/dev/null || true)"
   svg="$(curl -fsS "http://127.0.0.1:$PORT/screen.svg" 2>/dev/null || true)"
-  if [[ "$text" == *"IntelliJ"* && "$svg" == *"framebuffer-image"* ]]; then
+  if [[ "$text" == *"Mapped windows:"* && "$text" == *"Content window"* && "$svg" == *"framebuffer-image"* && "$text" != *"Download SDK"* && "$text" != *"Download JDK"* ]]; then
     ready=1
     break
   fi
@@ -97,8 +150,12 @@ done
 if [[ "$ready" != "1" ]]; then
   echo "IntelliJ page did not become screenshot-ready within ${READY_TIMEOUT_SECONDS}s." >&2
   echo "Server log: $SERVER_LOG" >&2
-  docker logs "$IDEA_CONTAINER" >&2 || true
+  diagnose_readiness_failure
   exit 1
+fi
+
+if (( READY_SETTLE_SECONDS > 0 )); then
+  sleep "$READY_SETTLE_SECONDS"
 fi
 
 CAPTURE_JS="$RUN_DIR/capture-page.js"
@@ -109,7 +166,11 @@ const url = process.env.SCREENSHOT_URL;
 const out = process.env.SCREENSHOT_OUT;
 
 (async () => {
-  const browser = await chromium.launch({ headless: true });
+  const port = new URL(url).port;
+  const browser = await chromium.launch({
+    headless: true,
+    args: port ? [`--explicitly-allowed-ports=${port}`] : [],
+  });
   try {
     const page = await browser.newPage({
       viewport: { width: 1600, height: 1000 },
@@ -128,14 +189,22 @@ const out = process.env.SCREENSHOT_OUT;
 NODE
 
 if node -e 'require.resolve("playwright")' >/dev/null 2>&1; then
-  SCREENSHOT_URL="http://127.0.0.1:$PORT/" \
-  SCREENSHOT_OUT="$OUT" \
-  run_timed "$CAPTURE_TIMEOUT_SECONDS" node "$CAPTURE_JS"
+  PLAYWRIGHT_NODE_PATH="$(node -e 'const path = require("path"); const pkg = require.resolve("playwright/package.json"); process.stdout.write(path.dirname(path.dirname(pkg)));')"
+  run_timed "$CAPTURE_TIMEOUT_SECONDS" env \
+    NODE_PATH="$PLAYWRIGHT_NODE_PATH" \
+    SCREENSHOT_URL="http://127.0.0.1:$PORT/" \
+    SCREENSHOT_OUT="$OUT" \
+    node "$CAPTURE_JS"
 elif [[ "$ALLOW_NPX_PLAYWRIGHT" == "1" ]]; then
-  run_timed 600 npx --yes playwright install chromium
-  SCREENSHOT_URL="http://127.0.0.1:$PORT/" \
-  SCREENSHOT_OUT="$OUT" \
-  run_timed "$CAPTURE_TIMEOUT_SECONDS" npx --yes --package=playwright node "$CAPTURE_JS"
+  PLAYWRIGHT_RUN_DIR="$RUN_DIR/playwright-node"
+  mkdir -p "$PLAYWRIGHT_RUN_DIR"
+  run_timed 600 npm --prefix "$PLAYWRIGHT_RUN_DIR" install --no-audit --no-fund playwright
+  run_timed 600 node "$PLAYWRIGHT_RUN_DIR/node_modules/playwright/cli.js" install chromium
+  run_timed "$CAPTURE_TIMEOUT_SECONDS" env \
+    NODE_PATH="$PLAYWRIGHT_RUN_DIR/node_modules" \
+    SCREENSHOT_URL="http://127.0.0.1:$PORT/" \
+    SCREENSHOT_OUT="$OUT" \
+    node "$CAPTURE_JS"
 else
   cat >&2 <<EOF
 Playwright is required to refresh the full-page README screenshot.

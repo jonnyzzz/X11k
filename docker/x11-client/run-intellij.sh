@@ -56,11 +56,15 @@ if [ "$IDEA_REGISTER_JBR_SDK" = "true" ] && [ -x "$IDEA_HOME/jbr/bin/java" ]; th
   : "${JDK_HOME:=$JAVA_HOME}"
   export JAVA_HOME JDK_HOME
   if [ ! -f "$IDEA_CONFIG/options/jdk.table.xml" ]; then
-    cat > "$IDEA_CONFIG/options/jdk.table.xml" <<EOF
+    {
+      cat <<'EOF'
 <application>
   <component name="ProjectJdkTable">
+EOF
+      for jdk_name in jbr-25 corretto-25; do
+        cat <<EOF
     <jdk version="2">
-      <name value="jbr-25" />
+      <name value="$jdk_name" />
       <type value="JavaSDK" />
       <version value="JBR 25" />
       <homePath value="/usr/lib/jvm/jbr-25" />
@@ -96,9 +100,13 @@ if [ "$IDEA_REGISTER_JBR_SDK" = "true" ] && [ -x "$IDEA_HOME/jbr/bin/java" ]; th
         </sourcePath>
       </roots>
     </jdk>
+EOF
+      done
+      cat <<'EOF'
   </component>
 </application>
 EOF
+    } > "$IDEA_CONFIG/options/jdk.table.xml"
   fi
 fi
 

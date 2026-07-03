@@ -80,6 +80,7 @@ class IntellijCommunitySmokeTest {
                         fi
                         check test -x /usr/lib/jvm/jbr-25/bin/java
                         check grep -q 'name value="jbr-25"' /tmp/idea-config/options/jdk.table.xml
+                        check grep -q 'name value="corretto-25"' /tmp/idea-config/options/jdk.table.xml
                         check grep -q 'ide.experimental.ui.onboarding' /tmp/idea-config/options/ide.general.xml
                         check grep -q 'experimental.ui.on.first.startup' /tmp/idea-config/options/other.xml
                         check sh -lc 'find /root/.java/.userPrefs/jetbrains -name prefs.xml -exec grep -l "euacommunity_accepted_version" {} + | grep -q .'
