@@ -5321,9 +5321,9 @@ internal class XFramebuffer(
         private const val TrapezoidSamples = TrapezoidSampleGrid * TrapezoidSampleGrid
         private const val TransformEpsilon = 1.0e-9
         private const val TransformResidualEpsilon = 1.0e-6
-        const val TextCellWidth = 8
-        const val TextAscent = 12
-        const val TextDescent = 4
+        const val TextCellWidth = 6
+        const val TextAscent = 11
+        const val TextDescent = 2
         const val TextCellHeight = TextAscent + TextDescent
 
         private fun framebufferSize(width: Int, height: Int): Pair<Int, Int> {

@@ -179,6 +179,42 @@ class XvfbContainerTest {
     }
 
     @Test
+    fun `xterm robot screenshot and svg framebuffer roughly match xvfb reference`() {
+        assumeDockerAndImage(CLIENT_IMAGE)
+        assumeDockerAndImage(REFERENCE_IMAGE)
+        val reference = runXtermAgainstXvfb()
+        val actual = runXtermAgainstKotlinServer(port = 6230)
+
+        assertTrue(actual.text.contains("label=\"xterm-parity\""), actual.text)
+        assertTrue(
+            actual.text.contains("- PolyText8:") ||
+                actual.text.contains("- ImageText8:") ||
+                actual.text.contains("- PutImage:"),
+            actual.text,
+        )
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected xterm SVG export to retain framebuffer images\n${actual.svg}\n${actual.text}")
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin xterm Robot screenshot",
+            coverageTolerance = 0.35,
+            distanceThreshold = 220.0,
+        )
+        assertComposedSvgCaptureClose(
+            expected = reference,
+            embeddedFramebuffers = actual.embeddedFramebuffers,
+            captureX = RealClientCaptureX,
+            captureY = RealClientCaptureY,
+            captureWidth = RealClientCaptureWidth,
+            captureHeight = RealClientCaptureHeight,
+            backgroundPixel = 0xff00_0000.toInt(),
+            label = "Kotlin xterm composed SVG framebuffer",
+            coverageTolerance = 0.35,
+            distanceThreshold = 220.0,
+        )
+    }
+
+    @Test
     fun `window manager smoke exposes independent windows and overlap over http`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         val port = 6209
@@ -620,6 +656,111 @@ class XvfbContainerTest {
         }
     }
 
+    private fun runXtermAgainstXvfb(): VisualCapture {
+        GenericContainer(DockerImageName.parse(REFERENCE_IMAGE).asCompatibleSubstituteFor("ubuntu"))
+            .withCommand("sleep", "120")
+            .use { container ->
+                container.start()
+                compileRobotCapture(container)
+                val result = container.execInContainer(
+                    "sh",
+                    "-lc",
+                    """
+                    set -eu
+                    Xvfb :99 -screen 0 640x480x24 >/tmp/xvfb.log 2>&1 &
+                    xvfb=${'$'}!
+                    trap 'kill "${'$'}term" 2>/dev/null || true; kill "${'$'}xvfb" 2>/dev/null || true' EXIT
+                    for _ in ${'$'}(seq 1 40); do
+                      DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && break
+                      sleep 0.25
+                    done
+                    DISPLAY=:99 ${xtermCommand()} >/tmp/xterm.log 2>&1 &
+                    term=${'$'}!
+                    for _ in ${'$'}(seq 1 40); do
+                      DISPLAY=:99 xwininfo -name xterm-parity >/tmp/xterm-ready.log 2>&1 && break
+                      sleep 0.25
+                    done
+                    DISPLAY=:99 xwininfo -name xterm-parity >/tmp/xterm-ready.log 2>&1
+                    DISPLAY=:99 java -cp /tmp XRobotCapture
+                    """.trimIndent(),
+                )
+                assertEquals(0, result.exitCode, result.stderr + result.stdout)
+                return visualCapture(result.stdout)
+            }
+    }
+
+    private fun runXtermAgainstKotlinServer(port: Int): RealClientResult {
+        assumeTrue(isPortAvailable(port), "Port $port is not available")
+        XServer(
+            ServerOptions(
+                host = "0.0.0.0",
+                port = port,
+                width = 640,
+                height = 480,
+                rootBackgroundPixel = 0x0000_0000,
+            ),
+        ).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            GenericContainer(DockerImageName.parse(CLIENT_IMAGE).asCompatibleSubstituteFor("ubuntu"))
+                .withCommand("sleep", "120")
+                .use { container ->
+                    container.start()
+                    compileRobotCapture(container)
+                    val display = port - 6000
+                    val startResult = container.execInContainer(
+                        "sh",
+                        "-lc",
+                        """
+                        set -eu
+                        DISPLAY=host.docker.internal:$display \
+                        ${xtermCommand()} >/tmp/xterm.log 2>&1 &
+                        echo ${'$'}! >/tmp/xterm.pid
+                        """.trimIndent(),
+                    )
+                    assertEquals(0, startResult.exitCode, startResult.stderr + startResult.stdout)
+
+                    waitUntil(
+                        failureMessage = {
+                            val log = container.execInContainer("sh", "-lc", "cat /tmp/xterm.log 2>/dev/null || true").stdout
+                            val text = runCatching { httpGet(port, "/text.txt") }.getOrElse { it.toString() }
+                            "xterm did not become SVG-ready before timeout\nlog:\n$log\ntext:\n$text"
+                        },
+                    ) {
+                        val text = httpGet(port, "/text.txt")
+                        text.contains("label=\"xterm-parity\"") &&
+                            httpGet(port, "/screen.svg").hasSvgClass("framebuffer-image")
+                    }
+
+                    val capture = container.execInContainer(
+                        "sh",
+                        "-lc",
+                        """
+                        set -eu
+                        pid=${'$'}(cat /tmp/xterm.pid)
+                        kill -0 "${'$'}pid"
+                        DISPLAY=host.docker.internal:$display java -cp /tmp XRobotCapture
+                        """.trimIndent(),
+                    )
+                    val text = httpGet(port, "/text.txt")
+                    val svg = httpGet(port, "/screen.svg")
+                    File("build/tmp/xvfb-container-test").also { it.mkdirs() }.let { directory ->
+                        File(directory, "xterm-actual.txt").writeText(text)
+                        File(directory, "xterm-actual.svg").writeText(svg)
+                    }
+                    container.execInContainer("sh", "-lc", "kill $(cat /tmp/xterm.pid) 2>/dev/null || true")
+                    server.close()
+                    serverThread.join(1_000)
+                    assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
+                    return RealClientResult(
+                        robot = visualCapture(capture.stdout),
+                        text = text,
+                        svg = svg,
+                        embeddedFramebuffers = svgCompositionLayers(svg),
+                    )
+                }
+        }
+    }
+
     private fun compileRobotCapture(container: GenericContainer<*>, movePointer: Boolean = false) {
         val result = container.execInContainer(
             "sh",
@@ -680,6 +821,39 @@ class XvfbContainerTest {
             ?: error("$label did not include an owner framebuffer ${ownerWidth}x$ownerHeight; exported=$embeddedFramebuffers")
         val composed = composeEmbeddedFramebuffers(embeddedFramebuffers)
         val cropped = composed.getSubimage(owner.x, owner.y, expected.width, expected.height)
+        assertVisualCaptureClose(
+            expected = expected,
+            actual = visualCapture(cropped),
+            label = label,
+            coverageTolerance = coverageTolerance,
+            averageTolerance = averageTolerance,
+            distanceThreshold = distanceThreshold,
+        )
+    }
+
+    private fun assertComposedSvgCaptureClose(
+        expected: VisualCapture,
+        embeddedFramebuffers: List<EmbeddedPng>,
+        captureX: Int,
+        captureY: Int,
+        captureWidth: Int,
+        captureHeight: Int,
+        backgroundPixel: Int,
+        label: String,
+        coverageTolerance: Double = 0.08,
+        averageTolerance: Double = 0.04,
+        distanceThreshold: Double = 45.0,
+    ) {
+        require(expected.width == captureWidth && expected.height == captureHeight) {
+            "$label expected image ${expected.width}x${expected.height} does not match capture ${captureWidth}x$captureHeight"
+        }
+        val composed = composeEmbeddedFramebuffers(
+            embeddedFramebuffers = embeddedFramebuffers,
+            canvasWidth = captureX + captureWidth,
+            canvasHeight = captureY + captureHeight,
+            backgroundPixel = backgroundPixel,
+        )
+        val cropped = composed.getSubimage(captureX, captureY, captureWidth, captureHeight)
         assertVisualCaptureClose(
             expected = expected,
             actual = visualCapture(cropped),
@@ -752,13 +926,22 @@ class XvfbContainerTest {
     private fun svgImageAttribute(tag: String, name: String): Int? =
         Regex("""\b$name="(-?\d+)"""").find(tag)?.groupValues?.get(1)?.toInt()
 
-    private fun composeEmbeddedFramebuffers(embeddedFramebuffers: List<EmbeddedPng>): BufferedImage {
-        val width = embeddedFramebuffers.maxOfOrNull { it.x + it.width } ?: 0
-        val height = embeddedFramebuffers.maxOfOrNull { it.y + it.height } ?: 0
+    private fun composeEmbeddedFramebuffers(
+        embeddedFramebuffers: List<EmbeddedPng>,
+        canvasWidth: Int = 0,
+        canvasHeight: Int = 0,
+        backgroundPixel: Int? = null,
+    ): BufferedImage {
+        val width = maxOf(embeddedFramebuffers.maxOfOrNull { it.x + it.width } ?: 0, canvasWidth)
+        val height = maxOf(embeddedFramebuffers.maxOfOrNull { it.y + it.height } ?: 0, canvasHeight)
         require(width > 0 && height > 0) { "No framebuffer geometry to compose: $embeddedFramebuffers" }
         val image = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
         val graphics = image.createGraphics()
         try {
+            if (backgroundPixel != null) {
+                graphics.color = java.awt.Color(backgroundPixel, true)
+                graphics.fillRect(0, 0, width, height)
+            }
             for (embedded in embeddedFramebuffers) {
                 if (embedded.bytes != null) {
                     val layer = ImageIO.read(ByteArrayInputStream(embedded.bytes)) ?: continue
@@ -901,6 +1084,9 @@ class XvfbContainerTest {
 
         fun xeyesCommand(): String =
             "xeyes -geometry ${RealClientCaptureWidth}x${RealClientCaptureHeight}+${RealClientCaptureX}+${RealClientCaptureY}"
+
+        fun xtermCommand(): String =
+            "xterm -T xterm-parity -n xterm-parity -geometry 28x8+${RealClientCaptureX}+${RealClientCaptureY} +sb +bc -fn fixed -bg white -fg black -cr black -e sh -lc 'printf \"Kotlin X11\\\\nxterm parity\\\\n0123456789\\\\n\"; sleep 60'"
 
         fun robotCaptureSource(movePointer: Boolean): String {
             val pointerMove = if (movePointer) {
