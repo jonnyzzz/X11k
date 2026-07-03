@@ -77,13 +77,41 @@ class XvfbContainerTest {
         assertTrue(actual.text.contains("label=\"xlogo\""), actual.text)
         assertTrue(actual.text.contains("- FillPoly:"), actual.text)
         assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected xlogo SVG export to retain framebuffer images\n${actual.svg}\n${actual.text}")
-        assertXlogoCaptureClose(reference, actual.robot, label = "Kotlin xlogo Robot screenshot")
+        assertVisualCaptureClose(reference, actual.robot, label = "Kotlin xlogo Robot screenshot")
         assertComposedSvgClose(
             expected = reference,
             embeddedFramebuffers = actual.embeddedFramebuffers,
-            ownerWidth = XlogoCaptureWidth,
-            ownerHeight = XlogoCaptureHeight,
+            ownerWidth = RealClientCaptureWidth,
+            ownerHeight = RealClientCaptureHeight,
             label = "Kotlin xlogo composed SVG framebuffer",
+        )
+    }
+
+    @Test
+    fun `xclock robot screenshot and svg framebuffer roughly match xvfb reference`() {
+        assumeDockerAndImage(CLIENT_IMAGE)
+        assumeDockerAndImage(REFERENCE_IMAGE)
+        val reference = runXclockAgainstXvfb()
+        val actual = runXclockAgainstKotlinServer(port = 6227)
+
+        assertTrue(actual.text.contains("label=\"xclock\""), actual.text)
+        assertTrue(actual.text.contains("- PutImage:"), actual.text)
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected xclock SVG export to retain framebuffer images\n${actual.svg}\n${actual.text}")
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin xclock Robot screenshot",
+            coverageTolerance = 0.45,
+            distanceThreshold = 60.0,
+        )
+        assertComposedSvgClose(
+            expected = reference,
+            embeddedFramebuffers = actual.embeddedFramebuffers,
+            ownerWidth = RealClientCaptureWidth,
+            ownerHeight = RealClientCaptureHeight,
+            label = "Kotlin xclock composed SVG framebuffer",
+            coverageTolerance = 0.45,
+            distanceThreshold = 60.0,
         )
     }
 
@@ -178,7 +206,7 @@ class XvfbContainerTest {
                       DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && break
                       sleep 0.25
                     done
-                    DISPLAY=:99 xlogo -geometry ${XlogoCaptureWidth}x${XlogoCaptureHeight}+${XlogoCaptureX}+${XlogoCaptureY} >/tmp/xlogo.log 2>&1 &
+                    DISPLAY=:99 xlogo -geometry ${RealClientCaptureWidth}x${RealClientCaptureHeight}+${RealClientCaptureX}+${RealClientCaptureY} >/tmp/xlogo.log 2>&1 &
                     logo=${'$'}!
                     DISPLAY=:99 java -cp /tmp XRobotCapture
                     """.trimIndent(),
@@ -204,7 +232,7 @@ class XvfbContainerTest {
                         """
                         set -eu
                         DISPLAY=host.docker.internal:$display \
-                        xlogo -geometry ${XlogoCaptureWidth}x${XlogoCaptureHeight}+${XlogoCaptureX}+${XlogoCaptureY} >/tmp/xlogo.log 2>&1 &
+                        xlogo -geometry ${RealClientCaptureWidth}x${RealClientCaptureHeight}+${RealClientCaptureX}+${RealClientCaptureY} >/tmp/xlogo.log 2>&1 &
                         echo ${'$'}! >/tmp/xlogo.pid
                         """.trimIndent(),
                     )
@@ -248,6 +276,94 @@ class XvfbContainerTest {
         }
     }
 
+    private fun runXclockAgainstXvfb(): VisualCapture {
+        GenericContainer(DockerImageName.parse(REFERENCE_IMAGE).asCompatibleSubstituteFor("ubuntu"))
+            .withCommand("sleep", "120")
+            .use { container ->
+                container.start()
+                compileRobotCapture(container)
+                val result = container.execInContainer(
+                    "sh",
+                    "-lc",
+                    """
+                    set -eu
+                    Xvfb :99 -screen 0 640x480x24 >/tmp/xvfb.log 2>&1 &
+                    xvfb=${'$'}!
+                    trap 'kill "${'$'}clock" 2>/dev/null || true; kill "${'$'}xvfb" 2>/dev/null || true' EXIT
+                    for _ in ${'$'}(seq 1 40); do
+                      DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && break
+                      sleep 0.25
+                    done
+                    DISPLAY=:99 ${xclockCommand()} >/tmp/xclock.log 2>&1 &
+                    clock=${'$'}!
+                    DISPLAY=:99 java -cp /tmp XRobotCapture
+                    """.trimIndent(),
+                )
+                assertEquals(0, result.exitCode, result.stderr + result.stdout)
+                return visualCapture(result.stdout)
+            }
+    }
+
+    private fun runXclockAgainstKotlinServer(port: Int): RealClientResult {
+        assumeTrue(isPortAvailable(port), "Port $port is not available")
+        XServer(ServerOptions(host = "0.0.0.0", port = port, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            GenericContainer(DockerImageName.parse(CLIENT_IMAGE).asCompatibleSubstituteFor("ubuntu"))
+                .withCommand("sleep", "120")
+                .use { container ->
+                    container.start()
+                    compileRobotCapture(container)
+                    val display = port - 6000
+                    val startResult = container.execInContainer(
+                        "sh",
+                        "-lc",
+                        """
+                        set -eu
+                        DISPLAY=host.docker.internal:$display \
+                        ${xclockCommand()} >/tmp/xclock.log 2>&1 &
+                        echo ${'$'}! >/tmp/xclock.pid
+                        """.trimIndent(),
+                    )
+                    assertEquals(0, startResult.exitCode, startResult.stderr + startResult.stdout)
+
+                    waitUntil(
+                        failureMessage = {
+                            val log = container.execInContainer("sh", "-lc", "cat /tmp/xclock.log 2>/dev/null || true").stdout
+                            val text = runCatching { httpGet(port, "/text.txt") }.getOrElse { it.toString() }
+                            "xclock did not become SVG-ready before timeout\nlog:\n$log\ntext:\n$text"
+                        },
+                    ) {
+                        val text = httpGet(port, "/text.txt")
+                        text.contains("label=\"xclock\"") &&
+                            httpGet(port, "/screen.svg").hasSvgClass("framebuffer-image")
+                    }
+
+                    val capture = container.execInContainer(
+                        "sh",
+                        "-lc",
+                        """
+                        set -eu
+                        pid=${'$'}(cat /tmp/xclock.pid)
+                        kill -0 "${'$'}pid"
+                        DISPLAY=host.docker.internal:$display java -cp /tmp XRobotCapture
+                        """.trimIndent(),
+                    )
+                    val text = httpGet(port, "/text.txt")
+                    val svg = httpGet(port, "/screen.svg")
+                    container.execInContainer("sh", "-lc", "kill $(cat /tmp/xclock.pid) 2>/dev/null || true")
+                    server.close()
+                    serverThread.join(1_000)
+                    assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
+                    return RealClientResult(
+                        robot = visualCapture(capture.stdout),
+                        text = text,
+                        svg = svg,
+                        embeddedFramebuffers = pngDataUris(svg),
+                    )
+                }
+        }
+    }
+
     private fun compileRobotCapture(container: GenericContainer<*>) {
         val result = container.execInContainer(
             "sh",
@@ -257,24 +373,31 @@ class XvfbContainerTest {
         assertEquals(0, result.exitCode, result.stderr + result.stdout)
     }
 
-    private fun assertXlogoCaptureClose(expected: VisualCapture, actual: VisualCapture, label: String) {
+    private fun assertVisualCaptureClose(
+        expected: VisualCapture,
+        actual: VisualCapture,
+        label: String,
+        coverageTolerance: Double = 0.08,
+        averageTolerance: Double = 0.04,
+        distanceThreshold: Double = 45.0,
+    ) {
         assertEquals(expected.width, actual.width, "$label width should match Xvfb reference")
         assertEquals(expected.height, actual.height, "$label height should match Xvfb reference")
         assertClose(
             expected = expected.nonBackgroundPixels,
             actual = actual.nonBackgroundPixels,
-            tolerance = 0.08,
+            tolerance = coverageTolerance,
             message = "$label should expose similar non-background coverage to Xvfb; reference=$expected actual=$actual",
         )
         assertClose(
             expected = expected.averageRgb,
             actual = actual.averageRgb,
-            tolerance = 0.04,
+            tolerance = averageTolerance,
             message = "$label should expose similar average RGB to Xvfb; reference=$expected actual=$actual",
         )
         val distance = imageDistance(expected.image, actual.image)
         assertTrue(
-            distance <= 45.0,
+            distance <= distanceThreshold,
             "$label should stay visually close to Xvfb reference; distance=$distance\nreference=$expected\nactual=$actual",
         )
     }
@@ -285,15 +408,21 @@ class XvfbContainerTest {
         ownerWidth: Int,
         ownerHeight: Int,
         label: String,
+        coverageTolerance: Double = 0.08,
+        averageTolerance: Double = 0.04,
+        distanceThreshold: Double = 45.0,
     ) {
         val owner = embeddedFramebuffers.lastOrNull { it.width == ownerWidth && it.height == ownerHeight }
             ?: error("$label did not include an owner framebuffer ${ownerWidth}x$ownerHeight; exported=$embeddedFramebuffers")
         val composed = composeEmbeddedFramebuffers(embeddedFramebuffers)
         val cropped = composed.getSubimage(owner.x, owner.y, expected.width, expected.height)
-        assertXlogoCaptureClose(
+        assertVisualCaptureClose(
             expected = expected,
             actual = visualCapture(cropped),
             label = label,
+            coverageTolerance = coverageTolerance,
+            averageTolerance = averageTolerance,
+            distanceThreshold = distanceThreshold,
         )
     }
 
@@ -360,7 +489,7 @@ class XvfbContainerTest {
                 redSum += (argb ushr 16) and 0xff
                 greenSum += (argb ushr 8) and 0xff
                 blueSum += argb and 0xff
-                if (rgbDistance(argb, XlogoBackground) > 8) nonBackground++
+                if (rgbDistance(argb, RealClientBackground) > 8) nonBackground++
             }
         }
         val pixels = image.width * image.height
@@ -443,11 +572,14 @@ class XvfbContainerTest {
     private companion object {
         const val CLIENT_IMAGE = "jonnyzzz-x/x11-client:latest"
         const val REFERENCE_IMAGE = "jonnyzzz-x/x11-reference:latest"
-        const val XlogoCaptureX = 20
-        const val XlogoCaptureY = 20
-        const val XlogoCaptureWidth = 220
-        const val XlogoCaptureHeight = 160
-        const val XlogoBackground = 0xffff_ffff.toInt()
+        const val RealClientCaptureX = 20
+        const val RealClientCaptureY = 20
+        const val RealClientCaptureWidth = 220
+        const val RealClientCaptureHeight = 160
+        const val RealClientBackground = 0xffff_ffff.toInt()
+
+        fun xclockCommand(): String =
+            "xclock -analog -norender -update 60 -geometry ${RealClientCaptureWidth}x${RealClientCaptureHeight}+${RealClientCaptureX}+${RealClientCaptureY}"
 
         val RobotCaptureSource = """
             import java.awt.Rectangle;
@@ -461,7 +593,7 @@ class XvfbContainerTest {
               public static void main(String[] args) throws Exception {
                 Thread.sleep(1200);
                 BufferedImage image = new Robot().createScreenCapture(
-                    new Rectangle($XlogoCaptureX, $XlogoCaptureY, $XlogoCaptureWidth, $XlogoCaptureHeight));
+                    new Rectangle($RealClientCaptureX, $RealClientCaptureY, $RealClientCaptureWidth, $RealClientCaptureHeight));
                 ByteArrayOutputStream output = new ByteArrayOutputStream();
                 ImageIO.write(image, "png", output);
                 System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
@@ -491,6 +623,13 @@ class XvfbContainerTest {
     }
 
     private data class XlogoResult(
+        val robot: VisualCapture,
+        val text: String,
+        val svg: String,
+        val embeddedFramebuffers: List<EmbeddedPng>,
+    )
+
+    private data class RealClientResult(
         val robot: VisualCapture,
         val text: String,
         val svg: String,
