@@ -5,6 +5,7 @@ import java.net.Socket
 import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertContains
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 
 class XXkbProtocolTest {
@@ -1832,7 +1833,7 @@ class XXkbProtocolTest {
     }
 
     @Test
-    fun `XKEYBOARD SetCompatMap accepts compat payload without changing empty map`() {
+    fun `XKEYBOARD SetCompatMap accepts symbol interpretations without changing empty group map`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
             out.write(setCompatMapRequest(groups = 0x5, nSI = 2))
@@ -1844,7 +1845,7 @@ class XXkbProtocolTest {
             assertEquals(0, compatMap[1].toInt() and 0xff)
             assertEquals(0, u16le(compatMap, 10))
             assertEquals(0, u16le(compatMap, 12))
-            assertEquals(0, u16le(compatMap, 14))
+            assertEquals(2, u16le(compatMap, 14))
         }
     }
 
@@ -1912,6 +1913,220 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD SetCompatMap persists symbol interpretations before group maps`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val firstInterpret = byteArrayOf(
+                0x11, 0x22, 0x33, 0x44,
+                0x55, 0x66, 0x77, 0x08,
+                0x01, 0x02, 0x03, 0x04,
+                0x05, 0x06, 0x07, 0x08,
+            )
+            val secondInterpret = byteArrayOf(
+                0x21, 0x32, 0x43, 0x54,
+                0x65, 0x76, 0x07, 0x18,
+                0x11, 0x12, 0x13, 0x14,
+                0x15, 0x16, 0x17, 0x18,
+            )
+            out.write(
+                setCompatMapRequest(
+                    groups = 0x1,
+                    nSI = 2,
+                    symInterprets = listOf(firstInterpret, secondInterpret),
+                    groupMaps = listOf(byteArrayOf(0x01, 0x04, 0x34, 0x12)),
+                ),
+            )
+            out.write(getCompatMapRequest(groups = 0x1, getAllSI = true, firstSI = 99, nSI = 99))
+            out.flush()
+
+            val compatMap = readReply(socket.getInputStream())
+            assertEquals(2, u16le(compatMap, 2))
+            assertEquals(9, u32le(compatMap, 4))
+            assertEquals(0x1, compatMap[8].toInt() and 0xff)
+            assertEquals(0, u16le(compatMap, 10))
+            assertEquals(2, u16le(compatMap, 12))
+            assertEquals(2, u16le(compatMap, 14))
+            assertContentEquals(firstInterpret, compatMap.copyOfRange(32, 48))
+            assertContentEquals(secondInterpret, compatMap.copyOfRange(48, 64))
+            assertEquals(0x01, compatMap[64].toInt() and 0xff)
+            assertEquals(0x04, compatMap[65].toInt() and 0xff)
+            assertEquals(0x1234, u16le(compatMap, 66))
+            assertEquals(68, compatMap.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetCompatMap returns requested symbol interpretation subset`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val firstInterpret = ByteArray(16) { index -> (0x10 + index).toByte() }
+            val secondInterpret = ByteArray(16) { index -> (0x40 + index).toByte() }
+            out.write(
+                setCompatMapRequest(
+                    groups = 0,
+                    nSI = 2,
+                    symInterprets = listOf(firstInterpret, secondInterpret),
+                ),
+            )
+            out.write(getCompatMapRequest(groups = 0, getAllSI = false, firstSI = 1, nSI = 1))
+            out.flush()
+
+            val compatMap = readReply(socket.getInputStream())
+            assertEquals(2, u16le(compatMap, 2))
+            assertEquals(4, u32le(compatMap, 4))
+            assertEquals(0, compatMap[8].toInt() and 0xff)
+            assertEquals(1, u16le(compatMap, 10))
+            assertEquals(1, u16le(compatMap, 12))
+            assertEquals(2, u16le(compatMap, 14))
+            assertContentEquals(secondInterpret, compatMap.copyOfRange(32, 48))
+            assertEquals(48, compatMap.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD CompatMapNotify reports total symbol interpretations after partial update`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val firstInterpret = ByteArray(16) { index -> (0x10 + index).toByte() }
+            val secondInterpret = ByteArray(16) { index -> (0x20 + index).toByte() }
+            val replacement = ByteArray(16) { index -> (0x50 + index).toByte() }
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventCompatMapNotify,
+                    details = selectEvents8Details(XXkb.CompatMapSymInterpret, XXkb.CompatMapSymInterpret),
+                ),
+            )
+            out.write(
+                setCompatMapRequest(
+                    groups = 0,
+                    nSI = 2,
+                    symInterprets = listOf(firstInterpret, secondInterpret),
+                ),
+            )
+            out.write(
+                setCompatMapRequest(
+                    groups = 0,
+                    firstSI = 1,
+                    nSI = 1,
+                    truncateSI = false,
+                    symInterprets = listOf(replacement),
+                ),
+            )
+            out.write(getCompatMapRequest(groups = 0, getAllSI = true, firstSI = 0, nSI = 0))
+            out.flush()
+
+            assertCompatMapNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 2,
+                changedGroups = 0,
+                firstSI = 0,
+                nSI = 2,
+                nTotalSI = 2,
+            )
+            assertCompatMapNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 3,
+                changedGroups = 0,
+                firstSI = 1,
+                nSI = 1,
+                nTotalSI = 2,
+            )
+            val compatMap = readReply(socket.getInputStream())
+            assertEquals(4, u16le(compatMap, 2))
+            assertEquals(8, u32le(compatMap, 4))
+            assertEquals(0, u16le(compatMap, 10))
+            assertEquals(2, u16le(compatMap, 12))
+            assertEquals(2, u16le(compatMap, 14))
+            assertContentEquals(firstInterpret, compatMap.copyOfRange(32, 48))
+            assertContentEquals(replacement, compatMap.copyOfRange(48, 64))
+            assertEquals(64, compatMap.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetCompatMap truncateSI shrinks symbol interpretation list`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val firstInterpret = ByteArray(16) { index -> (0x10 + index).toByte() }
+            val secondInterpret = ByteArray(16) { index -> (0x20 + index).toByte() }
+            val replacement = ByteArray(16) { index -> (0x70 + index).toByte() }
+            out.write(
+                setCompatMapRequest(
+                    groups = 0,
+                    nSI = 2,
+                    symInterprets = listOf(firstInterpret, secondInterpret),
+                ),
+            )
+            out.write(
+                setCompatMapRequest(
+                    groups = 0,
+                    firstSI = 0,
+                    nSI = 1,
+                    truncateSI = true,
+                    symInterprets = listOf(replacement),
+                ),
+            )
+            out.write(getCompatMapRequest(groups = 0, getAllSI = true, firstSI = 0, nSI = 0))
+            out.flush()
+
+            val compatMap = readReply(socket.getInputStream())
+            assertEquals(3, u16le(compatMap, 2))
+            assertEquals(4, u32le(compatMap, 4))
+            assertEquals(0, u16le(compatMap, 10))
+            assertEquals(1, u16le(compatMap, 12))
+            assertEquals(1, u16le(compatMap, 14))
+            assertContentEquals(replacement, compatMap.copyOfRange(32, 48))
+            assertEquals(48, compatMap.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetCompatMap rejects undefined symbol interpretation range and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val original = ByteArray(16) { index -> (0x10 + index).toByte() }
+            out.write(setCompatMapRequest(groups = 0, nSI = 1, symInterprets = listOf(original)))
+            out.write(getCompatMapRequest(groups = 0, getAllSI = false, firstSI = 1, nSI = 1))
+            out.write(getCompatMapRequest(groups = 0, getAllSI = true, firstSI = 0, nSI = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 1, sequence = 2, minorOpcode = XXkb.GetCompatMap)
+            val compatMap = readReply(socket.getInputStream())
+            assertEquals(3, u16le(compatMap, 2))
+            assertEquals(4, u32le(compatMap, 4))
+            assertEquals(0, u16le(compatMap, 10))
+            assertEquals(1, u16le(compatMap, 12))
+            assertEquals(1, u16le(compatMap, 14))
+            assertContentEquals(original, compatMap.copyOfRange(32, 48))
+            assertEquals(48, compatMap.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetCompatMap rejects impossible symbol interpretation range without mutation`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val original = ByteArray(16) { index -> (index + 1).toByte() }
+            val replacement = ByteArray(16) { index -> (0x60 + index).toByte() }
+            out.write(setCompatMapRequest(groups = 0, nSI = 1, symInterprets = listOf(original)))
+            out.write(setCompatMapRequest(groups = 0x1, firstSI = 3, nSI = 1, symInterprets = listOf(replacement)))
+            out.write(getCompatMapRequest(groups = 0x1, getAllSI = true, firstSI = 0, nSI = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 3, sequence = 2, minorOpcode = XXkb.SetCompatMap)
+            val compatMap = readReply(socket.getInputStream())
+            assertEquals(3, u16le(compatMap, 2))
+            assertEquals(4, u32le(compatMap, 4))
+            assertEquals(0, compatMap[8].toInt() and 0xff)
+            assertEquals(0, u16le(compatMap, 10))
+            assertEquals(1, u16le(compatMap, 12))
+            assertEquals(1, u16le(compatMap, 14))
+            assertContentEquals(original, compatMap.copyOfRange(32, 48))
+            assertEquals(48, compatMap.size)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD CompatMapNotify reports selected SetCompatMap changes`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -1921,7 +2136,7 @@ class XXkbProtocolTest {
                     details = selectEvents8Details(XXkb.AllCompatMapMask, XXkb.AllCompatMapMask),
                 ),
             )
-            out.write(setCompatMapRequest(groups = 0x5, firstSI = 7, nSI = 2))
+            out.write(setCompatMapRequest(groups = 0x5, firstSI = 0, nSI = 2))
             out.write(getCompatMapRequest(groups = 0, getAllSI = false, firstSI = 0, nSI = 0))
             out.flush()
 
@@ -1929,7 +2144,7 @@ class XXkbProtocolTest {
                 socket.getInputStream().readExactly(32),
                 sequence = 2,
                 changedGroups = 0x5,
-                firstSI = 7,
+                firstSI = 0,
                 nSI = 2,
                 nTotalSI = 2,
             )
@@ -1937,7 +2152,7 @@ class XXkbProtocolTest {
             assertEquals(3, u16le(compatMap, 2))
             assertEquals(0, u16le(compatMap, 10))
             assertEquals(0, u16le(compatMap, 12))
-            assertEquals(0, u16le(compatMap, 14))
+            assertEquals(2, u16le(compatMap, 14))
         }
     }
 
@@ -1987,7 +2202,7 @@ class XXkbProtocolTest {
             assertEquals(4, u16le(compatMap, 2))
             assertEquals(0, u16le(compatMap, 10))
             assertEquals(0, u16le(compatMap, 12))
-            assertEquals(0, u16le(compatMap, 14))
+            assertEquals(1, u16le(compatMap, 14))
         }
     }
 
@@ -5692,22 +5907,29 @@ class XXkbProtocolTest {
         firstSI: Int = 0,
         nSI: Int,
         bodySize: Int = 12 + nSI * 16 + Integer.bitCount(groups) * 4,
+        truncateSI: Boolean = true,
+        symInterprets: List<ByteArray>? = null,
         groupMaps: List<ByteArray>? = null,
     ): ByteArray {
         val body = ByteArray(bodySize)
         put16le(body, 0, 0x0100)
         if (body.size > 3) body[3] = 1
-        if (body.size > 4) body[4] = 1
+        if (body.size > 4) body[4] = if (truncateSI) 1 else 0
         if (body.size > 5) body[5] = groups.toByte()
         if (body.size >= 8) put16le(body, 6, firstSI)
         if (body.size >= 10) put16le(body, 8, nSI)
         for (index in 0 until nSI) {
             val offset = 12 + index * 16
             if (offset + 16 > body.size) break
-            put32le(body, offset, 0)
-            body[offset + 4] = 1
-            body[offset + 5] = 1
-            body[offset + 7] = 1
+            val symInterpret = symInterprets?.getOrNull(index)
+            if (symInterpret == null) {
+                put32le(body, offset, 0)
+                body[offset + 4] = 1
+                body[offset + 5] = 1
+                body[offset + 7] = 1
+            } else {
+                symInterpret.copyInto(body, offset, 0, minOf(16, symInterpret.size))
+            }
         }
         var offset = 12 + nSI * 16
         repeat(Integer.bitCount(groups)) { index ->

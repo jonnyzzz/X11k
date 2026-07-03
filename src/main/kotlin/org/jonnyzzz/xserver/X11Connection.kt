@@ -2425,14 +2425,27 @@ internal class X11Connection(
 
     private fun xkbGetCompatMap(body: ByteArray, majorOpcode: Int) {
         if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetCompatMap, badValue = 0)
-        val groups = state.xkbCompatGroupMaps((body[2].toInt() and 0xff) and XXkb.AllGroupsMask)
-        write(xkbCompatMapReply(groups))
+        val groups = (body[2].toInt() and 0xff) and XXkb.AllGroupsMask
+        val getAllSI = body[3].toInt() != 0
+        val firstSI = byteOrder.u16(body, 4)
+        val nSI = byteOrder.u16(body, 6)
+        val compatMap = state.xkbCompatGroupMaps(groups, getAllSI, firstSI, nSI)
+            ?: return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.GetCompatMap, badValue = firstSI)
+        write(xkbCompatMapReply(compatMap))
     }
 
     private fun xkbCompatMapReply(groups: XXkbCompatGroupMaps): ByteArray {
-        val reply = reply(extra = 0, payloadUnits = groups.maps.size)
+        val payloadUnits = groups.symInterprets.size * 4 + groups.maps.size
+        val reply = reply(extra = 0, payloadUnits = payloadUnits)
         reply[8] = groups.groups.toByte()
+        byteOrder.put16(reply, 10, groups.firstSI)
+        byteOrder.put16(reply, 12, groups.symInterprets.size)
+        byteOrder.put16(reply, 14, groups.nTotalSI)
         var offset = 32
+        for (symInterpret in groups.symInterprets) {
+            symInterpret.copyInto(reply, offset, 0, 16)
+            offset += 16
+        }
         for (map in groups.maps) {
             map.copyInto(reply, offset, 0, 4)
             offset += 4
@@ -2450,13 +2463,22 @@ internal class X11Connection(
         val nSI = byteOrder.u16(body, 8)
         val expectedSize = 12 + nSI * 16 + Integer.bitCount(groups) * 4
         if (body.size != expectedSize) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetCompatMap, badValue = 0)
+        val symInterprets = mutableListOf<ByteArray>()
+        var offset = 12
+        repeat(nSI) {
+            symInterprets += body.copyOfRange(offset, offset + 16)
+            offset += 16
+        }
         val groupMaps = mutableListOf<ByteArray>()
-        var offset = 12 + nSI * 16
         repeat(Integer.bitCount(groups)) {
             groupMaps += body.copyOfRange(offset, offset + 4)
             offset += 4
         }
-        state.setXkbCompatGroupMaps(groups, groupMaps)
+        val truncateSI = body[4].toInt() != 0
+        val nTotalSI = state.setXkbCompatMap(firstSI, symInterprets, truncateSI, groups, groupMaps)
+        if (nTotalSI == null) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.SetCompatMap, badValue = firstSI)
+        }
         val changed = (if (nSI > 0) XXkb.CompatMapSymInterpret else 0) or
             (if (groups != 0) XXkb.CompatMapGroupCompat else 0)
         sendXkbCompatMapNotify(
@@ -2466,7 +2488,7 @@ internal class X11Connection(
                     changedGroups = groups,
                     firstSI = firstSI,
                     nSI = nSI,
-                    nTotalSI = nSI,
+                    nTotalSI = nTotalSI,
                     changed = changed,
                 ),
             ),
@@ -3125,8 +3147,8 @@ internal class X11Connection(
             0
         }
         val serverSymbolsFound = 0
-        val compat = state.xkbCompatGroupMaps(XXkb.AllGroupsMask)
-            .takeIf { it.maps.isNotEmpty() && xkbGetKbdByNameCompatSpecMatches(componentSpecs[3]) }
+        val compat = state.xkbCompatGroupMaps(XXkb.AllGroupsMask, getAllSI = true, firstSI = 0, nSI = 0)
+            ?.takeIf { (it.maps.isNotEmpty() || it.symInterprets.isNotEmpty()) && xkbGetKbdByNameCompatSpecMatches(componentSpecs[3]) }
         val indicatorMaps = state.xkbIndicatorMaps(-1)
             .takeIf { it.maps.isNotEmpty() && xkbGetKbdByNameCompatSpecMatches(componentSpecs[3]) }
         val geometry = state.xkbGeometry(0)?.takeIf { xkbGetKbdByNameGeometrySpecMatches(componentSpecs[5]) }

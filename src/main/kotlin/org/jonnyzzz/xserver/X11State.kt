@@ -85,6 +85,9 @@ internal data class XXkbIndicatorMaps(
 
 internal data class XXkbCompatGroupMaps(
     val groups: Int,
+    val firstSI: Int,
+    val symInterprets: List<ByteArray>,
+    val nTotalSI: Int,
     val maps: List<ByteArray>,
 )
 
@@ -234,6 +237,7 @@ internal class X11State(
     private val xkbNamedIndicatorIndexes = linkedMapOf<Int, Int>()
     private val xkbComponentNameAtoms = linkedMapOf<Int, Int>()
     private val xkbCompatGroupMaps = linkedMapOf<Int, ByteArray>()
+    private val xkbCompatSymInterprets = mutableListOf<ByteArray>()
     private val xkbDeviceLedFeedbacks = linkedMapOf<Int, MutableList<XXkbDeviceLedFeedback>>()
     private var xkbGeometry: XXkbGeometry? = null
     private var activePointerGrab: XInputGrab? = null
@@ -1827,7 +1831,17 @@ internal class X11State(
     }
 
     @Synchronized
-    fun xkbCompatGroupMaps(groups: Int): XXkbCompatGroupMaps {
+    fun xkbCompatGroupMaps(groups: Int, getAllSI: Boolean, firstSI: Int, nSI: Int): XXkbCompatGroupMaps? {
+        val symInterprets = if (getAllSI) {
+            xkbCompatSymInterprets.map(ByteArray::copyOf)
+        } else if (nSI == 0) {
+            emptyList()
+        } else {
+            val endSI = firstSI + nSI
+            if (firstSI !in xkbCompatSymInterprets.indices || endSI > xkbCompatSymInterprets.size) return null
+            xkbCompatSymInterprets.subList(firstSI, endSI).map(ByteArray::copyOf)
+        }
+        val firstReturnedSI = if (getAllSI) 0 else firstSI
         var present = 0
         val maps = mutableListOf<ByteArray>()
         for (bit in 0 until 4) {
@@ -1838,11 +1852,27 @@ internal class X11State(
                 maps += map.copyOf()
             }
         }
-        return XXkbCompatGroupMaps(present, maps)
+        return XXkbCompatGroupMaps(present, firstReturnedSI, symInterprets, xkbCompatSymInterprets.size, maps)
     }
 
     @Synchronized
-    fun setXkbCompatGroupMaps(groups: Int, maps: List<ByteArray>) {
+    fun setXkbCompatMap(firstSI: Int, symInterprets: List<ByteArray>, truncateSI: Boolean, groups: Int, maps: List<ByteArray>): Int? {
+        if (firstSI > xkbCompatSymInterprets.size) return null
+        if (symInterprets.isNotEmpty()) {
+            val endSI = firstSI + symInterprets.size
+            while (xkbCompatSymInterprets.size < endSI) {
+                xkbCompatSymInterprets += ByteArray(16)
+            }
+            symInterprets.forEachIndexed { index, symInterpret ->
+                xkbCompatSymInterprets[firstSI + index] = symInterpret.copyOf()
+            }
+            if (truncateSI) {
+                while (xkbCompatSymInterprets.size > endSI) {
+                    xkbCompatSymInterprets.removeAt(xkbCompatSymInterprets.lastIndex)
+                }
+            }
+        }
+
         var index = 0
         for (bit in 0 until 4) {
             val bitMask = 1 shl bit
@@ -1850,6 +1880,7 @@ internal class X11State(
                 xkbCompatGroupMaps[bit] = maps[index++].copyOf()
             }
         }
+        return xkbCompatSymInterprets.size
     }
 
     @Synchronized
