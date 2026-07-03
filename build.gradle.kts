@@ -39,8 +39,10 @@ tasks.test {
         "x.intellijImage",
         "x.intellijReferenceImage",
         "x.vscodeSmoke",
+        "x.vscodeParity",
         "x.vscodeUrl",
         "x.vscodeImage",
+        "x.vscodeReferenceImage",
         "x.trace",
     ).forEach { name ->
         System.getProperty(name)?.let { systemProperty(name, it) }
