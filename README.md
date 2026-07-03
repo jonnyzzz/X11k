@@ -108,10 +108,13 @@ scripts/run-gradle-bounded.sh dockerBuildX11Client
 ```
 
 The IntelliJ release archive is intentionally not baked into the image; `run-intellij`
-downloads it on first use inside the container. The Docker helper also seeds the
-IntelliJ first-run agreement state, registers the bundled JetBrains Runtime as a
-JDK, disables first-run onboarding, and enables project trust for the isolated
-container by default so the mounted repository opens directly.
+downloads it on first use inside the container. Set `IDEA_CACHE_DIR` to reuse the
+downloaded archive across disposable containers; the smoke and parity tests bind
+`build/tmp/intellij-community-smoke/idea-cache` for that purpose. The Docker
+helper also seeds the IntelliJ first-run agreement state, registers the bundled
+JetBrains Runtime as a JDK, disables first-run onboarding, and enables project
+trust for the isolated container by default so the mounted repository opens
+directly.
 
 The IntelliJ Community smoke is intentionally opt-in because it downloads a large GitHub release artifact:
 

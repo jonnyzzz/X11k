@@ -2,10 +2,12 @@
 set -eu
 
 : "${DISPLAY:=host.docker.internal:0}"
+: "${IDEA_CACHE_DIR:=}"
 : "${IDEA_HOME:=/opt/idea}"
 : "${IDEA_CONFIG:=/tmp/idea-config}"
 : "${IDEA_SYSTEM:=/tmp/idea-system}"
 : "${IDEA_LOG:=/tmp/idea-log}"
+: "${IDEA_PLUGINS:=$IDEA_CONFIG/plugins}"
 : "${IDEA_PROJECT:=}"
 : "${IDEA_TRUST_PROJECT:=true}"
 : "${IDEA_TRUST_ALL_PROJECTS:=}"
@@ -42,11 +44,36 @@ if [ -z "${IDEA_URL:-}" ]; then
   esac
 fi
 
-mkdir -p "$IDEA_HOME" "$IDEA_CONFIG" "$IDEA_SYSTEM" "$IDEA_LOG" "$IDEA_PROJECT"
+idea_archive=/tmp/idea.tar.gz
+if [ -n "$IDEA_CACHE_DIR" ]; then
+  mkdir -p "$IDEA_CACHE_DIR"
+  archive_name=$(basename "${IDEA_URL%%\?*}")
+  if [ -z "$archive_name" ]; then
+    archive_name=idea.tar.gz
+  fi
+  idea_archive="$IDEA_CACHE_DIR/$archive_name"
+fi
+
+mkdir -p "$IDEA_HOME" "$IDEA_CONFIG" "$IDEA_SYSTEM" "$IDEA_LOG" "$IDEA_PLUGINS" "$IDEA_PROJECT"
 
 if [ ! -x "$IDEA_HOME/bin/idea.sh" ]; then
-  curl -L "$IDEA_URL" -o /tmp/idea.tar.gz
-  tar -xzf /tmp/idea.tar.gz -C "$IDEA_HOME" --strip-components=1
+  if [ ! -s "$idea_archive" ]; then
+    echo "[run-intellij] downloading IDEA archive: $IDEA_URL -> $idea_archive" >&2
+    tmp_archive="$idea_archive.tmp.$$"
+    rm -f "$tmp_archive"
+    if ! curl -fL "$IDEA_URL" -o "$tmp_archive"; then
+      rm -f "$tmp_archive"
+      exit 1
+    fi
+    mv "$tmp_archive" "$idea_archive"
+  else
+    echo "[run-intellij] using cached IDEA archive: $idea_archive" >&2
+  fi
+  echo "[run-intellij] extracting IDEA archive into $IDEA_HOME" >&2
+  tar -xzf "$idea_archive" -C "$IDEA_HOME" --strip-components=1
+  echo "[run-intellij] IDEA extraction complete" >&2
+else
+  echo "[run-intellij] using existing IDEA_HOME: $IDEA_HOME" >&2
 fi
 
 if [ "$IDEA_REGISTER_JBR_SDK" = "true" ] && [ -x "$IDEA_HOME/jbr/bin/java" ]; then
@@ -135,6 +162,7 @@ cat > /tmp/idea.properties <<EOF
 idea.config.path=$IDEA_CONFIG
 idea.system.path=$IDEA_SYSTEM
 idea.log.path=$IDEA_LOG
+idea.plugins.path=$IDEA_PLUGINS
 EOF
 
 if [ ! -f "$IDEA_PROJECT/README.md" ]; then

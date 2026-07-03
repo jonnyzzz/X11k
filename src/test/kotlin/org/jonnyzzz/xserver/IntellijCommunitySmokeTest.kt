@@ -150,6 +150,14 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij heavyweight cache directory stays under build tmp`() {
+        val root = projectRoot()
+        val cache = intellijCacheDir()
+
+        assertTrue(cache.startsWith(root.resolve("build/tmp").normalize()), "Unexpected IntelliJ cache path: $cache")
+    }
+
+    @Test
     fun `intellij log artifact names preserve pid suffixes`() {
         assertEquals("intellij-kotlin-jcef.log", intellijLogArtifactName("intellij-kotlin", "/tmp/idea-log/jcef.log"))
         assertEquals("intellij-kotlin-jcef-55.log", intellijLogArtifactName("intellij-kotlin", "/tmp/idea-log/jcef_55.log"))
@@ -272,19 +280,17 @@ class IntellijCommunitySmokeTest {
 
         XServer(ServerOptions(host = "0.0.0.0", port = port, width = 1280, height = 900)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
-            GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
-                .withFileSystemBind(cleanProjectExport().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
-                .withCommand("sleep", "900")
+            intellijContainer(image)
                 .use { container ->
                     container.start()
                     val display = port - 6000
-                    val result = container.execInContainer(
-                        "sh",
-                        "-lc",
+                    val result = execIntellijShell(
+                        container,
                         """
                         set -eu
                         command -v run-intellij
                         command -v git
+                        test -d /tmp/idea-cache
                         check() {
                           echo "check: ${'$'}*"
                           "${'$'}@"
@@ -300,7 +306,7 @@ class IntellijCommunitySmokeTest {
                         pid=${'$'}!
                         echo "${'$'}pid" >/tmp/idea-smoke.pid
                         opened=0
-                        for _ in ${'$'}(seq 1 120); do
+                        for _ in ${'$'}(seq 1 $IntellijOpenWaitSeconds); do
                           if grep -q "Project frame set to Project(name=" /tmp/idea-log/idea.log 2>/dev/null; then
                             opened=1
                             break
@@ -322,6 +328,8 @@ class IntellijCommunitySmokeTest {
                         check grep -q 'experimental.ui.on.first.startup' /tmp/idea-config/options/other.xml
                         check sh -lc 'find /root/.java/.userPrefs/jetbrains -name prefs.xml -exec grep -l "euacommunity_accepted_version" {} + | grep -q .'
                         check grep -q -- "-Didea.trust.all.projects=true" /tmp/idea-extra.vmoptions
+                        check test -d /tmp/idea-config/plugins
+                        check grep -q 'idea.plugins.path=/tmp/idea-config/plugins' /tmp/idea.properties
                         check grep -q "componentStore=/workspace/jonnyzzz-x" /tmp/idea-log/idea.log
                         if grep -q "Download JDK" /tmp/idea-log/idea.log; then echo "unexpected Download JDK log"; exit 1; fi
                         if grep -q "Cannot Run Git" /tmp/idea-log/idea.log; then echo "unexpected Cannot Run Git log"; exit 1; fi
@@ -333,7 +341,7 @@ class IntellijCommunitySmokeTest {
                         collectIntellijLogs(container, "intellij-smoke", "/tmp/idea-run-smoke.log"),
                     )
                     assertFalse(
-                        container.execInContainer("sh", "-lc", "grep -q 'Project is not trusted' /tmp/idea-log/idea.log").exitCode == 0,
+                        execContainerShell(container, 30, "grep -q 'Project is not trusted' /tmp/idea-log/idea.log").exitCode == 0,
                         "IntelliJ should not reject the mounted jonnyzzz-x project as untrusted",
                     )
                     try {
@@ -362,7 +370,11 @@ class IntellijCommunitySmokeTest {
                             "IntelliJ screen SVG should contain a large rendered IDE surface, got $stats\n$text",
                         )
                     } finally {
-                        container.execInContainer("sh", "-lc", "kill $(cat /tmp/idea-smoke.pid 2>/dev/null || pgrep -f run-intellij) 2>/dev/null || true")
+                        execContainerShell(
+                            container,
+                            30,
+                            "kill $(cat /tmp/idea-smoke.pid 2>/dev/null || pgrep -f run-intellij) 2>/dev/null || true",
+                        )
                     }
                 }
             server.close()
@@ -451,6 +463,28 @@ class IntellijCommunitySmokeTest {
         return export
     }
 
+    private fun intellijCacheDir(): Path {
+        val root = projectRoot()
+        val cache = root.resolve("build/tmp/intellij-community-smoke/idea-cache").normalize()
+        val buildTmp = root.resolve("build/tmp").normalize()
+        check(cache.startsWith(buildTmp)) { "Refusing to use IntelliJ cache outside build/tmp/: $cache" }
+        Files.createDirectories(cache)
+        return cache
+    }
+
+    private fun intellijContainer(image: String): GenericContainer<*> =
+        GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
+            .withFileSystemBind(cleanProjectExport().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
+            .withFileSystemBind(intellijCacheDir().toString(), "/tmp/idea-cache", BindMode.READ_WRITE)
+            .withEnv("IDEA_CACHE_DIR", "/tmp/idea-cache")
+            .withCommand("sleep", "900")
+
+    private fun execContainerShell(container: GenericContainer<*>, timeoutSeconds: Int, script: String) =
+        container.execInContainer("timeout", "${timeoutSeconds}s", "sh", "-lc", script)
+
+    private fun execIntellijShell(container: GenericContainer<*>, script: String) =
+        execContainerShell(container, IntellijContainerCommandTimeoutSeconds, script)
+
     private fun intellijDebugEnabled(): Boolean =
         System.getProperty("x.intellijDebug") == "true" || System.getenv("X_INTELLIJ_DEBUG") == "true"
 
@@ -499,20 +533,18 @@ class IntellijCommunitySmokeTest {
     }
 
     private fun runIntellijAgainstXvfb(image: String, url: String?): IntellijReferenceCapture =
-        GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
-            .withFileSystemBind(cleanProjectExport().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
-            .withCommand("sleep", "900")
+        intellijContainer(image)
             .use { container ->
                 container.start()
                 compileRobotCapture(container)
-                val result = container.execInContainer(
-                    "sh",
-                    "-lc",
+                val result = execIntellijShell(
+                    container,
                     """
                     set -eu
                     command -v Xvfb
                     command -v run-intellij
                     command -v git
+                    test -d /tmp/idea-cache
                     if [ -n "${url.orEmpty()}" ]; then
                       export IDEA_URL="${url.orEmpty()}"
                     fi
@@ -532,7 +564,7 @@ class IntellijCommunitySmokeTest {
                     run-intellij >/tmp/idea-run-xvfb.log 2>&1 &
                     idea=${'$'}!
                     opened=0
-                    for _ in ${'$'}(seq 1 120); do
+                    for _ in ${'$'}(seq 1 $IntellijOpenWaitSeconds); do
                       if grep -q "Project frame set to Project(name=" /tmp/idea-log/idea.log 2>/dev/null; then
                         opened=1
                         break
@@ -578,20 +610,18 @@ class IntellijCommunitySmokeTest {
             ),
         ).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
-            GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
-                .withFileSystemBind(cleanProjectExport().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
-                .withCommand("sleep", "900")
+            intellijContainer(image)
                 .use { container ->
                     container.start()
                     compileRobotCapture(container)
                     val display = port - 6000
-                    val startResult = container.execInContainer(
-                        "sh",
-                        "-lc",
+                    val startResult = execIntellijShell(
+                        container,
                         """
                         set -eu
                         command -v run-intellij
                         command -v git
+                        test -d /tmp/idea-cache
                         if [ -n "${url.orEmpty()}" ]; then
                           export IDEA_URL="${url.orEmpty()}"
                         fi
@@ -604,7 +634,7 @@ class IntellijCommunitySmokeTest {
                         pid=${'$'}!
                         echo "${'$'}pid" >/tmp/idea-parity.pid
                         opened=0
-                        for _ in ${'$'}(seq 1 120); do
+                        for _ in ${'$'}(seq 1 $IntellijOpenWaitSeconds); do
                           if grep -q "Project frame set to Project(name=" /tmp/idea-log/idea.log 2>/dev/null; then
                             opened=1
                             break
@@ -628,9 +658,8 @@ class IntellijCommunitySmokeTest {
                     try {
                         val snapshot = waitForVisibleIntellijPixels(port)
                         Thread.sleep(5_000)
-                        val capture = container.execInContainer(
-                            "sh",
-                            "-lc",
+                        val capture = execIntellijShell(
+                            container,
                             """
                             set -eu
                             pid=${'$'}(cat /tmp/idea-parity.pid)
@@ -654,7 +683,11 @@ class IntellijCommunitySmokeTest {
                             logs = logs,
                         )
                     } finally {
-                        container.execInContainer("sh", "-lc", "kill $(cat /tmp/idea-parity.pid 2>/dev/null || pgrep -f run-intellij) 2>/dev/null || true")
+                        execContainerShell(
+                            container,
+                            30,
+                            "kill $(cat /tmp/idea-parity.pid 2>/dev/null || pgrep -f run-intellij) 2>/dev/null || true",
+                        )
                         server.close()
                         serverThread.join(1_000)
                     }
@@ -824,9 +857,9 @@ class IntellijCommunitySmokeTest {
     }
 
     private fun compileRobotCapture(container: GenericContainer<*>) {
-        val result = container.execInContainer(
-            "sh",
-            "-lc",
+        val result = execContainerShell(
+            container,
+            120,
             "cat > /tmp/XIntellijRobotCapture.java <<'JAVA'\n${robotCaptureSource()}\nJAVA\njavac /tmp/XIntellijRobotCapture.java",
         )
         assertEquals(0, result.exitCode, result.stderr + result.stdout)
@@ -944,9 +977,9 @@ class IntellijCommunitySmokeTest {
             "/tmp/idea-log/jcef.log" to "$prefix-jcef.log",
             "/tmp/idea-log/jcef_chromium.log" to "$prefix-jcef-chromium.log",
         ) + extraLogs
-        val dynamicLogs = container.execInContainer(
-            "sh",
-            "-lc",
+        val dynamicLogs = execContainerShell(
+            container,
+            30,
             "if [ -d /tmp/idea-log ]; then find /tmp/idea-log -maxdepth 1 -type f \\( -name 'jcef*.log' -o -name 'jcef_chromium*.log' -o -name 'mesa*.log' \\) -print | sort; fi",
         )
         val pathsAndNames = (
@@ -962,9 +995,9 @@ class IntellijCommunitySmokeTest {
                 }
             ).distinctBy { (path, _) -> path }
         return pathsAndNames.mapNotNull { (path, fileName) ->
-            val result = container.execInContainer(
-                "sh",
-                "-lc",
+            val result = execContainerShell(
+                container,
+                30,
                 "if [ -f '$path' ]; then cat '$path'; fi",
             )
             if (result.exitCode == 0 && result.stdout.isNotEmpty()) {
@@ -1380,5 +1413,7 @@ class IntellijCommunitySmokeTest {
     private companion object {
         const val IntellijCaptureWidth = 1280
         const val IntellijCaptureHeight = 900
+        const val IntellijOpenWaitSeconds = 300
+        const val IntellijContainerCommandTimeoutSeconds = 900
     }
 }
