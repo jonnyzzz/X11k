@@ -494,6 +494,14 @@ internal object SvgScreenRenderer {
                             base = XRectangleCommand(0, 0, snapshot.width, snapshot.height),
                         )
                     }
+                    renderWindowBorderPatternDefinition(
+                        builder = this,
+                        window = window,
+                        pixmaps = snapshot.pixmaps,
+                        patternPrefix = "screen-border",
+                        originX = 0,
+                        originY = 0,
+                    )
                 }
             }
             svgElement("g", "font-family" to "monospace", "font-size" to 32) {
@@ -501,7 +509,15 @@ internal object SvgScreenRenderer {
                     val color = palette[index % palette.size]
                     val strokeWidth = if (window.focused) 8 else 4
                     svgElement("g", "clip-path" to "url(#${clipId("screen-border", window)})") {
-                        renderWindowBorder(this, window, originX = 0, originY = 0, clipId = clipId("screen-border", window))
+                        renderWindowBorder(
+                            builder = this,
+                            window = window,
+                            pixmaps = snapshot.pixmaps,
+                            patternPrefix = "screen-border",
+                            originX = 0,
+                            originY = 0,
+                            clipId = clipId("screen-border", window),
+                        )
                     }
                     svgElement("g", "clip-path" to "url(#${clipId("screen", window)})") {
                         svgElement(
@@ -787,6 +803,14 @@ internal object SvgScreenRenderer {
                             base = XRectangleCommand(0, 0, rootWindow.width, rootWindow.height),
                         )
                     }
+                    renderWindowBorderPatternDefinition(
+                        builder = this,
+                        window = window,
+                        pixmaps = snapshot.pixmaps,
+                        patternPrefix = "$clipPrefix-border",
+                        originX = rootWindow.x,
+                        originY = rootWindow.y,
+                    )
                 }
             }
             windowBackgroundFill(rootWindow, snapshot.windows)?.let { fill ->
@@ -799,6 +823,8 @@ internal object SvgScreenRenderer {
                     renderWindowBorder(
                         builder = this,
                         window = window,
+                        pixmaps = snapshot.pixmaps,
+                        patternPrefix = "$clipPrefix-border",
                         originX = rootWindow.x,
                         originY = rootWindow.y,
                         clipId = clipId("$clipPrefix-border", window),
@@ -840,10 +866,19 @@ internal object SvgScreenRenderer {
         }
     }
 
-    private fun renderWindowBorder(builder: XmlDom, window: XWindowSnapshot, originX: Int, originY: Int, clipId: String) {
+    private fun renderWindowBorder(
+        builder: XmlDom,
+        window: XWindowSnapshot,
+        pixmaps: List<XPixmapSnapshot>,
+        patternPrefix: String,
+        originX: Int,
+        originY: Int,
+        clipId: String,
+    ) {
         if (window.borderWidth <= 0) return
         val left = window.x - originX
         val top = window.y - originY
+        val fill = windowBorderFill(window, pixmaps, patternPrefix)
         for (rectangle in windowBorderRectangles(window)) {
             renderWindowBorderRect(
                 builder = builder,
@@ -853,6 +888,7 @@ internal object SvgScreenRenderer {
                 width = rectangle.width,
                 height = rectangle.height,
                 clipId = clipId,
+                fill = fill,
             )
         }
     }
@@ -865,20 +901,82 @@ internal object SvgScreenRenderer {
         width: Int,
         height: Int,
         clipId: String,
+        fill: String,
     ) {
         if (width <= 0 || height <= 0) return
         builder.svgElement(
             "rect",
             "class" to "window-border",
             "data-border-window-id" to window.idHex,
+            "data-border-pixmap-id" to window.borderPixmapIdHex,
             "clip-path" to "url(#$clipId)",
             "x" to x,
             "y" to y,
             "width" to width,
             "height" to height,
-            "fill" to pixelColor(window.borderPixel),
+            "fill" to fill,
         )
     }
+
+    private fun renderWindowBorderPatternDefinition(
+        builder: XmlDom,
+        window: XWindowSnapshot,
+        pixmaps: List<XPixmapSnapshot>,
+        patternPrefix: String,
+        originX: Int,
+        originY: Int,
+    ) {
+        if (window.borderWidth <= 0) return
+        val pixmap = windowBorderPixmap(window, pixmaps) ?: return
+        val href = pixmap.framebufferDataUri ?: return
+        builder.svgElement(
+            "pattern",
+            "id" to borderPatternId(patternPrefix, window, pixmap),
+            "data-border-window-id" to window.idHex,
+            "data-border-pixmap-id" to pixmap.idHex,
+            "patternUnits" to "userSpaceOnUse",
+            "x" to window.x - originX - window.borderWidth,
+            "y" to window.y - originY - window.borderWidth,
+            "width" to pixmap.width,
+            "height" to pixmap.height,
+        ) {
+            svgElement(
+                "image",
+                "class" to "window-border-pixmap-image",
+                "data-pixmap-id" to pixmap.idHex,
+                "x" to 0,
+                "y" to 0,
+                "width" to pixmap.width,
+                "height" to pixmap.height,
+                "href" to href,
+                "preserveAspectRatio" to "none",
+            )
+        }
+    }
+
+    private fun windowBorderFill(window: XWindowSnapshot, pixmaps: List<XPixmapSnapshot>, patternPrefix: String): String {
+        val pixmap = windowBorderPixmap(window, pixmaps)
+        return if (pixmap?.framebufferDataUri != null) {
+            "url(#${borderPatternId(patternPrefix, window, pixmap)})"
+        } else {
+            pixelColor(window.borderPixel)
+        }
+    }
+
+    private fun windowBorderPixmap(window: XWindowSnapshot, pixmaps: List<XPixmapSnapshot>): XPixmapSnapshot? =
+        window.borderPixmapId?.let { pixmapId ->
+            pixmaps.firstOrNull { pixmap ->
+                pixmap.id == pixmapId &&
+                    !pixmap.retained &&
+                    pixmap.painted &&
+                    pixmap.framebufferDataUri != null &&
+                    pixmap.width > 0 &&
+                    pixmap.height > 0
+            }
+        }
+
+    private fun borderPatternId(prefix: String, window: XWindowSnapshot, pixmap: XPixmapSnapshot): String =
+        "$prefix-pattern-${window.idHex.drop(2)}-${pixmap.idHex.drop(2)}"
 
     private fun subtreeWindows(snapshot: XScreenSnapshot, rootWindow: XWindowSnapshot): List<XWindowSnapshot> {
         val byParent = snapshot.windows.groupBy { it.parentId }

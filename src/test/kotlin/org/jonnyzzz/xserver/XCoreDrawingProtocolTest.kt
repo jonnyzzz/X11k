@@ -157,6 +157,112 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `screen svg exports tiled border pixmap pattern`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createPixmapRequest(PixmapId, width = 3, height = 2, drawable = X11Ids.RootWindow))
+                out.write(createGcRequest(GcId, foreground = Red, drawable = PixmapId))
+                out.write(
+                    putImage24PixelsRequest(
+                        PixmapId,
+                        width = 3,
+                        height = 2,
+                        pixels = listOf(Red, Green, Blue, 0x00ff_ff00, 0x0000_0000, 0x00ff_00ff),
+                    ),
+                )
+                out.write(
+                    createWindowRequest(
+                        WindowId,
+                        x = 11,
+                        y = 9,
+                        width = 64,
+                        height = 64,
+                        borderWidth = 3,
+                        backgroundPixel = 0x0012_3456,
+                        borderPixmap = PixmapId,
+                    ),
+                )
+                out.write(mapWindowRequest(WindowId))
+                out.write(getImageRequest(X11Ids.RootWindow, x = 7, y = 5, width = 12, height = 10))
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream(), WindowId)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 1, 1))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 2, 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 12, 3, 1))
+                assertEquals(0xffff_ff00.toInt(), pixelAt(image, 12, 1, 2))
+                assertEquals(0xff00_0000.toInt(), pixelAt(image, 12, 2, 2))
+                assertEquals(0xffff_00ff.toInt(), pixelAt(image, 12, 3, 2))
+                assertEquals(0xff12_3456.toInt(), pixelAt(image, 12, 7, 7))
+
+                val svg = httpGet(server.localPort, "/screen.svg")
+                assertContains(svg, """<pattern""")
+                assertContains(svg, """data-border-window-id="0x${WindowId.toString(16)}"""")
+                assertContains(svg, """data-border-pixmap-id="0x${PixmapId.toString(16)}"""")
+                assertContains(svg, """class="window-border-pixmap-image"""")
+                assertContains(svg, """x="8"""")
+                assertContains(svg, """y="6"""")
+                assertContains(svg, """fill="url(#screen-border-pattern-${WindowId.toString(16)}-${PixmapId.toString(16)})"""")
+                assertFalse(svg.contains("""fill="#000000""""))
+
+                val html = httpGet(server.localPort, "/")
+                assertContains(html, """id="preview-${WindowId.toString(16)}-border-pattern-${WindowId.toString(16)}-${PixmapId.toString(16)}"""")
+                assertContains(html, """fill="url(#preview-${WindowId.toString(16)}-border-pattern-${WindowId.toString(16)}-${PixmapId.toString(16)})"""")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `screen svg falls back to border pixel when border pixmap has no framebuffer content`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2, drawable = X11Ids.RootWindow))
+                out.write(
+                    createWindowRequest(
+                        WindowId,
+                        x = 10,
+                        y = 8,
+                        width = 64,
+                        height = 64,
+                        borderWidth = 2,
+                        backgroundPixel = 0x0012_3456,
+                        borderPixmap = PixmapId,
+                    ),
+                )
+                out.write(mapWindowRequest(WindowId))
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream(), WindowId)
+
+                val svg = httpGet(server.localPort, "/screen.svg")
+                assertFalse(svg.contains("""class="window-border-pixmap-image""""))
+                assertFalse(svg.contains("""fill="url(#screen-border-pattern-${WindowId.toString(16)}-${PixmapId.toString(16)})""""))
+                val borderRect = Regex("""<rect class="window-border"[^>]*data-border-window-id="0x${WindowId.toString(16)}"[^>]*>""")
+                    .find(svg)
+                    ?.value
+                    .orEmpty()
+                assertContains(borderRect, """data-border-pixmap-id="0x${PixmapId.toString(16)}"""")
+                assertContains(borderRect, """fill="#000000"""")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `window background pixmap tiles on ClearArea without immediate attribute repaint`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
