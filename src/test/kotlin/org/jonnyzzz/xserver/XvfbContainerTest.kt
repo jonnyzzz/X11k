@@ -6,7 +6,9 @@ import org.testcontainers.containers.GenericContainer
 import org.testcontainers.DockerClientFactory
 import org.testcontainers.utility.DockerImageName
 import java.io.ByteArrayInputStream
+import java.awt.Rectangle
 import java.awt.image.BufferedImage
+import java.io.File
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.Base64
@@ -145,6 +147,34 @@ class XvfbContainerTest {
             label = "Kotlin xcalc composed SVG framebuffer",
             coverageTolerance = 0.25,
             distanceThreshold = 300.0,
+        )
+    }
+
+    @Test
+    fun `xeyes robot screenshot and svg framebuffer roughly match xvfb reference`() {
+        assumeDockerAndImage(CLIENT_IMAGE)
+        assumeDockerAndImage(REFERENCE_IMAGE)
+        val reference = runXeyesAgainstXvfb()
+        val actual = runXeyesAgainstKotlinServer(port = 6229)
+
+        assertTrue(actual.text.contains("label=\"xeyes\""), actual.text)
+        assertTrue(actual.text.contains("- RENDER.Trapezoids:"), actual.text)
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected xeyes SVG export to retain framebuffer images\n${actual.svg}\n${actual.text}")
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin xeyes Robot screenshot",
+            coverageTolerance = 0.25,
+            distanceThreshold = 120.0,
+        )
+        assertComposedSvgClose(
+            expected = reference,
+            embeddedFramebuffers = actual.embeddedFramebuffers,
+            ownerWidth = RealClientCaptureWidth,
+            ownerHeight = RealClientCaptureHeight,
+            label = "Kotlin xeyes composed SVG framebuffer",
+            coverageTolerance = 0.25,
+            distanceThreshold = 120.0,
         )
     }
 
@@ -485,11 +515,116 @@ class XvfbContainerTest {
         }
     }
 
-    private fun compileRobotCapture(container: GenericContainer<*>) {
+    private fun runXeyesAgainstXvfb(): VisualCapture {
+        GenericContainer(DockerImageName.parse(REFERENCE_IMAGE).asCompatibleSubstituteFor("ubuntu"))
+            .withCommand("sleep", "120")
+            .use { container ->
+                container.start()
+                compileRobotCapture(container, movePointer = true)
+                val result = container.execInContainer(
+                    "sh",
+                    "-lc",
+                    """
+                    set -eu
+                    Xvfb :99 -screen 0 640x480x24 >/tmp/xvfb.log 2>&1 &
+                    xvfb=${'$'}!
+                    trap 'kill "${'$'}eyes" 2>/dev/null || true; kill "${'$'}xvfb" 2>/dev/null || true' EXIT
+                    for _ in ${'$'}(seq 1 40); do
+                      DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && break
+                      sleep 0.25
+                    done
+                    DISPLAY=:99 ${xeyesCommand()} >/tmp/xeyes.log 2>&1 &
+                    eyes=${'$'}!
+                    for _ in ${'$'}(seq 1 40); do
+                      DISPLAY=:99 xwininfo -name xeyes >/tmp/xeyes-ready.log 2>&1 && break
+                      sleep 0.25
+                    done
+                    DISPLAY=:99 xwininfo -name xeyes >/tmp/xeyes-ready.log 2>&1
+                    DISPLAY=:99 java -cp /tmp XRobotCapture
+                    """.trimIndent(),
+                )
+                assertEquals(0, result.exitCode, result.stderr + result.stdout)
+                return visualCapture(result.stdout)
+            }
+    }
+
+    private fun runXeyesAgainstKotlinServer(port: Int): RealClientResult {
+        assumeTrue(isPortAvailable(port), "Port $port is not available")
+        XServer(
+            ServerOptions(
+                host = "0.0.0.0",
+                port = port,
+                width = 640,
+                height = 480,
+                rootBackgroundPixel = 0x0000_0000,
+            ),
+        ).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            GenericContainer(DockerImageName.parse(CLIENT_IMAGE).asCompatibleSubstituteFor("ubuntu"))
+                .withCommand("sleep", "120")
+                .use { container ->
+                    container.start()
+                    compileRobotCapture(container, movePointer = true)
+                    val display = port - 6000
+                    val startResult = container.execInContainer(
+                        "sh",
+                        "-lc",
+                        """
+                        set -eu
+                        DISPLAY=host.docker.internal:$display \
+                        ${xeyesCommand()} >/tmp/xeyes.log 2>&1 &
+                        echo ${'$'}! >/tmp/xeyes.pid
+                        """.trimIndent(),
+                    )
+                    assertEquals(0, startResult.exitCode, startResult.stderr + startResult.stdout)
+
+                    waitUntil(
+                        failureMessage = {
+                            val log = container.execInContainer("sh", "-lc", "cat /tmp/xeyes.log 2>/dev/null || true").stdout
+                            val text = runCatching { httpGet(port, "/text.txt") }.getOrElse { it.toString() }
+                            "xeyes did not become SVG-ready before timeout\nlog:\n$log\ntext:\n$text"
+                        },
+                    ) {
+                        val text = httpGet(port, "/text.txt")
+                        text.contains("label=\"xeyes\"") &&
+                            httpGet(port, "/screen.svg").hasSvgClass("framebuffer-image")
+                    }
+
+                    val capture = container.execInContainer(
+                        "sh",
+                        "-lc",
+                        """
+                        set -eu
+                        pid=${'$'}(cat /tmp/xeyes.pid)
+                        kill -0 "${'$'}pid"
+                        DISPLAY=host.docker.internal:$display java -cp /tmp XRobotCapture
+                        """.trimIndent(),
+                    )
+                    val text = httpGet(port, "/text.txt")
+                    val svg = httpGet(port, "/screen.svg")
+                    File("build/tmp/xvfb-container-test").also { it.mkdirs() }.let { directory ->
+                        File(directory, "xeyes-actual.txt").writeText(text)
+                        File(directory, "xeyes-actual.svg").writeText(svg)
+                    }
+                    container.execInContainer("sh", "-lc", "kill $(cat /tmp/xeyes.pid) 2>/dev/null || true")
+                    server.close()
+                    serverThread.join(1_000)
+                    assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
+                    return RealClientResult(
+                        robot = visualCapture(capture.stdout),
+                        text = text,
+                        svg = svg,
+                        embeddedFramebuffers = svgCompositionLayers(svg),
+                    )
+                }
+        }
+    }
+
+    private fun compileRobotCapture(container: GenericContainer<*>, movePointer: Boolean = false) {
         val result = container.execInContainer(
             "sh",
             "-lc",
-            "cat > /tmp/XRobotCapture.java <<'JAVA'\n$RobotCaptureSource\nJAVA\njavac /tmp/XRobotCapture.java",
+            "cat > /tmp/XRobotCapture.java <<'JAVA'\n${robotCaptureSource(movePointer)}\nJAVA\njavac /tmp/XRobotCapture.java",
         )
         assertEquals(0, result.exitCode, result.stderr + result.stdout)
     }
@@ -502,6 +637,7 @@ class XvfbContainerTest {
         averageTolerance: Double = 0.04,
         distanceThreshold: Double = 45.0,
     ) {
+        dumpVisualCapturePair(label, expected, actual)
         assertEquals(expected.width, actual.width, "$label width should match Xvfb reference")
         assertEquals(expected.height, actual.height, "$label height should match Xvfb reference")
         assertClose(
@@ -521,6 +657,13 @@ class XvfbContainerTest {
             distance <= distanceThreshold,
             "$label should stay visually close to Xvfb reference; distance=$distance\nreference=$expected\nactual=$actual",
         )
+    }
+
+    private fun dumpVisualCapturePair(label: String, expected: VisualCapture, actual: VisualCapture) {
+        val safeLabel = label.lowercase().replace(Regex("""[^a-z0-9]+"""), "-").trim('-')
+        val directory = File("build/tmp/xvfb-container-test").also { it.mkdirs() }
+        ImageIO.write(expected.image, "png", File(directory, "$safeLabel-reference.png"))
+        ImageIO.write(actual.image, "png", File(directory, "$safeLabel-actual.png"))
     }
 
     private fun assertComposedSvgClose(
@@ -547,8 +690,9 @@ class XvfbContainerTest {
         )
     }
 
-    private fun svgCompositionLayers(svg: String): List<EmbeddedPng> =
-        Regex("""<(?:image|rect)\b[^>]*>""")
+    private fun svgCompositionLayers(svg: String): List<EmbeddedPng> {
+        val clipRectangles = svgClipRectangles(svg)
+        return Regex("""<(?:image|rect)\b[^>]*>""")
             .findAll(svg)
             .mapNotNull { match ->
                 val tag = match.value
@@ -570,6 +714,7 @@ class XvfbContainerTest {
                         y = y,
                         width = width,
                         height = height,
+                        clipRectangles = emptyList(),
                     )
                 }
                 EmbeddedPng(
@@ -580,9 +725,29 @@ class XvfbContainerTest {
                     y = y,
                     width = width,
                     height = height,
+                    clipRectangles = id?.let { clipRectangles["clip-screen-${it.removePrefix("0x")}"] }.orEmpty(),
                 )
             }
             .toList()
+    }
+
+    private fun svgClipRectangles(svg: String): Map<String, List<Rectangle>> =
+        Regex("""<clipPath\b[^>]*\bid="([^"]+)"[^>]*>(.*?)</clipPath>""", setOf(RegexOption.DOT_MATCHES_ALL))
+            .findAll(svg)
+            .associate { match ->
+                val rectangles = Regex("""<rect\b[^>]*>""")
+                    .findAll(match.groupValues[2])
+                    .mapNotNull { rect ->
+                        val tag = rect.value
+                        val x = svgImageAttribute(tag, "x") ?: return@mapNotNull null
+                        val y = svgImageAttribute(tag, "y") ?: return@mapNotNull null
+                        val width = svgImageAttribute(tag, "width") ?: return@mapNotNull null
+                        val height = svgImageAttribute(tag, "height") ?: return@mapNotNull null
+                        Rectangle(x, y, width, height)
+                    }
+                    .toList()
+                match.groupValues[1] to rectangles
+            }
 
     private fun svgImageAttribute(tag: String, name: String): Int? =
         Regex("""\b$name="(-?\d+)"""").find(tag)?.groupValues?.get(1)?.toInt()
@@ -597,7 +762,16 @@ class XvfbContainerTest {
             for (embedded in embeddedFramebuffers) {
                 if (embedded.bytes != null) {
                     val layer = ImageIO.read(ByteArrayInputStream(embedded.bytes)) ?: continue
-                    graphics.drawImage(layer, embedded.x, embedded.y, embedded.width, embedded.height, null)
+                    if (embedded.clipRectangles.isEmpty()) {
+                        graphics.drawImage(layer, embedded.x, embedded.y, embedded.width, embedded.height, null)
+                    } else {
+                        val originalClip = graphics.clip
+                        for (clip in embedded.clipRectangles) {
+                            graphics.clip = clip
+                            graphics.drawImage(layer, embedded.x, embedded.y, embedded.width, embedded.height, null)
+                        }
+                        graphics.clip = originalClip
+                    }
                 } else if (embedded.fill != null) {
                     graphics.color = java.awt.Color(embedded.fill, true)
                     graphics.fillRect(embedded.x, embedded.y, embedded.width, embedded.height)
@@ -725,7 +899,16 @@ class XvfbContainerTest {
         fun xcalcCommand(): String =
             "xcalc -geometry ${RealClientCaptureWidth}x${RealClientCaptureHeight}+${RealClientCaptureX}+${RealClientCaptureY}"
 
-        val RobotCaptureSource = """
+        fun xeyesCommand(): String =
+            "xeyes -geometry ${RealClientCaptureWidth}x${RealClientCaptureHeight}+${RealClientCaptureX}+${RealClientCaptureY}"
+
+        fun robotCaptureSource(movePointer: Boolean): String {
+            val pointerMove = if (movePointer) {
+                "robot.mouseMove(${RealClientCaptureX + RealClientCaptureWidth / 2}, ${RealClientCaptureY + RealClientCaptureHeight / 2});"
+            } else {
+                ""
+            }
+            return """
             import java.awt.Rectangle;
             import java.awt.Robot;
             import java.awt.image.BufferedImage;
@@ -735,15 +918,18 @@ class XvfbContainerTest {
 
             public class XRobotCapture {
               public static void main(String[] args) throws Exception {
+                Robot robot = new Robot();
+                $pointerMove
                 Thread.sleep(1200);
-                BufferedImage image = new Robot().createScreenCapture(
+                BufferedImage image = robot.createScreenCapture(
                     new Rectangle($RealClientCaptureX, $RealClientCaptureY, $RealClientCaptureWidth, $RealClientCaptureHeight));
                 ByteArrayOutputStream output = new ByteArrayOutputStream();
                 ImageIO.write(image, "png", output);
                 System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
               }
             }
-        """.trimIndent()
+            """.trimIndent()
+        }
     }
 
     private data class EmbeddedPng(
@@ -754,6 +940,7 @@ class XvfbContainerTest {
         val y: Int,
         val width: Int,
         val height: Int,
+        val clipRectangles: List<Rectangle>,
     )
 
     private data class VisualCapture(

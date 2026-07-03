@@ -124,6 +124,7 @@ internal class X11State(
     val width: Int,
     val height: Int,
     val dpi: Int = 96,
+    val rootBackgroundPixel: Int = 0x00ff_ffff,
 ) {
     var widthMillimeters: Int = pixelsToMillimeters(width, dpi)
         private set
@@ -358,6 +359,7 @@ internal class X11State(
                 height = height,
                 borderWidth = 0,
                 mapped = true,
+                backgroundPixel = rootBackgroundPixel,
             ),
         )
         PredefinedAtoms.forEachIndexed { index, name ->
