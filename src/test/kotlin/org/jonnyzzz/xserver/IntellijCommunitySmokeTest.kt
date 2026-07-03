@@ -94,6 +94,16 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij log artifact names preserve pid suffixes`() {
+        assertEquals("intellij-kotlin-jcef.log", intellijLogArtifactName("intellij-kotlin", "/tmp/idea-log/jcef.log"))
+        assertEquals("intellij-kotlin-jcef-55.log", intellijLogArtifactName("intellij-kotlin", "/tmp/idea-log/jcef_55.log"))
+        assertEquals(
+            "intellij-kotlin-jcef-chromium-55.log",
+            intellijLogArtifactName("intellij-kotlin", "/tmp/idea-log/jcef_chromium_55.log"),
+        )
+    }
+
+    @Test
     fun `intellij debug flag defaults from environment and honors system property`() {
         val previous = System.getProperty("x.intellijDebug")
         try {
@@ -708,7 +718,7 @@ class IntellijCommunitySmokeTest {
         composedSvg: BufferedImage,
         composedSvgCapture: VisualCapture,
     ) {
-        val directory = File("build/tmp/intellij-community-smoke").also { it.mkdirs() }
+        val directory = intellijSmokeArtifactsDirectory()
         ImageIO.write(reference.robot.image, "png", File(directory, "intellij-xvfb-reference.png"))
         ImageIO.write(actual.robot.image, "png", File(directory, "intellij-kotlin-robot.png"))
         ImageIO.write(composedSvg, "png", File(directory, "intellij-kotlin-svg-composed.png"))
@@ -721,25 +731,45 @@ class IntellijCommunitySmokeTest {
     }
 
     private fun dumpIntellijLogArtifacts(logs: List<IntellijLogArtifact>) {
-        val directory = File("build/tmp/intellij-community-smoke").also { it.mkdirs() }
+        val directory = intellijSmokeArtifactsDirectory()
         logs.forEach { artifact ->
             File(directory, artifact.fileName).writeText(artifact.text)
         }
     }
+
+    private fun intellijSmokeArtifactsDirectory(): File =
+        projectRoot().resolve("build/tmp/intellij-community-smoke").toFile().also { it.mkdirs() }
 
     private fun collectIntellijLogs(
         container: GenericContainer<*>,
         prefix: String,
         runLogPath: String,
     ): List<IntellijLogArtifact> {
-        val paths = listOf(
+        val fixedPaths = listOf(
             runLogPath to "$prefix-run.log",
             "/tmp/idea-log/idea.log" to "$prefix-idea.log",
             "/tmp/idea-log/xawt-trace.log" to "$prefix-xawt-trace.log",
             "/tmp/idea-log/jcef.log" to "$prefix-jcef.log",
             "/tmp/idea-log/jcef_chromium.log" to "$prefix-jcef-chromium.log",
         )
-        return paths.mapNotNull { (path, fileName) ->
+        val dynamicLogs = container.execInContainer(
+            "sh",
+            "-lc",
+            "if [ -d /tmp/idea-log ]; then find /tmp/idea-log -maxdepth 1 -type f \\( -name 'jcef*.log' -o -name 'jcef_chromium*.log' -o -name 'mesa*.log' \\) -print | sort; fi",
+        )
+        val pathsAndNames = (
+            fixedPaths +
+                if (dynamicLogs.exitCode == 0) {
+                    dynamicLogs.stdout
+                        .lineSequence()
+                        .filter { it.isNotBlank() }
+                        .map { path -> path to intellijLogArtifactName(prefix, path) }
+                        .toList()
+                } else {
+                    emptyList()
+                }
+            ).distinctBy { (path, _) -> path }
+        return pathsAndNames.mapNotNull { (path, fileName) ->
             val result = container.execInContainer(
                 "sh",
                 "-lc",
@@ -751,6 +781,15 @@ class IntellijCommunitySmokeTest {
                 null
             }
         }
+    }
+
+    private fun intellijLogArtifactName(prefix: String, path: String): String {
+        val normalized = path.substringAfterLast('/')
+            .removeSuffix(".log")
+            .replace('_', '-')
+            .replace(Regex("""[^A-Za-z0-9.-]+"""), "-")
+            .trim('-')
+        return "$prefix-$normalized.log"
     }
 
     private fun svgLayerInventory(layers: List<SvgLayer>): String =

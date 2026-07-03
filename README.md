@@ -124,7 +124,8 @@ inventory plus visual diffs, metrics, and IntelliJ client logs under
 `build/tmp/intellij-community-smoke/`.
 Add `-Dx.intellijDebug=true` or `X_INTELLIJ_DEBUG=true` to the smoke or parity
 test to also enable the container's XAWT/JCEF trace logs; when present, they are
-copied into the same diagnostics directory.
+copied into the same diagnostics directory, including pid-suffixed JCEF/Chromium
+logs and Mesa/EGL debug output in the run log.
 
 Run the prototype server:
 
@@ -155,7 +156,8 @@ Open `http://127.0.0.1:16000/` for the HTML page with the SVG window map, large 
 For focused IntelliJ/JBR/JCEF diagnostics, add `-e IDEA_X11_DEBUG=true` to the
 `x-demo-idea` container. That enables XRender pipeline logging, XToolkit traces,
 IntelliJ debug/trace categories, and verbose JCEF/Chromium logs under
-`/tmp/idea-log`. See [Debugging IntelliJ on the JVM X Server](docs/debugging-intellij-x11.md).
+`/tmp/idea-log`, plus Mesa/EGL loader diagnostics in the captured run log. See
+[Debugging IntelliJ on the JVM X Server](docs/debugging-intellij-x11.md).
 
 Send input through the HTTP API:
 

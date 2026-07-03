@@ -235,6 +235,11 @@ fi
 
 if [ "$IDEA_X11_DEBUG" = "true" ]; then
   mkdir -p "$IDEA_LOG"
+  : "${LIBGL_DEBUG:=verbose}"
+  : "${MESA_DEBUG:=1}"
+  : "${EGL_LOG_LEVEL:=debug}"
+  export LIBGL_DEBUG MESA_DEBUG EGL_LOG_LEVEL
+  echo "IDEA_X11_DEBUG=true LIBGL_DEBUG=$LIBGL_DEBUG MESA_DEBUG=$MESA_DEBUG EGL_LOG_LEVEL=$EGL_LOG_LEVEL" >&2
   append_idea_vm_option "-Dsun.java2d.xrender=True"
   append_idea_vm_option "-Dsun.java2d.opengl=false"
   append_idea_vm_option "-Dsun.awt.x11.trace=log,timestamp,stats,out:$IDEA_LOG/xawt-trace.log,td=1"
