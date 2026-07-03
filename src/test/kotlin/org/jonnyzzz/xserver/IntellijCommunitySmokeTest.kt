@@ -170,6 +170,8 @@ class IntellijCommunitySmokeTest {
             summaryFromExplicitText.contains("kotlinClientGlxExtensions=GLX_ARB_create_context GLX_EXT_create_context_es_profile"),
             summaryFromExplicitText,
         )
+        assertTrue(summary.contains("kotlinExplicitTextTraceIncluded=false"), summary)
+        assertTrue(summaryFromExplicitText.contains("kotlinExplicitTextTraceIncluded=true"), summaryFromExplicitText)
         assertTrue(summary.contains("kotlinAngleInitializationPbufferFailure=true"), summary)
     }
 
@@ -910,11 +912,14 @@ class IntellijCommunitySmokeTest {
     private fun intellijGlxJcefDiagnosticsSummary(logs: List<IntellijLogArtifact>, kotlinText: String? = null): String {
         val xvfbGlx = logs.firstOrNull { it.fileName == "intellij-xvfb-glx-xdpyinfo.log" }?.text.orEmpty()
         val kotlinGlx = logs.firstOrNull { it.fileName == "intellij-kotlin-glx-xdpyinfo.log" }?.text.orEmpty()
+        val kotlinTraceArtifacts = logs.filter { it.fileName.startsWith("intellij-kotlin-") }
         val kotlinTrace = (
-            logs.filter { it.fileName.startsWith("intellij-kotlin-") }.map { it.text } +
+            kotlinTraceArtifacts.map { it.text } +
                 listOfNotNull(kotlinText)
             ).joinToString("\n")
         return buildString {
+            appendLine("kotlinExplicitTextTraceIncluded=${!kotlinText.isNullOrBlank()}")
+            appendLine("kotlinTraceArtifacts=${kotlinTraceArtifacts.joinToString(" ") { it.fileName }}")
             appendLine("xvfbListsGlxExtension=${listedExtensionsFromXdpyinfo(xvfbGlx).contains("GLX")}")
             appendLine("kotlinListsGlxExtension=${listedExtensionsFromXdpyinfo(kotlinGlx).contains("GLX")}")
             appendLine("xvfbXdpyinfoGlxDetailUnsupported=${xdpyinfoGlxDetailUnsupported(xvfbGlx)}")
