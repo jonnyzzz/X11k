@@ -7,12 +7,14 @@ import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.BindMode
 import org.testcontainers.utility.DockerImageName
 import java.io.ByteArrayInputStream
+import java.awt.image.BufferedImage
 import java.net.Socket
 import java.nio.file.Path
 import java.net.ServerSocket
 import java.util.Base64
 import javax.imageio.ImageIO
 import kotlin.concurrent.thread
+import kotlin.math.abs
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -33,6 +35,10 @@ class IntellijCommunitySmokeTest {
         assertEquals(listOf("0x20", "0x21"), images.map { it.id })
         assertEquals("hello", images[0].bytes.decodeToString())
         assertEquals("world", images[1].bytes.decodeToString())
+        assertEquals(listOf(12, 36), images.map { it.x })
+        assertEquals(listOf(24, 48), images.map { it.y })
+        assertEquals(listOf(10, 20), images.map { it.width })
+        assertEquals(listOf(10, 20), images.map { it.height })
     }
 
     @Test
@@ -147,6 +153,38 @@ class IntellijCommunitySmokeTest {
         }
     }
 
+    @Test
+    fun `intellij community robot and svg roughly match xvfb reference`() {
+        assumeTrue(
+            System.getProperty("x.intellijParity") == "true" || System.getenv("X_INTELLIJ_PARITY") == "true",
+            "Set -Dx.intellijParity=true or X_INTELLIJ_PARITY=true to run the heavyweight IntelliJ Xvfb parity probe",
+        )
+        assumeTrue(DockerClientFactory.instance().isDockerAvailable, "Docker is not available")
+
+        val port = 6231
+        assumeTrue(isPortAvailable(port), "Port $port is not available")
+        val url = System.getProperty("x.intellijUrl") ?: System.getenv("X_INTELLIJ_URL")
+        val clientImage = System.getProperty("x.intellijImage")
+            ?: System.getenv("X_INTELLIJ_IMAGE")
+            ?: "jonnyzzz-x/x11-client:latest"
+        val referenceImage = System.getProperty("x.intellijReferenceImage")
+            ?: System.getenv("X_INTELLIJ_REFERENCE_IMAGE")
+            ?: "jonnyzzz-x/x11-reference:latest"
+        assumeTrue(imageExists(clientImage), "Build $clientImage first with scripts/run-gradle-bounded.sh dockerBuildX11Client")
+        assumeTrue(imageExists(referenceImage), "Build $referenceImage first with scripts/run-gradle-bounded.sh dockerBuildX11Images")
+
+        val reference = runIntellijAgainstXvfb(referenceImage, url)
+        val actual = runIntellijAgainstKotlinServer(port, clientImage, url)
+
+        assertTrue(actual.text.contains("Content window"), actual.text)
+        assertTrue(actual.text.contains("Unsupported requests:\n- None."), actual.text)
+        assertFalse(actual.text.contains("Download SDK") || actual.text.contains("Download JDK"), actual.text)
+        assertIntellijVisualClose(reference, actual.robot, "Kotlin Robot IntelliJ capture")
+
+        val composedSvg = composeEmbeddedPngs(actual.embeddedPngs, IntellijCaptureWidth, IntellijCaptureHeight)
+        assertIntellijVisualClose(reference, visualCapture(composedSvg), "Kotlin SVG-composed IntelliJ framebuffer")
+    }
+
     private fun projectRoot(): Path =
         Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize()
 
@@ -191,6 +229,148 @@ class IntellijCommunitySmokeTest {
         return lastSnapshot
     }
 
+    private fun runIntellijAgainstXvfb(image: String, url: String?): VisualCapture =
+        GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
+            .withFileSystemBind(projectRoot().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
+            .withCommand("sleep", "900")
+            .use { container ->
+                container.start()
+                compileRobotCapture(container)
+                val result = container.execInContainer(
+                    "sh",
+                    "-lc",
+                    """
+                    set -eu
+                    command -v Xvfb
+                    command -v run-intellij
+                    command -v git
+                    if [ -n "${url.orEmpty()}" ]; then
+                      export IDEA_URL="${url.orEmpty()}"
+                    fi
+                    Xvfb :99 -screen 0 ${IntellijCaptureWidth}x${IntellijCaptureHeight}x24 >/tmp/xvfb.log 2>&1 &
+                    xvfb=${'$'}!
+                    trap 'kill "${'$'}idea" 2>/dev/null || true; kill "${'$'}xvfb" 2>/dev/null || true' EXIT
+                    for _ in ${'$'}(seq 1 80); do
+                      DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && break
+                      sleep 0.25
+                    done
+                    DISPLAY=:99 xsetroot -solid white >/tmp/xsetroot.log 2>&1 || true
+                    DISPLAY=:99 \
+                    IDEA_PROJECT=/workspace/jonnyzzz-x \
+                    IDEA_TRUST_PROJECT=true \
+                    run-intellij >/tmp/idea-run-xvfb.log 2>&1 &
+                    idea=${'$'}!
+                    opened=0
+                    for _ in ${'$'}(seq 1 120); do
+                      if grep -q "Project frame set to Project(name=" /tmp/idea-log/idea.log 2>/dev/null; then
+                        opened=1
+                        break
+                      fi
+                      if ! kill -0 "${'$'}idea" 2>/dev/null; then
+                        break
+                      fi
+                      sleep 1
+                    done
+                    if [ "${'$'}opened" -ne 1 ]; then
+                      cat /tmp/idea-run-xvfb.log 2>/dev/null || true
+                      tail -240 /tmp/idea-log/idea.log 2>/dev/null || true
+                      exit 1
+                    fi
+                    if grep -q "Download JDK" /tmp/idea-log/idea.log; then echo "unexpected Download JDK log"; exit 1; fi
+                    if grep -q "Cannot Run Git" /tmp/idea-log/idea.log; then echo "unexpected Cannot Run Git log"; exit 1; fi
+                    if grep -q "Project is not trusted" /tmp/idea-log/idea.log; then echo "unexpected Project is not trusted log"; exit 1; fi
+                    sleep 5
+                    DISPLAY=:99 java -cp /tmp XIntellijRobotCapture
+                    """.trimIndent(),
+                )
+                assertEquals(0, result.exitCode, result.stderr + result.stdout)
+                visualCapture(result.stdout)
+            }
+
+    private fun runIntellijAgainstKotlinServer(port: Int, image: String, url: String?): IntellijKotlinCapture {
+        XServer(
+            ServerOptions(
+                host = "0.0.0.0",
+                port = port,
+                width = IntellijCaptureWidth,
+                height = IntellijCaptureHeight,
+            ),
+        ).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
+                .withFileSystemBind(projectRoot().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
+                .withCommand("sleep", "900")
+                .use { container ->
+                    container.start()
+                    compileRobotCapture(container)
+                    val display = port - 6000
+                    val startResult = container.execInContainer(
+                        "sh",
+                        "-lc",
+                        """
+                        set -eu
+                        command -v run-intellij
+                        command -v git
+                        if [ -n "${url.orEmpty()}" ]; then
+                          export IDEA_URL="${url.orEmpty()}"
+                        fi
+                        DISPLAY=host.docker.internal:$display \
+                        IDEA_PROJECT=/workspace/jonnyzzz-x \
+                        IDEA_TRUST_PROJECT=true \
+                        run-intellij >/tmp/idea-run-parity.log 2>&1 &
+                        pid=${'$'}!
+                        echo "${'$'}pid" >/tmp/idea-parity.pid
+                        opened=0
+                        for _ in ${'$'}(seq 1 120); do
+                          if grep -q "Project frame set to Project(name=" /tmp/idea-log/idea.log 2>/dev/null; then
+                            opened=1
+                            break
+                          fi
+                          if ! kill -0 "${'$'}pid" 2>/dev/null; then
+                            break
+                          fi
+                          sleep 1
+                        done
+                        if [ "${'$'}opened" -ne 1 ]; then
+                          cat /tmp/idea-run-parity.log 2>/dev/null || true
+                          tail -240 /tmp/idea-log/idea.log 2>/dev/null || true
+                          exit 1
+                        fi
+                        if grep -q "Download JDK" /tmp/idea-log/idea.log; then echo "unexpected Download JDK log"; exit 1; fi
+                        if grep -q "Cannot Run Git" /tmp/idea-log/idea.log; then echo "unexpected Cannot Run Git log"; exit 1; fi
+                        if grep -q "Project is not trusted" /tmp/idea-log/idea.log; then echo "unexpected Project is not trusted log"; exit 1; fi
+                        """.trimIndent(),
+                    )
+                    assertEquals(0, startResult.exitCode, startResult.stderr + startResult.stdout)
+                    try {
+                        val snapshot = waitForVisibleIntellijPixels(port)
+                        Thread.sleep(5_000)
+                        val capture = container.execInContainer(
+                            "sh",
+                            "-lc",
+                            """
+                            set -eu
+                            pid=${'$'}(cat /tmp/idea-parity.pid)
+                            kill -0 "${'$'}pid"
+                            DISPLAY=host.docker.internal:$display java -cp /tmp XIntellijRobotCapture
+                            """.trimIndent(),
+                        )
+                        assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
+                        val svg = httpGet(port, "/screen.svg")
+                        return IntellijKotlinCapture(
+                            robot = visualCapture(capture.stdout),
+                            text = snapshot.text,
+                            embeddedPngs = pngDataUris(svg),
+                        )
+                    } finally {
+                        container.execInContainer("sh", "-lc", "kill $(cat /tmp/idea-parity.pid 2>/dev/null || pgrep -f run-intellij) 2>/dev/null || true")
+                        server.close()
+                        serverThread.join(1_000)
+                    }
+                }
+        }
+    }
+
     private fun pngDataUris(svg: String): List<EmbeddedPng> =
         Regex("""<image\b[^>]*>""")
             .findAll(svg)
@@ -198,9 +378,23 @@ class IntellijCommunitySmokeTest {
                 val tag = match.value
                 val id = Regex("""\bdata-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1) ?: return@mapNotNull null
                 val encoded = Regex("""\bhref="data:image/png;base64,([A-Za-z0-9+/=]+)"""").find(tag)?.groupValues?.get(1) ?: return@mapNotNull null
-                EmbeddedPng(id, Base64.getDecoder().decode(encoded))
+                val x = svgIntAttribute(tag, "x") ?: return@mapNotNull null
+                val y = svgIntAttribute(tag, "y") ?: return@mapNotNull null
+                val width = svgIntAttribute(tag, "width") ?: return@mapNotNull null
+                val height = svgIntAttribute(tag, "height") ?: return@mapNotNull null
+                EmbeddedPng(
+                    id = id,
+                    bytes = Base64.getDecoder().decode(encoded),
+                    x = x,
+                    y = y,
+                    width = width,
+                    height = height,
+                )
             }
             .toList()
+
+    private fun svgIntAttribute(tag: String, name: String): Int? =
+        Regex("""\b$name="(-?\d+)"""").find(tag)?.groupValues?.get(1)?.toInt()
 
     private fun imageStats(id: String, bytes: ByteArray): ImageStats {
         val image = ImageIO.read(ByteArrayInputStream(bytes)) ?: return ImageStats(id, 0, 0, 0, 0, emptyList())
@@ -229,15 +423,167 @@ class IntellijCommunitySmokeTest {
         )
     }
 
+    private fun compileRobotCapture(container: GenericContainer<*>) {
+        val result = container.execInContainer(
+            "sh",
+            "-lc",
+            "cat > /tmp/XIntellijRobotCapture.java <<'JAVA'\n${robotCaptureSource()}\nJAVA\njavac /tmp/XIntellijRobotCapture.java",
+        )
+        assertEquals(0, result.exitCode, result.stderr + result.stdout)
+    }
+
+    private fun robotCaptureSource(): String =
+        """
+        import java.awt.Rectangle;
+        import java.awt.Robot;
+        import java.awt.image.BufferedImage;
+        import java.io.ByteArrayOutputStream;
+        import java.util.Base64;
+        import javax.imageio.ImageIO;
+
+        public class XIntellijRobotCapture {
+          public static void main(String[] args) throws Exception {
+            Robot robot = new Robot();
+            Thread.sleep(1200);
+            BufferedImage image = robot.createScreenCapture(
+                new Rectangle(0, 0, $IntellijCaptureWidth, $IntellijCaptureHeight));
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            ImageIO.write(image, "png", output);
+            System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
+          }
+        }
+        """.trimIndent()
+
+    private fun composeEmbeddedPngs(images: List<EmbeddedPng>, width: Int, height: Int): BufferedImage {
+        val image = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
+        val graphics = image.createGraphics()
+        try {
+            graphics.color = java.awt.Color.WHITE
+            graphics.fillRect(0, 0, width, height)
+            for (embedded in images) {
+                val layer = ImageIO.read(ByteArrayInputStream(embedded.bytes)) ?: continue
+                graphics.drawImage(layer, embedded.x, embedded.y, embedded.width, embedded.height, null)
+            }
+        } finally {
+            graphics.dispose()
+        }
+        return image
+    }
+
+    private fun visualCapture(stdout: String): VisualCapture {
+        val encoded = stdout.lineSequence()
+            .firstOrNull { it.startsWith("PNG_BASE64=") }
+            ?.removePrefix("PNG_BASE64=")
+            ?: error("XIntellijRobotCapture did not print PNG_BASE64, stdout:\n$stdout")
+        val image = ImageIO.read(ByteArrayInputStream(Base64.getDecoder().decode(encoded)))
+            ?: error("XIntellijRobotCapture PNG was not readable")
+        return visualCapture(image)
+    }
+
+    private fun visualCapture(image: BufferedImage): VisualCapture {
+        var nonWhite = 0
+        var redSum = 0L
+        var greenSum = 0L
+        var blueSum = 0L
+        for (y in 0 until image.height) {
+            for (x in 0 until image.width) {
+                val argb = image.getRGB(x, y)
+                redSum += (argb ushr 16) and 0xff
+                greenSum += (argb ushr 8) and 0xff
+                blueSum += argb and 0xff
+                val alpha = (argb ushr 24) and 0xff
+                val rgb = argb and 0x00ff_ffff
+                if (alpha > 0 && rgb != 0x00ff_ffff) nonWhite++
+            }
+        }
+        val pixels = image.width * image.height
+        return VisualCapture(
+            width = image.width,
+            height = image.height,
+            nonWhitePixels = nonWhite,
+            averageRgb = (redSum + greenSum + blueSum).toDouble() / (pixels * 3.0 * 255.0),
+            image = image,
+        )
+    }
+
+    private fun assertIntellijVisualClose(expected: VisualCapture, actual: VisualCapture, label: String) {
+        assertEquals(expected.width, actual.width, "$label width should match Xvfb reference")
+        assertEquals(expected.height, actual.height, "$label height should match Xvfb reference")
+        assertClose(
+            expected = expected.nonWhitePixels,
+            actual = actual.nonWhitePixels,
+            tolerance = 0.35,
+            message = "$label should expose similar non-white coverage to Xvfb; reference=$expected actual=$actual",
+        )
+        assertClose(
+            expected = expected.averageRgb,
+            actual = actual.averageRgb,
+            tolerance = 0.16,
+            message = "$label should expose similar average RGB to Xvfb; reference=$expected actual=$actual",
+        )
+        val distance = imageDistance(expected.image, actual.image)
+        assertTrue(
+            distance <= 125.0,
+            "$label should stay roughly close to Xvfb reference; distance=$distance\nreference=$expected\nactual=$actual",
+        )
+    }
+
+    private fun assertClose(expected: Int, actual: Int, tolerance: Double, message: String) {
+        val allowed = (expected * tolerance).toInt().coerceAtLeast(1)
+        assertTrue(abs(expected - actual) <= allowed, message)
+    }
+
+    private fun assertClose(expected: Double, actual: Double, tolerance: Double, message: String) {
+        assertTrue(abs(expected - actual) <= tolerance, message)
+    }
+
+    private fun imageDistance(reference: BufferedImage, actual: BufferedImage): Double {
+        var total = 0L
+        var samples = 0
+        for (y in 0 until reference.height step 5) {
+            for (x in 0 until reference.width step 5) {
+                total += rgbDistance(reference.getRGB(x, y), actual.getRGB(x, y))
+                samples++
+            }
+        }
+        return total.toDouble() / samples.toDouble()
+    }
+
+    private fun rgbDistance(left: Int, right: Int): Int =
+        abs(((left ushr 16) and 0xff) - ((right ushr 16) and 0xff)) +
+            abs(((left ushr 8) and 0xff) - ((right ushr 8) and 0xff)) +
+            abs((left and 0xff) - (right and 0xff))
+
     private data class EmbeddedPng(
         val id: String,
         val bytes: ByteArray,
+        val x: Int,
+        val y: Int,
+        val width: Int,
+        val height: Int,
     )
 
     private data class VisualSnapshot(
         val stats: List<ImageStats>,
         val text: String,
     )
+
+    private data class IntellijKotlinCapture(
+        val robot: VisualCapture,
+        val text: String,
+        val embeddedPngs: List<EmbeddedPng>,
+    )
+
+    private data class VisualCapture(
+        val width: Int,
+        val height: Int,
+        val nonWhitePixels: Int,
+        val averageRgb: Double,
+        val image: BufferedImage,
+    ) {
+        override fun toString(): String =
+            "VisualCapture(width=$width, height=$height, nonWhitePixels=$nonWhitePixels, averageRgb=$averageRgb)"
+    }
 
     private data class ImageStats(
         val id: String,
@@ -255,5 +601,10 @@ class IntellijCommunitySmokeTest {
                 height >= 360 &&
                 nonWhitePixels > 10_000 &&
                 distinctNonWhiteColors >= 16
+    }
+
+    private companion object {
+        const val IntellijCaptureWidth = 1280
+        const val IntellijCaptureHeight = 900
     }
 }
