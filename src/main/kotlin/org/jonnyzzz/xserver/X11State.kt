@@ -155,6 +155,7 @@ internal class X11State(
     private val xkbNamesNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbCompatMapNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val xkbBellNotifyInputs = linkedMapOf<XEventSink, Int>()
+    private val xkbExtensionDeviceNotifyInputs = linkedMapOf<XEventSink, Int>()
     private val screenSaverInputs = linkedMapOf<XEventSink, Int>()
     private val windowOwners = linkedMapOf<Int, XEventSink>()
     private val resourceOwners = linkedMapOf<Int, XEventSink>()
@@ -784,6 +785,20 @@ internal class X11State(
             xkbBellNotifyInputs.remove(owner)
         } else {
             xkbBellNotifyInputs[owner] = eventMask
+        }
+    }
+
+    @Synchronized
+    fun selectXkbExtensionDeviceNotifyInput(owner: XEventSink, clear: Boolean, selectAll: Boolean, affect: Int?, selected: Int) {
+        var eventMask = xkbExtensionDeviceNotifyInputs[owner] ?: 0
+        if (clear) eventMask = 0
+        if (selectAll) eventMask = XXkb.AllExtensionDeviceEvents
+        if (affect != null) eventMask = (eventMask and affect.inv()) or (selected and affect)
+
+        if (eventMask == 0) {
+            xkbExtensionDeviceNotifyInputs.remove(owner)
+        } else {
+            xkbExtensionDeviceNotifyInputs[owner] = eventMask
         }
     }
 
@@ -1782,8 +1797,9 @@ internal class X11State(
             .map { it.copy(maps = it.maps.map(ByteArray::copyOf)) }
 
     @Synchronized
-    fun setXkbDeviceLedFeedbacks(deviceSpec: Int, feedbacks: List<XXkbDeviceLedFeedback>, change: Int) {
-        if (feedbacks.isEmpty()) return
+    fun setXkbDeviceLedFeedbacks(deviceSpec: Int, feedbacks: List<XXkbDeviceLedFeedback>, change: Int): List<XXkbDeviceLedFeedback> {
+        if (feedbacks.isEmpty()) return emptyList()
+        val applied = mutableListOf<XXkbDeviceLedFeedback>()
         val existing = xkbDeviceLedFeedbacks.getOrPut(deviceSpec) { mutableListOf() }
         for (feedback in feedbacks) {
             val previousIndex = existing.indexOfFirst { it.ledClass == feedback.ledClass && it.ledId == feedback.ledId }
@@ -1811,7 +1827,9 @@ internal class X11State(
             } else {
                 existing += merged
             }
+            applied += merged.copy(maps = merged.maps.map(ByteArray::copyOf))
         }
+        return applied
     }
 
     @Synchronized
@@ -1917,6 +1935,18 @@ internal class X11State(
                 XXkbBellNotifyDispatch(sink = sink, event = event)
             }
         }
+
+    @Synchronized
+    fun xkbExtensionDeviceNotifyDispatches(event: XXkbExtensionDeviceNotifyEvent): List<XXkbExtensionDeviceNotifyDispatch> {
+        if (event.reason == 0) return emptyList()
+        return xkbExtensionDeviceNotifyInputs.mapNotNull { (sink, selected) ->
+            if ((selected and event.reason) == 0) {
+                null
+            } else {
+                XXkbExtensionDeviceNotifyDispatch(sink = sink, event = event)
+            }
+        }
+    }
 
     @Synchronized
     fun queryKeymap(): ByteArray {
@@ -2730,6 +2760,7 @@ internal class X11State(
         xkbNamesNotifyInputs.remove(sink)
         xkbCompatMapNotifyInputs.remove(sink)
         xkbBellNotifyInputs.remove(sink)
+        xkbExtensionDeviceNotifyInputs.remove(sink)
         screenSaverInputs.remove(sink)
         if (screenSaverAttributes?.owner == sink) screenSaverAttributes = null
         screenSaverSuspensions.remove(sink)

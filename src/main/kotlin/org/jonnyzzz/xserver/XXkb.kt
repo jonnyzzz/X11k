@@ -42,6 +42,7 @@ internal object XXkb {
     const val NamesNotify = 6
     const val CompatMapNotify = 7
     const val BellNotify = 8
+    const val ExtensionDeviceNotify = 11
 
     const val EventNewKeyboardNotify = 1 shl 0
     const val EventMapNotify = 1 shl 1
@@ -148,7 +149,10 @@ internal object XXkb {
     const val XiFeatureIndicatorNames = 1 shl 2
     const val XiFeatureIndicatorMaps = 1 shl 3
     const val XiFeatureIndicatorState = 1 shl 4
+    const val XiFeatureUnsupportedFeature = 1 shl 15
     const val XiFeatureIndicators = XiFeatureIndicatorNames or XiFeatureIndicatorMaps or XiFeatureIndicatorState
+    const val XiFeatureAllDeviceFeatures = 0x001e
+    const val AllExtensionDeviceEvents = 0x801f
     const val DeviceSpecUseCoreKeyboard = 0x0100
     const val DeviceSpecUseCorePointer = 0x0200
     const val KbdFeedbackClass = 0

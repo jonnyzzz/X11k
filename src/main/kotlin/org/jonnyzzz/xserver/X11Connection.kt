@@ -1652,6 +1652,15 @@ internal class X11Connection(
                 selected = details.bellNotifySelected,
             )
         }
+        if ((affectWhich and XXkb.EventExtensionDeviceNotify) != 0) {
+            state.selectXkbExtensionDeviceNotifyInput(
+                owner = this,
+                clear = (clear and XXkb.EventExtensionDeviceNotify) != 0,
+                selectAll = (selectAll and XXkb.EventExtensionDeviceNotify) != 0,
+                affect = details.extensionDeviceNotifyAffect,
+                selected = details.extensionDeviceNotifySelected,
+            )
+        }
     }
 
     private fun validateXkbSelectEventDetails(
@@ -1677,6 +1686,8 @@ internal class X11Connection(
         var compatMapNotifySelected = 0
         var bellNotifyAffect: Int? = null
         var bellNotifySelected = 0
+        var extensionDeviceNotifyAffect: Int? = null
+        var extensionDeviceNotifySelected = 0
 
         fun require(bytes: Int): Boolean {
             val next = offset + bytes
@@ -1692,6 +1703,7 @@ internal class X11Connection(
             mask: Int,
             captureStateNotify: Boolean = false,
             captureNamesNotify: Boolean = false,
+            captureExtensionDeviceNotify: Boolean = false,
         ): Boolean {
             if ((detailsMask and mask) == 0) return true
             if (!require(4)) return false
@@ -1708,6 +1720,10 @@ internal class X11Connection(
             if (captureNamesNotify) {
                 namesNotifyAffect = affect
                 namesNotifySelected = selected
+            }
+            if (captureExtensionDeviceNotify) {
+                extensionDeviceNotifyAffect = affect
+                extensionDeviceNotifySelected = selected
             }
             return true
         }
@@ -1775,7 +1791,7 @@ internal class X11Connection(
         if (!details8(XXkb.EventBellNotify, captureBellNotify = true)) return null
         if (!details8(XXkb.EventActionMessage)) return null
         if (!details16(XXkb.EventAccessXNotify)) return null
-        if (!details16(XXkb.EventExtensionDeviceNotify)) return null
+        if (!details16(XXkb.EventExtensionDeviceNotify, captureExtensionDeviceNotify = true)) return null
 
         if (paddedLength(offset) != body.size) {
             writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
@@ -1796,6 +1812,8 @@ internal class X11Connection(
             compatMapNotifySelected = compatMapNotifySelected,
             bellNotifyAffect = bellNotifyAffect,
             bellNotifySelected = bellNotifySelected,
+            extensionDeviceNotifyAffect = extensionDeviceNotifyAffect,
+            extensionDeviceNotifySelected = extensionDeviceNotifySelected,
         )
     }
 
@@ -1894,6 +1912,8 @@ internal class X11Connection(
         val compatMapNotifySelected: Int,
         val bellNotifyAffect: Int?,
         val bellNotifySelected: Int,
+        val extensionDeviceNotifyAffect: Int?,
+        val extensionDeviceNotifySelected: Int,
     )
 
     private fun xkbGetControls(body: ByteArray, majorOpcode: Int) {
@@ -3373,8 +3393,37 @@ internal class X11Connection(
         if (offset != body.size) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
         if (buttonActions.isNotEmpty()) {
             state.setXkbButtonActions(firstButton, buttonActions)
+            sendXkbExtensionDeviceNotify(
+                state.xkbExtensionDeviceNotifyDispatches(
+                    XXkbExtensionDeviceNotifyEvent(
+                        timestamp = state.syncServerTime(),
+                        deviceId = deviceSpec and 0xff,
+                        reason = XXkb.XiFeatureButtonActions,
+                        firstButton = firstButton,
+                        nButtons = buttonActions.size,
+                    ),
+                ),
+            )
         }
-        state.setXkbDeviceLedFeedbacks(deviceSpec, ledFeedbacks, change)
+        val appliedLedFeedbacks = state.setXkbDeviceLedFeedbacks(deviceSpec, ledFeedbacks, change)
+        val indicatorReason = change and XXkb.XiFeatureIndicators
+        if (indicatorReason != 0) {
+            for (feedback in appliedLedFeedbacks) {
+                sendXkbExtensionDeviceNotify(
+                    state.xkbExtensionDeviceNotifyDispatches(
+                        XXkbExtensionDeviceNotifyEvent(
+                            timestamp = state.syncServerTime(),
+                            deviceId = deviceSpec and 0xff,
+                            reason = indicatorReason,
+                            ledClass = feedback.ledClass,
+                            ledId = feedback.ledId,
+                            ledsDefined = feedback.namesPresent or feedback.mapsPresent,
+                            ledState = feedback.state,
+                        ),
+                    ),
+                )
+            }
+        }
     }
 
     private fun xkbDeviceInfoButtonRangeValid(allButtons: Boolean, firstButton: Int, buttonCount: Int, totalButtons: Int): Boolean {
@@ -11279,6 +11328,27 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendXkbExtensionDeviceNotifyEvent(event: XXkbExtensionDeviceNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = XXkb.FirstEvent.toByte()
+        bytes[1] = XXkb.ExtensionDeviceNotify.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.timestamp)
+        bytes[8] = event.deviceId.toByte()
+        bytes[9] = 0
+        byteOrder.put16(bytes, 10, event.reason)
+        byteOrder.put16(bytes, 12, event.ledClass)
+        byteOrder.put16(bytes, 14, event.ledId)
+        byteOrder.put32(bytes, 16, event.ledsDefined)
+        byteOrder.put32(bytes, 20, event.ledState)
+        bytes[24] = event.firstButton.toByte()
+        bytes[25] = event.nButtons.toByte()
+        byteOrder.put16(bytes, 26, event.supported)
+        byteOrder.put16(bytes, 28, event.unsupported)
+        byteOrder.put16(bytes, 30, 0)
+        write(bytes)
+    }
+
     override fun sendSyncCounterNotifyEvent(event: XSyncCounterNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = (XSync.FirstEvent + 0).toByte()
@@ -12645,6 +12715,12 @@ internal class X11Connection(
     private fun sendXkbBellNotify(notifications: List<XXkbBellNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendXkbBellNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendXkbExtensionDeviceNotify(notifications: List<XXkbExtensionDeviceNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendXkbExtensionDeviceNotifyEvent(notification.event) }
         }
     }
 

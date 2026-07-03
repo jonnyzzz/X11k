@@ -226,6 +226,7 @@ internal interface XEventSink {
     fun sendXkbNamesNotifyEvent(event: XXkbNamesNotifyEvent)
     fun sendXkbCompatMapNotifyEvent(event: XXkbCompatMapNotifyEvent)
     fun sendXkbBellNotifyEvent(event: XXkbBellNotifyEvent)
+    fun sendXkbExtensionDeviceNotifyEvent(event: XXkbExtensionDeviceNotifyEvent)
     fun sendSyncCounterNotifyEvent(event: XSyncCounterNotifyEvent)
     fun sendSyncAlarmNotifyEvent(event: XSyncAlarmNotifyEvent)
     fun sendSyntheticEvent(event: XSyntheticEvent)
@@ -697,6 +698,25 @@ internal data class XXkbBellNotifyEvent(
 internal data class XXkbBellNotifyDispatch(
     val sink: XEventSink,
     val event: XXkbBellNotifyEvent,
+)
+
+internal data class XXkbExtensionDeviceNotifyEvent(
+    val timestamp: Int,
+    val deviceId: Int,
+    val reason: Int,
+    val ledClass: Int = 0,
+    val ledId: Int = 0,
+    val ledsDefined: Int = 0,
+    val ledState: Int = 0,
+    val firstButton: Int = 0,
+    val nButtons: Int = 0,
+    val supported: Int = XXkb.XiFeatureAllDeviceFeatures,
+    val unsupported: Int = 0,
+)
+
+internal data class XXkbExtensionDeviceNotifyDispatch(
+    val sink: XEventSink,
+    val event: XXkbExtensionDeviceNotifyEvent,
 )
 
 internal data class XShapeNotifyEvent(

@@ -4182,6 +4182,236 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD SetDeviceInfo emits ExtensionDeviceNotify for selected button actions`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventExtensionDeviceNotify,
+                    details = selectEvents16Details(XXkb.XiFeatureButtonActions, XXkb.XiFeatureButtonActions),
+                ),
+            )
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 2,
+                    nDeviceLedFeedbacks = 0,
+                    change = XXkb.XiFeatureButtonActions,
+                    firstButton = 2,
+                ),
+            )
+            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 2, nButtons = 2))
+            out.flush()
+
+            assertXkbExtensionDeviceNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 2,
+                reason = XXkb.XiFeatureButtonActions,
+                firstButton = 2,
+                nButtons = 2,
+            )
+            val reply = readReply(socket.getInputStream())
+            assertEquals(3, u16le(reply, 2))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
+            assertEquals(2, reply[18].toInt() and 0xff)
+            assertEquals(2, reply[19].toInt() and 0xff)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetDeviceInfo suppresses ExtensionDeviceNotify when detail mask does not intersect`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventExtensionDeviceNotify,
+                    details = selectEvents16Details(XXkb.XiFeatureIndicatorState, XXkb.XiFeatureIndicatorState),
+                ),
+            )
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 1,
+                    nDeviceLedFeedbacks = 0,
+                    change = XXkb.XiFeatureButtonActions,
+                ),
+            )
+            out.write(useExtensionRequest())
+            out.flush()
+
+            val version = readReply(socket.getInputStream())
+            assertEquals(3, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SelectEvents clear removes ExtensionDeviceNotify selection`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventExtensionDeviceNotify,
+                    selectAll = XXkb.EventExtensionDeviceNotify,
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventExtensionDeviceNotify,
+                    clear = XXkb.EventExtensionDeviceNotify,
+                ),
+            )
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 1,
+                    nDeviceLedFeedbacks = 0,
+                    change = XXkb.XiFeatureButtonActions,
+                ),
+            )
+            out.write(useExtensionRequest())
+            out.flush()
+
+            val version = readReply(socket.getInputStream())
+            assertEquals(4, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetDeviceInfo emits ExtensionDeviceNotify for selected indicator feedback`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val reason = XXkb.XiFeatureIndicatorNames or XXkb.XiFeatureIndicatorMaps or XXkb.XiFeatureIndicatorState
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventExtensionDeviceNotify,
+                    details = selectEvents16Details(reason, reason),
+                ),
+            )
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 0,
+                    nDeviceLedFeedbacks = 1,
+                    change = reason,
+                    ledNamesPresent = 0x0000_0003,
+                    ledMapsPresent = 0x0000_0002,
+                    ledState = 0x0000_0002,
+                ),
+            )
+            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureIndicators, allButtons = false, firstButton = 0, nButtons = 0, ledClass = XXkb.DfltXIClass, ledId = XXkb.DfltXIId))
+            out.flush()
+
+            assertXkbExtensionDeviceNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 2,
+                reason = reason,
+                ledClass = XXkb.DfltXIClass,
+                ledId = XXkb.DfltXIId,
+                ledsDefined = 0x0000_0003,
+                ledState = 0x0000_0002,
+            )
+            val reply = readReply(socket.getInputStream())
+            assertEquals(3, u16le(reply, 2))
+            assertEquals(reason, u16le(reply, 8))
+            assertEquals(reason, u16le(reply, 10) and reason)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD ExtensionDeviceNotify reports current LED definitions after state-only update`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 0,
+                    nDeviceLedFeedbacks = 1,
+                    change = XXkb.XiFeatureIndicatorNames or XXkb.XiFeatureIndicatorMaps,
+                    ledNamesPresent = 0x0000_0003,
+                    ledMapsPresent = 0x0000_0002,
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventExtensionDeviceNotify,
+                    details = selectEvents16Details(XXkb.XiFeatureIndicatorState, XXkb.XiFeatureIndicatorState),
+                ),
+            )
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 0,
+                    nDeviceLedFeedbacks = 1,
+                    change = XXkb.XiFeatureIndicatorState,
+                    ledNamesPresent = 0,
+                    ledMapsPresent = 0,
+                    ledState = 0x0000_0002,
+                ),
+            )
+            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureIndicators, allButtons = false, firstButton = 0, nButtons = 0, ledClass = XXkb.DfltXIClass, ledId = XXkb.DfltXIId))
+            out.flush()
+
+            assertXkbExtensionDeviceNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 3,
+                reason = XXkb.XiFeatureIndicatorState,
+                ledClass = XXkb.DfltXIClass,
+                ledId = XXkb.DfltXIId,
+                ledsDefined = 0x0000_0003,
+                ledState = 0x0000_0002,
+            )
+            val reply = readReply(socket.getInputStream())
+            assertEquals(4, u16le(reply, 2))
+            assertEquals(XXkb.XiFeatureIndicators, u16le(reply, 8))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD ExtensionDeviceNotify reports current LED state after names maps update`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val reason = XXkb.XiFeatureIndicatorNames or XXkb.XiFeatureIndicatorMaps
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 0,
+                    nDeviceLedFeedbacks = 1,
+                    change = XXkb.XiFeatureIndicatorState,
+                    ledNamesPresent = 0,
+                    ledMapsPresent = 0,
+                    ledState = 0x0000_0002,
+                ),
+            )
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventExtensionDeviceNotify,
+                    details = selectEvents16Details(reason, reason),
+                ),
+            )
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 0,
+                    nDeviceLedFeedbacks = 1,
+                    change = reason,
+                    ledNamesPresent = 0x0000_0003,
+                    ledMapsPresent = 0x0000_0002,
+                    ledState = 0,
+                ),
+            )
+            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureIndicators, allButtons = false, firstButton = 0, nButtons = 0, ledClass = XXkb.DfltXIClass, ledId = XXkb.DfltXIId))
+            out.flush()
+
+            assertXkbExtensionDeviceNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 3,
+                reason = reason,
+                ledClass = XXkb.DfltXIClass,
+                ledId = XXkb.DfltXIId,
+                ledsDefined = 0x0000_0003,
+                ledState = 0x0000_0002,
+            )
+            val reply = readReply(socket.getInputStream())
+            assertEquals(4, u16le(reply, 2))
+            assertEquals(XXkb.XiFeatureIndicators, u16le(reply, 8))
+        }
+    }
+
+    @Test
     fun `XKEYBOARD SetDeviceInfo persists matching LED feedback`() {
         withServer { socket, _ ->
             val wanted = XXkb.XiFeatureIndicatorNames or XXkb.XiFeatureIndicatorMaps or XXkb.XiFeatureIndicatorState
@@ -5898,6 +6128,36 @@ class XXkbProtocolTest {
         assertEquals(0, u32le(event, 20))
         assertEquals(0, u32le(event, 24))
         assertEquals(0, u32le(event, 28))
+    }
+
+    private fun assertXkbExtensionDeviceNotify(
+        event: ByteArray,
+        sequence: Int,
+        reason: Int,
+        ledClass: Int = 0,
+        ledId: Int = 0,
+        ledsDefined: Int = 0,
+        ledState: Int = 0,
+        firstButton: Int = 0,
+        nButtons: Int = 0,
+        supported: Int = XXkb.XiFeatureAllDeviceFeatures,
+        unsupported: Int = 0,
+    ) {
+        assertEquals(XXkb.FirstEvent, event[0].toInt() and 0xff)
+        assertEquals(XXkb.ExtensionDeviceNotify, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(0, event[8].toInt() and 0xff)
+        assertEquals(0, event[9].toInt() and 0xff)
+        assertEquals(reason, u16le(event, 10))
+        assertEquals(ledClass, u16le(event, 12))
+        assertEquals(ledId, u16le(event, 14))
+        assertEquals(ledsDefined, u32le(event, 16))
+        assertEquals(ledState, u32le(event, 20))
+        assertEquals(firstButton, event[24].toInt() and 0xff)
+        assertEquals(nButtons, event[25].toInt() and 0xff)
+        assertEquals(supported, u16le(event, 26))
+        assertEquals(unsupported, u16le(event, 28))
+        assertEquals(0, u16le(event, 30))
     }
 
     private fun assertXkbKeySymMap(reply: ByteArray, offset: Int, width: Int, vararg keysyms: Int) {
