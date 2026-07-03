@@ -27,7 +27,7 @@ the `jonnyzzz-x/x11-reference:latest` comparison image; the normal
 | `xeyes` | Pointer motion and drawing | Stays running |
 | `xcalc` | Widgets, cursors, fonts, text drawing | Stays running |
 | `twm` + `xlogo` + `xclock` | Window manager, independent windows, overlap/focus state | Passing |
-| `xterm` | Text, keyboard, properties | Later milestone |
+| `xterm` | Text, keyboard, properties | Stays running |
 | AWT/Swing Java2D samples | Java GUI behavior, overlapping windows, owned popups/dialogs, heavyweight popup menus, menu dropdown popups, combo-box dropdowns, Swing tooltips, dense scroll-pane content, form controls, tabbed split-pane layouts, desktop-pane internal-frame layouts, layered/glass-pane overlays, and primitive SVG framebuffer export parity | Passing Docker/Xvfb parity probe |
 | IntelliJ IDEA Community GitHub release | Real-world target, heavyweight opt-in smoke | Passing opt-in |
 

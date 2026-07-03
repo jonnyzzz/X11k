@@ -48,6 +48,7 @@ RUN apt-get update \
         x11-apps \
         x11-xserver-utils \
         x11-utils \
+        xterm \
     && rm -rf /var/lib/apt/lists/*
 
 COPY run-intellij.sh /usr/local/bin/run-intellij

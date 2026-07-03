@@ -53,6 +53,7 @@ class XvfbContainerTest {
                     assertClientKeepsRunning(container, port, "xclock")
                     assertClientKeepsRunning(container, port, "xeyes")
                     assertClientKeepsRunning(container, port, "xcalc")
+                    assertClientKeepsRunning(container, port, "xterm")
                 }
 
             server.close()
