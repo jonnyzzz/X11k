@@ -3743,7 +3743,7 @@ internal class X11State(
     }
 
     @Synchronized
-    fun snapshot(): XScreenSnapshot {
+    fun snapshot(includeScreenFramebuffer: Boolean = false): XScreenSnapshot {
         val windowSnapshots = windows.values.mapIndexed { index, window ->
             val absolute = absolutePosition(window)
             val visible = visibleBounds(window, absolute.first, absolute.second)
@@ -3863,6 +3863,11 @@ internal class X11State(
             dpi = dpi,
             widthMillimeters = widthMillimeters,
             heightMillimeters = heightMillimeters,
+            screenFramebufferDataUri = if (includeScreenFramebuffer) {
+                XFramebuffer.imageDataUri(compositedRootImage(0, 0, width, height))
+            } else {
+                null
+            },
             focusWindowId = focusWindowId,
             pointer = XPointerStateSnapshot(
                 x = pointerX,
@@ -6761,6 +6766,7 @@ internal class X11State(
 
     private fun compositedRootImage(x: Int, y: Int, width: Int, height: Int): XImagePixels {
         val root = windows[X11Ids.RootWindow] ?: return XImagePixels(width, height, IntArray(width * height))
+        val displaySurfaceContext = rootDisplaySurfaceContext()
         val pixels = IntArray(width * height)
         for (row in 0 until height) {
             for (column in 0 until width) {
@@ -6775,8 +6781,88 @@ internal class X11State(
                 height = (y + height).coerceIn(0, this.height) - y.coerceIn(0, this.height),
             ),
         ).filter { it.width > 0 && it.height > 0 }
-        paintRootChildrenIntoImage(root.id, requestedClip, x, y, width, height, pixels)
+        paintRootChildrenIntoImage(root.id, requestedClip, x, y, width, height, pixels, displaySurfaceContext)
         return XImagePixels(width, height, pixels)
+    }
+
+    private fun rootDisplaySurfaceContext(): XRootDisplaySurfaceContext {
+        data class DrawableIdentity(val id: Int, val generation: Long)
+        fun drawableIdentity(id: Int): DrawableIdentity? =
+            windows[id]?.let { DrawableIdentity(id, it.generation) }
+                ?: pixmaps[id]?.let { DrawableIdentity(id, it.generation) }
+
+        val framebufferWindowConsumerDrawings = drawings.filter { drawing ->
+            drawing.framebufferBacked &&
+                drawing.sourceDrawableId != null &&
+                drawing.sourceDrawableGeneration != null &&
+                drawing.drawableGeneration != null
+        }
+        val framebufferWindowSourcesWithProvenance = framebufferWindowConsumerDrawings
+            .map { DrawableIdentity(it.sourceDrawableId!!, it.sourceDrawableGeneration!!) }
+            .toSet()
+        val framebufferWindowConsumersBySource = framebufferWindowConsumerDrawings
+            .filter { drawing -> windows[drawing.drawableId]?.generation == drawing.drawableGeneration }
+            .groupBy { DrawableIdentity(it.sourceDrawableId!!, it.sourceDrawableGeneration!!) }
+            .mapValues { (_, drawings) -> drawings.map { it.drawableId }.distinct().toSet() }
+        fun sizeMatchingWindowIds(width: Int, height: Int): Set<Int> =
+            windows.values
+                .filter { window ->
+                    window.id != X11Ids.RootWindow &&
+                        window.mapped &&
+                        window.windowClass == XWindowClass.InputOutput &&
+                        windowBackingPixmapMatchWidth(window) <= width &&
+                        windowBackingPixmapMatchHeight(window) <= height
+                }
+                .map { it.id }
+                .toSet()
+        fun matchingWindowIds(drawableId: Int, generation: Long?, width: Int, height: Int): Set<Int> {
+            val sizeMatches = sizeMatchingWindowIds(width, height)
+            val sourceIdentity = generation?.let { DrawableIdentity(drawableId, it) } ?: drawableIdentity(drawableId)
+            if (sourceIdentity == null) return sizeMatches
+            val consumers = framebufferWindowConsumersBySource[sourceIdentity]
+            if (consumers == null && sourceIdentity in framebufferWindowSourcesWithProvenance) return emptySet()
+            if (consumers == null) return sizeMatches
+            return sizeMatches.filter { it in consumers }.toSet()
+        }
+
+        val livePixmapSurfaces = pixmaps.values.map { pixmap ->
+            XRootPixmapSurface(
+                id = pixmap.id,
+                generation = pixmap.generation,
+                width = pixmap.width,
+                height = pixmap.height,
+                retained = false,
+                framebuffer = pixmap.framebuffer,
+                matchingWindowIds = matchingWindowIds(pixmap.id, pixmap.generation, pixmap.width, pixmap.height),
+            )
+        }
+        val retainedPictureSurfaces = pictures.values.mapNotNull { picture ->
+            val drawableId = picture.drawableId ?: return@mapNotNull null
+            val framebuffer = picture.retainedDrawableFramebuffer ?: return@mapNotNull null
+            if (pixmaps[drawableId]?.framebuffer === framebuffer) return@mapNotNull null
+            XRootPixmapSurface(
+                id = drawableId,
+                generation = picture.retainedDrawableGeneration ?: 0L,
+                width = framebuffer.width,
+                height = framebuffer.height,
+                retained = true,
+                framebuffer = framebuffer,
+                matchingWindowIds = matchingWindowIds(drawableId, picture.retainedDrawableGeneration, framebuffer.width, framebuffer.height),
+            )
+        }
+        val recentPaintByDrawable = drawings
+            .mapIndexedNotNull { index, drawing ->
+                if (drawing.framebufferBacked && drawing.drawableGeneration != null) {
+                    XRootDrawableIdentity(drawing.drawableId, drawing.drawableGeneration) to index
+                } else {
+                    null
+                }
+            }
+            .toMap()
+        return XRootDisplaySurfaceContext(
+            surfaces = livePixmapSurfaces + retainedPictureSurfaces,
+            recentPaintByDrawable = recentPaintByDrawable,
+        )
     }
 
     private fun paintRootChildrenIntoImage(
@@ -6787,6 +6873,7 @@ internal class X11State(
         imageWidth: Int,
         imageHeight: Int,
         pixels: IntArray,
+        displaySurfaceContext: XRootDisplaySurfaceContext,
     ) {
         if (parentClip.isEmpty()) return
         for (window in childrenOf(parentId)) {
@@ -6797,9 +6884,9 @@ internal class X11State(
             val windowClip = intersectClipLists(parentClip, rootSpaceWindowRenderClip(window, absolute.first, absolute.second))
             if (window.windowClass == XWindowClass.InputOutput) {
                 paintWindowBorderIntoRootImage(window, absolute.first, absolute.second, boundingClip, windowClip, imageX, imageY, imageWidth, imageHeight, pixels)
-                paintWindowIntoRootImage(window, absolute.first, absolute.second, windowClip, imageX, imageY, imageWidth, imageHeight, pixels)
+                paintWindowIntoRootImage(window, absolute.first, absolute.second, windowClip, imageX, imageY, imageWidth, imageHeight, pixels, displaySurfaceContext)
             }
-            paintRootChildrenIntoImage(window.id, windowClip, imageX, imageY, imageWidth, imageHeight, pixels)
+            paintRootChildrenIntoImage(window.id, windowClip, imageX, imageY, imageWidth, imageHeight, pixels, displaySurfaceContext)
         }
     }
 
@@ -6844,7 +6931,9 @@ internal class X11State(
         imageWidth: Int,
         imageHeight: Int,
         pixels: IntArray,
+        displaySurfaceContext: XRootDisplaySurfaceContext,
     ) {
+        val framebuffer = rootDisplayFramebufferForWindow(window, displaySurfaceContext)
         for (rectangle in clip) {
             val left = maxOf(imageX, rectangle.x)
             val top = maxOf(imageY, rectangle.y)
@@ -6855,10 +6944,69 @@ internal class X11State(
                 for (rootX in left until right) {
                     val localX = rootX - absoluteX
                     val localY = rootY - absoluteY
-                    val pixel = window.framebuffer.pixelAt(localX, localY) ?: continue
+                    val pixel = framebuffer.pixelAt(localX, localY) ?: continue
                     pixels[(rootY - imageY) * imageWidth + (rootX - imageX)] = pixel
                 }
             }
+        }
+    }
+
+    private fun rootDisplayFramebufferForWindow(window: XWindow, context: XRootDisplaySurfaceContext): XFramebuffer {
+        val pixmapSurface = rootMatchingPixmapSurfaces(context, window)
+            .firstOrNull { window.id in it.matchingWindowIds }
+        if (pixmapSurface != null && shouldUseRootPixmapSurface(context, window, pixmapSurface)) return pixmapSurface.framebuffer
+        return window.framebuffer
+    }
+
+    private fun rootMatchingPixmapSurfaces(context: XRootDisplaySurfaceContext, window: XWindow): List<XRootPixmapSurface> {
+        val subtreeIds = subtreeIds(window.id)
+        val backingWidth = windowBackingPixmapMatchWidth(window)
+        val backingHeight = windowBackingPixmapMatchHeight(window)
+        return context.surfaces
+            .filter { surface ->
+                surface.framebuffer.hasPaintedContent() &&
+                    surface.matchingWindowIds.any { it in subtreeIds }
+            }
+            .sortedWith(
+                compareByDescending<XRootPixmapSurface> { window.id in it.matchingWindowIds }
+                    .thenByDescending { it.width == window.width && it.height == window.height }
+                    .thenBy { surface ->
+                        if (window.id in surface.matchingWindowIds) {
+                            surface.width.toLong() * surface.height.toLong() -
+                                backingWidth.toLong() * backingHeight.toLong()
+                        } else {
+                            Long.MAX_VALUE
+                        }
+                    }
+                    .thenByDescending { context.recentPaintByDrawable[XRootDrawableIdentity(it.id, it.generation)] ?: -1 }
+                    .thenBy { it.retained }
+                    .thenBy { it.id },
+            )
+    }
+
+    private fun shouldUseRootPixmapSurface(context: XRootDisplaySurfaceContext, window: XWindow, surface: XRootPixmapSurface): Boolean {
+        val windowPaintIndex = context.recentPaintByDrawable[XRootDrawableIdentity(window.id, window.generation)] ?: -1
+        val surfacePaintIndex = context.recentPaintByDrawable[XRootDrawableIdentity(surface.id, surface.generation)] ?: -1
+        return windowPaintIndex < 0 || surfacePaintIndex > windowPaintIndex
+    }
+
+    private fun windowBackingPixmapMatchWidth(window: XWindow): Int {
+        val absolute = absolutePosition(window)
+        val visible = visibleBounds(window, absolute.first, absolute.second)
+        return if (visible != null && visible.width > 0) {
+            (visible.x - absolute.first).coerceAtLeast(0) + visible.width
+        } else {
+            window.width
+        }
+    }
+
+    private fun windowBackingPixmapMatchHeight(window: XWindow): Int {
+        val absolute = absolutePosition(window)
+        val visible = visibleBounds(window, absolute.first, absolute.second)
+        return if (visible != null && visible.height > 0) {
+            (visible.y - absolute.second).coerceAtLeast(0) + visible.height
+        } else {
+            window.height
         }
     }
 
@@ -10765,6 +10913,7 @@ internal data class XScreenSnapshot(
     val dpi: Int,
     val widthMillimeters: Int,
     val heightMillimeters: Int,
+    val screenFramebufferDataUri: String?,
     val focusWindowId: Int,
     val pointer: XPointerStateSnapshot,
     val keyboardState: XKeyboardStateSnapshot,
@@ -11334,6 +11483,26 @@ internal data class XPixmapSnapshot(
     val retained: Boolean get() = retainedPictureId != null
     val retainedPictureIdHex: String? get() = retainedPictureId?.let { "0x${it.toUInt().toString(16)}" }
 }
+
+private data class XRootDrawableIdentity(
+    val id: Int,
+    val generation: Long,
+)
+
+private data class XRootPixmapSurface(
+    val id: Int,
+    val generation: Long,
+    val width: Int,
+    val height: Int,
+    val retained: Boolean,
+    val framebuffer: XFramebuffer,
+    val matchingWindowIds: Set<Int>,
+)
+
+private data class XRootDisplaySurfaceContext(
+    val surfaces: List<XRootPixmapSurface>,
+    val recentPaintByDrawable: Map<XRootDrawableIdentity, Int>,
+)
 
 internal data class XCursor(
     val id: Int,

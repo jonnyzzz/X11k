@@ -991,10 +991,28 @@ class XvfbContainerTest {
         averageTolerance: Double = 0.04,
         distanceThreshold: Double = 45.0,
     ) {
-        val owner = embeddedFramebuffers.lastOrNull { it.bytes != null && it.width == ownerWidth && it.height == ownerHeight }
-            ?: error("$label did not include an owner framebuffer ${ownerWidth}x$ownerHeight; exported=$embeddedFramebuffers")
         val composed = composeEmbeddedFramebuffers(embeddedFramebuffers)
-        val cropped = composed.getSubimage(owner.x, owner.y, expected.width, expected.height)
+        val owner = embeddedFramebuffers.lastOrNull { it.bytes != null && it.width == ownerWidth && it.height == ownerHeight }
+        if (owner == null) {
+            embeddedFramebuffers.lastOrNull {
+                it.bytes != null &&
+                    it.x <= RealClientCaptureX &&
+                    it.y <= RealClientCaptureY &&
+                    it.x + it.width >= RealClientCaptureX + expected.width &&
+                    it.y + it.height >= RealClientCaptureY + expected.height
+            } ?: error(
+                "$label did not include an owner framebuffer ${ownerWidth}x$ownerHeight or a visible root framebuffer " +
+                    "covering capture ${RealClientCaptureX},${RealClientCaptureY} ${expected.width}x${expected.height}; exported=$embeddedFramebuffers",
+            )
+        }
+        val cropX = owner?.x ?: RealClientCaptureX
+        val cropY = owner?.y ?: RealClientCaptureY
+        require(cropX + expected.width <= composed.width && cropY + expected.height <= composed.height) {
+            "$label did not include an owner framebuffer ${ownerWidth}x$ownerHeight and composed SVG bounds " +
+                "${composed.width}x${composed.height} do not cover capture " +
+                "${cropX},${cropY} ${expected.width}x${expected.height}; exported=$embeddedFramebuffers"
+        }
+        val cropped = composed.getSubimage(cropX, cropY, expected.width, expected.height)
         assertVisualCaptureClose(
             expected = expected,
             actual = visualCapture(cropped),
@@ -1043,6 +1061,7 @@ class XvfbContainerTest {
         return Regex("""<(?:image|rect)\b[^>]*>""")
             .findAll(svg)
             .mapNotNull { match ->
+                if (isInsideHiddenSvgGroup(svg, match.range.first)) return@mapNotNull null
                 val tag = match.value
                 val id = Regex("""\bdata-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1)
                 val x = svgImageAttribute(tag, "x") ?: return@mapNotNull null
@@ -1081,6 +1100,43 @@ class XvfbContainerTest {
             }
             .toList()
     }
+
+    private fun isInsideHiddenSvgGroup(svg: String, offset: Int): Boolean {
+        val hiddenStack = mutableListOf<Boolean>()
+        Regex("""<g\b[^>]*>|</g>""")
+            .findAll(svg.substring(0, offset.coerceIn(0, svg.length)))
+            .forEach { match ->
+                val tag = match.value
+                if (tag.startsWith("</")) {
+                    if (hiddenStack.isNotEmpty()) hiddenStack.removeAt(hiddenStack.lastIndex)
+                } else {
+                    hiddenStack += svgVisibilityHidden(tag) ?: (hiddenStack.lastOrNull() == true)
+                }
+            }
+        return hiddenStack.lastOrNull() == true
+    }
+
+    private fun svgVisibilityHidden(tag: String): Boolean? {
+        val visibility = svgStringAttribute(tag, "visibility")
+            ?: Regex("""\bstyle\s*=\s*(['"])(.*?)\1""")
+                .find(tag)
+                ?.groupValues
+                ?.get(2)
+                ?.split(';')
+                ?.mapNotNull { declaration ->
+                    val parts = declaration.split(':', limit = 2)
+                    parts.getOrNull(1)?.trim().takeIf { parts.getOrNull(0)?.trim() == "visibility" }
+                }
+                ?.lastOrNull()
+        return when (visibility?.trim()) {
+            "hidden", "collapse" -> true
+            "visible" -> false
+            else -> null
+        }
+    }
+
+    private fun svgStringAttribute(tag: String, name: String): String? =
+        Regex("""\b$name\s*=\s*(['"])(.*?)\1""").find(tag)?.groupValues?.get(2)
 
     private fun svgClipPathId(tag: String): String? =
         Regex("""\bclip-path="url\(#([^)"']+)\)"""").find(tag)?.groupValues?.get(1)

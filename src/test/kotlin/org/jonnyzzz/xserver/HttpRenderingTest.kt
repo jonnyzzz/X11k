@@ -1,6 +1,10 @@
 package org.jonnyzzz.xserver
 
+import java.awt.image.BufferedImage
+import java.io.ByteArrayInputStream
 import java.net.Socket
+import java.util.Base64
+import javax.imageio.ImageIO
 import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -59,6 +63,9 @@ class HttpRenderingTest {
                     assertContains(svg.body, "0x200002")
                     assertContains(svg.body, """data-window-id="0x200001"""")
                     assertContains(svg.body, """class="framebuffer-image"""")
+                    assertContains(svg.body, """class="framebuffer-image screen-framebuffer-image"""")
+                    assertContains(svg.body, """data-source="composited-root"""")
+                    assertContains(svg.body, """class="semantic-window-layers" visibility="hidden"""")
                     assertContains(svg.body, """href="data:image/png;base64,""")
                     assertFalse(svg.body.contains("""width="65533""""))
                     assertFalse(svg.body.contains("<polyline"), "Framebuffer-backed core lines should not be double-rendered as SVG overlays")
@@ -314,6 +321,7 @@ class HttpRenderingTest {
                 assertContains(svg, """data-pixmap-id="0x200100"""")
                 assertContains(svg, """data-source="matching-pixmap"""")
                 assertContains(svg, """href="data:image/png;base64,""")
+                assertEquals(0xffff_0000.toInt(), screenFramebufferImage(svg).getRGB(50, 50))
             }
 
             server.close()
@@ -800,6 +808,7 @@ class HttpRenderingTest {
                 assertContains(svg, """data-pixmap-id="0x200100"""")
                 assertContains(svg, """data-picture-id="0x200200"""")
                 assertContains(svg, """data-source="retained-picture"""")
+                assertEquals(0xffff_0000.toInt(), screenFramebufferImage(svg).getRGB(50, 50))
 
                 val html = httpGet(server.localPort, "/").body
                 assertContains(html, "Retained picture 0x200200")
@@ -1914,6 +1923,20 @@ class HttpRenderingTest {
                 body = response.substringAfter("\r\n\r\n"),
             )
         }
+
+    private fun screenFramebufferImage(svg: String): BufferedImage {
+        val tag = Regex("""<image\b(?=[^>]*\bclass="[^"]*\bscreen-framebuffer-image\b)[^>]*>""")
+            .find(svg)
+            ?.value
+            ?: error("screen-framebuffer-image tag not found in SVG:\n$svg")
+        val encoded = Regex("\\bhref=\"data:image/png;base64,([A-Za-z0-9+/=]+)\"")
+            .find(tag)
+            ?.groupValues
+            ?.get(1)
+            ?: error("screen-framebuffer-image tag has no PNG data URI: $tag")
+        return ImageIO.read(ByteArrayInputStream(Base64.getDecoder().decode(encoded)))
+            ?: error("screen-framebuffer-image PNG was not readable")
+    }
 
     private fun waitUntil(condition: () -> Boolean) {
         val deadline = System.currentTimeMillis() + 2_000

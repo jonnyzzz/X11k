@@ -54,7 +54,7 @@ internal class HttpScreenConnection(
 
         val body = when (route) {
             "", "/" -> SvgScreenRenderer.html(state.snapshot())
-            "/screen.svg" -> SvgScreenRenderer.svg(state.snapshot())
+            "/screen.svg" -> SvgScreenRenderer.svg(state.snapshot(includeScreenFramebuffer = true))
             "/text" -> TextScreenRenderer.html(state.snapshot())
             "/text.txt" -> TextScreenRenderer.plain(state.snapshot())
             "/state.json" -> SvgScreenRenderer.json(state.snapshot())

@@ -51,7 +51,7 @@ internal object SvgScreenRenderer {
                 "role" to "img",
                 "aria-label" to "X screen",
             )
-            renderSvgContent(this, snapshot)
+            renderCaptureSvgContent(this, snapshot)
         }
 
     fun json(snapshot: XScreenSnapshot): String =
@@ -574,6 +574,29 @@ internal object SvgScreenRenderer {
                 ) {
                     text(RenderCredit.Text)
                 }
+            }
+        }
+    }
+
+    private fun renderCaptureSvgContent(builder: XmlDom, snapshot: XScreenSnapshot) {
+        with(builder) {
+            comment(RenderCredit.Text)
+            snapshot.screenFramebufferDataUri?.let { href ->
+                svgElement(
+                    "image",
+                    "class" to "framebuffer-image screen-framebuffer-image",
+                    "data-source" to "composited-root",
+                    "data-window-id" to "0x${X11Ids.RootWindow.toUInt().toString(16)}",
+                    "x" to 0,
+                    "y" to 0,
+                    "width" to snapshot.width,
+                    "height" to snapshot.height,
+                    "href" to href,
+                    "preserveAspectRatio" to "none",
+                )
+            }
+            svgElement("g", "class" to "semantic-window-layers", "visibility" to "hidden", "aria-hidden" to "true") {
+                renderSvgContent(this, snapshot)
             }
         }
     }

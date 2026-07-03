@@ -31,6 +31,9 @@ class IntellijCommunitySmokeTest {
             """
             <svg>
               <image data-window-id="0x20" x="12" y="24" width="10" height="10" href="data:image/png;base64,aGVsbG8="/>
+              <g class="semantic-window-layers" visibility = 'hidden'>
+                <image data-window-id="0x22" x="1" y="1" width="2" height="2" href="data:image/png;base64,aGlkZGVu"/>
+              </g>
               <image href="data:image/png;base64,d29ybGQ=" height="20" width="20" y="48" x="36" data-window-id="0x21"/>
             </svg>
             """.trimIndent()
@@ -56,6 +59,14 @@ class IntellijCommunitySmokeTest {
               </defs>
               <image data-window-id="0x20" clip-path="url(#clip-screen-20)" x="12" y="24" width="10" height="10" href="data:image/png;base64,aGVsbG8="/>
               <rect class="window-border" data-border-window-id="0x21" clip-path="url(#clip-screen-20)" x="7" y="8" width="9" height="10" fill="#112233"/>
+              <g class="semantic-window-layers" visibility="hidden">
+                <g>
+                  <image data-window-id="0x22" x="1" y="1" width="2" height="2" href="data:image/png;base64,aGlkZGVu"/>
+                </g>
+                <g>
+                  <rect class="window-border" data-border-window-id="0x23" x="3" y="3" width="4" height="4" fill="#445566"/>
+                </g>
+              </g>
             </svg>
             """.trimIndent()
 
@@ -592,6 +603,7 @@ class IntellijCommunitySmokeTest {
         Regex("""<image\b[^>]*>""")
             .findAll(svg)
             .mapNotNull { match ->
+                if (isInsideHiddenSvgGroup(svg, match.range.first)) return@mapNotNull null
                 val tag = match.value
                 val id = Regex("""\bdata-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1) ?: return@mapNotNull null
                 val encoded = Regex("""\bhref="data:image/png;base64,([A-Za-z0-9+/=]+)"""").find(tag)?.groupValues?.get(1) ?: return@mapNotNull null
@@ -618,6 +630,7 @@ class IntellijCommunitySmokeTest {
         return Regex("""<(?:image|rect)\b[^>]*>""")
             .findAll(svg)
             .mapNotNull { match ->
+                if (isInsideHiddenSvgGroup(svg, match.range.first)) return@mapNotNull null
                 val tag = match.value
                 val x = svgIntAttribute(tag, "x") ?: return@mapNotNull null
                 val y = svgIntAttribute(tag, "y") ?: return@mapNotNull null
@@ -656,6 +669,43 @@ class IntellijCommunitySmokeTest {
             }
             .toList()
     }
+
+    private fun isInsideHiddenSvgGroup(svg: String, offset: Int): Boolean {
+        val hiddenStack = mutableListOf<Boolean>()
+        Regex("""<g\b[^>]*>|</g>""")
+            .findAll(svg.substring(0, offset.coerceIn(0, svg.length)))
+            .forEach { match ->
+                val tag = match.value
+                if (tag.startsWith("</")) {
+                    if (hiddenStack.isNotEmpty()) hiddenStack.removeAt(hiddenStack.lastIndex)
+                } else {
+                    hiddenStack += svgVisibilityHidden(tag) ?: (hiddenStack.lastOrNull() == true)
+                }
+            }
+        return hiddenStack.lastOrNull() == true
+    }
+
+    private fun svgVisibilityHidden(tag: String): Boolean? {
+        val visibility = svgStringAttribute(tag, "visibility")
+            ?: Regex("""\bstyle\s*=\s*(['"])(.*?)\1""")
+                .find(tag)
+                ?.groupValues
+                ?.get(2)
+                ?.split(';')
+                ?.mapNotNull { declaration ->
+                    val parts = declaration.split(':', limit = 2)
+                    parts.getOrNull(1)?.trim().takeIf { parts.getOrNull(0)?.trim() == "visibility" }
+                }
+                ?.lastOrNull()
+        return when (visibility?.trim()) {
+            "hidden", "collapse" -> true
+            "visible" -> false
+            else -> null
+        }
+    }
+
+    private fun svgStringAttribute(tag: String, name: String): String? =
+        Regex("""\b$name\s*=\s*(['"])(.*?)\1""").find(tag)?.groupValues?.get(2)
 
     private fun svgClipPathId(tag: String): String? =
         Regex("""\bclip-path="url\(#([^)"']+)\)"""").find(tag)?.groupValues?.get(1)
