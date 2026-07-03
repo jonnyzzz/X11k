@@ -48,6 +48,7 @@ class XvfbContainerTest {
                     assertClientSucceeds(container, port, "xdpyinfo")
                     assertClientSucceeds(container, port, "xwininfo -root")
                     assertClientSucceeds(container, port, "xprop -root")
+                    assertClientSucceeds(container, port, "xset q")
                     assertClientKeepsRunning(container, port, "xlogo")
                     assertClientKeepsRunning(container, port, "xclock")
                     assertClientKeepsRunning(container, port, "xeyes")

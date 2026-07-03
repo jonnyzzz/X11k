@@ -46,6 +46,7 @@ RUN apt-get update \
         tar \
         twm \
         x11-apps \
+        x11-xserver-utils \
         x11-utils \
     && rm -rf /var/lib/apt/lists/*
 

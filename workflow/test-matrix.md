@@ -21,7 +21,7 @@ the `jonnyzzz-x/x11-reference:latest` comparison image; the normal
 | `xdpyinfo` | Setup, screens, visuals, extensions | Passing |
 | `xprop -root` | Atoms and properties | Passing |
 | `xwininfo -root` | Window tree and geometry | Passing |
-| `xset q` | Basic server state queries | Later milestone |
+| `xset q` | Basic server state queries | Passing |
 | `xlogo` | Window, expose, drawing | Stays running |
 | `xclock` | Drawing, timer updates, events | Stays running |
 | `xeyes` | Pointer motion and drawing | Stays running |

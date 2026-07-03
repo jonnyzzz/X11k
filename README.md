@@ -18,6 +18,7 @@ It can run the first Docker smoke matrix against real X clients:
 - `xdpyinfo`
 - `xwininfo -root`
 - `xprop -root`
+- `xset q`
 - `xlogo`
 - `xclock`
 - `xeyes`
@@ -158,7 +159,7 @@ The first compatibility milestone is deliberately smaller than full Xvfb parity:
 2. One-screen server model with root window, fixed true-color visual/depth, atoms/properties, resource IDs, and basic window tree operations.
 3. Events and hierarchy snapshots before broad rendering, because clients often fail early on event semantics.
 4. Framebuffer, pixmaps, graphics contexts, `PutImage`, `GetImage`, `ClearArea`, and `CopyArea`.
-5. Dockerized differential tests against Xvfb for `xdpyinfo`, `xprop`, `xwininfo`, `xlogo`, `xclock`, and then JBR/IntelliJ smoke tests.
+5. Dockerized differential tests against Xvfb for `xdpyinfo`, `xprop`, `xwininfo`, `xset q`, `xlogo`, `xclock`, `xeyes`, `xcalc`, and then JBR/IntelliJ smoke tests.
 
 See `workflow/roadmap.md` and `workflow/test-matrix.md`.
 
