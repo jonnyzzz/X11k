@@ -50,6 +50,73 @@ assert_readiness() {
   fi
 }
 
+canonical_dir() {
+  local dir="$1"
+  (cd "$dir" && pwd -P)
+}
+
+absolute_path() {
+  local path="$1"
+  case "$path" in
+    /*) printf '%s\n' "$path" ;;
+    *) printf '%s\n' "$ROOT/$path" ;;
+  esac
+}
+
+guarded_project_export_dir() {
+  local requested raw parent base runs_root build_tmp_root parent_real candidate
+  requested="$1"
+  raw="$(absolute_path "$requested")"
+  raw="${raw%/}"
+  parent="$(dirname "$raw")"
+  base="$(basename "$raw")"
+  if [[ -z "$base" || "$base" == "." || "$base" == ".." ]]; then
+    echo "Unsafe PROJECT_EXPORT_DIR: $requested" >&2
+    return 1
+  fi
+  mkdir -p "$ROOT/runs" "$ROOT/build/tmp"
+  runs_root="$(canonical_dir "$ROOT/runs")"
+  build_tmp_root="$(canonical_dir "$ROOT/build/tmp")"
+  case "$raw" in
+    "$ROOT/runs/"*|"$ROOT/build/tmp/"*) ;;
+    *)
+      echo "PROJECT_EXPORT_DIR must be under $ROOT/runs or $ROOT/build/tmp; got $requested" >&2
+      return 1
+      ;;
+  esac
+  mkdir -p "$parent"
+  parent_real="$(canonical_dir "$parent")"
+  candidate="$parent_real/$base"
+  case "$candidate" in
+    "$runs_root/"*|"$build_tmp_root/"*) ;;
+    *)
+      echo "PROJECT_EXPORT_DIR resolves outside guarded run/build roots: $candidate" >&2
+      return 1
+      ;;
+  esac
+  if [[ -L "$candidate" ]]; then
+    echo "PROJECT_EXPORT_DIR must not be a symlink: $candidate" >&2
+    return 1
+  fi
+  printf '%s\n' "$candidate"
+}
+
+assert_project_export_guard() {
+  local name="$1"
+  local expected="$2"
+  local path="$3"
+  local actual
+  if guarded_project_export_dir "$path" >/dev/null 2>&1; then
+    actual=1
+  else
+    actual=0
+  fi
+  if [[ "$actual" != "$expected" ]]; then
+    echo "project export guard self-test failed: $name expected $expected got $actual" >&2
+    exit 1
+  fi
+}
+
 run_readiness_self_test() {
   local ready_text=$'Screen: 3840 x 2160\nMapped windows: 3\n- 0x200001 label="Content window"'
   local ready_svg='<svg><image class="framebuffer-image backing-pixmap-image"/></svg>'
@@ -59,6 +126,12 @@ run_readiness_self_test() {
   assert_readiness "missing framebuffer" 0 "$ready_text" '<svg></svg>'
   assert_readiness "download sdk modal" 0 $'Mapped windows: 4\nContent window\nDownload SDK?' "$ready_svg"
   assert_readiness "download jdk modal" 0 $'Mapped windows: 4\nContent window\nDownload JDK' "$ready_svg"
+  assert_project_export_guard "default runs export" 1 "$ROOT/runs/intellij-readme-screenshot/project"
+  assert_project_export_guard "relative runs export" 1 "runs/intellij-readme-screenshot/project"
+  assert_project_export_guard "build tmp export" 1 "$ROOT/build/tmp/intellij-readme-screenshot/project"
+  assert_project_export_guard "repo root rejected" 0 "$ROOT"
+  assert_project_export_guard "parent traversal rejected" 0 "$ROOT/runs/../../outside-project"
+  assert_project_export_guard "outside tmp rejected" 0 "/tmp/intellij-readme-screenshot-project"
 }
 
 if [[ "${INTELLIJ_README_SCREENSHOT_SELF_TEST:-0}" == "1" ]]; then
@@ -101,7 +174,8 @@ run_timed() {
 }
 
 prepare_project_export() {
-  rm -rf "$PROJECT_EXPORT_DIR"
+  PROJECT_EXPORT_DIR="$(guarded_project_export_dir "$PROJECT_EXPORT_DIR")"
+  rm -rf -- "$PROJECT_EXPORT_DIR"
   mkdir -p "$PROJECT_EXPORT_DIR"
   while IFS= read -r -d '' path; do
     mkdir -p "$PROJECT_EXPORT_DIR/$(dirname "$path")"
@@ -150,7 +224,7 @@ diagnose_readiness_failure() {
 }
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-  run_timed "$BUILD_TIMEOUT_SECONDS" "$ROOT/gradlew" --no-daemon installDist dockerBuildX11Client
+  GRADLE_TIMEOUT_SECONDS="$BUILD_TIMEOUT_SECONDS" "$ROOT/scripts/run-gradle-bounded.sh" installDist dockerBuildX11Client
 fi
 
 docker rm -f "$IDEA_CONTAINER" >/dev/null 2>&1 || true
