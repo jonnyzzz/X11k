@@ -77,6 +77,11 @@ internal data class XXkbVirtualModifierBindings(
     val realModifiers: List<Int>,
 )
 
+internal data class XXkbIndicatorMaps(
+    val which: Int,
+    val maps: List<ByteArray>,
+)
+
 internal class X11State(
     val width: Int,
     val height: Int,
@@ -184,6 +189,7 @@ internal class X11State(
     private var keyboardMapping = XKeyboardMapping.Default
     private var keyboardControl = XKeyboardControlSettings.Default
     private var xkbIndicatorState = 0
+    private val xkbIndicatorMaps = linkedMapOf<Int, ByteArray>()
     private val xkbNamedIndicatorIndexes = linkedMapOf<Int, Int>()
     private var activePointerGrab: XInputGrab? = null
     private var frozenPointerOwner: XEventSink? = null
@@ -1693,6 +1699,31 @@ internal class X11State(
 
     @Synchronized
     fun xkbIndicatorState(): Int = xkbIndicatorState
+
+    @Synchronized
+    fun xkbIndicatorMaps(which: Int): XXkbIndicatorMaps {
+        var present = 0
+        val maps = mutableListOf<ByteArray>()
+        for (bit in 0 until 32) {
+            val bitMask = 1 shl bit
+            val map = xkbIndicatorMaps[bit]
+            if ((which and bitMask) != 0 && map != null) {
+                present = present or bitMask
+                maps += map.copyOf()
+            }
+        }
+        return XXkbIndicatorMaps(which = present, maps = maps)
+    }
+
+    @Synchronized
+    fun setXkbIndicatorMaps(which: Int, maps: List<ByteArray>) {
+        var index = 0
+        for (bit in 0 until 32) {
+            if ((which and (1 shl bit)) != 0) {
+                xkbIndicatorMaps[bit] = maps[index++].copyOf()
+            }
+        }
+    }
 
     @Synchronized
     fun xkbNamedIndicator(indicator: Int): XkbNamedIndicator? {

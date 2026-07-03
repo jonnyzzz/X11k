@@ -2402,7 +2402,15 @@ internal class X11Connection(
 
     private fun xkbGetIndicatorMap(body: ByteArray, majorOpcode: Int) {
         if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetIndicatorMap, badValue = 0)
-        val reply = reply(extra = 0, payloadUnits = 0)
+        val maps = state.xkbIndicatorMaps(byteOrder.u32(body, 4))
+        val reply = reply(extra = 0, payloadUnits = maps.maps.size * 3)
+        byteOrder.put32(reply, 8, maps.which)
+        reply[16] = maps.maps.size.toByte()
+        var offset = 32
+        for (map in maps.maps) {
+            map.copyInto(reply, offset)
+            offset += 12
+        }
         write(reply)
     }
 
@@ -2411,6 +2419,10 @@ internal class X11Connection(
         val which = byteOrder.u32(body, 4)
         val expectedSize = 8 + Integer.bitCount(which) * 12
         if (body.size != expectedSize) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetIndicatorMap, badValue = 0)
+        val maps = List(Integer.bitCount(which)) { index ->
+            body.copyOfRange(8 + index * 12, 20 + index * 12)
+        }
+        state.setXkbIndicatorMaps(which, maps)
         sendXkbIndicatorMapNotify(
             state.xkbIndicatorMapNotifyDispatches(
                 XXkbIndicatorMapNotifyEvent(

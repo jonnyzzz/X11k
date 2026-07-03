@@ -2000,19 +2000,22 @@ class XXkbProtocolTest {
     }
 
     @Test
-    fun `XKEYBOARD SetIndicatorMap accepts map records without creating indicators`() {
+    fun `XKEYBOARD SetIndicatorMap persists map records without creating indicator state`() {
         withServer { socket, _ ->
+            val records = listOf(indicatorMapRecord(1), indicatorMapRecord(2))
             val out = socket.getOutputStream()
-            out.write(setIndicatorMapRequest(which = 0x3))
+            out.write(setIndicatorMapRequest(which = 0x3, maps = records))
             out.write(getIndicatorMapRequest(which = 0x3))
             out.write(getIndicatorStateRequest())
             out.flush()
 
             val map = readReply(socket.getInputStream())
             assertEquals(2, u16le(map, 2))
-            assertEquals(0, u32le(map, 8))
+            assertEquals(6, u32le(map, 4))
+            assertEquals(0x3, u32le(map, 8))
             assertEquals(0, u32le(map, 12))
-            assertEquals(0, map[16].toInt() and 0xff)
+            assertEquals(2, map[16].toInt() and 0xff)
+            assertIndicatorMaps(map, records)
 
             val state = readReply(socket.getInputStream())
             assertEquals(3, u16le(state, 2))
@@ -2021,8 +2024,28 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetIndicatorMap filters to requested stored maps`() {
+        withServer { socket, _ ->
+            val records = listOf(indicatorMapRecord(1), indicatorMapRecord(2))
+            val out = socket.getOutputStream()
+            out.write(setIndicatorMapRequest(which = 0x3, maps = records))
+            out.write(getIndicatorMapRequest(which = 0x2))
+            out.flush()
+
+            val map = readReply(socket.getInputStream())
+            assertEquals(2, u16le(map, 2))
+            assertEquals(3, u32le(map, 4))
+            assertEquals(0x2, u32le(map, 8))
+            assertEquals(0, u32le(map, 12))
+            assertEquals(1, map[16].toInt() and 0xff)
+            assertIndicatorMaps(map, listOf(records[1]))
+        }
+    }
+
+    @Test
     fun `XKEYBOARD IndicatorMapNotify reports selected SetIndicatorMap changes`() {
         withServer { socket, _ ->
+            val records = listOf(indicatorMapRecord(1), indicatorMapRecord(2))
             val out = socket.getOutputStream()
             out.write(
                 selectEventsRequest(
@@ -2030,14 +2053,16 @@ class XXkbProtocolTest {
                     details = selectEvents32Details(0x3, 0x3),
                 ),
             )
-            out.write(setIndicatorMapRequest(which = 0x3))
+            out.write(setIndicatorMapRequest(which = 0x3, maps = records))
             out.write(getIndicatorMapRequest(which = 0x3))
             out.flush()
 
             assertIndicatorMapNotify(socket.getInputStream().readExactly(32), sequence = 2, state = 0, changed = 0x3)
             val map = readReply(socket.getInputStream())
             assertEquals(3, u16le(map, 2))
-            assertEquals(0, u32le(map, 8))
+            assertEquals(0x3, u32le(map, 8))
+            assertEquals(2, map[16].toInt() and 0xff)
+            assertIndicatorMaps(map, records)
         }
     }
 
@@ -2057,7 +2082,8 @@ class XXkbProtocolTest {
 
             val map = readReply(socket.getInputStream())
             assertEquals(3, u16le(map, 2))
-            assertEquals(0, u32le(map, 8))
+            assertEquals(0x3, u32le(map, 8))
+            assertEquals(2, map[16].toInt() and 0xff)
         }
     }
 
@@ -2083,7 +2109,8 @@ class XXkbProtocolTest {
 
             val map = readReply(socket.getInputStream())
             assertEquals(4, u16le(map, 2))
-            assertEquals(0, u32le(map, 8))
+            assertEquals(0x2, u32le(map, 8))
+            assertEquals(1, map[16].toInt() and 0xff)
         }
     }
 
@@ -3783,7 +3810,11 @@ class XXkbProtocolTest {
         return request(XXkb.MajorOpcode, XXkb.GetIndicatorMap, body)
     }
 
-    private fun setIndicatorMapRequest(which: Int, bodySize: Int = 8 + Integer.bitCount(which) * 12): ByteArray {
+    private fun setIndicatorMapRequest(
+        which: Int,
+        maps: List<ByteArray> = List(Integer.bitCount(which)) { indicatorMapRecord(it + 1) },
+        bodySize: Int = 8 + Integer.bitCount(which) * 12,
+    ): ByteArray {
         val body = ByteArray(bodySize)
         put16le(body, 0, 0x0100)
         if (body.size >= 8) {
@@ -3792,16 +3823,23 @@ class XXkbProtocolTest {
         for (index in 0 until Integer.bitCount(which)) {
             val offset = 8 + index * 12
             if (offset + 12 > body.size) break
-            body[offset] = 1
-            body[offset + 1] = 1
-            body[offset + 2] = 1
-            body[offset + 3] = 1
-            body[offset + 4] = 1
-            body[offset + 5] = 1
-            put16le(body, offset + 6, 1)
-            put32le(body, offset + 8, XXkb.BoolCtrlRepeatKeys)
+            val map = maps.getOrElse(index) { indicatorMapRecord(index + 1) }
+            map.copyInto(body, offset)
         }
         return request(XXkb.MajorOpcode, XXkb.SetIndicatorMap, body)
+    }
+
+    private fun indicatorMapRecord(seed: Int): ByteArray {
+        val map = ByteArray(12)
+        map[0] = seed.toByte()
+        map[1] = (seed + 1).toByte()
+        map[2] = (seed + 2).toByte()
+        map[3] = (seed + 3).toByte()
+        map[4] = (seed + 4).toByte()
+        map[5] = (seed + 5).toByte()
+        put16le(map, 6, seed)
+        put32le(map, 8, XXkb.BoolCtrlRepeatKeys or seed)
+        return map
     }
 
     private fun getNamedIndicatorRequest(indicator: Int): ByteArray {
@@ -4364,6 +4402,16 @@ class XXkbProtocolTest {
         assertEquals(0, u32le(event, 20))
         assertEquals(0, u32le(event, 24))
         assertEquals(0, u32le(event, 28))
+    }
+
+    private fun assertIndicatorMaps(reply: ByteArray, maps: List<ByteArray>) {
+        assertEquals(maps.size, reply[16].toInt() and 0xff)
+        assertEquals(32 + maps.size * 12, reply.size)
+        maps.forEachIndexed { index, map ->
+            val offset = 32 + index * 12
+            assertEquals(map.toList(), reply.copyOfRange(offset, offset + 12).toList())
+        }
+        assertZero(reply, 17, 32)
     }
 
     private fun assertCompatMapNotify(event: ByteArray, sequence: Int, changedGroups: Int, firstSI: Int, nSI: Int, nTotalSI: Int) {
