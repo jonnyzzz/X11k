@@ -87,6 +87,17 @@ internal data class XXkbCompatGroupMaps(
     val maps: List<ByteArray>,
 )
 
+internal data class XXkbDeviceLedFeedback(
+    val ledClass: Int,
+    val ledId: Int,
+    val namesPresent: Int,
+    val mapsPresent: Int,
+    val physIndicators: Int,
+    val state: Int,
+    val names: List<Int>,
+    val maps: List<ByteArray>,
+)
+
 internal data class XkbNamedIndicatorUpdate(
     val stateNotify: XXkbIndicatorStateNotifyEvent?,
     val mapChanged: Int,
@@ -204,6 +215,7 @@ internal class X11State(
     private val xkbNamedIndicatorIndexes = linkedMapOf<Int, Int>()
     private val xkbComponentNameAtoms = linkedMapOf<Int, Int>()
     private val xkbCompatGroupMaps = linkedMapOf<Int, ByteArray>()
+    private val xkbDeviceLedFeedbacks = linkedMapOf<Int, MutableList<XXkbDeviceLedFeedback>>()
     private var activePointerGrab: XInputGrab? = null
     private var frozenPointerOwner: XEventSink? = null
     private val frozenPointerButtons = mutableListOf<XQueuedPointerButton>()
@@ -1744,6 +1756,44 @@ internal class X11State(
             val bitMask = 1 shl bit
             if ((groups and bitMask) != 0) {
                 xkbCompatGroupMaps[bit] = maps[index++].copyOf()
+            }
+        }
+    }
+
+    @Synchronized
+    fun xkbDeviceLedFeedbacks(deviceSpec: Int): List<XXkbDeviceLedFeedback> =
+        xkbDeviceLedFeedbacks[deviceSpec].orEmpty()
+            .map { it.copy(maps = it.maps.map(ByteArray::copyOf)) }
+
+    @Synchronized
+    fun setXkbDeviceLedFeedbacks(deviceSpec: Int, feedbacks: List<XXkbDeviceLedFeedback>, change: Int) {
+        if (feedbacks.isEmpty()) return
+        val existing = xkbDeviceLedFeedbacks.getOrPut(deviceSpec) { mutableListOf() }
+        for (feedback in feedbacks) {
+            val previousIndex = existing.indexOfFirst { it.ledClass == feedback.ledClass && it.ledId == feedback.ledId }
+            val previous = existing.getOrNull(previousIndex)
+            val merged = if (previous == null) {
+                feedback.copy(
+                    namesPresent = if ((change and XXkb.XiFeatureIndicatorNames) != 0) feedback.namesPresent else 0,
+                    mapsPresent = if ((change and XXkb.XiFeatureIndicatorMaps) != 0) feedback.mapsPresent else 0,
+                    state = if ((change and XXkb.XiFeatureIndicatorState) != 0) feedback.state else 0,
+                    names = if ((change and XXkb.XiFeatureIndicatorNames) != 0) feedback.names else emptyList(),
+                    maps = if ((change and XXkb.XiFeatureIndicatorMaps) != 0) feedback.maps.map(ByteArray::copyOf) else emptyList(),
+                )
+            } else {
+                previous.copy(
+                    physIndicators = feedback.physIndicators,
+                    namesPresent = if ((change and XXkb.XiFeatureIndicatorNames) != 0) feedback.namesPresent else previous.namesPresent,
+                    mapsPresent = if ((change and XXkb.XiFeatureIndicatorMaps) != 0) feedback.mapsPresent else previous.mapsPresent,
+                    state = if ((change and XXkb.XiFeatureIndicatorState) != 0) feedback.state else previous.state,
+                    names = if ((change and XXkb.XiFeatureIndicatorNames) != 0) feedback.names else previous.names,
+                    maps = if ((change and XXkb.XiFeatureIndicatorMaps) != 0) feedback.maps.map(ByteArray::copyOf) else previous.maps.map(ByteArray::copyOf),
+                )
+            }
+            if (previousIndex >= 0) {
+                existing[previousIndex] = merged
+            } else {
+                existing += merged
             }
         }
     }

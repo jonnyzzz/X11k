@@ -143,6 +143,12 @@ internal object XXkb {
     const val XiFeatureIndicators = XiFeatureIndicatorNames or XiFeatureIndicatorMaps or XiFeatureIndicatorState
     const val DeviceSpecUseCoreKeyboard = 0x0100
     const val DeviceSpecUseCorePointer = 0x0200
+    const val KbdFeedbackClass = 0
+    const val LedFeedbackClass = 4
+    const val DfltXIClass = 0x0300
+    const val DfltXIId = 0x0400
+    const val AllXIClasses = 0x0500
+    const val AllXIIds = 0x0600
     const val DefaultMouseKeysButton = 1
     const val DefaultGroupCount = 1
     const val DefaultRepeatDelay = 660

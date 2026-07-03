@@ -2918,8 +2918,26 @@ internal class X11Connection(
         val allButtons = body[4].toInt() != 0
         val firstButton = body[5].toInt() and 0xff
         val buttonCount = body[6].toInt() and 0xff
-        val totalButtons = if (deviceSpec == XXkb.DeviceSpecUseCorePointer) state.pointerMapping().size else 0
-        val supported = if (deviceSpec == XXkb.DeviceSpecUseCorePointer) XXkb.XiFeatureButtonActions else 0
+        val ledClass = byteOrder.u16(body, 8)
+        val ledId = byteOrder.u16(body, 10)
+        val corePointerDevice = deviceSpec == XXkb.DeviceSpecUseCorePointer
+        val totalButtons = if (corePointerDevice) state.pointerMapping().size else 0
+        val allLedFeedbacks = if (corePointerDevice && (wanted and XXkb.XiFeatureIndicators) != 0) state.xkbDeviceLedFeedbacks(deviceSpec) else emptyList()
+        val requestedLedFeedbacks = if (allLedFeedbacks.isNotEmpty()) {
+            if (!xkbGetDeviceInfoLedClassValid(ledClass)) {
+                return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = ledClass)
+            }
+            if (!xkbGetDeviceInfoLedIdValid(ledId)) {
+                return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = ledId)
+            }
+            xkbDeviceInfoMatchingLedFeedbacks(allLedFeedbacks, ledClass, ledId).also { feedbacks ->
+                if (feedbacks.isEmpty()) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = 0)
+            }
+        } else {
+            emptyList()
+        }
+        val supportedLedFeatures = if (requestedLedFeedbacks.isNotEmpty()) XXkb.XiFeatureIndicators else 0
+        val supported = (if (corePointerDevice) XXkb.XiFeatureButtonActions else 0) or supportedLedFeatures
         val present = wanted and supported
         val unsupported = wanted and supported.inv()
         val firstButtonReturned = if ((present and XXkb.XiFeatureButtonActions) != 0) {
@@ -2938,14 +2956,17 @@ internal class X11Connection(
         } else {
             0
         }
-        val payload = ByteArray(4 + buttonsReturned * 8)
+        val ledPayload = xkbDeviceInfoLedPayload(requestedLedFeedbacks, present)
+        val payload = ByteArray(4 + buttonsReturned * 8 + ledPayload.size)
         state.xkbButtonActions(firstButtonReturned, buttonsReturned).forEachIndexed { index, action ->
             action.copyInto(payload, 4 + index * 8)
         }
+        ledPayload.copyInto(payload, 4 + buttonsReturned * 8)
         val reply = reply(extra = 0, payloadUnits = payload.size / 4)
         byteOrder.put16(reply, 8, present)
         byteOrder.put16(reply, 10, supported)
         byteOrder.put16(reply, 12, unsupported)
+        byteOrder.put16(reply, 14, if ((present and XXkb.XiFeatureIndicators) != 0) requestedLedFeedbacks.size else 0)
         reply[16] = firstButton.toByte()
         reply[17] = buttonCount.toByte()
         reply[18] = firstButtonReturned.toByte()
@@ -2963,29 +2984,146 @@ internal class X11Connection(
         val nButtons = body[3].toInt() and 0xff
         val nDeviceLedFeedbacks = byteOrder.u16(body, 6)
         var offset = 8
+        val buttonActions = mutableListOf<ByteArray>()
         if (change and XXkb.XiFeatureButtonActions != 0) {
             val nextOffset = offset + nButtons * 8
             if (nextOffset > body.size) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
             if (deviceSpec == XXkb.DeviceSpecUseCorePointer) {
-                state.setXkbButtonActions(
-                    firstButton,
-                    List(nButtons) { index -> body.copyOfRange(offset + index * 8, offset + (index + 1) * 8) },
-                )
+                repeat(nButtons) { index ->
+                    buttonActions += body.copyOfRange(offset + index * 8, offset + (index + 1) * 8)
+                }
             }
             offset = nextOffset
         }
+        val ledFeedbacks = mutableListOf<XXkbDeviceLedFeedback>()
         if (change and XXkb.XiFeatureIndicators != 0) {
             repeat(nDeviceLedFeedbacks) {
                 if (offset > body.size - 20) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
+                val ledClass = byteOrder.u16(body, offset)
+                val ledId = byteOrder.u16(body, offset + 2)
+                if (!xkbSetDeviceInfoLedClassValid(ledClass)) {
+                    return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = ledClass)
+                }
+                if (!xkbSetDeviceInfoLedIdValid(ledId)) {
+                    return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = ledId)
+                }
                 val namesPresent = byteOrder.u32(body, offset + 4)
                 val mapsPresent = byteOrder.u32(body, offset + 8)
+                val physIndicators = byteOrder.u32(body, offset + 12)
+                val ledState = byteOrder.u32(body, offset + 16)
                 val ledBytes = 20L + Integer.bitCount(namesPresent) * 4L + Integer.bitCount(mapsPresent) * 12L
                 val nextOffset = offset.toLong() + ledBytes
                 if (nextOffset > body.size) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
+                offset += 20
+                val names = mutableListOf<Int>()
+                repeat(Integer.bitCount(namesPresent)) {
+                    byteOrder.u32(body, offset).also { atom ->
+                        if (atom != 0 && state.atomName(atom) == null) {
+                            return writeError(error = 5, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = atom)
+                        }
+                        names += atom
+                        offset += 4
+                    }
+                }
+                val maps = mutableListOf<ByteArray>()
+                repeat(Integer.bitCount(mapsPresent)) {
+                    maps += body.copyOfRange(offset, offset + 12)
+                    offset += 12
+                }
+                if (deviceSpec == XXkb.DeviceSpecUseCorePointer) {
+                    ledFeedbacks += XXkbDeviceLedFeedback(
+                        ledClass = ledClass,
+                        ledId = ledId,
+                        namesPresent = namesPresent,
+                        mapsPresent = mapsPresent,
+                        physIndicators = physIndicators,
+                        state = ledState,
+                        names = names,
+                        maps = maps,
+                    )
+                }
                 offset = nextOffset.toInt()
             }
         }
         if (offset != body.size) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
+        if (buttonActions.isNotEmpty()) {
+            state.setXkbButtonActions(firstButton, buttonActions)
+        }
+        state.setXkbDeviceLedFeedbacks(deviceSpec, ledFeedbacks, change)
+    }
+
+    private fun xkbSetDeviceInfoLedClassValid(ledClass: Int): Boolean =
+        ledClass == XXkb.KbdFeedbackClass ||
+            ledClass == XXkb.LedFeedbackClass ||
+            ledClass == XXkb.DfltXIClass
+
+    private fun xkbSetDeviceInfoLedIdValid(ledId: Int): Boolean =
+        ledId == XXkb.DfltXIId || (ledId and 0xff00) == 0
+
+    private fun xkbGetDeviceInfoLedClassValid(ledClass: Int): Boolean =
+        xkbSetDeviceInfoLedClassValid(ledClass) || ledClass == XXkb.AllXIClasses
+
+    private fun xkbGetDeviceInfoLedIdValid(ledId: Int): Boolean =
+        xkbSetDeviceInfoLedIdValid(ledId) || ledId == XXkb.AllXIIds
+
+    private fun xkbDeviceInfoMatchingLedFeedbacks(feedbacks: List<XXkbDeviceLedFeedback>, ledClass: Int, ledId: Int): List<XXkbDeviceLedFeedback> {
+        val classMatched = xkbDeviceInfoClassMatchedFeedbacks(feedbacks, ledClass)
+        if (ledId == XXkb.AllXIIds) return classMatched
+        val defaultId = classMatched.firstOrNull { it.ledId == XXkb.DfltXIId }?.ledId ?: classMatched.firstOrNull()?.ledId
+        return classMatched.filter { feedback ->
+            feedback.ledId == ledId || ledId == XXkb.DfltXIId && feedback.ledId == defaultId
+        }
+    }
+
+    private fun xkbDeviceInfoClassMatchedFeedbacks(feedbacks: List<XXkbDeviceLedFeedback>, ledClass: Int): List<XXkbDeviceLedFeedback> {
+        if (ledClass == XXkb.AllXIClasses) return feedbacks
+        val normalizedClasses = feedbacks.map { xkbDeviceInfoNormalizedLedClass(it.ledClass) }
+        val defaultClass = if (normalizedClasses.any { it == XXkb.KbdFeedbackClass }) XXkb.KbdFeedbackClass else XXkb.LedFeedbackClass
+        val requestedClass = if (ledClass == XXkb.DfltXIClass) defaultClass else ledClass
+        return feedbacks.filter { feedback ->
+            xkbDeviceInfoNormalizedLedClass(feedback.ledClass) == requestedClass
+        }
+    }
+
+    private fun xkbDeviceInfoNormalizedLedClass(ledClass: Int): Int =
+        if (ledClass == XXkb.DfltXIClass) XXkb.KbdFeedbackClass else ledClass
+
+    private fun xkbDeviceInfoLedPayload(feedbacks: List<XXkbDeviceLedFeedback>, present: Int): ByteArray {
+        if ((present and XXkb.XiFeatureIndicators) == 0) return ByteArray(0)
+        val includeNames = (present and XXkb.XiFeatureIndicatorNames) != 0
+        val includeMaps = (present and XXkb.XiFeatureIndicatorMaps) != 0
+        val includeState = (present and XXkb.XiFeatureIndicatorState) != 0
+        val size = feedbacks.sumOf { feedback ->
+            20 +
+                (if (includeNames) Integer.bitCount(feedback.namesPresent) * 4 else 0) +
+                (if (includeMaps) Integer.bitCount(feedback.mapsPresent) * 12 else 0)
+        }
+        val payload = ByteArray(size)
+        var offset = 0
+        for (feedback in feedbacks) {
+            val namesPresent = if (includeNames) feedback.namesPresent else 0
+            val mapsPresent = if (includeMaps) feedback.mapsPresent else 0
+            byteOrder.put16(payload, offset, feedback.ledClass)
+            byteOrder.put16(payload, offset + 2, feedback.ledId)
+            byteOrder.put32(payload, offset + 4, namesPresent)
+            byteOrder.put32(payload, offset + 8, mapsPresent)
+            byteOrder.put32(payload, offset + 12, feedback.physIndicators)
+            byteOrder.put32(payload, offset + 16, if (includeState) feedback.state else 0)
+            offset += 20
+            if (includeNames) {
+                for (name in feedback.names) {
+                    byteOrder.put32(payload, offset, name)
+                    offset += 4
+                }
+            }
+            if (includeMaps) {
+                for (map in feedback.maps) {
+                    map.copyInto(payload, offset, 0, 12)
+                    offset += 12
+                }
+            }
+        }
+        return payload
     }
 
     private fun xkbSetDebuggingFlags(body: ByteArray, majorOpcode: Int) {
