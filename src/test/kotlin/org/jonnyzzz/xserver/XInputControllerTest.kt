@@ -54,6 +54,44 @@ class XInputControllerTest {
     }
 
     @Test
+    fun `input click honors sibling stacking before lower child creation order`() {
+        XServer(ServerOptions(port = 0, width = 800, height = 600)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val lower = 0x0020_0001
+                val upper = 0x0020_0002
+                val lowerChild = 0x0020_0003
+                out.write(createWindowRequest(lower, x = 10, y = 10, width = 70, height = 70))
+                out.write(createWindowRequest(upper, x = 25, y = 25, width = 40, height = 40))
+                out.write(createWindowRequest(lowerChild, parent = lower, x = 20, y = 20, width = 30, height = 30))
+                out.write(selectButtonEventsRequest(upper))
+                out.write(selectButtonEventsRequest(lowerChild))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(upper))
+                out.write(mapWindowRequest(lowerChild))
+                out.flush()
+                readUntilEvent(input, 12)
+                readUntilEvent(input, 12)
+                readUntilEvent(input, 12)
+
+                val direct = server.input.click(35, 35)
+                assertEquals("0x200002", direct.targetWindowIdHex)
+                assertEquals(2, direct.deliveredEvents)
+                assertButtonEvent(input, type = 4, rootX = 35, rootY = 35, eventX = 10, eventY = 10, eventWindow = upper)
+                assertButtonEvent(input, type = 5, rootX = 35, rootY = 35, eventX = 10, eventY = 10, eventWindow = upper)
+                assertNoEvent(socket, input)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `input API and HTTP move deliver X11 motion events to selected window`() {
         XServer(ServerOptions(port = 0, width = 800, height = 600)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

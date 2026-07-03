@@ -9557,10 +9557,10 @@ internal class X11State(
     private fun Int.toHex(): String = "0x${toUInt().toString(16)}"
 
     private fun mappedChildContaining(parentId: Int, rootX: Int, rootY: Int): XWindow? =
-        windows.values.toList()
+        childrenOf(parentId)
             .asReversed()
             .firstOrNull { window ->
-                if (window.parentId != parentId || !window.mapped) return@firstOrNull false
+                if (!window.mapped) return@firstOrNull false
                 val absolute = absolutePosition(window)
                 rootX >= absolute.first &&
                     rootY >= absolute.second &&
@@ -9569,21 +9569,30 @@ internal class X11State(
                     windowInputShapeContains(window, rootX, rootY, absolute)
             }
 
-    private fun windowAt(x: Int, y: Int): XWindow? =
-        windows.values.toList()
-            .asReversed()
-            .firstOrNull { window ->
-                val absolute = absolutePosition(window)
-                window.mapped &&
-                    windowIsViewable(window.id) &&
-                    visibleBounds(window, absolute.first, absolute.second)?.let { bounds ->
-                        x >= bounds.x &&
-                            y >= bounds.y &&
-                            x < bounds.x + bounds.width &&
-                            y < bounds.y + bounds.height &&
-                            windowInputShapeContains(window, x, y, absolute)
-                    } == true
-            }
+    private fun windowAt(x: Int, y: Int): XWindow? {
+        val root = windows[X11Ids.RootWindow] ?: return null
+        return windowAtInSubtree(root, x, y)
+    }
+
+    private fun windowAtInSubtree(window: XWindow, rootX: Int, rootY: Int): XWindow? {
+        val absolute = absolutePosition(window)
+        if (!windowContainsPointer(window, rootX, rootY, absolute)) return null
+        for (child in childrenOf(window.id).asReversed()) {
+            windowAtInSubtree(child, rootX, rootY)?.let { return it }
+        }
+        return window
+    }
+
+    private fun windowContainsPointer(window: XWindow, rootX: Int, rootY: Int, absolute: Pair<Int, Int>): Boolean =
+        window.mapped &&
+            windowIsViewable(window.id) &&
+            visibleBounds(window, absolute.first, absolute.second)?.let { bounds ->
+                rootX >= bounds.x &&
+                    rootY >= bounds.y &&
+                    rootX < bounds.x + bounds.width &&
+                    rootY < bounds.y + bounds.height &&
+                    windowInputShapeContains(window, rootX, rootY, absolute)
+            } == true
 
     private fun windowInputShapeContains(window: XWindow, rootX: Int, rootY: Int, absolute: Pair<Int, Int>): Boolean {
         val inputClip = intersectClips(window.boundingShape, window.inputShape) ?: return true
