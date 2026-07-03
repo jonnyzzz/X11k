@@ -23,6 +23,49 @@ import kotlin.test.assertTrue
 
 class VSCodeSmokeTest {
     @Test
+    fun `vscode diagnostics summary extracts extension and glx evidence`() {
+        val text = """
+            Window hierarchy and geometry:
+            - 0x200003 parent=0x26 label="code" geometry=0,0 1279x899 class=InputOutput depth=24 visual=0x28 backgroundPixel=-592396 backgroundPixmap=none borderPixel=0 borderPixmap=none bitGravity=1 winGravity=1 backingStore=0 backingPlanes=-1 backingPixel=0 saveUnder=false overrideRedirect=false colormap=0x27 cursor=0x20000d mapped=true focused=true stack=4
+
+            Extension queries:
+            - #57 XInputExtension supported=false
+            - #56 XFIXES supported=true
+            - #55 SYNC supported=true
+            - #51 RENDER supported=true
+            - #49 GLX supported=true
+            - #48 DRI3 supported=false
+
+            Unsupported requests:
+            - None.
+
+            GLX operations:
+            - #8 QueryServerString minor=19 screen=0 name=2
+            - #7 SetClientInfo2ARB minor=35 layout=spec client=1.4 versions=17 glBytes=1 glxBytes=54 glExtensions= glxExtensions=GLX_ARB_create_context GLX_ARB_create_context_profile
+            - #6 GetFBConfigs minor=21 screen=0
+            - #1 QueryVersion minor=7 client=1.4
+        """.trimIndent()
+        val summary = vscodeDiagnosticsSummary(
+            text = text,
+            logs = listOf(
+                VSCodeLogArtifact(
+                    fileName = "vscode-kotlin-vscode-run.log",
+                    text = "[16:0703/182742.562139:ERROR:dbus/bus.cc:405] Failed to connect to the bus",
+                ),
+            ),
+        )
+
+        assertTrue(summary.contains("vscodeWindowEvidence=true"), summary)
+        assertTrue(summary.contains("vscodeUnsupportedRequests=None"), summary)
+        assertTrue(summary.contains("vscodeUnsupportedExtensions=DRI3 XInputExtension"), summary)
+        assertTrue(summary.contains("vscodeSupportedExtensions=GLX RENDER SYNC XFIXES"), summary)
+        assertTrue(summary.contains("vscodeGlxOperations=GetFBConfigs QueryServerString QueryVersion SetClientInfo2ARB"), summary)
+        assertTrue(summary.contains("vscodeClientGlxExtensions=GLX_ARB_create_context GLX_ARB_create_context_profile"), summary)
+        assertTrue(summary.contains("vscodeDbusLogWarnings=true"), summary)
+        assertFalse(summary.contains("vscodeUnsupportedExtensions=XInputExtension DRI3"), summary)
+    }
+
+    @Test
     fun `vscode from official tarball starts against kotlin x server`() {
         assumeTrue(
             System.getProperty("x.vscodeSmoke") == "true" || System.getenv("X_VSCODE_SMOKE") == "true",
@@ -235,6 +278,7 @@ class VSCodeSmokeTest {
         val directory = vscodeSmokeArtifactsDirectory()
         File(directory, "vscode-kotlin-text.txt").writeText(text)
         File(directory, "vscode-kotlin-screen.svg").writeText(svg)
+        File(directory, "vscode-diagnostics.txt").writeText(vscodeDiagnosticsSummary(text, logs))
         logs.forEach { artifact -> File(directory, artifact.fileName).writeText(artifact.text) }
     }
 
@@ -298,6 +342,63 @@ class VSCodeSmokeTest {
             .replace(Regex("""[^A-Za-z0-9._-]+"""), "-")
             .trim('-')
         return "vscode-kotlin-$cleaned"
+    }
+
+    private fun vscodeDiagnosticsSummary(text: String, logs: List<VSCodeLogArtifact>): String =
+        buildString {
+            appendLine("vscodeWindowEvidence=${hasVSCodeWindowEvidence(text)}")
+            appendLine("vscodeUnsupportedRequests=${unsupportedRequestsFromText(text).joinToStringOrNone()}")
+            appendLine("vscodeUnsupportedExtensions=${extensionQueriesFromText(text, supported = false).joinToStringOrNone()}")
+            appendLine("vscodeSupportedExtensions=${extensionQueriesFromText(text, supported = true).joinToStringOrNone()}")
+            appendLine("vscodeGlxOperations=${glxOperationsFromText(text).joinToStringOrNone()}")
+            appendLine("vscodeClientGlxExtensions=${clientGlxExtensionsFromText(text).joinToStringOrNone()}")
+            appendLine("vscodeDbusLogWarnings=${logs.any { it.text.contains("dbus", ignoreCase = true) }}")
+        }
+
+    private fun List<String>.joinToStringOrNone(): String =
+        if (isEmpty()) "None" else joinToString(" ")
+
+    private fun unsupportedRequestsFromText(text: String): List<String> =
+        sectionLines(text, "Unsupported requests:")
+            .map { it.removePrefix("-").trim() }
+            .filter { it.isNotEmpty() && it != "None." }
+            .distinct()
+            .sorted()
+
+    private fun extensionQueriesFromText(text: String, supported: Boolean): List<String> =
+        sectionLines(text, "Extension queries:")
+            .mapNotNull { line ->
+                val match = Regex("""-\s+#\d+\s+(\S+)\s+supported=(true|false)""").find(line.trim()) ?: return@mapNotNull null
+                match.groupValues[1].takeIf { match.groupValues[2].toBooleanStrict() == supported }
+            }
+            .distinct()
+            .sorted()
+
+    private fun glxOperationsFromText(text: String): List<String> =
+        sectionLines(text, "GLX operations:")
+            .mapNotNull { line -> Regex("""-\s+#\d+\s+(\S+)""").find(line.trim())?.groupValues?.get(1) }
+            .distinct()
+            .sorted()
+
+    private fun clientGlxExtensionsFromText(text: String): List<String> =
+        Regex("""\bglxExtensions=([^\n]*)""")
+            .findAll(text)
+            .flatMap { match -> match.groupValues[1].trim().split(Regex("""\s+""")).asSequence() }
+            .filter { it.startsWith("GLX_") }
+            .distinct()
+            .sorted()
+            .toList()
+
+    private fun sectionLines(text: String, header: String): List<String> {
+        val lines = text.lineSequence().toList()
+        val start = lines.indexOfFirst { it.trim() == header }
+        if (start < 0) return emptyList()
+        return lines
+            .asSequence()
+            .drop(start + 1)
+            .takeWhile { line -> line.isBlank() || line.trimStart().startsWith("-") }
+            .filter { it.trimStart().startsWith("-") }
+            .toList()
     }
 
     private data class EmbeddedPng(

@@ -130,9 +130,10 @@ copied into the same diagnostics directory, including pid-suffixed JCEF/Chromium
 logs and Mesa/EGL debug output in the run log.
 
 The VSCode/Electron smoke is also opt-in because it downloads the current stable
-VSCode tarball. It records the Kotlin server text/SVG view and VSCode logs under
-`build/tmp/vscode-smoke/`; set `-Dx.vscodeUrl=...` or `X_VSCODE_URL=...` to pin
-a specific archive instead of the official latest-stable endpoint:
+VSCode tarball. It records the Kotlin server text/SVG view, a compact extension
+and GLX diagnostics summary, and VSCode logs under `build/tmp/vscode-smoke/`;
+set `-Dx.vscodeUrl=...` or `X_VSCODE_URL=...` to pin a specific archive instead
+of the official latest-stable endpoint:
 
 ```bash
 scripts/run-gradle-bounded.sh dockerBuildX11Client

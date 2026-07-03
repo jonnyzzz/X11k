@@ -41,7 +41,7 @@ The parity probe writes PNG/SVG/text diagnostics, visual diffs/metrics, and Inte
 It also writes `intellij-glx-jcef-diagnostics.txt` from Xvfb/Kotlin `xdpyinfo -ext GLX` preflight logs, decoded client GLX extension strings, and known JCEF/ANGLE signatures.
 Add `-Dx.intellijDebug=true` or `X_INTELLIJ_DEBUG=true` to the smoke or parity probe when XAWT/JCEF tracing is needed; optional trace files are copied into the same diagnostics directory.
 Debug mode also captures pid-suffixed JCEF/Chromium log files when JetBrains Runtime writes them and enables Mesa/EGL loader diagnostics in the IntelliJ run log.
-Run the VSCode smoke explicitly with `-Dx.vscodeSmoke=true` after building `jonnyzzz-x/x11-client:latest`; it writes the Kotlin `/text.txt`, `/screen.svg`, and VSCode logs under `build/tmp/vscode-smoke/`.
+Run the VSCode smoke explicitly with `-Dx.vscodeSmoke=true` after building `jonnyzzz-x/x11-client:latest`; it writes the Kotlin `/text.txt`, `/screen.svg`, `vscode-diagnostics.txt`, and VSCode logs under `build/tmp/vscode-smoke/`.
 
 Build all local Docker images before the default Docker-backed test matrix:
 
