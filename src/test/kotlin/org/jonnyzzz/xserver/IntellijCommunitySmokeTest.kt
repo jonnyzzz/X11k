@@ -86,6 +86,51 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij visual region metrics identify frame and margins`() {
+        val text =
+            """
+            Screen:
+            - size=1280x900
+
+            Window hierarchy and geometry:
+            - 0x26 parent=0x0 label="root" geometry=0,0 1280x900 class=InputOutput depth=24 visual=0x28 backgroundPixel=16777215 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=0
+            - 0x200003 parent=0x26 label="Idea frame" geometry=10,20 1260x860 class=InputOutput depth=24 visual=0x28 backgroundPixel=0 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=1
+            - 0x200004 parent=0x200003 label="content" geometry=0,0 1260x860 class=InputOutput depth=24 visual=0x28 backgroundPixel=0 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=true stack=2
+            """.trimIndent()
+        val expected = BufferedImage(1280, 900, BufferedImage.TYPE_INT_RGB).also { image ->
+            val graphics = image.createGraphics()
+            graphics.color = java.awt.Color.BLACK
+            graphics.fillRect(0, 0, image.width, image.height)
+            graphics.dispose()
+        }
+        val actual = BufferedImage(1280, 900, BufferedImage.TYPE_INT_RGB).also { image ->
+            val graphics = image.createGraphics()
+            graphics.color = java.awt.Color.WHITE
+            graphics.fillRect(0, 0, image.width, image.height)
+            graphics.color = java.awt.Color.BLACK
+            graphics.fillRect(10, 20, 1260, 860)
+            graphics.dispose()
+        }
+
+        val metrics = intellijVisualRegionMetrics(
+            text = text,
+            expected = visualCapture(expected),
+            actualRobot = visualCapture(actual),
+            actualSvg = visualCapture(actual),
+        )
+
+        assertTrue(metrics.contains("ideaFrame=10,20 1260x860"), metrics)
+        assertTrue(metrics.contains("ideaFrameArea=1083600"), metrics)
+        assertTrue(metrics.contains("topMargin=20"), metrics)
+        assertTrue(metrics.contains("leftMargin=10"), metrics)
+        assertTrue(metrics.contains("rightMargin=10"), metrics)
+        assertTrue(metrics.contains("bottomMargin=20"), metrics)
+        assertTrue(metrics.contains("robotInsideFrameCoverageRatio=1.0"), metrics)
+        assertTrue(metrics.contains("robotOutsideFrameNonWhitePixels=0"), metrics)
+        assertTrue(metrics.contains("svgInsideFrameCoverageRatio=1.0"), metrics)
+    }
+
+    @Test
     fun `intellij clean project export contains tracked files only`() {
         val root = projectRoot()
         val untracked = root.resolve("build/tmp/intellij-community-smoke/untracked-sentinel.txt")
@@ -865,6 +910,14 @@ class IntellijCommunitySmokeTest {
         File(directory, "intellij-glx-jcef-diagnostics.txt").writeText(intellijGlxJcefDiagnosticsSummary(logs, kotlinText = actual.text))
         dumpIntellijVisualDiff(directory, "intellij-kotlin-robot-vs-xvfb", reference.robot, actual.robot)
         dumpIntellijVisualDiff(directory, "intellij-kotlin-svg-vs-xvfb", reference.robot, composedSvgCapture)
+        File(directory, "intellij-visual-region-metrics.txt").writeText(
+            intellijVisualRegionMetrics(
+                text = actual.text,
+                expected = reference.robot,
+                actualRobot = actual.robot,
+                actualSvg = composedSvgCapture,
+            ),
+        )
     }
 
     private fun dumpIntellijLogArtifacts(logs: List<IntellijLogArtifact>) {
@@ -1040,6 +1093,111 @@ class IntellijCommunitySmokeTest {
                 appendLine("sampledDistance=${imageDistance(expected.image, actual.image)}")
             },
         )
+    }
+
+    private fun intellijVisualRegionMetrics(
+        text: String,
+        expected: VisualCapture,
+        actualRobot: VisualCapture,
+        actualSvg: VisualCapture,
+    ): String {
+        val frame = largestMappedRootChildWindow(text)
+        return buildString {
+            appendLine("screen=${expected.width}x${expected.height}")
+            appendLine("expectedFullScreen=$expected")
+            appendLine("robotFullScreen=$actualRobot")
+            appendLine("svgFullScreen=$actualSvg")
+            if (frame == null) {
+                appendLine("ideaFrame=none")
+                return@buildString
+            }
+            appendLine("ideaFrame=${frame.x},${frame.y} ${frame.width}x${frame.height}")
+            appendLine("ideaFrameArea=${frame.width * frame.height}")
+            appendLine("topMargin=${frame.y}")
+            appendLine("leftMargin=${frame.x}")
+            appendLine("rightMargin=${(expected.width - frame.x - frame.width).coerceAtLeast(0)}")
+            appendLine("bottomMargin=${(expected.height - frame.y - frame.height).coerceAtLeast(0)}")
+            appendLine("expectedInsideFrame=${regionCapture(expected.image, frame)}")
+            appendLine("robotInsideFrame=${regionCapture(actualRobot.image, frame)}")
+            appendLine("svgInsideFrame=${regionCapture(actualSvg.image, frame)}")
+            appendLine("expectedOutsideFrameNonWhitePixels=${outsideRegionNonWhitePixels(expected.image, frame)}")
+            appendLine("robotOutsideFrameNonWhitePixels=${outsideRegionNonWhitePixels(actualRobot.image, frame)}")
+            appendLine("svgOutsideFrameNonWhitePixels=${outsideRegionNonWhitePixels(actualSvg.image, frame)}")
+            appendLine(
+                "robotInsideFrameCoverageRatio=${
+                    ratio(
+                        regionCapture(actualRobot.image, frame).nonWhitePixels,
+                        regionCapture(expected.image, frame).nonWhitePixels,
+                    )
+                }",
+            )
+            appendLine(
+                "svgInsideFrameCoverageRatio=${
+                    ratio(
+                        regionCapture(actualSvg.image, frame).nonWhitePixels,
+                        regionCapture(expected.image, frame).nonWhitePixels,
+                    )
+                }",
+            )
+            appendLine("robotInsideFrameSampledDistance=${imageDistance(regionImage(expected.image, frame), regionImage(actualRobot.image, frame))}")
+            appendLine("svgInsideFrameSampledDistance=${imageDistance(regionImage(expected.image, frame), regionImage(actualSvg.image, frame))}")
+        }
+    }
+
+    private fun largestMappedRootChildWindow(text: String): Rectangle? {
+        val rootId = Regex("""-\s+(0x[0-9a-fA-F]+)\s+parent=\S+\s+label="root"""")
+            .find(text)
+            ?.groupValues
+            ?.get(1)
+            ?: return null
+        return Regex(
+            """-\s+0x[0-9a-fA-F]+\s+parent=${Regex.escape(rootId)}\b[^\n]*\bgeometry=(-?\d+),(-?\d+)\s+(\d+)x(\d+)[^\n]*\bmapped=true\b""",
+        )
+            .findAll(text)
+            .map { match ->
+                Rectangle(
+                    match.groupValues[1].toInt(),
+                    match.groupValues[2].toInt(),
+                    match.groupValues[3].toInt(),
+                    match.groupValues[4].toInt(),
+                )
+            }
+            .filter { it.width > 0 && it.height > 0 }
+            .maxByOrNull { it.width.toLong() * it.height.toLong() }
+    }
+
+    private fun regionCapture(image: BufferedImage, region: Rectangle): VisualCapture =
+        visualCapture(regionImage(image, region))
+
+    private fun regionImage(image: BufferedImage, region: Rectangle): BufferedImage {
+        val x = region.x.coerceIn(0, image.width)
+        val y = region.y.coerceIn(0, image.height)
+        val right = (region.x + region.width).coerceIn(0, image.width)
+        val bottom = (region.y + region.height).coerceIn(0, image.height)
+        val width = (right - x).coerceAtLeast(1)
+        val height = (bottom - y).coerceAtLeast(1)
+        val copy = BufferedImage(width, height, BufferedImage.TYPE_INT_RGB)
+        val graphics = copy.createGraphics()
+        try {
+            graphics.drawImage(image, 0, 0, width, height, x, y, x + width, y + height, null)
+        } finally {
+            graphics.dispose()
+        }
+        return copy
+    }
+
+    private fun outsideRegionNonWhitePixels(image: BufferedImage, region: Rectangle): Int {
+        var nonWhite = 0
+        for (y in 0 until image.height) {
+            for (x in 0 until image.width) {
+                if (region.contains(x, y)) continue
+                val argb = image.getRGB(x, y)
+                val alpha = (argb ushr 24) and 0xff
+                val rgb = argb and 0x00ff_ffff
+                if (alpha > 0 && rgb != 0x00ff_ffff) nonWhite++
+            }
+        }
+        return nonWhite
     }
 
     private fun visualDiffImage(expected: BufferedImage, actual: BufferedImage): BufferedImage {
