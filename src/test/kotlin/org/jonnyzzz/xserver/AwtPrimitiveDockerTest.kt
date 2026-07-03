@@ -347,6 +347,35 @@ class AwtPrimitiveDockerTest {
         )
     }
 
+    @Test
+    fun `awt swing form controls robot screenshot roughly matches xvfb reference`() {
+        assumeDockerAndImage(CLIENT_IMAGE)
+        assumeDockerAndImage(REFERENCE_IMAGE)
+        val reference = runRobotProbeAgainstXvfb(
+            mainClass = "VisualFormControlsProbe",
+            source = VisualFormControlsProbeSource,
+        )
+        val actual = runRobotProbeAgainstKotlinServer(
+            port = 6222,
+            title = "AWT Form Controls Parity Probe",
+            mainClass = "VisualFormControlsProbe",
+            source = VisualFormControlsProbeSource,
+        )
+
+        assertContains(actual.text, "AWT Form Controls Parity Probe")
+        assertContains(actual.text, "RENDER.")
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected Kotlin SVG export to retain framebuffer images for the Swing form-controls probe")
+        assertTrue(
+            actual.exportedFramebuffers.any { it.width == 360 && it.height == 240 },
+            "Swing form controls should expose the owner framebuffer surface; exported=${actual.exportedFramebuffers}\n${actual.text}",
+        )
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin Swing form-controls Robot screenshot",
+        )
+    }
+
     private fun assertVisualCaptureClose(
         expected: VisualProbeCapture,
         actual: VisualProbeCapture,
@@ -2087,6 +2116,144 @@ class AwtPrimitiveDockerTest {
                   label.setBackground(leaf ? new Color(245, 248, 252) : new Color(64, 196, 125));
                   label.setBorder(new EmptyBorder(0, 4, 0, 4));
                   return label;
+                }
+              }
+            }
+            """.trimIndent()
+
+        val VisualFormControlsProbeSource =
+            """
+            import java.awt.Color;
+            import java.awt.Font;
+            import java.awt.Graphics;
+            import java.awt.Graphics2D;
+            import java.awt.Point;
+            import java.awt.Rectangle;
+            import java.awt.RenderingHints;
+            import java.awt.Robot;
+            import java.awt.image.BufferedImage;
+            import java.io.ByteArrayOutputStream;
+            import java.util.Base64;
+            import javax.imageio.ImageIO;
+            import javax.swing.JButton;
+            import javax.swing.JCheckBox;
+            import javax.swing.JComponent;
+            import javax.swing.JFrame;
+            import javax.swing.JLabel;
+            import javax.swing.JPanel;
+            import javax.swing.JProgressBar;
+            import javax.swing.JRadioButton;
+            import javax.swing.JScrollPane;
+            import javax.swing.JSlider;
+            import javax.swing.JTextArea;
+            import javax.swing.JTextField;
+            import javax.swing.SwingUtilities;
+            import javax.swing.border.EmptyBorder;
+
+            public class VisualFormControlsProbe {
+              public static void main(String[] args) throws Exception {
+                final JFrame[] frameHolder = new JFrame[1];
+                SwingUtilities.invokeAndWait(() -> {
+                  JFrame frame = new JFrame("AWT Form Controls Parity Probe");
+                  frame.setUndecorated(true);
+                  frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+                  frame.setBounds(40, 40, 360, 240);
+                  FormPanel owner = new FormPanel();
+                  owner.setLayout(null);
+                  frame.setContentPane(owner);
+
+                  JLabel title = new JLabel("settings");
+                  title.setForeground(Color.WHITE);
+                  title.setFont(new Font("SansSerif", Font.BOLD, 18));
+                  title.setBounds(24, 16, 120, 28);
+                  owner.add(title);
+
+                  JTextField field = new JTextField("Run configuration");
+                  field.setFont(new Font("SansSerif", Font.BOLD, 14));
+                  field.setBounds(24, 52, 192, 30);
+                  field.setCaretPosition(0);
+                  field.setEditable(false);
+                  owner.add(field);
+
+                  JCheckBox check = new JCheckBox("auto build", true);
+                  check.setFont(new Font("SansSerif", Font.BOLD, 13));
+                  check.setForeground(new Color(20, 30, 50));
+                  check.setBackground(new Color(245, 248, 252));
+                  check.setBounds(232, 50, 108, 30);
+                  owner.add(check);
+
+                  JRadioButton radio = new JRadioButton("local", true);
+                  radio.setFont(new Font("SansSerif", Font.BOLD, 13));
+                  radio.setForeground(new Color(20, 30, 50));
+                  radio.setBackground(new Color(245, 248, 252));
+                  radio.setBounds(232, 84, 108, 30);
+                  owner.add(radio);
+
+                  JSlider slider = new JSlider(0, 100, 72);
+                  slider.setPaintTicks(true);
+                  slider.setMajorTickSpacing(25);
+                  slider.setOpaque(true);
+                  slider.setBackground(new Color(245, 248, 252));
+                  slider.setBounds(24, 96, 192, 42);
+                  owner.add(slider);
+
+                  JProgressBar progress = new JProgressBar(0, 100);
+                  progress.setValue(64);
+                  progress.setStringPainted(true);
+                  progress.setString("64%");
+                  progress.setFont(new Font("SansSerif", Font.BOLD, 12));
+                  progress.setBounds(24, 148, 192, 26);
+                  owner.add(progress);
+
+                  JButton button = new JButton("Apply");
+                  button.setFont(new Font("SansSerif", Font.BOLD, 14));
+                  button.setBounds(232, 132, 108, 42);
+                  owner.add(button);
+
+                  JTextArea notes = new JTextArea("profile: default\nscope: project");
+                  notes.setFont(new Font("SansSerif", Font.PLAIN, 13));
+                  notes.setEditable(false);
+                  notes.setBorder(new EmptyBorder(4, 6, 4, 6));
+                  JScrollPane notesScroll = new JScrollPane(notes);
+                  notesScroll.setBounds(24, 186, 316, 36);
+                  notesScroll.setBorder(new EmptyBorder(0, 0, 0, 0));
+                  owner.add(notesScroll);
+
+                  frame.setVisible(true);
+                  owner.paintImmediately(0, 0, 360, 240);
+                  frameHolder[0] = frame;
+                });
+                Thread.sleep(1000);
+                Point origin = frameHolder[0].getLocationOnScreen();
+                BufferedImage image = new Robot().createScreenCapture(new Rectangle(origin.x, origin.y, 360, 240));
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                ImageIO.write(image, "png", output);
+                System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
+                System.out.flush();
+                long holdMillis = Long.getLong("visualProbe.holdMillis", 0L);
+                if (holdMillis > 0L) {
+                  Thread.sleep(holdMillis);
+                }
+                SwingUtilities.invokeAndWait(() -> frameHolder[0].dispose());
+              }
+
+              static final class FormPanel extends JPanel {
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(new Color(20, 30, 50));
+                    g.fillRect(0, 0, getWidth(), getHeight());
+                    g.setColor(new Color(230, 50, 44));
+                    g.fillRect(18, 16, 128, 28);
+                    g.setColor(new Color(42, 168, 255));
+                    g.fillRect(154, 16, 188, 28);
+                    g.setColor(new Color(255, 225, 64));
+                    g.fillRect(232, 184, 108, 38);
+                  } finally {
+                    g.dispose();
+                  }
                 }
               }
             }
