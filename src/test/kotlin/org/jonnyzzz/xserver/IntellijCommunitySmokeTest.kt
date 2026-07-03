@@ -116,45 +116,44 @@ class IntellijCommunitySmokeTest {
 
     @Test
     fun `intellij glx jcef diagnostics summary extracts preflight and angle failures`() {
-        val summary = intellijGlxJcefDiagnosticsSummary(
-            logs = listOf(
-                IntellijLogArtifact(
-                    fileName = "intellij-xvfb-glx-xdpyinfo.log",
-                    text =
-                        """
-                        GLX version: 1.4
-                        GLX extensions:
-                            GLX_ARB_create_context, GLX_EXT_create_context_es_profile
+        val kotlinText = "- #7 SetClientInfo2ARB minor=35 layout=spec client=1.4 versions=1 glBytes=14 glxBytes=67 glExtensions=GL_EXT_texture glxExtensions=GLX_ARB_create_context GLX_EXT_create_context_es_profile"
+        val logs = listOf(
+            IntellijLogArtifact(
+                fileName = "intellij-xvfb-glx-xdpyinfo.log",
+                text =
+                    """
+                    GLX version: 1.4
+                    GLX extensions:
+                        GLX_ARB_create_context, GLX_EXT_create_context_es_profile
 
-                        GLX visuals:
-                        """.trimIndent(),
-                ),
-                IntellijLogArtifact(
-                    fileName = "intellij-kotlin-glx-xdpyinfo.log",
-                    text =
-                        """
-                        GLX extension not supported by xdpyinfo
-                        number of extensions:    2
-                            GLX
-                            RENDER
-                        default screen number:    0
-                        GLX version: 1.4
-                        GLX extensions:
-                            GLX_ARB_create_context GLX_ARB_create_context_profile
-                            GLX_EXT_create_context_es_profile
-                        GLX visuals:
-                        """.trimIndent(),
-                ),
-                IntellijLogArtifact(
-                    fileName = "intellij-kotlin-run.log",
-                    text = "ANGLE Display::initialize error 12289: Could not create the initialization pbuffer.",
-                ),
-                IntellijLogArtifact(
-                    fileName = "intellij-kotlin-text.txt",
-                    text = "- #7 SetClientInfo2ARB minor=35 layout=spec client=1.4 versions=1 glBytes=14 glxBytes=67 glExtensions=GL_EXT_texture glxExtensions=GLX_ARB_create_context GLX_EXT_create_context_es_profile",
-                ),
+                    GLX visuals:
+                    """.trimIndent(),
+            ),
+            IntellijLogArtifact(
+                fileName = "intellij-kotlin-glx-xdpyinfo.log",
+                text =
+                    """
+                    GLX extension not supported by xdpyinfo
+                    number of extensions:    2
+                        GLX
+                        RENDER
+                    default screen number:    0
+                    GLX version: 1.4
+                    GLX extensions:
+                        GLX_ARB_create_context GLX_ARB_create_context_profile
+                        GLX_EXT_create_context_es_profile
+                    GLX visuals:
+                    """.trimIndent(),
+            ),
+            IntellijLogArtifact(
+                fileName = "intellij-kotlin-run.log",
+                text = "ANGLE Display::initialize error 12289: Could not create the initialization pbuffer.",
             ),
         )
+        val summary = intellijGlxJcefDiagnosticsSummary(
+            logs = logs + IntellijLogArtifact(fileName = "intellij-kotlin-text.txt", text = kotlinText),
+        )
+        val summaryFromExplicitText = intellijGlxJcefDiagnosticsSummary(logs, kotlinText = kotlinText)
 
         assertTrue(summary.contains("xvfbGlxExtensions=GLX_ARB_create_context GLX_EXT_create_context_es_profile"), summary)
         assertTrue(
@@ -166,6 +165,10 @@ class IntellijCommunitySmokeTest {
         assertTrue(
             summary.contains("kotlinClientGlxExtensions=GLX_ARB_create_context GLX_EXT_create_context_es_profile"),
             summary,
+        )
+        assertTrue(
+            summaryFromExplicitText.contains("kotlinClientGlxExtensions=GLX_ARB_create_context GLX_EXT_create_context_es_profile"),
+            summaryFromExplicitText,
         )
         assertTrue(summary.contains("kotlinAngleInitializationPbufferFailure=true"), summary)
     }
@@ -845,7 +848,7 @@ class IntellijCommunitySmokeTest {
         File(directory, "intellij-kotlin-svg-layers.txt").writeText(svgLayerInventory(actual.svgLayers))
         val logs = reference.logs + actual.logs
         dumpIntellijLogArtifacts(logs)
-        File(directory, "intellij-glx-jcef-diagnostics.txt").writeText(intellijGlxJcefDiagnosticsSummary(logs))
+        File(directory, "intellij-glx-jcef-diagnostics.txt").writeText(intellijGlxJcefDiagnosticsSummary(logs, kotlinText = actual.text))
         dumpIntellijVisualDiff(directory, "intellij-kotlin-robot-vs-xvfb", reference.robot, actual.robot)
         dumpIntellijVisualDiff(directory, "intellij-kotlin-svg-vs-xvfb", reference.robot, composedSvgCapture)
     }
@@ -904,10 +907,13 @@ class IntellijCommunitySmokeTest {
         }
     }
 
-    private fun intellijGlxJcefDiagnosticsSummary(logs: List<IntellijLogArtifact>): String {
+    private fun intellijGlxJcefDiagnosticsSummary(logs: List<IntellijLogArtifact>, kotlinText: String? = null): String {
         val xvfbGlx = logs.firstOrNull { it.fileName == "intellij-xvfb-glx-xdpyinfo.log" }?.text.orEmpty()
         val kotlinGlx = logs.firstOrNull { it.fileName == "intellij-kotlin-glx-xdpyinfo.log" }?.text.orEmpty()
-        val kotlinText = logs.filter { it.fileName.startsWith("intellij-kotlin-") }.joinToString("\n") { it.text }
+        val kotlinTrace = (
+            logs.filter { it.fileName.startsWith("intellij-kotlin-") }.map { it.text } +
+                listOfNotNull(kotlinText)
+            ).joinToString("\n")
         return buildString {
             appendLine("xvfbListsGlxExtension=${listedExtensionsFromXdpyinfo(xvfbGlx).contains("GLX")}")
             appendLine("kotlinListsGlxExtension=${listedExtensionsFromXdpyinfo(kotlinGlx).contains("GLX")}")
@@ -915,11 +921,11 @@ class IntellijCommunitySmokeTest {
             appendLine("kotlinXdpyinfoGlxDetailUnsupported=${xdpyinfoGlxDetailUnsupported(kotlinGlx)}")
             appendLine("xvfbGlxExtensions=${glxExtensionsFromXdpyinfo(xvfbGlx).joinToString(" ")}")
             appendLine("kotlinGlxExtensions=${glxExtensionsFromXdpyinfo(kotlinGlx).joinToString(" ")}")
-            appendLine("kotlinClientGlxExtensions=${clientGlxExtensionsFromText(kotlinText).joinToString(" ")}")
-            appendLine("kotlinAngleInitializationPbufferFailure=${kotlinText.contains("Could not create the initialization pbuffer")}")
+            appendLine("kotlinClientGlxExtensions=${clientGlxExtensionsFromText(kotlinTrace).joinToString(" ")}")
+            appendLine("kotlinAngleInitializationPbufferFailure=${kotlinTrace.contains("Could not create the initialization pbuffer")}")
             appendLine(
                 "kotlinAngleMissingEsProfileMessage=${
-                    kotlinText.contains("Cannot create an OpenGL ES platform on GLX without the GLX_EXT_create_context_es_profile extension")
+                    kotlinTrace.contains("Cannot create an OpenGL ES platform on GLX without the GLX_EXT_create_context_es_profile extension")
                 }",
             )
         }
