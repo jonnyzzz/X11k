@@ -82,6 +82,12 @@ internal data class XXkbIndicatorMaps(
     val maps: List<ByteArray>,
 )
 
+internal data class XkbNamedIndicatorUpdate(
+    val stateNotify: XXkbIndicatorStateNotifyEvent?,
+    val mapChanged: Int,
+    val state: Int,
+)
+
 internal class X11State(
     val width: Int,
     val height: Int,
@@ -1733,26 +1739,46 @@ internal class X11State(
             indicator = indicator,
             index = index,
             on = (xkbIndicatorState and mask) != 0,
+            map = xkbIndicatorMaps[index]?.copyOf(),
         )
     }
 
     @Synchronized
-    fun setXkbNamedIndicatorState(indicator: Int, on: Boolean, createIfMissing: Boolean): XXkbIndicatorStateNotifyEvent? {
+    fun setXkbNamedIndicator(indicator: Int, setMap: Boolean, map: ByteArray?, setState: Boolean, on: Boolean, createIfMissing: Boolean): XkbNamedIndicatorUpdate {
         val existingIndex = xkbNamedIndicatorIndexes[indicator]
-        if (existingIndex == null && !createIfMissing) return null
+        if (existingIndex == null && !createIfMissing) {
+            return XkbNamedIndicatorUpdate(stateNotify = null, mapChanged = 0, state = xkbIndicatorState)
+        }
         val index = existingIndex ?: run {
-            if (xkbNamedIndicatorIndexes.size >= 32) return null
+            if (xkbNamedIndicatorIndexes.size >= 32) {
+                return XkbNamedIndicatorUpdate(stateNotify = null, mapChanged = 0, state = xkbIndicatorState)
+            }
             xkbNamedIndicatorIndexes.size.also { xkbNamedIndicatorIndexes[indicator] = it }
         }
         val mask = 1 shl index
+        var mapChanged = 0
+        if (setMap && map != null) {
+            xkbIndicatorMaps[index] = map.copyOf()
+            mapChanged = mask
+        }
         val previous = xkbIndicatorState
-        xkbIndicatorState = if (on) xkbIndicatorState or mask else xkbIndicatorState and mask.inv()
+        if (setState) {
+            xkbIndicatorState = if (on) xkbIndicatorState or mask else xkbIndicatorState and mask.inv()
+        }
         val changed = previous xor xkbIndicatorState
-        if (changed == 0) return null
-        return XXkbIndicatorStateNotifyEvent(
-            timestamp = syncServerTime(),
+        val stateNotify = if (changed == 0) {
+            null
+        } else {
+            XXkbIndicatorStateNotifyEvent(
+                timestamp = syncServerTime(),
+                state = xkbIndicatorState,
+                changed = changed,
+            )
+        }
+        return XkbNamedIndicatorUpdate(
+            stateNotify = stateNotify,
+            mapChanged = mapChanged,
             state = xkbIndicatorState,
-            changed = changed,
         )
     }
 
@@ -11138,6 +11164,7 @@ internal data class XkbNamedIndicator(
     val indicator: Int,
     val index: Int,
     val on: Boolean,
+    val map: ByteArray?,
 )
 
 internal data class XWindowSnapshot(

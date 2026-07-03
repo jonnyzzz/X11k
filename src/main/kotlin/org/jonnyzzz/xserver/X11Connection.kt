@@ -2445,6 +2445,7 @@ internal class X11Connection(
             reply[13] = if (named.on) 1 else 0
             reply[14] = 1
             reply[15] = named.index.toByte()
+            named.map?.copyInto(reply, 16)
             reply[28] = 1
         }
         write(reply)
@@ -2455,9 +2456,40 @@ internal class X11Connection(
         val indicator = byteOrder.u32(body, 8)
         val setState = body[12].toInt() != 0
         val on = body[13].toInt() != 0
+        val setMap = body[14].toInt() != 0
         val createMap = body[15].toInt() != 0
-        if (setState) {
-            val event = state.setXkbNamedIndicatorState(indicator, on, createIfMissing = createMap) ?: return
+        val map = if (setMap) {
+            ByteArray(12).also { target ->
+                target[0] = body[17]
+                target[1] = body[18]
+                target[2] = body[19]
+                target[3] = body[20]
+                target[5] = body[21]
+                body.copyInto(target, destinationOffset = 6, startIndex = 22, endIndex = 28)
+            }
+        } else {
+            null
+        }
+        val update = state.setXkbNamedIndicator(
+            indicator = indicator,
+            setMap = setMap,
+            map = map,
+            setState = setState,
+            on = on,
+            createIfMissing = createMap,
+        )
+        if (update.mapChanged != 0) {
+            sendXkbIndicatorMapNotify(
+                state.xkbIndicatorMapNotifyDispatches(
+                    XXkbIndicatorMapNotifyEvent(
+                        timestamp = state.syncServerTime(),
+                        state = update.state,
+                        changed = update.mapChanged,
+                    ),
+                ),
+            )
+        }
+        update.stateNotify?.let { event ->
             sendXkbIndicatorStateNotify(state.xkbIndicatorStateNotifyDispatches(event))
         }
     }

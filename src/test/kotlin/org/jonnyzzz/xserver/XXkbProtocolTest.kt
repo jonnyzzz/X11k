@@ -2228,6 +2228,70 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD SetNamedIndicator persists embedded indicator map`() {
+        withServer { socket, _ ->
+            val indicator = 0x0020_0400
+            val map = indicatorMapRecord(7).also { it[4] = 0 }
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventIndicatorMapNotify,
+                    details = selectEvents32Details(0x1, 0x1),
+                ),
+            )
+            out.write(setNamedIndicatorRequest(indicator, setState = false, on = false, setMap = true, createMap = true, map = map))
+            out.write(getNamedIndicatorRequest(indicator))
+            out.write(getIndicatorMapRequest(which = 0x1))
+            out.flush()
+
+            assertIndicatorMapNotify(socket.getInputStream().readExactly(32), sequence = 2, state = 0, changed = 0x1)
+            val named = readReply(socket.getInputStream())
+            assertEquals(3, u16le(named, 2))
+            assertEquals(indicator, u32le(named, 8))
+            assertEquals(1, named[12].toInt() and 0xff)
+            assertEquals(0, named[13].toInt() and 0xff)
+            assertEquals(1, named[14].toInt() and 0xff)
+            assertEquals(0, named[15].toInt() and 0xff)
+            assertEquals(map.toList(), named.copyOfRange(16, 28).toList())
+            assertEquals(1, named[28].toInt() and 0xff)
+
+            val maps = readReply(socket.getInputStream())
+            assertEquals(4, u16le(maps, 2))
+            assertEquals(0x1, u32le(maps, 8))
+            assertIndicatorMaps(maps, listOf(map))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetNamedIndicator map does not create absent indicator when createMap is false`() {
+        withServer { socket, _ ->
+            val indicator = 0x0020_0400
+            val out = socket.getOutputStream()
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventIndicatorMapNotify,
+                    selectAll = XXkb.EventIndicatorMapNotify,
+                ),
+            )
+            out.write(setNamedIndicatorRequest(indicator, setState = false, on = false, setMap = true, createMap = false, map = indicatorMapRecord(9)))
+            out.write(getNamedIndicatorRequest(indicator))
+            out.write(getIndicatorMapRequest(which = 0x1))
+            out.flush()
+
+            val named = readReply(socket.getInputStream())
+            assertEquals(3, u16le(named, 2))
+            assertEquals(indicator, u32le(named, 8))
+            assertEquals(0, named[12].toInt() and 0xff)
+            assertEquals(0, named[28].toInt() and 0xff)
+
+            val maps = readReply(socket.getInputStream())
+            assertEquals(4, u16le(maps, 2))
+            assertEquals(0, u32le(maps, 8))
+            assertEquals(0, maps[16].toInt() and 0xff)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD SetNamedIndicator does not create absent indicator state when createMap is false`() {
         withServer { socket, _ ->
             val indicator = 0x0020_0400
@@ -3851,7 +3915,14 @@ class XXkbProtocolTest {
         return request(XXkb.MajorOpcode, XXkb.GetNamedIndicator, body)
     }
 
-    private fun setNamedIndicatorRequest(indicator: Int, setState: Boolean, on: Boolean, setMap: Boolean, createMap: Boolean): ByteArray {
+    private fun setNamedIndicatorRequest(
+        indicator: Int,
+        setState: Boolean,
+        on: Boolean,
+        setMap: Boolean,
+        createMap: Boolean,
+        map: ByteArray = ByteArray(12),
+    ): ByteArray {
         val body = ByteArray(28)
         put16le(body, 0, 0x0100)
         put16le(body, 2, 0)
@@ -3861,8 +3932,14 @@ class XXkbProtocolTest {
         body[13] = if (on) 1 else 0
         body[14] = if (setMap) 1 else 0
         body[15] = if (createMap) 1 else 0
-        put16le(body, 22, 0)
-        put32le(body, 24, 0)
+        if (setMap) {
+            body[17] = map[0]
+            body[18] = map[1]
+            body[19] = map[2]
+            body[20] = map[3]
+            body[21] = map[5]
+            map.copyInto(body, destinationOffset = 22, startIndex = 6, endIndex = 12)
+        }
         return request(XXkb.MajorOpcode, XXkb.SetNamedIndicator, body)
     }
 
