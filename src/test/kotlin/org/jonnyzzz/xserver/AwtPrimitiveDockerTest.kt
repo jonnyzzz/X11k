@@ -256,6 +256,37 @@ class AwtPrimitiveDockerTest {
         )
     }
 
+    @Test
+    fun `awt combo dropdown robot screenshot roughly matches xvfb reference`() {
+        assumeDockerAndImage(CLIENT_IMAGE)
+        assumeDockerAndImage(REFERENCE_IMAGE)
+        val reference = runRobotProbeAgainstXvfb(
+            mainClass = "VisualComboDropdownProbe",
+            source = VisualComboDropdownProbeSource,
+        )
+        val actual = runRobotProbeAgainstKotlinServer(
+            port = 6219,
+            title = "AWT Combo Dropdown Parity Probe",
+            mainClass = "VisualComboDropdownProbe",
+            source = VisualComboDropdownProbeSource,
+        )
+
+        assertContains(actual.text, "AWT Combo Dropdown Parity Probe")
+        assertContains(actual.text, "RENDER.")
+        assertContains(actual.text, "geometry=118,132 204x114")
+        assertContains(actual.text, "overrideRedirect=true")
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected Kotlin SVG export to retain framebuffer images for the combo dropdown probe")
+        assertTrue(
+            actual.exportedFramebuffers.any { it.width == 360 && it.height == 240 },
+            "Combo dropdown rendering should expose the owner framebuffer surface; exported=${actual.exportedFramebuffers}\n${actual.text}",
+        )
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin combo-dropdown Robot screenshot",
+        )
+    }
+
     private fun assertVisualCaptureClose(
         expected: VisualProbeCapture,
         actual: VisualProbeCapture,
@@ -1523,6 +1554,131 @@ class AwtPrimitiveDockerTest {
                   } finally {
                     g.dispose();
                   }
+                }
+              }
+            }
+            """.trimIndent()
+
+        val VisualComboDropdownProbeSource =
+            """
+            import java.awt.AlphaComposite;
+            import java.awt.Color;
+            import java.awt.Component;
+            import java.awt.Dimension;
+            import java.awt.Font;
+            import java.awt.Graphics;
+            import java.awt.Graphics2D;
+            import java.awt.Point;
+            import java.awt.Rectangle;
+            import java.awt.RenderingHints;
+            import java.awt.Robot;
+            import java.awt.image.BufferedImage;
+            import java.io.ByteArrayOutputStream;
+            import java.util.Base64;
+            import javax.imageio.ImageIO;
+            import javax.swing.DefaultListCellRenderer;
+            import javax.swing.JComboBox;
+            import javax.swing.JComponent;
+            import javax.swing.JFrame;
+            import javax.swing.JList;
+            import javax.swing.JPanel;
+            import javax.swing.JPopupMenu;
+            import javax.swing.SwingUtilities;
+
+            public class VisualComboDropdownProbe {
+              public static void main(String[] args) throws Exception {
+                final JFrame[] frameHolder = new JFrame[1];
+                final JComboBox<String>[] comboHolder = new JComboBox[1];
+                SwingUtilities.invokeAndWait(() -> {
+                  JPopupMenu.setDefaultLightWeightPopupEnabled(false);
+
+                  JFrame frame = new JFrame("AWT Combo Dropdown Parity Probe");
+                  frame.setUndecorated(true);
+                  frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+                  frame.setBounds(40, 40, 360, 240);
+                  OwnerPanel owner = new OwnerPanel();
+                  owner.setLayout(null);
+                  frame.setContentPane(owner);
+
+                  JComboBox<String> combo = new JComboBox<>(new String[] {
+                    "Project SDK",
+                    "Run Configuration",
+                    "Module Source",
+                    "Inspection Profile"
+                  });
+                  combo.setLightWeightPopupEnabled(false);
+                  combo.setMaximumRowCount(4);
+                  combo.setSelectedIndex(0);
+                  combo.setRenderer(new StripeRenderer());
+                  combo.setBounds(78, 58, 204, 34);
+                  owner.add(combo);
+
+                  frame.setVisible(true);
+                  owner.paintImmediately(0, 0, 360, 240);
+                  combo.showPopup();
+                  combo.paintImmediately(0, 0, 204, 34);
+
+                  frameHolder[0] = frame;
+                  comboHolder[0] = combo;
+                });
+                Thread.sleep(1000);
+                Point origin = frameHolder[0].getLocationOnScreen();
+                BufferedImage image = new Robot().createScreenCapture(new Rectangle(origin.x, origin.y, 360, 240));
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                ImageIO.write(image, "png", output);
+                System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
+                System.out.flush();
+                long holdMillis = Long.getLong("visualProbe.holdMillis", 0L);
+                if (holdMillis > 0L) {
+                  Thread.sleep(holdMillis);
+                }
+                SwingUtilities.invokeAndWait(() -> {
+                  comboHolder[0].hidePopup();
+                  frameHolder[0].dispose();
+                });
+              }
+
+              static final class OwnerPanel extends JPanel {
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(new Color(20, 30, 50));
+                    g.fillRect(0, 0, getWidth(), getHeight());
+                    g.setColor(new Color(230, 50, 44));
+                    g.fillRect(18, 20, 104, 62);
+                    g.setComposite(AlphaComposite.SrcOver.derive(0.54f));
+                    g.setColor(new Color(42, 168, 255));
+                    g.fillRect(74, 50, 138, 96);
+                    g.setComposite(AlphaComposite.SrcOver);
+                    g.setColor(new Color(255, 225, 64));
+                    g.fillRect(24, 172, 312, 34);
+                    g.setColor(new Color(238, 244, 250));
+                    g.setFont(new Font("SansSerif", Font.BOLD, 22));
+                    g.drawString("combo owner", 26, 136);
+                  } finally {
+                    g.dispose();
+                  }
+                }
+              }
+
+              static final class StripeRenderer extends DefaultListCellRenderer {
+                @Override
+                public Component getListCellRendererComponent(
+                    JList<?> list,
+                    Object value,
+                    int index,
+                    boolean isSelected,
+                    boolean cellHasFocus
+                ) {
+                  JComponent component = (JComponent) super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+                  component.setPreferredSize(new Dimension(204, 28));
+                  component.setFont(new Font("SansSerif", Font.BOLD, 14));
+                  component.setForeground(index == 0 ? Color.WHITE : new Color(20, 30, 50));
+                  component.setBackground(index == 0 ? new Color(36, 52, 76) : new Color(245, 248, 252));
+                  component.setOpaque(true);
+                  return component;
                 }
               }
             }
