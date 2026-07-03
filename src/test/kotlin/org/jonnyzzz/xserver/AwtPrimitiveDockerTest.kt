@@ -376,6 +376,35 @@ class AwtPrimitiveDockerTest {
         )
     }
 
+    @Test
+    fun `awt tabbed split pane robot screenshot roughly matches xvfb reference`() {
+        assumeDockerAndImage(CLIENT_IMAGE)
+        assumeDockerAndImage(REFERENCE_IMAGE)
+        val reference = runRobotProbeAgainstXvfb(
+            mainClass = "VisualTabbedSplitPaneProbe",
+            source = VisualTabbedSplitPaneProbeSource,
+        )
+        val actual = runRobotProbeAgainstKotlinServer(
+            port = 6223,
+            title = "AWT Tabbed Split Pane Parity Probe",
+            mainClass = "VisualTabbedSplitPaneProbe",
+            source = VisualTabbedSplitPaneProbeSource,
+        )
+
+        assertContains(actual.text, "AWT Tabbed Split Pane Parity Probe")
+        assertContains(actual.text, "RENDER.")
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected Kotlin SVG export to retain framebuffer images for the tabbed split-pane probe")
+        assertTrue(
+            actual.exportedFramebuffers.any { it.width == 360 && it.height == 240 },
+            "Tabbed split-pane Swing rendering should expose the owner framebuffer surface; exported=${actual.exportedFramebuffers}\n${actual.text}",
+        )
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin tabbed split-pane Robot screenshot",
+        )
+    }
+
     private fun assertVisualCaptureClose(
         expected: VisualProbeCapture,
         actual: VisualProbeCapture,
@@ -2254,6 +2283,184 @@ class AwtPrimitiveDockerTest {
                   } finally {
                     g.dispose();
                   }
+                }
+              }
+            }
+            """.trimIndent()
+
+        val VisualTabbedSplitPaneProbeSource =
+            """
+            import java.awt.Color;
+            import java.awt.Component;
+            import java.awt.Dimension;
+            import java.awt.Font;
+            import java.awt.Graphics;
+            import java.awt.Graphics2D;
+            import java.awt.Point;
+            import java.awt.Rectangle;
+            import java.awt.RenderingHints;
+            import java.awt.Robot;
+            import java.awt.image.BufferedImage;
+            import java.io.ByteArrayOutputStream;
+            import java.util.Base64;
+            import javax.imageio.ImageIO;
+            import javax.swing.DefaultListCellRenderer;
+            import javax.swing.DefaultListModel;
+            import javax.swing.JComponent;
+            import javax.swing.JFrame;
+            import javax.swing.JLabel;
+            import javax.swing.JList;
+            import javax.swing.JPanel;
+            import javax.swing.JScrollPane;
+            import javax.swing.JSplitPane;
+            import javax.swing.JTabbedPane;
+            import javax.swing.JTextPane;
+            import javax.swing.ListSelectionModel;
+            import javax.swing.SwingUtilities;
+            import javax.swing.border.EmptyBorder;
+            import javax.swing.text.SimpleAttributeSet;
+            import javax.swing.text.StyleConstants;
+            import javax.swing.text.StyledDocument;
+
+            public class VisualTabbedSplitPaneProbe {
+              public static void main(String[] args) throws Exception {
+                final JFrame[] frameHolder = new JFrame[1];
+                SwingUtilities.invokeAndWait(() -> {
+                  JFrame frame = new JFrame("AWT Tabbed Split Pane Parity Probe");
+                  frame.setUndecorated(true);
+                  frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+                  frame.setBounds(40, 40, 360, 240);
+                  TabbedPanel owner = new TabbedPanel();
+                  owner.setLayout(null);
+                  frame.setContentPane(owner);
+
+                  JLabel title = new JLabel("workspace");
+                  title.setForeground(Color.WHITE);
+                  title.setFont(new Font("SansSerif", Font.BOLD, 18));
+                  title.setBounds(24, 16, 140, 26);
+                  owner.add(title);
+
+                  JTabbedPane tabs = new JTabbedPane();
+                  tabs.setFont(new Font("SansSerif", Font.BOLD, 13));
+                  tabs.setBounds(18, 52, 324, 166);
+                  tabs.addTab("Project", splitPane());
+                  tabs.addTab("Debug", debugPanel());
+                  tabs.setSelectedIndex(0);
+                  owner.add(tabs);
+
+                  frame.setVisible(true);
+                  owner.paintImmediately(0, 0, 360, 240);
+                  tabs.paintImmediately(0, 0, tabs.getWidth(), tabs.getHeight());
+                  frameHolder[0] = frame;
+                });
+                Thread.sleep(1000);
+                Point origin = frameHolder[0].getLocationOnScreen();
+                BufferedImage image = new Robot().createScreenCapture(new Rectangle(origin.x, origin.y, 360, 240));
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                ImageIO.write(image, "png", output);
+                System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
+                System.out.flush();
+                long holdMillis = Long.getLong("visualProbe.holdMillis", 0L);
+                if (holdMillis > 0L) {
+                  Thread.sleep(holdMillis);
+                }
+                SwingUtilities.invokeAndWait(() -> frameHolder[0].dispose());
+              }
+
+              static JSplitPane splitPane() {
+                DefaultListModel<String> model = new DefaultListModel<>();
+                model.addElement("src/main");
+                model.addElement("src/test");
+                model.addElement("workflow");
+                model.addElement("README.md");
+                JList<String> list = new JList<>(model);
+                list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+                list.setSelectedIndex(1);
+                list.setFixedCellHeight(24);
+                list.setFont(new Font("SansSerif", Font.BOLD, 13));
+                list.setCellRenderer(new ProjectListRenderer());
+                JScrollPane listScroll = new JScrollPane(list);
+                listScroll.setBorder(new EmptyBorder(0, 0, 0, 0));
+                listScroll.setPreferredSize(new Dimension(118, 118));
+
+                JTextPane editor = new JTextPane();
+                editor.setEditable(false);
+                editor.setFont(new Font("Monospaced", Font.BOLD, 13));
+                editor.setBackground(new Color(245, 248, 252));
+                editor.setBorder(new EmptyBorder(8, 10, 8, 10));
+                StyledDocument doc = editor.getStyledDocument();
+                try {
+                  SimpleAttributeSet keyword = new SimpleAttributeSet();
+                  StyleConstants.setForeground(keyword, new Color(230, 50, 44));
+                  StyleConstants.setBold(keyword, true);
+                  SimpleAttributeSet plain = new SimpleAttributeSet();
+                  StyleConstants.setForeground(plain, new Color(20, 30, 50));
+                  SimpleAttributeSet accent = new SimpleAttributeSet();
+                  StyleConstants.setForeground(accent, new Color(42, 120, 200));
+                  StyleConstants.setBold(accent, true);
+                  doc.insertString(doc.getLength(), "fun ", keyword);
+                  doc.insertString(doc.getLength(), "renderTabs() {\n", plain);
+                  doc.insertString(doc.getLength(), "  split = ", plain);
+                  doc.insertString(doc.getLength(), "stable\n", accent);
+                  doc.insertString(doc.getLength(), "  tabs = 2\n}", plain);
+                } catch (Exception e) {
+                  throw new RuntimeException(e);
+                }
+                JScrollPane editorScroll = new JScrollPane(editor);
+                editorScroll.setBorder(new EmptyBorder(0, 0, 0, 0));
+                editorScroll.setPreferredSize(new Dimension(184, 118));
+
+                JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, listScroll, editorScroll);
+                split.setDividerLocation(118);
+                split.setDividerSize(8);
+                split.setResizeWeight(0.36);
+                split.setContinuousLayout(true);
+                split.setBorder(new EmptyBorder(0, 0, 0, 0));
+                return split;
+              }
+
+              static JPanel debugPanel() {
+                JPanel panel = new JPanel(null);
+                panel.setBackground(new Color(245, 248, 252));
+                return panel;
+              }
+
+              static final class TabbedPanel extends JPanel {
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(new Color(20, 30, 50));
+                    g.fillRect(0, 0, getWidth(), getHeight());
+                    g.setColor(new Color(230, 50, 44));
+                    g.fillRect(18, 16, 128, 28);
+                    g.setColor(new Color(42, 168, 255));
+                    g.fillRect(154, 16, 188, 28);
+                    g.setColor(new Color(255, 225, 64));
+                    g.fillRect(18, 220, 324, 6);
+                  } finally {
+                    g.dispose();
+                  }
+                }
+              }
+
+              static final class ProjectListRenderer extends DefaultListCellRenderer {
+                @Override
+                public Component getListCellRendererComponent(
+                    JList<?> list,
+                    Object value,
+                    int index,
+                    boolean selected,
+                    boolean cellHasFocus
+                ) {
+                  JLabel label = (JLabel) super.getListCellRendererComponent(list, value, index, selected, false);
+                  label.setOpaque(true);
+                  label.setFont(new Font("SansSerif", Font.BOLD, 13));
+                  label.setForeground(selected ? Color.WHITE : new Color(20, 30, 50));
+                  label.setBackground(selected ? new Color(36, 52, 76) : (index % 2 == 0 ? new Color(245, 248, 252) : new Color(225, 234, 242)));
+                  label.setBorder(new EmptyBorder(0, 8, 0, 8));
+                  return label;
                 }
               }
             }
