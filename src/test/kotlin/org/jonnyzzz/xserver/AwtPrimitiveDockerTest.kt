@@ -6,6 +6,7 @@ import org.testcontainers.DockerClientFactory
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.utility.DockerImageName
 import java.io.ByteArrayInputStream
+import java.awt.image.BufferedImage
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.Base64
@@ -134,6 +135,13 @@ class AwtPrimitiveDockerTest {
             actual = actual.robot,
             label = "Kotlin overlapping-window Robot screenshot",
         )
+        assertComposedSvgClose(
+            expected = reference,
+            embeddedFramebuffers = actual.embeddedFramebuffers,
+            ownerWidth = 360,
+            ownerHeight = 240,
+            label = "Kotlin overlapping-window composed SVG",
+        )
     }
 
     @Test
@@ -163,6 +171,13 @@ class AwtPrimitiveDockerTest {
             expected = reference,
             actual = actual.robot,
             label = "Kotlin owned-popup Robot screenshot",
+        )
+        assertComposedSvgClose(
+            expected = reference,
+            embeddedFramebuffers = actual.embeddedFramebuffers,
+            ownerWidth = 360,
+            ownerHeight = 240,
+            label = "Kotlin owned-popup composed SVG",
         )
     }
 
@@ -194,6 +209,13 @@ class AwtPrimitiveDockerTest {
             actual = actual.robot,
             label = "Kotlin owned-dialog Robot screenshot",
         )
+        assertComposedSvgClose(
+            expected = reference,
+            embeddedFramebuffers = actual.embeddedFramebuffers,
+            ownerWidth = 360,
+            ownerHeight = 240,
+            label = "Kotlin owned-dialog composed SVG",
+        )
     }
 
     @Test
@@ -224,6 +246,13 @@ class AwtPrimitiveDockerTest {
             actual = actual.robot,
             label = "Kotlin heavyweight-popup-menu Robot screenshot",
         )
+        assertComposedSvgClose(
+            expected = reference,
+            embeddedFramebuffers = actual.embeddedFramebuffers,
+            ownerWidth = 360,
+            ownerHeight = 240,
+            label = "Kotlin heavyweight-popup-menu composed SVG",
+        )
     }
 
     @Test
@@ -253,6 +282,13 @@ class AwtPrimitiveDockerTest {
             expected = reference,
             actual = actual.robot,
             label = "Kotlin menu-dropdown Robot screenshot",
+        )
+        assertComposedSvgClose(
+            expected = reference,
+            embeddedFramebuffers = actual.embeddedFramebuffers,
+            ownerWidth = 360,
+            ownerHeight = 240,
+            label = "Kotlin menu-dropdown composed SVG",
         )
     }
 
@@ -285,6 +321,13 @@ class AwtPrimitiveDockerTest {
             actual = actual.robot,
             label = "Kotlin combo-dropdown Robot screenshot",
         )
+        assertComposedSvgClose(
+            expected = reference,
+            embeddedFramebuffers = actual.embeddedFramebuffers,
+            ownerWidth = 360,
+            ownerHeight = 240,
+            label = "Kotlin combo-dropdown composed SVG",
+        )
     }
 
     @Test
@@ -315,6 +358,13 @@ class AwtPrimitiveDockerTest {
             expected = reference,
             actual = actual.robot,
             label = "Kotlin tooltip-popup Robot screenshot",
+        )
+        assertComposedSvgClose(
+            expected = reference,
+            embeddedFramebuffers = actual.embeddedFramebuffers,
+            ownerWidth = 360,
+            ownerHeight = 240,
+            label = "Kotlin tooltip-popup composed SVG",
         )
     }
 
@@ -538,6 +588,24 @@ class AwtPrimitiveDockerTest {
         )
     }
 
+    private fun assertComposedSvgClose(
+        expected: VisualProbeCapture,
+        embeddedFramebuffers: List<EmbeddedPng>,
+        ownerWidth: Int,
+        ownerHeight: Int,
+        label: String,
+    ) {
+        val owner = embeddedFramebuffers.lastOrNull { it.width == ownerWidth && it.height == ownerHeight }
+            ?: error("$label did not include an owner framebuffer ${ownerWidth}x$ownerHeight; exported=$embeddedFramebuffers")
+        val composed = composeEmbeddedFramebuffers(embeddedFramebuffers)
+        val cropped = composed.getSubimage(owner.x, owner.y, expected.width, expected.height)
+        assertVisualCaptureClose(
+            expected = expected,
+            actual = visualProbeCapture(cropped),
+            label = label,
+        )
+    }
+
     private fun runAwtProbe(
         port: Int,
         title: String,
@@ -701,6 +769,7 @@ class AwtPrimitiveDockerTest {
                         exportedFramebuffers = pngDataUris(svg).mapNotNull { embeddedPng ->
                             ImageIO.read(ByteArrayInputStream(embeddedPng.bytes))?.let(::visualProbeCapture)
                         },
+                        embeddedFramebuffers = pngDataUris(svg),
                     )
                 }
         }
@@ -718,9 +787,40 @@ class AwtPrimitiveDockerTest {
                 val tag = match.value
                 val id = Regex("""\bdata-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1) ?: return@mapNotNull null
                 val encoded = Regex("""\bhref="data:image/png;base64,([A-Za-z0-9+/=]+)"""").find(tag)?.groupValues?.get(1) ?: return@mapNotNull null
-                EmbeddedPng(id, Base64.getDecoder().decode(encoded))
+                val x = svgImageAttribute(tag, "x") ?: return@mapNotNull null
+                val y = svgImageAttribute(tag, "y") ?: return@mapNotNull null
+                val width = svgImageAttribute(tag, "width") ?: return@mapNotNull null
+                val height = svgImageAttribute(tag, "height") ?: return@mapNotNull null
+                EmbeddedPng(
+                    id = id,
+                    bytes = Base64.getDecoder().decode(encoded),
+                    x = x,
+                    y = y,
+                    width = width,
+                    height = height,
+                )
             }
             .toList()
+
+    private fun svgImageAttribute(tag: String, name: String): Int? =
+        Regex("""\b$name="(-?\d+)"""").find(tag)?.groupValues?.get(1)?.toInt()
+
+    private fun composeEmbeddedFramebuffers(embeddedFramebuffers: List<EmbeddedPng>): BufferedImage {
+        val width = embeddedFramebuffers.maxOfOrNull { it.x + it.width } ?: 0
+        val height = embeddedFramebuffers.maxOfOrNull { it.y + it.height } ?: 0
+        require(width > 0 && height > 0) { "No framebuffer geometry to compose: $embeddedFramebuffers" }
+        val image = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
+        val graphics = image.createGraphics()
+        try {
+            for (embedded in embeddedFramebuffers) {
+                val layer = ImageIO.read(ByteArrayInputStream(embedded.bytes)) ?: continue
+                graphics.drawImage(layer, embedded.x, embedded.y, embedded.width, embedded.height, null)
+            }
+        } finally {
+            graphics.dispose()
+        }
+        return image
+    }
 
     private fun String.hasSvgClass(className: String): Boolean =
         Regex("""\bclass="([^"]*)"""")
@@ -812,6 +912,10 @@ class AwtPrimitiveDockerTest {
     private data class EmbeddedPng(
         val id: String,
         val bytes: ByteArray,
+        val x: Int,
+        val y: Int,
+        val width: Int,
+        val height: Int,
     )
 
     private data class ImageStats(
@@ -841,6 +945,7 @@ class AwtPrimitiveDockerTest {
         val text: String,
         val svg: String,
         val exportedFramebuffers: List<VisualProbeCapture>,
+        val embeddedFramebuffers: List<EmbeddedPng>,
     )
 
     private data class ProbeResult(
