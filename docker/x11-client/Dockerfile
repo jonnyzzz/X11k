@@ -22,8 +22,10 @@ RUN apt-get update \
         libgbm1 \
         libgl1 \
         libgtk-3-0 \
+        libnotify4 \
         libnss3 \
         libpango-1.0-0 \
+        libsecret-1-0 \
         libx11-6 \
         libx11-xcb1 \
         libxaw7 \
@@ -38,9 +40,11 @@ RUN apt-get update \
         libxpm4 \
         libxrandr2 \
         libxrender1 \
+        libxshmfence1 \
         libxss1 \
         libxt6t64 \
         libxtst6 \
+        libxkbfile1 \
         openjdk-21-jdk \
         procps \
         tar \
@@ -52,8 +56,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY run-intellij.sh /usr/local/bin/run-intellij
+COPY run-vscode.sh /usr/local/bin/run-vscode
 COPY run-x11-apps.sh /usr/local/bin/run-x11-apps
 
-RUN chmod +x /usr/local/bin/run-intellij /usr/local/bin/run-x11-apps
+RUN chmod +x /usr/local/bin/run-intellij /usr/local/bin/run-vscode /usr/local/bin/run-x11-apps
 
 CMD ["sleep", "infinity"]

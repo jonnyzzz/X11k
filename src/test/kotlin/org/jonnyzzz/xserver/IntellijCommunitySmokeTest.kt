@@ -138,6 +138,10 @@ class IntellijCommunitySmokeTest {
                     fileName = "intellij-kotlin-run.log",
                     text = "ANGLE Display::initialize error 12289: Could not create the initialization pbuffer.",
                 ),
+                IntellijLogArtifact(
+                    fileName = "intellij-kotlin-text.txt",
+                    text = "- #7 SetClientInfo2ARB minor=35 layout=spec client=1.4 versions=1 glBytes=14 glxBytes=67 glExtensions=GL_EXT_texture glxExtensions=GLX_ARB_create_context GLX_EXT_create_context_es_profile",
+                ),
             ),
         )
 
@@ -148,6 +152,10 @@ class IntellijCommunitySmokeTest {
         )
         assertTrue(summary.contains("kotlinListsGlxExtension=true"), summary)
         assertTrue(summary.contains("kotlinXdpyinfoGlxDetailUnsupported=true"), summary)
+        assertTrue(
+            summary.contains("kotlinClientGlxExtensions=GLX_ARB_create_context GLX_EXT_create_context_es_profile"),
+            summary,
+        )
         assertTrue(summary.contains("kotlinAngleInitializationPbufferFailure=true"), summary)
     }
 
@@ -857,6 +865,7 @@ class IntellijCommunitySmokeTest {
             appendLine("kotlinXdpyinfoGlxDetailUnsupported=${xdpyinfoGlxDetailUnsupported(kotlinGlx)}")
             appendLine("xvfbGlxExtensions=${glxExtensionsFromXdpyinfo(xvfbGlx).joinToString(" ")}")
             appendLine("kotlinGlxExtensions=${glxExtensionsFromXdpyinfo(kotlinGlx).joinToString(" ")}")
+            appendLine("kotlinClientGlxExtensions=${clientGlxExtensionsFromText(kotlinText).joinToString(" ")}")
             appendLine("kotlinAngleInitializationPbufferFailure=${kotlinText.contains("Could not create the initialization pbuffer")}")
             appendLine(
                 "kotlinAngleMissingEsProfileMessage=${
@@ -896,6 +905,15 @@ class IntellijCommunitySmokeTest {
             .sorted()
             .toList()
     }
+
+    private fun clientGlxExtensionsFromText(text: String): List<String> =
+        Regex("""\bglxExtensions=([^\n]*)""")
+            .findAll(text)
+            .flatMap { match -> match.groupValues[1].trim().split(Regex("""\s+""")).asSequence() }
+            .filter { it.startsWith("GLX_") }
+            .distinct()
+            .sorted()
+            .toList()
 
     private fun intellijLogArtifactName(prefix: String, path: String): String {
         val normalized = path.substringAfterLast('/')

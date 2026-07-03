@@ -139,10 +139,37 @@ class XGlxProtocolTest {
                 XGlx.SetClientInfo2ARB,
                 glxSetClientInfoBody(wordsPerVersion = 3, versionWords = listOf(4, 6, 0), glExtensions = "GL_EXT_texture!", glxExtensions = "GLX_EXT_texture_from_pixmap?"),
             )
+            writeRequest(
+                socket,
+                XGlx.MajorOpcode,
+                XGlx.SetClientInfo2ARB,
+                glxLegacySetClientInfoBody(wordsPerVersion = 3, versionWords = listOf(4, 6, 0), glExtensions = "GL_EXT_legacy", glxExtensions = "GLX_EXT_legacy"),
+            )
             writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
 
             val pointer = readReply(socket.getInputStream())
-            assertEquals(4, u16le(pointer, 2))
+            assertEquals(5, u16le(pointer, 2))
+
+            val text = httpGet(socket, "/text.txt")
+            assertTrue(text.contains("ClientInfo minor=20 client=1.4 bytes=19 glxExtensions=GLX_EXT_visual_info"), text)
+            assertTrue(
+                text.contains(
+                    "SetClientInfoARB minor=33 layout=spec client=1.4 versions=1 glBytes=19 glxBytes=23 glExtensions=GL_ARB_multisample! glxExtensions=GLX_ARB_create_context?",
+                ),
+                text,
+            )
+            assertTrue(
+                text.contains(
+                    "SetClientInfo2ARB minor=35 layout=spec client=1.4 versions=1 glBytes=15 glxBytes=28 glExtensions=GL_EXT_texture! glxExtensions=GLX_EXT_texture_from_pixmap?",
+                ),
+                text,
+            )
+            assertTrue(
+                text.contains(
+                    "SetClientInfo2ARB minor=35 layout=legacy versions=1 glBytes=13 glxBytes=14 glExtensions=GL_EXT_legacy glxExtensions=GLX_EXT_legacy",
+                ),
+                text,
+            )
         }
     }
 
@@ -1746,6 +1773,25 @@ class XGlxProtocolTest {
     }
 
     private fun glxSetClientInfoBody(
+        wordsPerVersion: Int,
+        versionWords: List<Int>,
+        glExtensions: String,
+        glxExtensions: String,
+    ): ByteArray {
+        val glBytes = glExtensions.encodeToByteArray()
+        val glxBytes = glxExtensions.encodeToByteArray()
+        require(versionWords.size % wordsPerVersion == 0)
+        return u32(1) +
+            u32(4) +
+            u32(versionWords.size / wordsPerVersion) +
+            u32(glBytes.size) +
+            u32(glxBytes.size) +
+            versionWords.flatMap { u32(it).toList() }.toByteArray() +
+            padded(glBytes) +
+            padded(glxBytes)
+    }
+
+    private fun glxLegacySetClientInfoBody(
         wordsPerVersion: Int,
         versionWords: List<Int>,
         glExtensions: String,

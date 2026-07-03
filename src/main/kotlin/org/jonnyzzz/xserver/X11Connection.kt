@@ -5026,14 +5026,56 @@ internal class X11Connection(
 
     private fun glxSetClientInfo(body: ByteArray, minorOpcode: Int, versionWords: Int) {
         if (body.size < 12) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
-        val versions = byteOrder.u32(body, 0).toUInt().toLong()
-        val glExtensionBytes = byteOrder.u32(body, 4).toUInt().toLong()
-        val glxExtensionBytes = byteOrder.u32(body, 8).toUInt().toLong()
-        val expectedBytes = 12L +
-            versions * versionWords * 4L +
-            paddedLength(glExtensionBytes) +
-            paddedLength(glxExtensionBytes)
-        glxCheckBodyLength(body, expectedBytes = expectedBytes, minorOpcode = minorOpcode)
+        if (glxSetClientInfoLayout(body, versionWords) == null) {
+            writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
+        }
+    }
+
+    private fun glxSetClientInfoLayout(body: ByteArray, versionWords: Int): XGlxSetClientInfoLayout? {
+        fun layout(
+            name: String,
+            headerSize: Int,
+            versionsOffset: Int,
+            glExtensionBytesOffset: Int,
+            glxExtensionBytesOffset: Int,
+            majorOffset: Int? = null,
+            minorOffset: Int? = null,
+        ): XGlxSetClientInfoLayout? {
+            if (body.size < headerSize) return null
+            val versions = byteOrder.u32(body, versionsOffset).toUInt().toLong()
+            val glExtensionBytes = byteOrder.u32(body, glExtensionBytesOffset).toUInt().toLong()
+            val glxExtensionBytes = byteOrder.u32(body, glxExtensionBytesOffset).toUInt().toLong()
+            val glOffset = headerSize.toLong() + versions * versionWords * 4L
+            val glxOffset = glOffset + paddedLength(glExtensionBytes)
+            val expectedBytes = glxOffset + paddedLength(glxExtensionBytes)
+            if (expectedBytes > Int.MAX_VALUE || body.size.toLong() != expectedBytes) return null
+            return XGlxSetClientInfoLayout(
+                name = name,
+                major = majorOffset?.let { byteOrder.u32(body, it) },
+                minor = minorOffset?.let { byteOrder.u32(body, it) },
+                versions = versions,
+                glExtensionBytes = glExtensionBytes,
+                glxExtensionBytes = glxExtensionBytes,
+                glOffset = glOffset.toInt(),
+                glxOffset = glxOffset.toInt(),
+            )
+        }
+
+        return layout(
+            name = "spec",
+            headerSize = 20,
+            majorOffset = 0,
+            minorOffset = 4,
+            versionsOffset = 8,
+            glExtensionBytesOffset = 12,
+            glxExtensionBytesOffset = 16,
+        ) ?: layout(
+            name = "legacy",
+            headerSize = 12,
+            versionsOffset = 0,
+            glExtensionBytesOffset = 4,
+            glxExtensionBytesOffset = 8,
+        )
     }
 
     private fun glxCheckBodyLength(
@@ -5637,6 +5679,29 @@ internal class X11Connection(
     private fun glxDetail(minorOpcode: Int, body: ByteArray): String {
         fun hex(offset: Int): String = if (body.size >= offset + 4) byteOrder.u32(body, offset).toHex() else "n/a"
         fun u32(offset: Int): String = if (body.size >= offset + 4) byteOrder.u32(body, offset).toString() else "n/a"
+        fun stringField(offset: Int, size: Long): String {
+            if (size < 0L || size > Int.MAX_VALUE) return "n/a"
+            val length = size.toInt()
+            if (offset < 0 || body.size.toLong() < offset.toLong() + length.toLong()) return "n/a"
+            return body.copyOfRange(offset, offset + length)
+                .decodeToString()
+                .trimEnd('\u0000')
+                .replace(Regex("""\s+"""), " ")
+                .take(240)
+        }
+        fun clientInfoDetail(): String {
+            val extensionBytes = if (body.size >= 12) byteOrder.u32(body, 8).toUInt().toLong() else -1L
+            return "client=${u32(0)}.${u32(4)} bytes=${u32(8)} glxExtensions=${stringField(12, extensionBytes)}"
+        }
+        fun setClientInfoDetail(versionWords: Int): String {
+            val layout = glxSetClientInfoLayout(body, versionWords)
+                ?: return "versions=${u32(0)} glBytes=${u32(4)} glxBytes=${u32(8)}"
+            val client = if (layout.major != null && layout.minor != null) " client=${layout.major}.${layout.minor}" else ""
+            return "layout=${layout.name}$client versions=${layout.versions} " +
+                "glBytes=${layout.glExtensionBytes} glxBytes=${layout.glxExtensionBytes} " +
+                "glExtensions=${stringField(layout.glOffset, layout.glExtensionBytes)} " +
+                "glxExtensions=${stringField(layout.glxOffset, layout.glxExtensionBytes)}"
+        }
         return when (minorOpcode) {
             XGlx.QueryVersion -> "client=${u32(0)}.${u32(4)}"
             3 -> "context=${hex(0)} visual=${hex(4)} screen=${u32(8)} direct=${body.getOrNull(16)?.toInt() == 1}"
@@ -5646,9 +5711,9 @@ internal class X11Connection(
             XGlx.GetVisualConfigs -> "screen=${u32(0)}"
             XGlx.QueryExtensionsString -> "screen=${u32(0)}"
             XGlx.QueryServerString -> "screen=${u32(0)} name=${u32(4)}"
-            XGlx.ClientInfo -> "client=${u32(0)}.${u32(4)} bytes=${u32(8)}"
-            XGlx.SetClientInfoARB -> "versions=${u32(0)} glBytes=${u32(4)} glxBytes=${u32(8)}"
-            XGlx.SetClientInfo2ARB -> "versions=${u32(0)} glBytes=${u32(4)} glxBytes=${u32(8)}"
+            XGlx.ClientInfo -> clientInfoDetail()
+            XGlx.SetClientInfoARB -> setClientInfoDetail(versionWords = 2)
+            XGlx.SetClientInfo2ARB -> setClientInfoDetail(versionWords = 3)
             XGlx.GetFBConfigs -> "screen=${u32(0)}"
             XGlx.CreateNewContext -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} renderType=${hex(12)} direct=${body.getOrNull(20)?.toInt() == 1}"
             XGlx.QueryContext -> "context=${hex(0)}"
@@ -13832,6 +13897,17 @@ private data class XCompositeGlyphParseResult(
 private data class XCompositeGlyphParseError(
     val error: Int,
     val badValue: Int,
+)
+
+private data class XGlxSetClientInfoLayout(
+    val name: String,
+    val major: Int?,
+    val minor: Int?,
+    val versions: Long,
+    val glExtensionBytes: Long,
+    val glxExtensionBytes: Long,
+    val glOffset: Int,
+    val glxOffset: Int,
 )
 
 private data class XTextRun(

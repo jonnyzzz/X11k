@@ -26,6 +26,7 @@ It can run the first Docker smoke matrix against real X clients:
 - `xterm`
 - `twm` with overlapping app windows
 - IntelliJ IDEA Community from GitHub releases in opt-in heavyweight smoke and rough Xvfb parity probes
+- VSCode from the official update service in an opt-in heavyweight Electron smoke
 
 The graphical apps are still compatibility smoke tests rather than full visual conformance tests. Rendering now includes the maintained window model, mapped child-window borders, fixed-font core text, `PutImage` pixel data, XRender fills/composites/glyphs, painted pixmap/offscreen surfaces in SVG previews, and automated Xvfb-vs-Kotlin Robot parity coverage for deterministic Java2D/AWT primitives, overlapping Swing windows, owned popup/dialog windows, heavyweight popup menus, menu dropdown popups, combo-box dropdowns, Swing tooltips, dense Swing scroll-pane content, standard Swing form controls, tabbed split-pane layouts, desktop-pane internal-frame layouts, layered/glass-pane overlays, `xlogo`, `xclock`, `xeyes`, `xcalc`, `xterm`, and `twm`-managed `xlogo`/`xclock` overlap. The single-window primitive, dense Swing, form-controls, tabbed split-pane, desktop-pane, layered-overlay, `xlogo`, `xclock`, `xeyes`, `xcalc`, `xterm`, and `twm` probes also compare the Kotlin server's SVG-exported or composed SVG framebuffer output against the Xvfb reference, and the overlapping/popup probes compare the composed SVG framebuffer stack against the Xvfb reference. More X drawing semantics are still pending, especially GL/JCEF-backed paths and broader app-managed surface presentation.
 
@@ -128,6 +129,16 @@ test to also enable the container's XAWT/JCEF trace logs; when present, they are
 copied into the same diagnostics directory, including pid-suffixed JCEF/Chromium
 logs and Mesa/EGL debug output in the run log.
 
+The VSCode/Electron smoke is also opt-in because it downloads the current stable
+VSCode tarball. It records the Kotlin server text/SVG view and VSCode logs under
+`build/tmp/vscode-smoke/`; set `-Dx.vscodeUrl=...` or `X_VSCODE_URL=...` to pin
+a specific archive instead of the official latest-stable endpoint:
+
+```bash
+scripts/run-gradle-bounded.sh dockerBuildX11Client
+scripts/run-gradle-bounded.sh test --tests org.jonnyzzz.xserver.VSCodeSmokeTest -Dx.vscodeSmoke=true
+```
+
 Run the prototype server:
 
 ```bash
@@ -178,7 +189,7 @@ curl -fsS -X POST http://127.0.0.1:16000/input/key \
 
 `button` accepts `left`, `middle`, `right`, `wheel-up`, `wheel-down`, or the raw X11 button number `1..255`.
 
-Current IntelliJ demo limitation: the mounted project opens and the frame/window model is visible. JetBrains Runtime paints UI content through XRender-backed windows and retained offscreen pixmap/picture surfaces, and the heavyweight smoke now verifies that at least one exported SVG framebuffer surface contains non-white, multi-color rendered pixels. An opt-in parity probe also compares the current full-screen IntelliJ Xvfb Robot reference against both the Kotlin-server Robot capture and the Kotlin SVG-composed framebuffer stack. Remaining work is visual parity: refine final composition, clipping, and GL/JCEF-backed paths until the top-level SVG/HTML render is indistinguishable from the Xvfb reference. The server also exposes a minimal GLX probe surface for discovery requests (`QueryVersion`, server strings, visual configs, FBConfigs, and context creation), and the HTTP text report logs recent GLX operations. Real GLX context rendering is not implemented yet. The HTTP state report also logs every input operation so click-through attempts can be replayed and refined.
+Current IntelliJ demo limitation: the mounted project opens and the frame/window model is visible. JetBrains Runtime paints UI content through XRender-backed windows and retained offscreen pixmap/picture surfaces, and the heavyweight smoke now verifies that at least one exported SVG framebuffer surface contains non-white, multi-color rendered pixels. An opt-in parity probe also compares the current full-screen IntelliJ Xvfb Robot reference against both the Kotlin-server Robot capture and the Kotlin SVG-composed framebuffer stack. Remaining work is visual parity: refine final composition, clipping, and GL/JCEF-backed paths until the top-level SVG/HTML render is indistinguishable from the Xvfb reference. The server also exposes a minimal GLX probe surface for discovery requests (`QueryVersion`, server strings, visual configs, FBConfigs, and context creation), and the HTTP text report logs recent GLX operations including decoded client GLX extension strings from `ClientInfo`/`SetClientInfo*` requests. Real GLX context rendering is not implemented yet. The HTTP state report also logs every input operation so click-through attempts can be replayed and refined.
 
 Run simpler X11 demo clients against an already running server:
 
