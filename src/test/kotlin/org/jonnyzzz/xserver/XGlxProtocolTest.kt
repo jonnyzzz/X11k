@@ -60,6 +60,10 @@ class XGlxProtocolTest {
             assertEquals(1, u32le(visuals, 8))
             assertEquals(XGlx.VisualConfigValues, u32le(visuals, 12))
             assertEquals(X11Ids.RootVisual, u32le(visuals, 32))
+
+            val text = httpGet(socket, "/text.txt")
+            assertTrue(text.contains("QueryServerString minor=19 screen=0 name=3 value=${XGlx.Extensions}"), text)
+            assertTrue(text.contains("QueryExtensionsString minor=18 screen=0 value=${XGlx.Extensions}"), text)
         }
     }
 

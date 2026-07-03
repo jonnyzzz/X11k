@@ -40,7 +40,7 @@ class VSCodeSmokeTest {
             - None.
 
             GLX operations:
-            - #8 QueryServerString minor=19 screen=0 name=2
+            - #8 QueryServerString minor=19 screen=0 name=3 value=GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es_profile
             - #7 SetClientInfo2ARB minor=35 layout=spec client=1.4 versions=17 glBytes=1 glxBytes=54 glExtensions= glxExtensions=GLX_ARB_create_context GLX_ARB_create_context_profile
             - #6 GetFBConfigs minor=21 screen=0
             - #1 QueryVersion minor=7 client=1.4
@@ -60,6 +60,10 @@ class VSCodeSmokeTest {
         assertTrue(summary.contains("vscodeUnsupportedExtensions=DRI3 XInputExtension"), summary)
         assertTrue(summary.contains("vscodeSupportedExtensions=GLX RENDER SYNC XFIXES"), summary)
         assertTrue(summary.contains("vscodeGlxOperations=GetFBConfigs QueryServerString QueryVersion SetClientInfo2ARB"), summary)
+        assertTrue(
+            summary.contains("vscodeServerGlxExtensions=GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es_profile"),
+            summary,
+        )
         assertTrue(summary.contains("vscodeClientGlxExtensions=GLX_ARB_create_context GLX_ARB_create_context_profile"), summary)
         assertTrue(summary.contains("vscodeDbusLogWarnings=true"), summary)
         assertFalse(summary.contains("vscodeUnsupportedExtensions=XInputExtension DRI3"), summary)
@@ -351,6 +355,7 @@ class VSCodeSmokeTest {
             appendLine("vscodeUnsupportedExtensions=${extensionQueriesFromText(text, supported = false).joinToStringOrNone()}")
             appendLine("vscodeSupportedExtensions=${extensionQueriesFromText(text, supported = true).joinToStringOrNone()}")
             appendLine("vscodeGlxOperations=${glxOperationsFromText(text).joinToStringOrNone()}")
+            appendLine("vscodeServerGlxExtensions=${serverGlxExtensionsFromText(text).joinToStringOrNone()}")
             appendLine("vscodeClientGlxExtensions=${clientGlxExtensionsFromText(text).joinToStringOrNone()}")
             appendLine("vscodeDbusLogWarnings=${logs.any { it.text.contains("dbus", ignoreCase = true) }}")
         }
@@ -382,6 +387,15 @@ class VSCodeSmokeTest {
 
     private fun clientGlxExtensionsFromText(text: String): List<String> =
         Regex("""\bglxExtensions=([^\n]*)""")
+            .findAll(text)
+            .flatMap { match -> match.groupValues[1].trim().split(Regex("""\s+""")).asSequence() }
+            .filter { it.startsWith("GLX_") }
+            .distinct()
+            .sorted()
+            .toList()
+
+    private fun serverGlxExtensionsFromText(text: String): List<String> =
+        Regex("""\bQuery(?:ServerString|ExtensionsString)\s+minor=\d+[^\n]*\bvalue=([^\n]*)""")
             .findAll(text)
             .flatMap { match -> match.groupValues[1].trim().split(Regex("""\s+""")).asSequence() }
             .filter { it.startsWith("GLX_") }

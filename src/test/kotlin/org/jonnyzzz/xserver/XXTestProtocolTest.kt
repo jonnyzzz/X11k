@@ -167,8 +167,11 @@ class XXTestProtocolTest {
                     otherOut.flush()
                     assertEquals(2, u16le(readReply(other.getInputStream()), 2))
 
-                    owner.getOutputStream().write(request(36, 0, ByteArray(0)))
-                    owner.getOutputStream().flush()
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(request(36, 0, ByteArray(0)))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertEquals(2, u16le(readReply(owner.getInputStream()), 2))
 
                     otherOut.write(queryPointerRequest())
                     otherOut.flush()

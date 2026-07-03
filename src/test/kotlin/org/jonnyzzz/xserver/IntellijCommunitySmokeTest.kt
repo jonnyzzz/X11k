@@ -116,7 +116,11 @@ class IntellijCommunitySmokeTest {
 
     @Test
     fun `intellij glx jcef diagnostics summary extracts preflight and angle failures`() {
-        val kotlinText = "- #7 SetClientInfo2ARB minor=35 layout=spec client=1.4 versions=1 glBytes=14 glxBytes=67 glExtensions=GL_EXT_texture glxExtensions=GLX_ARB_create_context GLX_EXT_create_context_es_profile"
+        val kotlinText =
+            """
+            - #8 QueryServerString minor=19 screen=0 name=3 value=GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es_profile
+            - #7 SetClientInfo2ARB minor=35 layout=spec client=1.4 versions=1 glBytes=14 glxBytes=67 glExtensions=GL_EXT_texture glxExtensions=GLX_ARB_create_context GLX_EXT_create_context_es_profile
+            """.trimIndent()
         val logs = listOf(
             IntellijLogArtifact(
                 fileName = "intellij-xvfb-glx-xdpyinfo.log",
@@ -167,7 +171,15 @@ class IntellijCommunitySmokeTest {
             summary,
         )
         assertTrue(
+            summary.contains("kotlinServerGlxExtensionsFromTrace=GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es_profile"),
+            summary,
+        )
+        assertTrue(
             summaryFromExplicitText.contains("kotlinClientGlxExtensions=GLX_ARB_create_context GLX_EXT_create_context_es_profile"),
+            summaryFromExplicitText,
+        )
+        assertTrue(
+            summaryFromExplicitText.contains("kotlinServerGlxExtensionsFromTrace=GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es_profile"),
             summaryFromExplicitText,
         )
         assertTrue(summary.contains("kotlinExplicitTextTraceIncluded=false"), summary)
@@ -926,6 +938,7 @@ class IntellijCommunitySmokeTest {
             appendLine("kotlinXdpyinfoGlxDetailUnsupported=${xdpyinfoGlxDetailUnsupported(kotlinGlx)}")
             appendLine("xvfbGlxExtensions=${glxExtensionsFromXdpyinfo(xvfbGlx).joinToString(" ")}")
             appendLine("kotlinGlxExtensions=${glxExtensionsFromXdpyinfo(kotlinGlx).joinToString(" ")}")
+            appendLine("kotlinServerGlxExtensionsFromTrace=${serverGlxExtensionsFromText(kotlinTrace).joinToString(" ")}")
             appendLine("kotlinClientGlxExtensions=${clientGlxExtensionsFromText(kotlinTrace).joinToString(" ")}")
             appendLine("kotlinAngleInitializationPbufferFailure=${kotlinTrace.contains("Could not create the initialization pbuffer")}")
             appendLine(
@@ -969,6 +982,15 @@ class IntellijCommunitySmokeTest {
 
     private fun clientGlxExtensionsFromText(text: String): List<String> =
         Regex("""\bglxExtensions=([^\n]*)""")
+            .findAll(text)
+            .flatMap { match -> match.groupValues[1].trim().split(Regex("""\s+""")).asSequence() }
+            .filter { it.startsWith("GLX_") }
+            .distinct()
+            .sorted()
+            .toList()
+
+    private fun serverGlxExtensionsFromText(text: String): List<String> =
+        Regex("""\bQuery(?:ServerString|ExtensionsString)\s+minor=\d+[^\n]*\bvalue=([^\n]*)""")
             .findAll(text)
             .flatMap { match -> match.groupValues[1].trim().split(Regex("""\s+""")).asSequence() }
             .filter { it.startsWith("GLX_") }

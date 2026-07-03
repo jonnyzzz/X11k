@@ -5702,6 +5702,10 @@ internal class X11Connection(
                 "glExtensions=${stringField(layout.glOffset, layout.glExtensionBytes)} " +
                 "glxExtensions=${stringField(layout.glxOffset, layout.glxExtensionBytes)}"
         }
+        fun serverStringValue(name: Int): String =
+            XGlx.serverString(name)
+                .replace(Regex("""\s+"""), " ")
+                .take(240)
         return when (minorOpcode) {
             XGlx.QueryVersion -> "client=${u32(0)}.${u32(4)}"
             3 -> "context=${hex(0)} visual=${hex(4)} screen=${u32(8)} direct=${body.getOrNull(16)?.toInt() == 1}"
@@ -5709,8 +5713,8 @@ internal class X11Connection(
             5 -> "drawable=${hex(0)} context=${hex(4)} oldTag=${hex(8)}"
             XGlx.IsDirect -> "context=${hex(0)}"
             XGlx.GetVisualConfigs -> "screen=${u32(0)}"
-            XGlx.QueryExtensionsString -> "screen=${u32(0)}"
-            XGlx.QueryServerString -> "screen=${u32(0)} name=${u32(4)}"
+            XGlx.QueryExtensionsString -> "screen=${u32(0)} value=${serverStringValue(XGlx.ExtensionsName)}"
+            XGlx.QueryServerString -> "screen=${u32(0)} name=${u32(4)} value=${if (body.size >= 8) serverStringValue(byteOrder.u32(body, 4)) else "n/a"}"
             XGlx.ClientInfo -> clientInfoDetail()
             XGlx.SetClientInfoARB -> setClientInfoDetail(versionWords = 2)
             XGlx.SetClientInfo2ARB -> setClientInfoDetail(versionWords = 3)
