@@ -403,6 +403,11 @@ class AwtPrimitiveDockerTest {
             actual = actual.robot,
             label = "Kotlin tabbed split-pane Robot screenshot",
         )
+        assertExportedFramebufferClose(
+            expected = reference,
+            exportedFramebuffers = actual.exportedFramebuffers,
+            label = "Kotlin tabbed split-pane SVG exported framebuffer",
+        )
     }
 
     @Test
@@ -494,6 +499,22 @@ class AwtPrimitiveDockerTest {
         assertTrue(
             imageDistance(expected.image, actual.image) <= 18.0,
             "$label should stay visually close to Xvfb reference\nreference=$expected\nactual=$actual",
+        )
+    }
+
+    private fun assertExportedFramebufferClose(
+        expected: VisualProbeCapture,
+        exportedFramebuffers: List<VisualProbeCapture>,
+        label: String,
+    ) {
+        val exportedFramebuffer = exportedFramebuffers
+            .filter { it.width == expected.width && it.height == expected.height }
+            .minByOrNull { imageDistance(expected.image, it.image) }
+            ?: error("$label did not include a framebuffer matching the Xvfb capture dimensions ${expected.width}x${expected.height}; exported=$exportedFramebuffers")
+        assertVisualCaptureClose(
+            expected = expected,
+            actual = exportedFramebuffer,
+            label = label,
         )
     }
 
