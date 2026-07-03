@@ -223,6 +223,29 @@ diagnose_readiness_failure() {
   } >&2
 }
 
+dismiss_intellij_readme_notifications() {
+  local text content_line local_x local_y root_x root_y
+  text="$(curl -fsS "http://127.0.0.1:$PORT/text.txt" 2>/dev/null || true)"
+  content_line="$(printf '%s\n' "$text" | grep 'label="Content window"' | head -1 || true)"
+  if [[ ! "$content_line" =~ geometry=([-0-9]+),([-0-9]+)[[:space:]]([0-9]+)x([0-9]+) ]]; then
+    return 0
+  fi
+
+  # Keep README screenshots focused on renderer state, not transient IntelliJ first-run notifications.
+  local points=(940 395 1030 725)
+  local index
+  for ((index = 0; index < ${#points[@]}; index += 2)); do
+    local_x="${points[index]}"
+    local_y="${points[index + 1]}"
+    root_x=$((BASH_REMATCH[1] + local_x))
+    root_y=$((BASH_REMATCH[2] + local_y))
+    curl -fsS -X POST \
+      -d "x=$root_x&y=$root_y&button=left" \
+      "http://127.0.0.1:$PORT/input/click" >/dev/null 2>&1 || true
+    sleep 1
+  done
+}
+
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   GRADLE_TIMEOUT_SECONDS="$BUILD_TIMEOUT_SECONDS" "$ROOT/scripts/run-gradle-bounded.sh" installDist dockerBuildX11Client
 fi
@@ -274,6 +297,7 @@ fi
 if (( READY_SETTLE_SECONDS > 0 )); then
   sleep "$READY_SETTLE_SECONDS"
 fi
+dismiss_intellij_readme_notifications
 
 CAPTURE_JS="$RUN_DIR/capture-page.js"
 cat >"$CAPTURE_JS" <<'NODE'
