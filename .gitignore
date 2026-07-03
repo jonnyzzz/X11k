@@ -5,3 +5,9 @@ out/
 *.iml
 *.log
 .DS_Store
+runs/
+.playwright-mcp/
+THE_PROMPT_v5*.md
+/glx-user-agreement.png
+/intellij-*.png
+/jonnyzzz-x-*.png

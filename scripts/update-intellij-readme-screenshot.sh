@@ -23,6 +23,49 @@ if (( DISPLAY_NUMBER < 0 )); then
   exit 2
 fi
 
+intellij_screenshot_ready() {
+  local text="$1"
+  local svg="$2"
+  [[ "$text" == *"Mapped windows:"* &&
+    "$text" == *"Content window"* &&
+    "$svg" == *"framebuffer-image"* &&
+    "$text" != *"Download SDK"* &&
+    "$text" != *"Download JDK"* ]]
+}
+
+assert_readiness() {
+  local name="$1"
+  local expected="$2"
+  local text="$3"
+  local svg="$4"
+  local actual
+  if intellij_screenshot_ready "$text" "$svg"; then
+    actual=1
+  else
+    actual=0
+  fi
+  if [[ "$actual" != "$expected" ]]; then
+    echo "readiness self-test failed: $name expected $expected got $actual" >&2
+    exit 1
+  fi
+}
+
+run_readiness_self_test() {
+  local ready_text=$'Screen: 3840 x 2160\nMapped windows: 3\n- 0x200001 label="Content window"'
+  local ready_svg='<svg><image class="framebuffer-image backing-pixmap-image"/></svg>'
+  assert_readiness "ready content framebuffer" 1 "$ready_text" "$ready_svg"
+  assert_readiness "missing mapped windows" 0 "Content window" "$ready_svg"
+  assert_readiness "missing content window" 0 "Mapped windows: 3" "$ready_svg"
+  assert_readiness "missing framebuffer" 0 "$ready_text" '<svg></svg>'
+  assert_readiness "download sdk modal" 0 $'Mapped windows: 4\nContent window\nDownload SDK?' "$ready_svg"
+  assert_readiness "download jdk modal" 0 $'Mapped windows: 4\nContent window\nDownload JDK' "$ready_svg"
+}
+
+if [[ "${INTELLIJ_README_SCREENSHOT_SELF_TEST:-0}" == "1" ]]; then
+  run_readiness_self_test
+  exit 0
+fi
+
 TIMEOUT_BIN="${TIMEOUT_BIN:-}"
 if [[ -z "$TIMEOUT_BIN" ]]; then
   for candidate in /opt/homebrew/bin/timeout gtimeout timeout; do
@@ -140,7 +183,7 @@ deadline=$((SECONDS + READY_TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
   text="$(curl -fsS "http://127.0.0.1:$PORT/text.txt" 2>/dev/null || true)"
   svg="$(curl -fsS "http://127.0.0.1:$PORT/screen.svg" 2>/dev/null || true)"
-  if [[ "$text" == *"Mapped windows:"* && "$text" == *"Content window"* && "$svg" == *"framebuffer-image"* && "$text" != *"Download SDK"* && "$text" != *"Download JDK"* ]]; then
+  if intellij_screenshot_ready "$text" "$svg"; then
     ready=1
     break
   fi
