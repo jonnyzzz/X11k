@@ -318,6 +318,35 @@ class AwtPrimitiveDockerTest {
         )
     }
 
+    @Test
+    fun `awt dense swing content robot screenshot roughly matches xvfb reference`() {
+        assumeDockerAndImage(CLIENT_IMAGE)
+        assumeDockerAndImage(REFERENCE_IMAGE)
+        val reference = runRobotProbeAgainstXvfb(
+            mainClass = "VisualDenseSwingProbe",
+            source = VisualDenseSwingProbeSource,
+        )
+        val actual = runRobotProbeAgainstKotlinServer(
+            port = 6221,
+            title = "AWT Dense Swing Parity Probe",
+            mainClass = "VisualDenseSwingProbe",
+            source = VisualDenseSwingProbeSource,
+        )
+
+        assertContains(actual.text, "AWT Dense Swing Parity Probe")
+        assertContains(actual.text, "RENDER.")
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected Kotlin SVG export to retain framebuffer images for the dense Swing probe")
+        assertTrue(
+            actual.exportedFramebuffers.any { it.width == 360 && it.height == 240 },
+            "Dense Swing rendering should expose the owner framebuffer surface; exported=${actual.exportedFramebuffers}\n${actual.text}",
+        )
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin dense-Swing Robot screenshot",
+        )
+    }
+
     private fun assertVisualCaptureClose(
         expected: VisualProbeCapture,
         actual: VisualProbeCapture,
@@ -1879,6 +1908,185 @@ class AwtPrimitiveDockerTest {
                   } finally {
                     g.dispose();
                   }
+                }
+              }
+            }
+            """.trimIndent()
+
+        val VisualDenseSwingProbeSource =
+            """
+            import java.awt.Color;
+            import java.awt.Component;
+            import java.awt.Dimension;
+            import java.awt.Font;
+            import java.awt.Graphics;
+            import java.awt.Graphics2D;
+            import java.awt.Point;
+            import java.awt.Rectangle;
+            import java.awt.RenderingHints;
+            import java.awt.Robot;
+            import java.awt.image.BufferedImage;
+            import java.io.ByteArrayOutputStream;
+            import java.util.Base64;
+            import javax.imageio.ImageIO;
+            import javax.swing.JComponent;
+            import javax.swing.JFrame;
+            import javax.swing.JLabel;
+            import javax.swing.JPanel;
+            import javax.swing.JScrollPane;
+            import javax.swing.JTable;
+            import javax.swing.JTree;
+            import javax.swing.SwingConstants;
+            import javax.swing.SwingUtilities;
+            import javax.swing.border.EmptyBorder;
+            import javax.swing.table.DefaultTableCellRenderer;
+            import javax.swing.table.DefaultTableModel;
+            import javax.swing.tree.DefaultMutableTreeNode;
+            import javax.swing.tree.DefaultTreeCellRenderer;
+
+            public class VisualDenseSwingProbe {
+              public static void main(String[] args) throws Exception {
+                final JFrame[] frameHolder = new JFrame[1];
+                SwingUtilities.invokeAndWait(() -> {
+                  JFrame frame = new JFrame("AWT Dense Swing Parity Probe");
+                  frame.setUndecorated(true);
+                  frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+                  frame.setBounds(40, 40, 360, 240);
+                  DashboardPanel owner = new DashboardPanel();
+                  owner.setLayout(null);
+                  frame.setContentPane(owner);
+
+                  JTable table = new JTable(new DefaultTableModel(
+                      new Object[][] {
+                        {"core", "91%", "ready"},
+                        {"render", "84%", "watch"},
+                        {"input", "77%", "pass"},
+                        {"xkb", "95%", "ready"},
+                        {"awt", "88%", "probe"}
+                      },
+                      new Object[] {"Area", "Score", "State"}
+                  ));
+                  table.setName("DenseSwingTable");
+                  table.setRowHeight(22);
+                  table.setShowGrid(false);
+                  table.setIntercellSpacing(new Dimension(0, 0));
+                  table.setTableHeader(null);
+                  table.setFont(new Font("SansSerif", Font.BOLD, 13));
+                  table.setDefaultRenderer(Object.class, new TableRenderer());
+                  JScrollPane tableScroll = new JScrollPane(table);
+                  tableScroll.setBounds(18, 54, 186, 124);
+                  tableScroll.setBorder(new EmptyBorder(0, 0, 0, 0));
+                  owner.add(tableScroll);
+
+                  DefaultMutableTreeNode root = new DefaultMutableTreeNode("project");
+                  DefaultMutableTreeNode src = new DefaultMutableTreeNode("src");
+                  src.add(new DefaultMutableTreeNode("main"));
+                  src.add(new DefaultMutableTreeNode("test"));
+                  DefaultMutableTreeNode workflow = new DefaultMutableTreeNode("workflow");
+                  workflow.add(new DefaultMutableTreeNode("matrix"));
+                  workflow.add(new DefaultMutableTreeNode("agents"));
+                  root.add(src);
+                  root.add(workflow);
+                  JTree tree = new JTree(root);
+                  tree.setName("DenseSwingTree");
+                  tree.setRowHeight(22);
+                  tree.setShowsRootHandles(true);
+                  tree.setRootVisible(true);
+                  tree.setFont(new Font("SansSerif", Font.PLAIN, 13));
+                  tree.setCellRenderer(new TreeRenderer());
+                  for (int row = 0; row < tree.getRowCount(); row++) {
+                    tree.expandRow(row);
+                  }
+                  JScrollPane treeScroll = new JScrollPane(tree);
+                  treeScroll.setBounds(214, 54, 128, 124);
+                  treeScroll.setBorder(new EmptyBorder(0, 0, 0, 0));
+                  owner.add(treeScroll);
+
+                  JLabel footer = new JLabel("retained Swing surfaces", SwingConstants.CENTER);
+                  footer.setOpaque(true);
+                  footer.setForeground(new Color(20, 30, 50));
+                  footer.setBackground(new Color(255, 225, 64));
+                  footer.setFont(new Font("SansSerif", Font.BOLD, 15));
+                  footer.setBounds(18, 190, 324, 28);
+                  owner.add(footer);
+
+                  frame.setVisible(true);
+                  owner.paintImmediately(0, 0, 360, 240);
+                  table.paintImmediately(0, 0, table.getWidth(), table.getHeight());
+                  tree.paintImmediately(0, 0, tree.getWidth(), tree.getHeight());
+                  frameHolder[0] = frame;
+                });
+                Thread.sleep(1000);
+                Point origin = frameHolder[0].getLocationOnScreen();
+                BufferedImage image = new Robot().createScreenCapture(new Rectangle(origin.x, origin.y, 360, 240));
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                ImageIO.write(image, "png", output);
+                System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
+                System.out.flush();
+                long holdMillis = Long.getLong("visualProbe.holdMillis", 0L);
+                if (holdMillis > 0L) {
+                  Thread.sleep(holdMillis);
+                }
+                SwingUtilities.invokeAndWait(() -> frameHolder[0].dispose());
+              }
+
+              static final class DashboardPanel extends JPanel {
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(new Color(20, 30, 50));
+                    g.fillRect(0, 0, getWidth(), getHeight());
+                    g.setColor(new Color(230, 50, 44));
+                    g.fillRect(18, 18, 128, 24);
+                    g.setColor(new Color(42, 168, 255));
+                    g.fillRect(154, 18, 188, 24);
+                    g.setColor(Color.WHITE);
+                    g.setFont(new Font("SansSerif", Font.BOLD, 18));
+                    g.drawString("dense Swing", 28, 37);
+                  } finally {
+                    g.dispose();
+                  }
+                }
+              }
+
+              static final class TableRenderer extends DefaultTableCellRenderer {
+                @Override
+                public Component getTableCellRendererComponent(
+                    JTable table,
+                    Object value,
+                    boolean isSelected,
+                    boolean hasFocus,
+                    int row,
+                    int column
+                ) {
+                  JComponent component = (JComponent) super.getTableCellRendererComponent(table, value, false, false, row, column);
+                  component.setOpaque(true);
+                  component.setForeground(column == 2 ? Color.WHITE : new Color(20, 30, 50));
+                  component.setBackground(column == 2 ? new Color(36, 52, 76) : (row % 2 == 0 ? new Color(245, 248, 252) : new Color(225, 234, 242)));
+                  component.setBorder(new EmptyBorder(0, 8, 0, 8));
+                  return component;
+                }
+              }
+
+              static final class TreeRenderer extends DefaultTreeCellRenderer {
+                @Override
+                public Component getTreeCellRendererComponent(
+                    JTree tree,
+                    Object value,
+                    boolean selected,
+                    boolean expanded,
+                    boolean leaf,
+                    int row,
+                    boolean hasFocus
+                ) {
+                  JLabel label = (JLabel) super.getTreeCellRendererComponent(tree, value, false, expanded, leaf, row, false);
+                  label.setOpaque(true);
+                  label.setForeground(leaf ? new Color(20, 30, 50) : Color.WHITE);
+                  label.setBackground(leaf ? new Color(245, 248, 252) : new Color(64, 196, 125));
+                  label.setBorder(new EmptyBorder(0, 4, 0, 4));
+                  return label;
                 }
               }
             }
