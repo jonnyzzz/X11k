@@ -197,6 +197,7 @@ internal class X11State(
     private var xkbIndicatorState = 0
     private val xkbIndicatorMaps = linkedMapOf<Int, ByteArray>()
     private val xkbNamedIndicatorIndexes = linkedMapOf<Int, Int>()
+    private val xkbComponentNameAtoms = linkedMapOf<Int, Int>()
     private var activePointerGrab: XInputGrab? = null
     private var frozenPointerOwner: XEventSink? = null
     private val frozenPointerButtons = mutableListOf<XQueuedPointerButton>()
@@ -1699,6 +1700,18 @@ internal class X11State(
                 null
             } else {
                 XXkbCompatMapNotifyDispatch(sink = sink, event = event)
+            }
+        }
+    }
+
+    @Synchronized
+    fun xkbComponentNameAtom(mask: Int): Int? = xkbComponentNameAtoms[mask]
+
+    @Synchronized
+    fun setXkbComponentNameAtoms(atoms: Map<Int, Int>) {
+        for ((mask, atom) in atoms) {
+            if (atom != 0 && atomName(atom) != null) {
+                xkbComponentNameAtoms[mask] = atom
             }
         }
     }

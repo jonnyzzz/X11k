@@ -2626,6 +2626,96 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD SetNames persists component name atoms`() {
+        withServer { socket, _ ->
+            val names = listOf(
+                "xkb-keycodes-custom",
+                "xkb-geometry-custom",
+                "xkb-symbols-custom",
+                "xkb-phys-symbols-custom",
+                "xkb-types-custom",
+                "xkb-compat-custom",
+            )
+            val out = socket.getOutputStream()
+            for (name in names) {
+                out.write(internAtomRequest(name))
+            }
+            out.flush()
+            val atoms = names.map { u32le(readReply(socket.getInputStream()), 8) }
+
+            out.write(
+                selectEventsRequest(
+                    affectWhich = XXkb.EventNamesNotify,
+                    details = selectEvents16Details(XXkb.ComponentNameDetails, XXkb.ComponentNameDetails),
+                ),
+            )
+            out.write(setNamesComponentNamesRequest(XXkb.ComponentNameDetails, atoms))
+            out.write(getNamesRequest(which = XXkb.ComponentNameDetails))
+            out.flush()
+
+            assertNamesNotify(
+                socket.getInputStream().readExactly(32),
+                sequence = 8,
+                changed = XXkb.ComponentNameDetails,
+                firstType = 0,
+                nTypes = 0,
+                firstLevelName = 0,
+                nLevelNames = 0,
+                nRadioGroups = 0,
+                nAliases = 0,
+                changedGroupNames = 0,
+                changedVirtualMods = 0,
+                firstKey = 0,
+                nKeys = 0,
+                changedIndicators = 0,
+            )
+            val reply = readReply(socket.getInputStream())
+            assertEquals(9, u16le(reply, 2))
+            assertEquals(6, u32le(reply, 4))
+            assertEquals(XXkb.ComponentNameDetails, u32le(reply, 8))
+            assertEquals(atoms, List(6) { index -> u32le(reply, 32 + index * 4) })
+            assertEquals(names, atoms.map { atomName(socket, it) })
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetNames ignores zero component atoms and preserves defaults`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val requested = XXkb.NameDetailSymbols or XXkb.NameDetailTypes
+            out.write(setNamesComponentNamesRequest(requested, listOf(0, 0)))
+            out.write(getNamesRequest(which = requested))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(2, u32le(reply, 4))
+            assertEquals(requested, u32le(reply, 8))
+            val atoms = List(2) { index -> u32le(reply, 32 + index * 4) }
+            assertEquals(listOf("us", "complete"), atoms.map { atomName(socket, it) })
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetNames rejects invalid component name atom without changing names`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val invalidAtom = 0x0102_0304
+            val requested = XXkb.NameDetailSymbols
+            out.write(setNamesComponentNamesRequest(requested, listOf(invalidAtom)))
+            out.write(getNamesRequest(which = requested))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 5, opcode = XXkb.MajorOpcode, badValue = invalidAtom, sequence = 1, minorOpcode = XXkb.SetNames)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(1, u32le(reply, 4))
+            assertEquals(requested, u32le(reply, 8))
+            assertEquals("us", atomName(socket, u32le(reply, 32)))
+        }
+    }
+
+    @Test
     fun `XKEYBOARD NamesNotify reports selected SetNames changes`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -3950,6 +4040,14 @@ class XXkbProtocolTest {
         return request(XXkb.MajorOpcode, XXkb.GetNames, body)
     }
 
+    private fun internAtomRequest(name: String, onlyIfExists: Boolean = false): ByteArray {
+        val bytes = name.encodeToByteArray()
+        val body = ByteArray(4 + paddedLengthForTest(bytes.size))
+        put16le(body, 0, bytes.size)
+        bytes.copyInto(body, 4)
+        return request(16, if (onlyIfExists) 1 else 0, body)
+    }
+
     private fun atomName(socket: Socket, atom: Int): String {
         val body = ByteArray(4)
         put32le(body, 0, atom)
@@ -4026,6 +4124,29 @@ class XXkbProtocolTest {
             write(8)
             write(8)
             write(8)
+        }
+        return request(XXkb.MajorOpcode, XXkb.SetNames, body)
+    }
+
+    private fun setNamesComponentNamesRequest(which: Int, atoms: List<Int>): ByteArray {
+        val body = ByteArray(24 + Integer.bitCount(which and XXkb.ComponentNameDetails) * 4)
+        put16le(body, 0, 0x0100)
+        put32le(body, 4, which and XXkb.ComponentNameDetails)
+        var offset = 24
+        var atomIndex = 0
+        listOf(
+            XXkb.NameDetailKeycodes,
+            XXkb.NameDetailGeometry,
+            XXkb.NameDetailSymbols,
+            XXkb.NameDetailPhysSymbols,
+            XXkb.NameDetailTypes,
+            XXkb.NameDetailCompat,
+        ).forEach { mask ->
+            if ((which and mask) != 0) {
+                put32le(body, offset, atoms.getOrElse(atomIndex) { 0 })
+                atomIndex++
+                offset += 4
+            }
         }
         return request(XXkb.MajorOpcode, XXkb.SetNames, body)
     }

@@ -2507,7 +2507,20 @@ internal class X11Connection(
     }
 
     private fun xkbGetNamesComponentPayload(present: Int): ByteArray {
-        val names = listOf(
+        val names = xkbComponentNameDefaults()
+        val payload = ByteArray(names.count { (mask, _) -> (present and mask) != 0 } * 4)
+        var offset = 0
+        names.forEach { (mask, name) ->
+            if ((present and mask) != 0) {
+                byteOrder.put32(payload, offset, state.xkbComponentNameAtom(mask) ?: state.internAtom(name, onlyIfExists = false))
+                offset += 4
+            }
+        }
+        return payload
+    }
+
+    private fun xkbComponentNameDefaults(): List<Pair<Int, String>> =
+        listOf(
             XXkb.NameDetailKeycodes to "evdev",
             XXkb.NameDetailGeometry to "pc(pc105)",
             XXkb.NameDetailSymbols to "us",
@@ -2515,16 +2528,6 @@ internal class X11Connection(
             XXkb.NameDetailTypes to "complete",
             XXkb.NameDetailCompat to "complete",
         )
-        val payload = ByteArray(names.count { (mask, _) -> (present and mask) != 0 } * 4)
-        var offset = 0
-        names.forEach { (mask, name) ->
-            if ((present and mask) != 0) {
-                byteOrder.put32(payload, offset, state.internAtom(name, onlyIfExists = false))
-                offset += 4
-            }
-        }
-        return payload
-    }
 
     private fun xkbSetNames(body: ByteArray, majorOpcode: Int) {
         if (body.size < 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetNames, badValue = 0)
@@ -2532,6 +2535,11 @@ internal class X11Connection(
         if (parsed == null || body.size != parsed.expectedSize) {
             return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetNames, badValue = 0)
         }
+        val invalidComponentNameAtom = parsed.componentNameAtoms.values.firstOrNull { state.atomName(it) == null }
+        if (invalidComponentNameAtom != null) {
+            return writeError(error = 5, opcode = majorOpcode, minorOpcode = XXkb.SetNames, badValue = invalidComponentNameAtom)
+        }
+        state.setXkbComponentNameAtoms(parsed.componentNameAtoms)
         sendXkbNamesNotify(state.xkbNamesNotifyDispatches(parsed.toEvent(timestamp = state.syncServerTime())))
     }
 
@@ -2558,12 +2566,15 @@ internal class X11Connection(
             return true
         }
 
-        if ((which and XXkb.NameDetailKeycodes) != 0 && !require(4)) return null
-        if ((which and XXkb.NameDetailGeometry) != 0 && !require(4)) return null
-        if ((which and XXkb.NameDetailSymbols) != 0 && !require(4)) return null
-        if ((which and XXkb.NameDetailPhysSymbols) != 0 && !require(4)) return null
-        if ((which and XXkb.NameDetailTypes) != 0 && !require(4)) return null
-        if ((which and XXkb.NameDetailCompat) != 0 && !require(4)) return null
+        val componentNameAtoms = linkedMapOf<Int, Int>()
+        for ((mask, _) in xkbComponentNameDefaults()) {
+            if ((which and mask) != 0) {
+                if (offset + 4 > body.size) return null
+                val atom = byteOrder.u32(body, offset)
+                if (!require(4)) return null
+                if (atom != 0) componentNameAtoms[mask] = atom
+            }
+        }
         if ((which and XXkb.NameDetailKeyTypeNames) != 0 && !require(nTypes * 4)) return null
         if ((which and XXkb.NameDetailKtLevelNames) != 0) {
             if (!require(nKtLevels)) return null
@@ -2591,6 +2602,7 @@ internal class X11Connection(
             firstKey = firstKey,
             nKeys = nKeys,
             changedIndicators = indicators,
+            componentNameAtoms = componentNameAtoms,
         )
     }
 
@@ -2608,6 +2620,7 @@ internal class X11Connection(
         val firstKey: Int,
         val nKeys: Int,
         val changedIndicators: Int,
+        val componentNameAtoms: Map<Int, Int>,
     ) {
         fun toEvent(timestamp: Int): XXkbNamesNotifyEvent =
             XXkbNamesNotifyEvent(
