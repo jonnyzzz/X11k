@@ -77,32 +77,57 @@ class AwtPrimitiveDockerTest {
         val reference = runRobotProbeAgainstXvfb()
         val actual = runRobotProbeAgainstKotlinServer(port = 6213)
 
-        assertEquals(reference.width, actual.width, "Captured content width should match Xvfb reference")
-        assertEquals(reference.height, actual.height, "Captured content height should match Xvfb reference")
+        assertContains(actual.text, "AWT Visual Parity Probe")
+        assertContains(actual.text, "RENDER.")
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected Kotlin SVG export to retain a framebuffer image for the visual parity probe")
+
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin Robot screenshot",
+        )
+        val exportedFramebuffer = actual.exportedFramebuffers
+            .filter { it.width == reference.width && it.height == reference.height }
+            .minByOrNull { imageDistance(reference.image, it.image) }
+            ?: error("Kotlin SVG export did not contain a framebuffer matching the Xvfb capture dimensions ${reference.width}x${reference.height}; exported=${actual.exportedFramebuffers}\n${actual.text}")
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = exportedFramebuffer,
+            label = "Kotlin SVG exported framebuffer",
+        )
+    }
+
+    private fun assertVisualCaptureClose(
+        expected: VisualProbeCapture,
+        actual: VisualProbeCapture,
+        label: String,
+    ) {
+        assertEquals(expected.width, actual.width, "$label content width should match Xvfb reference")
+        assertEquals(expected.height, actual.height, "$label content height should match Xvfb reference")
         assertClose(
-            expected = reference.nonBackgroundPixels,
+            expected = expected.nonBackgroundPixels,
             actual = actual.nonBackgroundPixels,
             tolerance = 0.12,
-            message = "Kotlin server should expose similar non-background coverage to Xvfb; reference=$reference actual=$actual",
+            message = "$label should expose similar non-background coverage to Xvfb; reference=$expected actual=$actual",
         )
         assertClose(
-            expected = reference.averageRgb,
+            expected = expected.averageRgb,
             actual = actual.averageRgb,
             tolerance = 0.08,
-            message = "Kotlin server should expose similar average RGB to Xvfb; reference=$reference actual=$actual",
+            message = "$label should expose similar average RGB to Xvfb; reference=$expected actual=$actual",
         )
         val sampleTolerance = 36
         for (point in VisualProbeSamplePoints) {
-            val referencePixel = reference.sampleArgb.getValue(point)
+            val referencePixel = expected.sampleArgb.getValue(point)
             val actualPixel = actual.sampleArgb.getValue(point)
             assertTrue(
                 rgbDistance(referencePixel, actualPixel) <= sampleTolerance,
-                "Sample $point differs too much from Xvfb: reference=${referencePixel.hexArgb()} actual=${actualPixel.hexArgb()}\nreference=$reference\nactual=$actual",
+                "$label sample $point differs too much from Xvfb: reference=${referencePixel.hexArgb()} actual=${actualPixel.hexArgb()}\nreference=$expected\nactual=$actual",
             )
         }
         assertTrue(
-            imageDistance(reference.image, actual.image) <= 18.0,
-            "Kotlin server screenshot should stay visually close to Xvfb reference\nreference=$reference\nactual=$actual",
+            imageDistance(expected.image, actual.image) <= 18.0,
+            "$label should stay visually close to Xvfb reference\nreference=$expected\nactual=$actual",
         )
     }
 
@@ -194,7 +219,7 @@ class AwtPrimitiveDockerTest {
             }
     }
 
-    private fun runRobotProbeAgainstKotlinServer(port: Int): VisualProbeCapture {
+    private fun runRobotProbeAgainstKotlinServer(port: Int): KotlinVisualProbeResult {
         assumeTrue(isPortAvailable(port), "Port $port is not available")
         XServer(ServerOptions(host = "0.0.0.0", port = port, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -204,15 +229,64 @@ class AwtPrimitiveDockerTest {
                     container.start()
                     compileProbe(container, "VisualParityProbe", VisualParityProbeSource)
                     val display = port - 6000
-                    val result = container.execInContainer(
+                    val startResult = container.execInContainer(
                         "sh",
                         "-lc",
-                        "DISPLAY=host.docker.internal:$display java -cp /tmp -Djava.awt.headless=false -Dsun.java2d.xrender=True -Dsun.java2d.opengl=false VisualParityProbe",
+                        """
+                        DISPLAY=host.docker.internal:$display \
+                        nohup java -cp /tmp \
+                          -Djava.awt.headless=false \
+                          -Dsun.java2d.xrender=True \
+                          -Dsun.java2d.opengl=false \
+                          -DvisualProbe.holdMillis=60000 \
+                          VisualParityProbe >/tmp/visual-parity.log 2>&1 &
+                        echo ${'$'}! >/tmp/visual-parity.pid
+                        """.trimIndent(),
+                    )
+                    assertEquals(0, startResult.exitCode, startResult.stderr + startResult.stdout)
+
+                    waitUntil(
+                        failureMessage = {
+                            val log = container.execInContainer("sh", "-lc", "cat /tmp/visual-parity.log 2>/dev/null || true").stdout
+                            val text = runCatching { httpGet(port, "/text.txt") }.getOrElse { it.toString() }
+                            "Visual parity probe did not become SVG-ready before timeout\nlog:\n$log\ntext:\n$text"
+                        },
+                    ) {
+                        val log = container.execInContainer("sh", "-lc", "cat /tmp/visual-parity.log 2>/dev/null || true")
+                        val currentText = httpGet(port, "/text.txt")
+                        log.stdout.contains("PNG_BASE64=") &&
+                            currentText.contains("AWT Visual Parity Probe") &&
+                            currentText.contains("RENDER.") &&
+                            httpGet(port, "/screen.svg").hasSvgClass("framebuffer-image")
+                    }
+
+                    val text = httpGet(port, "/text.txt")
+                    val svg = httpGet(port, "/screen.svg")
+                    val log = container.execInContainer(
+                        "sh",
+                        "-lc",
+                        """
+                        pid=${'$'}(cat /tmp/visual-parity.pid)
+                        if ! kill -0 "${'$'}pid" 2>/dev/null; then
+                          echo "VisualParityProbe exited before SVG snapshot completed" >&2
+                          cat /tmp/visual-parity.log 2>/dev/null || true
+                          exit 1
+                        fi
+                        cat /tmp/visual-parity.log
+                        kill "${'$'}pid" 2>/dev/null || true
+                        """.trimIndent(),
                     )
                     server.close()
                     serverThread.join(1_000)
-                    assertEquals(0, result.exitCode, result.stderr + result.stdout)
-                    return visualProbeCapture(result.stdout)
+                    assertEquals(0, log.exitCode, log.stderr + log.stdout)
+                    return KotlinVisualProbeResult(
+                        robot = visualProbeCapture(log.stdout),
+                        text = text,
+                        svg = svg,
+                        exportedFramebuffers = pngDataUris(svg).mapNotNull { embeddedPng ->
+                            ImageIO.read(ByteArrayInputStream(embeddedPng.bytes))?.let(::visualProbeCapture)
+                        },
+                    )
                 }
         }
     }
@@ -223,9 +297,14 @@ class AwtPrimitiveDockerTest {
     }
 
     private fun pngDataUris(svg: String): List<EmbeddedPng> =
-        Regex("""<image\b[^>]*data-window-id="([^"]+)"[^>]*href="data:image/png;base64,([A-Za-z0-9+/=]+)"""")
+        Regex("""<image\b[^>]*>""")
             .findAll(svg)
-            .map { EmbeddedPng(it.groupValues[1], Base64.getDecoder().decode(it.groupValues[2])) }
+            .mapNotNull { match ->
+                val tag = match.value
+                val id = Regex("""\bdata-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1) ?: return@mapNotNull null
+                val encoded = Regex("""\bhref="data:image/png;base64,([A-Za-z0-9+/=]+)"""").find(tag)?.groupValues?.get(1) ?: return@mapNotNull null
+                EmbeddedPng(id, Base64.getDecoder().decode(encoded))
+            }
             .toList()
 
     private fun String.hasSvgClass(className: String): Boolean =
@@ -256,6 +335,10 @@ class AwtPrimitiveDockerTest {
             ?: error("VisualParityProbe did not print PNG_BASE64, stdout:\n$stdout")
         val image = ImageIO.read(ByteArrayInputStream(Base64.getDecoder().decode(encoded)))
             ?: error("VisualParityProbe PNG was not readable")
+        return visualProbeCapture(image)
+    }
+
+    private fun visualProbeCapture(image: java.awt.image.BufferedImage): VisualProbeCapture {
         var nonBackground = 0
         var redSum = 0L
         var greenSum = 0L
@@ -336,6 +419,13 @@ class AwtPrimitiveDockerTest {
             })"
     }
 
+    private data class KotlinVisualProbeResult(
+        val robot: VisualProbeCapture,
+        val text: String,
+        val svg: String,
+        val exportedFramebuffers: List<VisualProbeCapture>,
+    )
+
     private data class ProbeResult(
         val text: String,
         val svg: String,
@@ -351,7 +441,10 @@ class AwtPrimitiveDockerTest {
             socket.getInputStream().readBytes().decodeToString().substringAfter("\r\n\r\n")
         }
 
-    private fun waitUntil(condition: () -> Boolean) {
+    private fun waitUntil(
+        failureMessage: () -> String = { "Condition did not become true before timeout" },
+        condition: () -> Boolean,
+    ) {
         val deadline = System.currentTimeMillis() + 20_000
         var failure: Throwable? = null
         while (System.currentTimeMillis() < deadline) {
@@ -363,7 +456,7 @@ class AwtPrimitiveDockerTest {
             Thread.sleep(100)
         }
         failure?.let { throw it }
-        assertTrue(condition(), "Condition did not become true before timeout")
+        assertTrue(condition(), failureMessage())
     }
 
     private fun isPortAvailable(port: Int): Boolean =
@@ -624,6 +717,11 @@ class AwtPrimitiveDockerTest {
                 ByteArrayOutputStream output = new ByteArrayOutputStream();
                 ImageIO.write(image, "png", output);
                 System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
+                System.out.flush();
+                long holdMillis = Long.getLong("visualProbe.holdMillis", 0L);
+                if (holdMillis > 0L) {
+                  Thread.sleep(holdMillis);
+                }
                 SwingUtilities.invokeAndWait(() -> frameHolder[0].dispose());
               }
 
