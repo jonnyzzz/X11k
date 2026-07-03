@@ -28,12 +28,12 @@ the `jonnyzzz-x/x11-reference:latest` comparison image; the normal
 | `xcalc` | Widgets, cursors, fonts, text drawing | Stays running |
 | `twm` + `xlogo` + `xclock` | Window manager, independent windows, overlap/focus state | Passing |
 | `xterm` | Text, keyboard, properties | Later milestone |
-| AWT/Swing Java2D samples | Java GUI behavior, overlapping windows, owned popups/dialogs, heavyweight popup menus, menu dropdown popups, combo-box dropdowns, Swing tooltips, dense scroll-pane content, form controls, tabbed split-pane layouts, and primitive SVG framebuffer export parity | Passing Docker/Xvfb parity probe |
+| AWT/Swing Java2D samples | Java GUI behavior, overlapping windows, owned popups/dialogs, heavyweight popup menus, menu dropdown popups, combo-box dropdowns, Swing tooltips, dense scroll-pane content, form controls, tabbed split-pane layouts, desktop-pane internal-frame layouts, and primitive SVG framebuffer export parity | Passing Docker/Xvfb parity probe |
 | IntelliJ IDEA Community GitHub release | Real-world target, heavyweight opt-in smoke | Passing opt-in |
 
 `Stays running` means the app remains connected under `timeout` and does not exit early with an X protocol error. It does not imply complete rendering parity yet.
 
-The AWT/Swing Java2D probes compare client-side `Robot` captures against Xvfb for deterministic primitives, overlapping Swing windows, owned popup windows, owned dialog windows, heavyweight popup menus, menu dropdown popups, combo-box dropdowns, Swing tooltips, dense `JTable`/`JTree` scroll-pane content, standard form controls such as text fields, checkboxes, sliders, progress bars, buttons, and text areas, and IDE-style tabbed split-pane layouts with lists and editor text. They also compare the Kotlin server's exported SVG framebuffer for the single-window primitive probe. IntelliJ still needs broader SVG/HTML parity coverage for larger retained surfaces and GL/JCEF-backed paths.
+The AWT/Swing Java2D probes compare client-side `Robot` captures against Xvfb for deterministic primitives, overlapping Swing windows, owned popup windows, owned dialog windows, heavyweight popup menus, menu dropdown popups, combo-box dropdowns, Swing tooltips, dense `JTable`/`JTree` scroll-pane content, standard form controls such as text fields, checkboxes, sliders, progress bars, buttons, and text areas, IDE-style tabbed split-pane layouts with lists and editor text, and desktop-pane internal-frame layouts. They also compare the Kotlin server's exported SVG framebuffer for the single-window primitive probe. IntelliJ still needs broader SVG/HTML parity coverage for larger retained surfaces and GL/JCEF-backed paths.
 
 The IntelliJ smoke is excluded from default `test` because it downloads the current GitHub release tarball.
 Build `jonnyzzz-x/x11-client:latest` first with `./gradlew dockerBuildX11Client`, then run it explicitly with `-Dx.intellijSmoke=true`.

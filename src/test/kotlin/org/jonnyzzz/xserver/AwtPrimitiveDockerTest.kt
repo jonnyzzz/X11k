@@ -405,6 +405,35 @@ class AwtPrimitiveDockerTest {
         )
     }
 
+    @Test
+    fun `awt desktop pane internal frames robot screenshot roughly matches xvfb reference`() {
+        assumeDockerAndImage(CLIENT_IMAGE)
+        assumeDockerAndImage(REFERENCE_IMAGE)
+        val reference = runRobotProbeAgainstXvfb(
+            mainClass = "VisualDesktopPaneProbe",
+            source = VisualDesktopPaneProbeSource,
+        )
+        val actual = runRobotProbeAgainstKotlinServer(
+            port = 6224,
+            title = "AWT Desktop Pane Parity Probe",
+            mainClass = "VisualDesktopPaneProbe",
+            source = VisualDesktopPaneProbeSource,
+        )
+
+        assertContains(actual.text, "AWT Desktop Pane Parity Probe")
+        assertContains(actual.text, "RENDER.")
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected Kotlin SVG export to retain framebuffer images for the desktop-pane probe")
+        assertTrue(
+            actual.exportedFramebuffers.any { it.width == 360 && it.height == 240 },
+            "Desktop-pane Swing rendering should expose the owner framebuffer surface; exported=${actual.exportedFramebuffers}\n${actual.text}",
+        )
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin desktop-pane Robot screenshot",
+        )
+    }
+
     private fun assertVisualCaptureClose(
         expected: VisualProbeCapture,
         actual: VisualProbeCapture,
@@ -2461,6 +2490,141 @@ class AwtPrimitiveDockerTest {
                   label.setBackground(selected ? new Color(36, 52, 76) : (index % 2 == 0 ? new Color(245, 248, 252) : new Color(225, 234, 242)));
                   label.setBorder(new EmptyBorder(0, 8, 0, 8));
                   return label;
+                }
+              }
+            }
+            """.trimIndent()
+
+        val VisualDesktopPaneProbeSource =
+            """
+            import java.awt.Color;
+            import java.awt.Font;
+            import java.awt.Graphics;
+            import java.awt.Graphics2D;
+            import java.awt.Point;
+            import java.awt.Rectangle;
+            import java.awt.RenderingHints;
+            import java.awt.Robot;
+            import java.awt.image.BufferedImage;
+            import java.io.ByteArrayOutputStream;
+            import java.util.Base64;
+            import javax.imageio.ImageIO;
+            import javax.swing.JButton;
+            import javax.swing.JDesktopPane;
+            import javax.swing.JFrame;
+            import javax.swing.JInternalFrame;
+            import javax.swing.JLabel;
+            import javax.swing.JList;
+            import javax.swing.JPanel;
+            import javax.swing.JScrollPane;
+            import javax.swing.JTextArea;
+            import javax.swing.ListSelectionModel;
+            import javax.swing.SwingUtilities;
+            import javax.swing.border.EmptyBorder;
+
+            public class VisualDesktopPaneProbe {
+              public static void main(String[] args) throws Exception {
+                final JFrame[] frameHolder = new JFrame[1];
+                SwingUtilities.invokeAndWait(() -> {
+                  JFrame frame = new JFrame("AWT Desktop Pane Parity Probe");
+                  frame.setUndecorated(true);
+                  frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+                  frame.setBounds(40, 40, 360, 240);
+                  DesktopOwnerPanel owner = new DesktopOwnerPanel();
+                  owner.setLayout(null);
+                  frame.setContentPane(owner);
+
+                  JLabel title = new JLabel("desktop");
+                  title.setForeground(Color.WHITE);
+                  title.setFont(new Font("SansSerif", Font.BOLD, 18));
+                  title.setBounds(24, 16, 120, 26);
+                  owner.add(title);
+
+                  JDesktopPane desktop = new JDesktopPane();
+                  desktop.setBackground(new Color(225, 234, 242));
+                  desktop.setBounds(18, 52, 324, 166);
+                  owner.add(desktop);
+
+                  JInternalFrame project = internalFrame("Project", 10, 10, 136, 132);
+                  JList<String> files = new JList<>(new String[] {"src", "test", "workflow", "README.md"});
+                  files.setFont(new Font("SansSerif", Font.BOLD, 13));
+                  files.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+                  files.setSelectedIndex(2);
+                  files.setFixedCellHeight(22);
+                  JScrollPane filesScroll = new JScrollPane(files);
+                  filesScroll.setBorder(new EmptyBorder(0, 0, 0, 0));
+                  project.setContentPane(filesScroll);
+                  desktop.add(project);
+                  project.setVisible(true);
+
+                  JInternalFrame editor = internalFrame("Editor", 104, 34, 198, 116);
+                  JPanel editorPanel = new JPanel(null);
+                  editorPanel.setBackground(new Color(245, 248, 252));
+                  JTextArea text = new JTextArea("class Desktop {\n  frame = active\n  layer = tools\n}");
+                  text.setEditable(false);
+                  text.setFont(new Font("Monospaced", Font.BOLD, 13));
+                  text.setForeground(new Color(20, 30, 50));
+                  text.setBackground(new Color(245, 248, 252));
+                  text.setBorder(new EmptyBorder(6, 8, 6, 8));
+                  text.setBounds(0, 0, 188, 66);
+                  editorPanel.add(text);
+                  JButton run = new JButton("Run");
+                  run.setFont(new Font("SansSerif", Font.BOLD, 13));
+                  run.setBounds(112, 72, 72, 28);
+                  editorPanel.add(run);
+                  editor.setContentPane(editorPanel);
+                  desktop.add(editor);
+                  editor.setVisible(true);
+
+                  try {
+                    editor.setSelected(true);
+                  } catch (Exception ignored) {
+                  }
+
+                  frame.setVisible(true);
+                  owner.paintImmediately(0, 0, 360, 240);
+                  desktop.paintImmediately(0, 0, desktop.getWidth(), desktop.getHeight());
+                  frameHolder[0] = frame;
+                });
+                Thread.sleep(1000);
+                Point origin = frameHolder[0].getLocationOnScreen();
+                BufferedImage image = new Robot().createScreenCapture(new Rectangle(origin.x, origin.y, 360, 240));
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                ImageIO.write(image, "png", output);
+                System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
+                System.out.flush();
+                long holdMillis = Long.getLong("visualProbe.holdMillis", 0L);
+                if (holdMillis > 0L) {
+                  Thread.sleep(holdMillis);
+                }
+                SwingUtilities.invokeAndWait(() -> frameHolder[0].dispose());
+              }
+
+              static JInternalFrame internalFrame(String title, int x, int y, int width, int height) {
+                JInternalFrame frame = new JInternalFrame(title, false, false, false, false);
+                frame.setBounds(x, y, width, height);
+                frame.setFrameIcon(null);
+                frame.setFont(new Font("SansSerif", Font.BOLD, 12));
+                return frame;
+              }
+
+              static final class DesktopOwnerPanel extends JPanel {
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(new Color(20, 30, 50));
+                    g.fillRect(0, 0, getWidth(), getHeight());
+                    g.setColor(new Color(230, 50, 44));
+                    g.fillRect(18, 16, 128, 28);
+                    g.setColor(new Color(42, 168, 255));
+                    g.fillRect(154, 16, 188, 28);
+                    g.setColor(new Color(255, 225, 64));
+                    g.fillRect(18, 220, 324, 6);
+                  } finally {
+                    g.dispose();
+                  }
                 }
               }
             }
