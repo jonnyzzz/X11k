@@ -3536,6 +3536,109 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetKbdByName reports stored compat map for matching component expression`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val groupMaps = listOf(
+                byteArrayOf(0x01, 0x02, 0x34, 0x12),
+                byteArrayOf(0x04, 0x08, 0x78, 0x56),
+            )
+            val matchingComponents = xkbComponentSpecs("", "", "", "comp*")
+
+            out.write(setCompatMapRequest(groups = 0x5, nSI = 0, groupMaps = groupMaps))
+            out.write(getKbdByNameRequest(need = 0, want = XXkb.GbnCompatMap, load = false, trailingNames = matchingComponents))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            val compatSize = 32 + groupMaps.size * 4
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(compatSize / 4, u32le(reply, 4))
+            assertEquals(XXkb.GbnCompatMap, u16le(reply, 12))
+            assertEquals(XXkb.GbnCompatMap, u16le(reply, 14))
+            assertCompatMapReply(reply.copyOfRange(32, reply.size), sequence = 2, groups = 0x5, groupMaps = groupMaps)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName does not report stored compat map for nonmatching component expression`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val nonmatchingComponents = xkbComponentSpecs("", "", "", "does-not-match")
+
+            out.write(
+                setCompatMapRequest(
+                    groups = 0x1,
+                    nSI = 0,
+                    groupMaps = listOf(byteArrayOf(0x01, 0x02, 0x34, 0x12)),
+                ),
+            )
+            out.write(getKbdByNameRequest(need = 0, want = XXkb.GbnCompatMap, load = false, trailingNames = nonmatchingComponents))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName with mandatory unsupported pieces suppresses compat map report`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                setCompatMapRequest(
+                    groups = 0x1,
+                    nSI = 0,
+                    groupMaps = listOf(byteArrayOf(0x01, 0x02, 0x34, 0x12)),
+                ),
+            )
+            out.write(getKbdByNameRequest(need = XXkb.GbnCompatMap or 1, want = XXkb.GbnCompatMap, load = false))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(XXkb.GbnCompatMap, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName reports compat map before geometry when both are requested`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val groupMaps = listOf(
+                byteArrayOf(0x01, 0x02, 0x34, 0x12),
+                byteArrayOf(0x04, 0x08, 0x78, 0x56),
+            )
+            out.write(internAtomRequest("xkb-getkbd-compat-geometry"))
+            out.flush()
+            val geometryAtom = u32le(readReply(socket.getInputStream()), 8)
+            val geometryBody = setGeometryBody(name = geometryAtom)
+
+            out.write(setCompatMapRequest(groups = 0x5, nSI = 0, groupMaps = groupMaps))
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, geometryBody))
+            out.write(getKbdByNameRequest(need = 0, want = XXkb.GbnCompatMap or XXkb.GbnGeometry, load = false))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            val compatSize = 32 + groupMaps.size * 4
+            val geometrySize = geometryBody.copyOfRange(24, geometryBody.size).size + 32
+            val reported = XXkb.GbnCompatMap or XXkb.GbnGeometry
+            assertEquals(4, u16le(reply, 2))
+            assertEquals((compatSize + geometrySize) / 4, u32le(reply, 4))
+            assertEquals(reported, u16le(reply, 12))
+            assertEquals(reported, u16le(reply, 14))
+            assertCompatMapReply(reply.copyOfRange(32, 32 + compatSize), sequence = 4, groups = 0x5, groupMaps = groupMaps)
+            assertGeometryReply(reply.copyOfRange(32 + compatSize, reply.size), sequence = 4, geometryBody = geometryBody)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetKbdByName does not report stored geometry for nonmatching component expression`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -5378,6 +5481,21 @@ class XXkbProtocolTest {
         assertEquals(geometryBody[20].toInt() and 0xff, reply[30].toInt() and 0xff)
         assertEquals(geometryBody[21].toInt() and 0xff, reply[31].toInt() and 0xff)
         assertEquals(payload.toList(), reply.copyOfRange(32, reply.size).toList())
+    }
+
+    private fun assertCompatMapReply(reply: ByteArray, sequence: Int, groups: Int, groupMaps: List<ByteArray>) {
+        assertEquals(1, reply[0].toInt())
+        assertEquals(0, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(groupMaps.size, u32le(reply, 4))
+        assertEquals(groups, reply[8].toInt() and 0xff)
+        assertEquals(0, u16le(reply, 10))
+        assertEquals(0, u16le(reply, 12))
+        assertEquals(0, u16le(reply, 14))
+        groupMaps.forEachIndexed { index, groupMap ->
+            assertEquals(groupMap.toList(), reply.copyOfRange(32 + index * 4, 36 + index * 4).toList())
+        }
+        assertEquals(32 + groupMaps.size * 4, reply.size)
     }
 
     private fun assertNamesNotify(

@@ -2367,6 +2367,10 @@ internal class X11Connection(
     private fun xkbGetCompatMap(body: ByteArray, majorOpcode: Int) {
         if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetCompatMap, badValue = 0)
         val groups = state.xkbCompatGroupMaps((body[2].toInt() and 0xff) and XXkb.AllGroupsMask)
+        write(xkbCompatMapReply(groups))
+    }
+
+    private fun xkbCompatMapReply(groups: XXkbCompatGroupMaps): ByteArray {
         val reply = reply(extra = 0, payloadUnits = groups.maps.size)
         reply[8] = groups.groups.toByte()
         var offset = 32
@@ -2374,7 +2378,7 @@ internal class X11Connection(
             map.copyInto(reply, offset, 0, 4)
             offset += 4
         }
-        write(reply)
+        return reply
     }
 
     private fun xkbSetCompatMap(body: ByteArray, majorOpcode: Int) {
@@ -3022,10 +3026,25 @@ internal class X11Connection(
             ?: return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetKbdByName, badValue = 0)
         val need = byteOrder.u16(body, 2) and XXkb.GbnAllComponents
         val want = byteOrder.u16(body, 4) and XXkb.GbnAllComponents
+        val compat = state.xkbCompatGroupMaps(XXkb.AllGroupsMask)
+            .takeIf { it.maps.isNotEmpty() && xkbGetKbdByNameCompatSpecMatches(componentSpecs[3]) }
         val geometry = state.xkbGeometry(0)?.takeIf { xkbGetKbdByNameGeometrySpecMatches(componentSpecs[5]) }
-        val found = if (geometry != null) XXkb.GbnGeometry else 0
+        val found = (if (compat != null) XXkb.GbnCompatMap else 0) or
+            (if (geometry != null) XXkb.GbnGeometry else 0)
         val reported = if ((need and found.inv()) == 0) found and (need or want) else 0
-        val payload = if ((reported and XXkb.GbnGeometry) != 0) xkbGeometryReply(geometry, requestedName = geometry?.name ?: 0) else ByteArray(0)
+        val payloadParts = mutableListOf<ByteArray>()
+        if ((reported and XXkb.GbnCompatMap) != 0 && compat != null) {
+            payloadParts += xkbCompatMapReply(compat)
+        }
+        if ((reported and XXkb.GbnGeometry) != 0 && geometry != null) {
+            payloadParts += xkbGeometryReply(geometry, requestedName = geometry.name)
+        }
+        val payload = ByteArray(payloadParts.sumOf { it.size })
+        var payloadOffset = 0
+        for (part in payloadParts) {
+            part.copyInto(payload, payloadOffset)
+            payloadOffset += part.size
+        }
         val reply = reply(extra = 0, payloadUnits = payload.size / 4)
         reply[8] = XKeyboard.MinKeycode.toByte()
         reply[9] = XKeyboard.MaxKeycode.toByte()
@@ -3035,9 +3054,16 @@ internal class X11Connection(
         write(reply)
     }
 
+    private fun xkbGetKbdByNameCompatSpecMatches(spec: String): Boolean =
+        xkbGetKbdByNameComponentSpecMatches(category = 3, spec)
+
     private fun xkbGetKbdByNameGeometrySpecMatches(spec: String): Boolean {
+        return xkbGetKbdByNameComponentSpecMatches(category = 5, spec)
+    }
+
+    private fun xkbGetKbdByNameComponentSpecMatches(category: Int, spec: String): Boolean {
         val pattern = xkbSanitizeComponentPattern(spec)
-        return pattern.isEmpty() || xkbComponentCatalog()[5].any { name -> xkbComponentPatternMatches(pattern, name) }
+        return pattern.isEmpty() || xkbComponentCatalog()[category].any { name -> xkbComponentPatternMatches(pattern, name) }
     }
 
     private fun xkbComponentSpecs(body: ByteArray, startOffset: Int, absentPatterns: List<String> = List(6) { "" }): List<String>? {
