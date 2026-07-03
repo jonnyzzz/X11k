@@ -6005,6 +6005,7 @@ internal class X11Connection(
             sendVisibilityNotify(state.visibilityNotifySinks(visibilityBefore))
             sendCrossing(crossingEvents)
             sendExposeForViewableMappedSubtree(mapped)
+            sendExposeForViewableMappedSubtreeSubscribers(mapped, excludedSink = this)
         }
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
@@ -6034,6 +6035,7 @@ internal class X11Connection(
         sendVisibilityNotify(state.visibilityNotifySinks(visibilityBefore))
         sendCrossing(crossingEvents)
         sendExposeForViewableMappedSubtree(window)
+        sendExposeForViewableMappedSubtreeSubscribers(window, excludedSink = this)
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
 
@@ -6088,6 +6090,7 @@ internal class X11Connection(
                 sendVisibilityNotify(state.visibilityNotifySinks(visibilityBefore))
                 sendCrossing(crossingEvents)
                 sendExposeForViewableMappedSubtree(mapped)
+                sendExposeForViewableMappedSubtreeSubscribers(mapped, excludedSink = this)
             }
         }
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
@@ -10707,6 +10710,19 @@ internal class X11Connection(
         sendExposeIfViewable(window)
         for (child in state.childrenOf(window.id)) {
             if (child.mapped) sendExposeForViewableMappedSubtree(child)
+        }
+    }
+
+    private fun sendExposeForViewableMappedSubtreeSubscribers(window: XWindow, excludedSink: XEventSink) {
+        if (window.windowClass == XWindowClass.InputOutput && state.windowIsViewable(window.id)) {
+            sendExpose(
+                state.exposureSinks(window.id).filterNot { it == excludedSink },
+                window.id,
+                XRectangleCommand(0, 0, window.width, window.height),
+            )
+        }
+        for (child in state.childrenOf(window.id)) {
+            if (child.mapped) sendExposeForViewableMappedSubtreeSubscribers(child, excludedSink)
         }
     }
 

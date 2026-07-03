@@ -11156,6 +11156,43 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `MapWindow exposes reparented child to original owner`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { managerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    managerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(managerSocket)
+
+                    val appWindow = WindowId + 417
+                    val ownerInput = ownerSocket.getInputStream()
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(appWindow, eventMask = XEventMasks.Exposure))
+                    ownerOut.write(mapWindowRequest(appWindow))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertExpose(ownerInput.readExactly(32), appWindow)
+                    assertEquals(3, u16le(readReply(ownerInput), 2))
+
+                    val frameWindow = WindowId + 418
+                    val managerOut = managerSocket.getOutputStream()
+                    managerOut.write(createWindowRequest(frameWindow, width = 60, height = 50))
+                    managerOut.write(reparentWindowRequest(appWindow, frameWindow, x = 7, y = 8))
+                    managerOut.write(mapWindowRequest(frameWindow))
+                    managerOut.write(queryPointerRequest())
+                    managerOut.flush()
+
+                    assertExpose(ownerInput.readExactly(32), appWindow, x = 0, y = 0, width = 40, height = 30)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ReparentWindow automatic unmap exposes old parent and lower overlapping sibling`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -12740,6 +12777,41 @@ class XCoreDrawingProtocolTest {
                 val pointer = readReply(input)
                 assertEquals(1, pointer[0].toInt())
                 assertEquals(7, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `MapSubwindows exposes mapped child to non requester subscriber`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { mapperSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    mapperSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(mapperSocket)
+                    val parent = WindowId + 419
+                    val child = WindowId + 420
+                    val ownerInput = ownerSocket.getInputStream()
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(parent))
+                    ownerOut.write(createWindowRequest(child, parent = parent, eventMask = XEventMasks.Exposure))
+                    ownerOut.write(mapWindowRequest(parent))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertExpose(ownerInput.readExactly(32), parent)
+                    assertEquals(4, u16le(readReply(ownerInput), 2))
+
+                    val mapperOut = mapperSocket.getOutputStream()
+                    mapperOut.write(mapSubwindowsRequest(parent))
+                    mapperOut.write(queryPointerRequest())
+                    mapperOut.flush()
+
+                    assertExpose(ownerInput.readExactly(32), child, x = 0, y = 0, width = 40, height = 30)
+                }
             }
             server.close()
             serverThread.join(1_000)

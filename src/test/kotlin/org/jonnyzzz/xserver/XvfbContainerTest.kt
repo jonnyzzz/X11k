@@ -217,16 +217,111 @@ class XvfbContainerTest {
     @Test
     fun `window manager smoke exposes independent windows and overlap over http`() {
         assumeDockerAndImage(CLIENT_IMAGE)
-        val port = 6209
+        assumeDockerAndImage(REFERENCE_IMAGE)
+        val reference = runWindowManagerAgainstXvfb()
+        val actual = runWindowManagerAgainstKotlinServer(port = 6209)
+
+        assertTrue(actual.text.contains("Focus:"), actual.text)
+        assertTrue(actual.text.contains("Overlap and focus:"), actual.text)
+        assertTrue(actual.text.contains("overlaps"), actual.text)
+        assertTrue(actual.text.contains("label=\"xlogo\""), actual.text)
+        assertTrue(actual.text.contains("label=\"xclock\""), actual.text)
+        assertTrue(actual.svg.contains("data-window-id="), actual.svg)
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected WM SVG export to retain app framebuffers\n${actual.svg}\n${actual.text}")
+        assertTrue(actual.svg.hasSvgClass("window-border"), "Expected WM SVG export to retain window-manager border layers\n${actual.svg}\n${actual.text}")
+        val actualComposedSvg = windowManagerComposedSvgCapture(actual.embeddedFramebuffers)
+        assertWindowManagerAppContentVisible(reference, label = "Xvfb twm reference")
+        assertWindowManagerAppContentVisible(actual.robot, label = "Kotlin twm Robot screenshot")
+        assertWindowManagerAppContentVisible(actualComposedSvg, label = "Kotlin twm composed SVG framebuffer")
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin twm composed Robot screenshot",
+            coverageTolerance = 0.30,
+            averageTolerance = 0.08,
+            distanceThreshold = 130.0,
+        )
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actualComposedSvg,
+            label = "Kotlin twm composed SVG framebuffer",
+            coverageTolerance = 0.30,
+            averageTolerance = 0.08,
+            distanceThreshold = 130.0,
+        )
+    }
+
+    private fun runWindowManagerAgainstXvfb(): VisualCapture {
+        GenericContainer(DockerImageName.parse(REFERENCE_IMAGE).asCompatibleSubstituteFor("ubuntu"))
+            .withCommand("sleep", "120")
+            .use { container ->
+                container.start()
+                compileRobotCapture(
+                    container,
+                    captureX = WindowManagerCaptureX,
+                    captureY = WindowManagerCaptureY,
+                    captureWidth = WindowManagerCaptureWidth,
+                    captureHeight = WindowManagerCaptureHeight,
+                )
+                val result = container.execInContainer(
+                    "sh",
+                    "-lc",
+                    """
+                    set -eu
+                    Xvfb :99 -screen 0 800x600x24 >/tmp/xvfb.log 2>&1 &
+                    xvfb=${'$'}!
+                    trap 'kill "${'$'}clock" "${'$'}logo" "${'$'}twm" "${'$'}xvfb" 2>/dev/null || true' EXIT
+                    for _ in ${'$'}(seq 1 40); do
+                      DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && break
+                      sleep 0.25
+                    done
+                    DISPLAY=:99 twm >/tmp/twm.log 2>&1 &
+                    twm=${'$'}!
+                    sleep 1
+                    DISPLAY=:99 xlogo -geometry ${WindowManagerXlogoGeometry} >/tmp/xlogo.log 2>&1 &
+                    logo=${'$'}!
+                    DISPLAY=:99 ${windowManagerXclockCommand()} >/tmp/xclock.log 2>&1 &
+                    clock=${'$'}!
+                    for _ in ${'$'}(seq 1 40); do
+                      DISPLAY=:99 xwininfo -name xlogo >/tmp/xlogo-ready.log 2>&1 &&
+                        DISPLAY=:99 xwininfo -name xclock >/tmp/xclock-ready.log 2>&1 && break
+                      sleep 0.25
+                    done
+                    DISPLAY=:99 xwininfo -name xlogo >/tmp/xlogo-ready.log 2>&1
+                    DISPLAY=:99 xwininfo -name xclock >/tmp/xclock-ready.log 2>&1
+                    DISPLAY=:99 java -cp /tmp XRobotCapture
+                    """.trimIndent(),
+                )
+                assertEquals(0, result.exitCode, result.stderr + result.stdout)
+                return visualCapture(result.stdout)
+            }
+    }
+
+    private fun runWindowManagerAgainstKotlinServer(port: Int): RealClientResult {
         assumeTrue(isPortAvailable(port), "Port $port is not available")
 
-        XServer(ServerOptions(host = "0.0.0.0", port = port, width = 800, height = 600)).use { server ->
+        XServer(
+            ServerOptions(
+                host = "0.0.0.0",
+                port = port,
+                width = 800,
+                height = 600,
+                rootBackgroundPixel = WindowManagerBackground and 0x00ff_ffff,
+            ),
+        ).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
 
             GenericContainer(DockerImageName.parse(CLIENT_IMAGE).asCompatibleSubstituteFor("ubuntu"))
                 .withCommand("sleep", "300")
                 .use { container ->
                     container.start()
+                    compileRobotCapture(
+                        container,
+                        captureX = WindowManagerCaptureX,
+                        captureY = WindowManagerCaptureY,
+                        captureWidth = WindowManagerCaptureWidth,
+                        captureHeight = WindowManagerCaptureHeight,
+                    )
 
                     val display = port - 6000
                     val result = container.execInContainer(
@@ -236,27 +331,99 @@ class XvfbContainerTest {
                         set -eu
                         export DISPLAY=host.docker.internal:$display
                         twm >/tmp/twm.log 2>&1 &
+                        echo ${'$'}! >/tmp/twm.pid
                         sleep 1
-                        timeout 6s xlogo -geometry 180x120+40+40 >/tmp/xlogo.log 2>&1 &
-                        timeout 6s xclock -geometry 180x120+110+90 >/tmp/xclock.log 2>&1 &
+                        xlogo -geometry ${WindowManagerXlogoGeometry} >/tmp/xlogo.log 2>&1 &
+                        echo ${'$'}! >/tmp/xlogo.pid
+                        ${windowManagerXclockCommand()} >/tmp/xclock.log 2>&1 &
+                        echo ${'$'}! >/tmp/xclock.pid
                         sleep 2
                         curl -fsS http://host.docker.internal:$port/text.txt > /tmp/screen.txt
                         curl -fsS http://host.docker.internal:$port/screen.svg > /tmp/screen.svg
+                        java -cp /tmp XRobotCapture > /tmp/robot.txt
                         cat /tmp/screen.txt
                         printf '\n--- SVG ---\n'
                         cat /tmp/screen.svg
+                        printf '\n--- ROBOT ---\n'
+                        cat /tmp/robot.txt
                         """.trimIndent(),
                     )
+                    val text = httpGet(port, "/text.txt")
+                    val svg = httpGet(port, "/screen.svg")
+                    File("build/tmp/xvfb-container-test").also { it.mkdirs() }.let { directory ->
+                        File(directory, "window-manager-actual.txt").writeText(text)
+                        File(directory, "window-manager-actual.svg").writeText(svg)
+                    }
+                    container.execInContainer(
+                        "sh",
+                        "-lc",
+                        "kill $(cat /tmp/xclock.pid /tmp/xlogo.pid /tmp/twm.pid 2>/dev/null) 2>/dev/null || true",
+                    )
+                    server.close()
+                    serverThread.join(1_000)
                     assertEquals(0, result.exitCode, result.stderr + result.stdout)
-                    assertTrue(result.stdout.contains("Focus:"), result.stdout)
-                    assertTrue(result.stdout.contains("Overlap and focus:"), result.stdout)
-                    assertTrue(result.stdout.contains("overlaps"), result.stdout)
-                    assertTrue(result.stdout.contains("data-window-id="), result.stdout)
+                    return RealClientResult(
+                        robot = visualCapture(result.stdout.substringAfter("--- ROBOT ---")),
+                        text = text,
+                        svg = svg,
+                        embeddedFramebuffers = svgCompositionLayers(svg),
+                    )
                 }
-
-            server.close()
-            serverThread.join(1_000)
         }
+    }
+
+    private fun windowManagerComposedSvgCapture(embeddedFramebuffers: List<EmbeddedPng>): VisualCapture {
+        val composed = composeEmbeddedFramebuffers(
+            embeddedFramebuffers = embeddedFramebuffers,
+            canvasWidth = WindowManagerCaptureX + WindowManagerCaptureWidth,
+            canvasHeight = WindowManagerCaptureY + WindowManagerCaptureHeight,
+            backgroundPixel = WindowManagerBackground,
+        )
+        return visualCapture(
+            composed.getSubimage(
+                WindowManagerCaptureX,
+                WindowManagerCaptureY,
+                WindowManagerCaptureWidth,
+                WindowManagerCaptureHeight,
+            ),
+        )
+    }
+
+    private fun assertWindowManagerAppContentVisible(capture: VisualCapture, label: String) {
+        val xlogoDarkPixels = darkPixelsInRootRectangle(capture.image, rootX = 55, rootY = 65, width = 45, height = 80)
+        val xclockDarkPixels = darkPixelsInRootRectangle(capture.image, rootX = 130, rootY = 125, width = 120, height = 85)
+        assertTrue(
+            xlogoDarkPixels >= 120,
+            "$label should include xlogo line art; darkPixels=$xlogoDarkPixels capture=$capture",
+        )
+        assertTrue(
+            xclockDarkPixels >= 120,
+            "$label should include xclock ticks or hands; darkPixels=$xclockDarkPixels capture=$capture",
+        )
+    }
+
+    private fun darkPixelsInRootRectangle(
+        image: BufferedImage,
+        rootX: Int,
+        rootY: Int,
+        width: Int,
+        height: Int,
+    ): Int {
+        val xStart = (rootX - WindowManagerCaptureX).coerceIn(0, image.width)
+        val yStart = (rootY - WindowManagerCaptureY).coerceIn(0, image.height)
+        val xEnd = (rootX - WindowManagerCaptureX + width).coerceIn(0, image.width)
+        val yEnd = (rootY - WindowManagerCaptureY + height).coerceIn(0, image.height)
+        var count = 0
+        for (y in yStart until yEnd) {
+            for (x in xStart until xEnd) {
+                val argb = image.getRGB(x, y)
+                val red = (argb ushr 16) and 0xff
+                val green = (argb ushr 8) and 0xff
+                val blue = argb and 0xff
+                if (red + green + blue < 90) count++
+            }
+        }
+        return count
     }
 
     private fun assertClientSucceeds(
@@ -761,11 +928,18 @@ class XvfbContainerTest {
         }
     }
 
-    private fun compileRobotCapture(container: GenericContainer<*>, movePointer: Boolean = false) {
+    private fun compileRobotCapture(
+        container: GenericContainer<*>,
+        movePointer: Boolean = false,
+        captureX: Int = RealClientCaptureX,
+        captureY: Int = RealClientCaptureY,
+        captureWidth: Int = RealClientCaptureWidth,
+        captureHeight: Int = RealClientCaptureHeight,
+    ) {
         val result = container.execInContainer(
             "sh",
             "-lc",
-            "cat > /tmp/XRobotCapture.java <<'JAVA'\n${robotCaptureSource(movePointer)}\nJAVA\njavac /tmp/XRobotCapture.java",
+            "cat > /tmp/XRobotCapture.java <<'JAVA'\n${robotCaptureSource(movePointer, captureX, captureY, captureWidth, captureHeight)}\nJAVA\njavac /tmp/XRobotCapture.java",
         )
         assertEquals(0, result.exitCode, result.stderr + result.stdout)
     }
@@ -1090,6 +1264,12 @@ class XvfbContainerTest {
         const val RealClientCaptureWidth = 220
         const val RealClientCaptureHeight = 160
         const val RealClientBackground = 0xffff_ffff.toInt()
+        const val WindowManagerCaptureX = 20
+        const val WindowManagerCaptureY = 20
+        const val WindowManagerCaptureWidth = 360
+        const val WindowManagerCaptureHeight = 260
+        const val WindowManagerBackground = 0xff00_0000.toInt()
+        const val WindowManagerXlogoGeometry = "180x120+40+40"
 
         fun xclockCommand(): String =
             "xclock -analog -norender -update 60 -geometry ${RealClientCaptureWidth}x${RealClientCaptureHeight}+${RealClientCaptureX}+${RealClientCaptureY}"
@@ -1103,9 +1283,18 @@ class XvfbContainerTest {
         fun xtermCommand(): String =
             "xterm -T xterm-parity -n xterm-parity -geometry 28x8+${RealClientCaptureX}+${RealClientCaptureY} +sb +bc -fn fixed -bg white -fg black -cr black -e sh -lc 'printf \"Kotlin X11\\\\nxterm parity\\\\n0123456789\\\\n\"; sleep 60'"
 
-        fun robotCaptureSource(movePointer: Boolean): String {
+        fun windowManagerXclockCommand(): String =
+            "xclock -analog -norender -update 60 -geometry 180x120+110+90"
+
+        fun robotCaptureSource(
+            movePointer: Boolean,
+            captureX: Int = RealClientCaptureX,
+            captureY: Int = RealClientCaptureY,
+            captureWidth: Int = RealClientCaptureWidth,
+            captureHeight: Int = RealClientCaptureHeight,
+        ): String {
             val pointerMove = if (movePointer) {
-                "robot.mouseMove(${RealClientCaptureX + RealClientCaptureWidth / 2}, ${RealClientCaptureY + RealClientCaptureHeight / 2});"
+                "robot.mouseMove(${captureX + captureWidth / 2}, ${captureY + captureHeight / 2});"
             } else {
                 ""
             }
@@ -1123,7 +1312,7 @@ class XvfbContainerTest {
                 $pointerMove
                 Thread.sleep(1200);
                 BufferedImage image = robot.createScreenCapture(
-                    new Rectangle($RealClientCaptureX, $RealClientCaptureY, $RealClientCaptureWidth, $RealClientCaptureHeight));
+                    new Rectangle($captureX, $captureY, $captureWidth, $captureHeight));
                 ByteArrayOutputStream output = new ByteArrayOutputStream();
                 ImageIO.write(image, "png", output);
                 System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
