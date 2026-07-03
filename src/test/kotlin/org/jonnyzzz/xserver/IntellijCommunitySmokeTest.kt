@@ -574,6 +574,7 @@ class IntellijCommunitySmokeTest {
                 port = port,
                 width = IntellijCaptureWidth,
                 height = IntellijCaptureHeight,
+                rootBackgroundPixel = 0x0000_0000,
             ),
         ).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
