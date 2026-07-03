@@ -94,6 +94,28 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij debug flag defaults from environment and honors system property`() {
+        val previous = System.getProperty("x.intellijDebug")
+        try {
+            System.clearProperty("x.intellijDebug")
+            assertEquals(System.getenv("X_INTELLIJ_DEBUG") == "true", intellijDebugEnabled())
+
+            System.setProperty("x.intellijDebug", "true")
+            assertTrue(intellijDebugEnabled())
+            assertEquals("true", intellijDebugValue())
+
+            System.setProperty("x.intellijDebug", "false")
+            assertEquals(System.getenv("X_INTELLIJ_DEBUG") == "true", intellijDebugEnabled())
+        } finally {
+            if (previous == null) {
+                System.clearProperty("x.intellijDebug")
+            } else {
+                System.setProperty("x.intellijDebug", previous)
+            }
+        }
+    }
+
+    @Test
     fun `intellij community from github releases starts against kotlin x server`() {
         assumeTrue(
             System.getProperty("x.intellijSmoke") == "true" || System.getenv("X_INTELLIJ_SMOKE") == "true",
@@ -132,6 +154,7 @@ class IntellijCommunitySmokeTest {
                           export IDEA_URL="${url.orEmpty()}"
                         fi
                         DISPLAY=host.docker.internal:$display \
+                        IDEA_X11_DEBUG=${intellijDebugValue()} \
                         IDEA_PROJECT=/workspace/jonnyzzz-x \
                         IDEA_TRUST_PROJECT=true \
                         run-intellij >/tmp/idea-run-smoke.log 2>&1 &
@@ -167,6 +190,9 @@ class IntellijCommunitySmokeTest {
                         """.trimIndent(),
                     )
                     assertEquals(0, result.exitCode, result.stderr + result.stdout)
+                    dumpIntellijLogArtifacts(
+                        collectIntellijLogs(container, "intellij-smoke", "/tmp/idea-run-smoke.log"),
+                    )
                     assertFalse(
                         container.execInContainer("sh", "-lc", "grep -q 'Project is not trusted' /tmp/idea-log/idea.log").exitCode == 0,
                         "IntelliJ should not reject the mounted jonnyzzz-x project as untrusted",
@@ -286,6 +312,12 @@ class IntellijCommunitySmokeTest {
         return export
     }
 
+    private fun intellijDebugEnabled(): Boolean =
+        System.getProperty("x.intellijDebug") == "true" || System.getenv("X_INTELLIJ_DEBUG") == "true"
+
+    private fun intellijDebugValue(): String =
+        if (intellijDebugEnabled()) "true" else "false"
+
     private fun isPortAvailable(port: Int): Boolean =
         runCatching { ServerSocket(port).use { true } }.getOrDefault(false)
 
@@ -354,6 +386,7 @@ class IntellijCommunitySmokeTest {
                     done
                     DISPLAY=:99 xsetroot -solid white >/tmp/xsetroot.log 2>&1 || true
                     DISPLAY=:99 \
+                    IDEA_X11_DEBUG=${intellijDebugValue()} \
                     IDEA_PROJECT=/workspace/jonnyzzz-x \
                     IDEA_TRUST_PROJECT=true \
                     run-intellij >/tmp/idea-run-xvfb.log 2>&1 &
@@ -417,6 +450,7 @@ class IntellijCommunitySmokeTest {
                           export IDEA_URL="${url.orEmpty()}"
                         fi
                         DISPLAY=host.docker.internal:$display \
+                        IDEA_X11_DEBUG=${intellijDebugValue()} \
                         IDEA_PROJECT=/workspace/jonnyzzz-x \
                         IDEA_TRUST_PROJECT=true \
                         run-intellij >/tmp/idea-run-parity.log 2>&1 &
@@ -681,11 +715,16 @@ class IntellijCommunitySmokeTest {
         File(directory, "intellij-kotlin-screen.svg").writeText(actual.svg)
         File(directory, "intellij-kotlin-text.txt").writeText(actual.text)
         File(directory, "intellij-kotlin-svg-layers.txt").writeText(svgLayerInventory(actual.svgLayers))
-        (reference.logs + actual.logs).forEach { artifact ->
-            File(directory, artifact.fileName).writeText(artifact.text)
-        }
+        dumpIntellijLogArtifacts(reference.logs + actual.logs)
         dumpIntellijVisualDiff(directory, "intellij-kotlin-robot-vs-xvfb", reference.robot, actual.robot)
         dumpIntellijVisualDiff(directory, "intellij-kotlin-svg-vs-xvfb", reference.robot, composedSvgCapture)
+    }
+
+    private fun dumpIntellijLogArtifacts(logs: List<IntellijLogArtifact>) {
+        val directory = File("build/tmp/intellij-community-smoke").also { it.mkdirs() }
+        logs.forEach { artifact ->
+            File(directory, artifact.fileName).writeText(artifact.text)
+        }
     }
 
     private fun collectIntellijLogs(
