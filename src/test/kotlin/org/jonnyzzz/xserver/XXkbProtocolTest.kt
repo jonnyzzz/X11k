@@ -1829,6 +1829,69 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD SetCompatMap persists requested group compatibility maps`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                setCompatMapRequest(
+                    groups = 0x5,
+                    nSI = 0,
+                    groupMaps = listOf(
+                        byteArrayOf(0x01, 0x02, 0x34, 0x12),
+                        byteArrayOf(0x04, 0x08, 0x78, 0x56),
+                    ),
+                ),
+            )
+            out.write(getCompatMapRequest(groups = -1, getAllSI = true, firstSI = 0, nSI = 0xffff))
+            out.flush()
+
+            val compatMap = readReply(socket.getInputStream())
+            assertEquals(2, u16le(compatMap, 2))
+            assertEquals(2, u32le(compatMap, 4))
+            assertEquals(0x5, compatMap[8].toInt() and 0xff)
+            assertEquals(0, u16le(compatMap, 10))
+            assertEquals(0, u16le(compatMap, 12))
+            assertEquals(0, u16le(compatMap, 14))
+            assertEquals(0x01, compatMap[32].toInt() and 0xff)
+            assertEquals(0x02, compatMap[33].toInt() and 0xff)
+            assertEquals(0x1234, u16le(compatMap, 34))
+            assertEquals(0x04, compatMap[36].toInt() and 0xff)
+            assertEquals(0x08, compatMap[37].toInt() and 0xff)
+            assertEquals(0x5678, u16le(compatMap, 38))
+            assertEquals(40, compatMap.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetCompatMap returns intersection of requested persisted groups`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                setCompatMapRequest(
+                    groups = 0x7,
+                    nSI = 0,
+                    groupMaps = listOf(
+                        byteArrayOf(0x01, 0x01, 0x11, 0x11),
+                        byteArrayOf(0x02, 0x02, 0x22, 0x22),
+                        byteArrayOf(0x03, 0x03, 0x33, 0x33),
+                    ),
+                ),
+            )
+            out.write(getCompatMapRequest(groups = 0x2, getAllSI = false, firstSI = 0, nSI = 0))
+            out.flush()
+
+            val compatMap = readReply(socket.getInputStream())
+            assertEquals(2, u16le(compatMap, 2))
+            assertEquals(1, u32le(compatMap, 4))
+            assertEquals(0x2, compatMap[8].toInt() and 0xff)
+            assertEquals(0x02, compatMap[32].toInt() and 0xff)
+            assertEquals(0x02, compatMap[33].toInt() and 0xff)
+            assertEquals(0x2222, u16le(compatMap, 34))
+            assertEquals(36, compatMap.size)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD CompatMapNotify reports selected SetCompatMap changes`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -1926,6 +1989,23 @@ class XXkbProtocolTest {
             assertEquals(2, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetCompatMap rejects out of range group masks and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(setCompatMapRequest(groups = 0x10, nSI = 0))
+            out.write(getCompatMapRequest(groups = -1, getAllSI = true, firstSI = 0, nSI = 0xffff))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x10, sequence = 1, minorOpcode = XXkb.SetCompatMap)
+            val compatMap = readReply(socket.getInputStream())
+            assertEquals(2, u16le(compatMap, 2))
+            assertEquals(0, u32le(compatMap, 4))
+            assertEquals(0, compatMap[8].toInt() and 0xff)
+            assertEquals(32, compatMap.size)
         }
     }
 
@@ -3924,6 +4004,7 @@ class XXkbProtocolTest {
         firstSI: Int = 0,
         nSI: Int,
         bodySize: Int = 12 + nSI * 16 + Integer.bitCount(groups) * 4,
+        groupMaps: List<ByteArray>? = null,
     ): ByteArray {
         val body = ByteArray(bodySize)
         put16le(body, 0, 0x0100)
@@ -3941,11 +4022,16 @@ class XXkbProtocolTest {
             body[offset + 7] = 1
         }
         var offset = 12 + nSI * 16
-        repeat(Integer.bitCount(groups)) {
+        repeat(Integer.bitCount(groups)) { index ->
             if (offset + 4 > body.size) return@repeat
-            body[offset] = 1
-            body[offset + 1] = 1
-            put16le(body, offset + 2, 1)
+            val groupMap = groupMaps?.getOrNull(index)
+            if (groupMap == null) {
+                body[offset] = 1
+                body[offset + 1] = 1
+                put16le(body, offset + 2, 1)
+            } else {
+                groupMap.copyInto(body, offset, 0, minOf(4, groupMap.size))
+            }
             offset += 4
         }
         return request(XXkb.MajorOpcode, XXkb.SetCompatMap, body)

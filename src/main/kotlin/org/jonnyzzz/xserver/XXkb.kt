@@ -90,6 +90,7 @@ internal object XXkb {
     const val AllControlsMask = -0x07ffe001
     const val AllIndicatorEventsMask = -1
     const val AllBellEventsMask = 1 shl 0
+    const val AllGroupsMask = 0x0f
     const val CompatMapSymInterpret = 1 shl 0
     const val CompatMapGroupCompat = 1 shl 1
     const val AllCompatMapMask =

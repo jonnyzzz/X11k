@@ -2366,17 +2366,34 @@ internal class X11Connection(
 
     private fun xkbGetCompatMap(body: ByteArray, majorOpcode: Int) {
         if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetCompatMap, badValue = 0)
-        val reply = reply(extra = 0, payloadUnits = 0)
+        val groups = state.xkbCompatGroupMaps((body[2].toInt() and 0xff) and XXkb.AllGroupsMask)
+        val reply = reply(extra = 0, payloadUnits = groups.maps.size)
+        reply[8] = groups.groups.toByte()
+        var offset = 32
+        for (map in groups.maps) {
+            map.copyInto(reply, offset, 0, 4)
+            offset += 4
+        }
         write(reply)
     }
 
     private fun xkbSetCompatMap(body: ByteArray, majorOpcode: Int) {
         if (body.size < 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetCompatMap, badValue = 0)
         val groups = body[5].toInt() and 0xff
+        if ((groups and XXkb.AllGroupsMask.inv()) != 0) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.SetCompatMap, badValue = groups)
+        }
         val firstSI = byteOrder.u16(body, 6)
         val nSI = byteOrder.u16(body, 8)
         val expectedSize = 12 + nSI * 16 + Integer.bitCount(groups) * 4
         if (body.size != expectedSize) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetCompatMap, badValue = 0)
+        val groupMaps = mutableListOf<ByteArray>()
+        var offset = 12 + nSI * 16
+        repeat(Integer.bitCount(groups)) {
+            groupMaps += body.copyOfRange(offset, offset + 4)
+            offset += 4
+        }
+        state.setXkbCompatGroupMaps(groups, groupMaps)
         val changed = (if (nSI > 0) XXkb.CompatMapSymInterpret else 0) or
             (if (groups != 0) XXkb.CompatMapGroupCompat else 0)
         sendXkbCompatMapNotify(

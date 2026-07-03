@@ -82,6 +82,11 @@ internal data class XXkbIndicatorMaps(
     val maps: List<ByteArray>,
 )
 
+internal data class XXkbCompatGroupMaps(
+    val groups: Int,
+    val maps: List<ByteArray>,
+)
+
 internal data class XkbNamedIndicatorUpdate(
     val stateNotify: XXkbIndicatorStateNotifyEvent?,
     val mapChanged: Int,
@@ -198,6 +203,7 @@ internal class X11State(
     private val xkbIndicatorMaps = linkedMapOf<Int, ByteArray>()
     private val xkbNamedIndicatorIndexes = linkedMapOf<Int, Int>()
     private val xkbComponentNameAtoms = linkedMapOf<Int, Int>()
+    private val xkbCompatGroupMaps = linkedMapOf<Int, ByteArray>()
     private var activePointerGrab: XInputGrab? = null
     private var frozenPointerOwner: XEventSink? = null
     private val frozenPointerButtons = mutableListOf<XQueuedPointerButton>()
@@ -1712,6 +1718,32 @@ internal class X11State(
         for ((mask, atom) in atoms) {
             if (atom != 0 && atomName(atom) != null) {
                 xkbComponentNameAtoms[mask] = atom
+            }
+        }
+    }
+
+    @Synchronized
+    fun xkbCompatGroupMaps(groups: Int): XXkbCompatGroupMaps {
+        var present = 0
+        val maps = mutableListOf<ByteArray>()
+        for (bit in 0 until 4) {
+            val bitMask = 1 shl bit
+            val map = xkbCompatGroupMaps[bit]
+            if ((groups and bitMask) != 0 && map != null) {
+                present = present or bitMask
+                maps += map.copyOf()
+            }
+        }
+        return XXkbCompatGroupMaps(present, maps)
+    }
+
+    @Synchronized
+    fun setXkbCompatGroupMaps(groups: Int, maps: List<ByteArray>) {
+        var index = 0
+        for (bit in 0 until 4) {
+            val bitMask = 1 shl bit
+            if ((groups and bitMask) != 0) {
+                xkbCompatGroupMaps[bit] = maps[index++].copyOf()
             }
         }
     }
