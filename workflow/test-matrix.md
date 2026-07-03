@@ -35,6 +35,7 @@ The AWT/Swing Java2D probes compare client-side `Robot` captures against Xvfb fo
 
 The IntelliJ smoke is excluded from default `test` because it downloads the current GitHub release tarball.
 Build `jonnyzzz-x/x11-client:latest` first with `scripts/run-gradle-bounded.sh dockerBuildX11Client`, then run the smoke explicitly with `-Dx.intellijSmoke=true`. Build both Docker images with `scripts/run-gradle-bounded.sh dockerBuildX11Images`, then run the rough parity probe explicitly with `-Dx.intellijParity=true`.
+Both IntelliJ paths mount a clean tracked-file project export from `build/tmp/intellij-community-smoke/project` so untracked orchestration files do not affect the visible IDE project tree.
 The parity probe writes PNG/SVG/text diagnostics, visual diffs/metrics, and IntelliJ client logs under `build/tmp/intellij-community-smoke/` so visual drift can be inspected without rerunning the heavyweight clients immediately.
 
 Build all local Docker images before the default Docker-backed test matrix:

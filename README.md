@@ -114,6 +114,10 @@ scripts/run-gradle-bounded.sh dockerBuildX11Images
 scripts/run-gradle-bounded.sh test --tests org.jonnyzzz.xserver.IntellijCommunitySmokeTest -Dx.intellijParity=true
 ```
 
+The IntelliJ smoke and parity containers open a clean tracked-file project export
+under `build/tmp/intellij-community-smoke/project`, so untracked run artifacts do
+not leak into the IDE project tree or visual comparison.
+
 The parity probe writes its current Xvfb reference, Kotlin Robot capture,
 Kotlin SVG-composed capture, raw `/screen.svg`, `/text.txt`, and SVG layer
 inventory plus visual diffs, metrics, and IntelliJ client logs under

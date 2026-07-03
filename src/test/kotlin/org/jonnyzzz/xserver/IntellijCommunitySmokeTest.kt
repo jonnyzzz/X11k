@@ -12,6 +12,9 @@ import java.io.File
 import java.awt.image.BufferedImage
 import java.net.Socket
 import java.nio.file.Path
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.StandardCopyOption
 import java.net.ServerSocket
 import java.util.Base64
 import javax.imageio.ImageIO
@@ -72,6 +75,25 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij clean project export contains tracked files only`() {
+        val root = projectRoot()
+        val untracked = root.resolve("build/tmp/intellij-community-smoke/untracked-sentinel.txt")
+        Files.createDirectories(untracked.parent)
+        Files.writeString(untracked, "this must not be mounted into IntelliJ")
+        try {
+            val export = cleanProjectExport()
+
+            assertTrue(Files.exists(export.resolve("README.md")), "tracked files should be exported")
+            assertFalse(
+                Files.exists(export.resolve("build/tmp/intellij-community-smoke/untracked-sentinel.txt")),
+                "generated and untracked files should not be exported into the IntelliJ project mount",
+            )
+        } finally {
+            Files.deleteIfExists(untracked)
+        }
+    }
+
+    @Test
     fun `intellij community from github releases starts against kotlin x server`() {
         assumeTrue(
             System.getProperty("x.intellijSmoke") == "true" || System.getenv("X_INTELLIJ_SMOKE") == "true",
@@ -90,7 +112,7 @@ class IntellijCommunitySmokeTest {
         XServer(ServerOptions(host = "0.0.0.0", port = port, width = 1280, height = 900)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
-                .withFileSystemBind(projectRoot().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
+                .withFileSystemBind(cleanProjectExport().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
                 .withCommand("sleep", "900")
                 .use { container ->
                     container.start()
@@ -225,6 +247,45 @@ class IntellijCommunitySmokeTest {
     private fun projectRoot(): Path =
         Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize()
 
+    private fun cleanProjectExport(): Path {
+        val root = projectRoot()
+        val export = root.resolve("build/tmp/intellij-community-smoke/project").normalize()
+        val buildRoot = root.resolve("build").normalize()
+        check(export.startsWith(buildRoot)) { "Refusing to delete project export outside build/: $export" }
+        export.toFile().deleteRecursively()
+        Files.createDirectories(export)
+
+        val process = ProcessBuilder("git", "-C", root.toString(), "ls-files", "-z")
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.readBytes()
+        val exitCode = process.waitFor()
+        check(exitCode == 0) {
+            "git ls-files failed with exit code $exitCode:\n${output.decodeToString()}"
+        }
+
+        output.decodeToString()
+            .split('\u0000')
+            .asSequence()
+            .filter { it.isNotEmpty() }
+            .forEach { relativePath ->
+                val source = root.resolve(relativePath).normalize()
+                val target = export.resolve(relativePath).normalize()
+                check(source.startsWith(root)) { "Tracked path escaped project root: $relativePath" }
+                check(target.startsWith(export)) { "Export path escaped project export: $relativePath" }
+                Files.createDirectories(target.parent)
+                Files.copy(
+                    source,
+                    target,
+                    LinkOption.NOFOLLOW_LINKS,
+                    StandardCopyOption.COPY_ATTRIBUTES,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            }
+
+        return export
+    }
+
     private fun isPortAvailable(port: Int): Boolean =
         runCatching { ServerSocket(port).use { true } }.getOrDefault(false)
 
@@ -268,7 +329,7 @@ class IntellijCommunitySmokeTest {
 
     private fun runIntellijAgainstXvfb(image: String, url: String?): IntellijReferenceCapture =
         GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
-            .withFileSystemBind(projectRoot().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
+            .withFileSystemBind(cleanProjectExport().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
             .withCommand("sleep", "900")
             .use { container ->
                 container.start()
@@ -339,7 +400,7 @@ class IntellijCommunitySmokeTest {
         ).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
-                .withFileSystemBind(projectRoot().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
+                .withFileSystemBind(cleanProjectExport().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
                 .withCommand("sleep", "900")
                 .use { container ->
                     container.start()
