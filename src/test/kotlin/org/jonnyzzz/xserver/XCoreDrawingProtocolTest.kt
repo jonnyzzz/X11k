@@ -15335,6 +15335,135 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `SetInputFocus emits ancestor and inferior FocusChange details`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val parent = WindowId
+                val child = WindowId + 1
+                out.write(createWindowRequest(parent))
+                out.write(createWindowRequest(child, parent = parent))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(setInputFocusRequest(0, revertTo = 2))
+                out.write(changeWindowEventMaskRequest(parent, XEventMasks.FocusChange))
+                out.write(changeWindowEventMaskRequest(child, XEventMasks.FocusChange))
+                out.write(setInputFocusRequest(parent, revertTo = 2))
+                out.write(setInputFocusRequest(child, revertTo = 2))
+                out.write(setInputFocusRequest(parent, revertTo = 2))
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, child)
+                assertFocusEvent(input.readExactly(32), type = 9, sequence = 8, window = parent)
+                assertFocusEvent(
+                    input.readExactly(32),
+                    type = 10,
+                    sequence = 9,
+                    window = parent,
+                    detail = XNotifyDetail.Inferior,
+                )
+                assertFocusEvent(
+                    input.readExactly(32),
+                    type = 9,
+                    sequence = 9,
+                    window = child,
+                    detail = XNotifyDetail.Ancestor,
+                )
+                assertFocusEvent(
+                    input.readExactly(32),
+                    type = 10,
+                    sequence = 10,
+                    window = child,
+                    detail = XNotifyDetail.Ancestor,
+                )
+                assertFocusEvent(
+                    input.readExactly(32),
+                    type = 9,
+                    sequence = 10,
+                    window = parent,
+                    detail = XNotifyDetail.Inferior,
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SetInputFocus emits nonlinear virtual FocusChange details to selected ancestors`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val firstParent = WindowId
+                val firstChild = WindowId + 1
+                val secondParent = WindowId + 2
+                val secondChild = WindowId + 3
+                out.write(createWindowRequest(firstParent))
+                out.write(createWindowRequest(firstChild, parent = firstParent))
+                out.write(createWindowRequest(secondParent))
+                out.write(createWindowRequest(secondChild, parent = secondParent))
+                out.write(mapWindowRequest(firstParent))
+                out.write(mapWindowRequest(firstChild))
+                out.write(mapWindowRequest(secondParent))
+                out.write(mapWindowRequest(secondChild))
+                out.write(setInputFocusRequest(0, revertTo = 2))
+                out.write(changeWindowEventMaskRequest(firstChild, XEventMasks.FocusChange))
+                out.write(changeWindowEventMaskRequest(firstParent, XEventMasks.FocusChange))
+                out.write(changeWindowEventMaskRequest(secondParent, XEventMasks.FocusChange))
+                out.write(changeWindowEventMaskRequest(secondChild, XEventMasks.FocusChange))
+                out.write(setInputFocusRequest(firstChild, revertTo = 2))
+                out.write(setInputFocusRequest(secondChild, revertTo = 2))
+                out.flush()
+
+                assertMapAndExpose(input, firstParent)
+                assertMapAndExpose(input, firstChild)
+                assertMapAndExpose(input, secondParent)
+                assertMapAndExpose(input, secondChild)
+                assertFocusEvent(input.readExactly(32), type = 9, sequence = 14, window = firstChild)
+                assertFocusEvent(
+                    input.readExactly(32),
+                    type = 10,
+                    sequence = 15,
+                    window = firstChild,
+                    detail = XNotifyDetail.Nonlinear,
+                )
+                assertFocusEvent(
+                    input.readExactly(32),
+                    type = 10,
+                    sequence = 15,
+                    window = firstParent,
+                    detail = XNotifyDetail.NonlinearVirtual,
+                )
+                assertFocusEvent(
+                    input.readExactly(32),
+                    type = 9,
+                    sequence = 15,
+                    window = secondParent,
+                    detail = XNotifyDetail.NonlinearVirtual,
+                )
+                assertFocusEvent(
+                    input.readExactly(32),
+                    type = 9,
+                    sequence = 15,
+                    window = secondChild,
+                    detail = XNotifyDetail.Nonlinear,
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `UnmapWindow reverts focus to None and emits FocusOut`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -15414,8 +15543,20 @@ class XCoreDrawingProtocolTest {
 
                 assertMapAndExpose(input, parent)
                 assertMapAndExpose(input, child)
-                assertFocusEvent(input.readExactly(32), type = 10, sequence = 8, window = child)
-                assertFocusEvent(input.readExactly(32), type = 9, sequence = 8, window = parent)
+                assertFocusEvent(
+                    input.readExactly(32),
+                    type = 10,
+                    sequence = 8,
+                    window = child,
+                    detail = XNotifyDetail.Ancestor,
+                )
+                assertFocusEvent(
+                    input.readExactly(32),
+                    type = 9,
+                    sequence = 8,
+                    window = parent,
+                    detail = XNotifyDetail.Inferior,
+                )
                 val focus = readReply(input)
                 assertEquals(0, focus[1].toInt() and 0xff)
                 assertEquals(parent, u32le(focus, 8))

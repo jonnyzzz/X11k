@@ -216,7 +216,9 @@ class XShapeProtocolTest {
 
                     val observerOut = observer.getOutputStream()
                     observerOut.write(shapeSelectInput(WindowId, enabled = true))
+                    observerOut.write(shapeInputSelected(WindowId))
                     observerOut.flush()
+                    assertEquals(1, readReply(observer.getInputStream())[1].toInt() and 0xff)
 
                     mutatorOut.write(shapeOffset(WindowId, XFixes.ShapeBounding, xOffset = 7, yOffset = 9))
                     mutatorOut.write(shapeGetRectangles(WindowId, XFixes.ShapeBounding))

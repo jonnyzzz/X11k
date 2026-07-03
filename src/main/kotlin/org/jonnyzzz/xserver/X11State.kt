@@ -1302,8 +1302,62 @@ internal class X11State(
         this.focusWindowId = focusWindowId
         this.focusRevertTo = revertTo
         if (previousFocusWindowId == focusWindowId) return emptyList()
-        return focusChangeDispatches(previousFocusWindowId, XFocusEventType.FocusOut) +
-            focusChangeDispatches(focusWindowId, XFocusEventType.FocusIn)
+        return focusChangeDispatches(previousFocusWindowId, focusWindowId)
+    }
+
+    private fun focusChangeDispatches(previousFocusWindowId: Int, focusWindowId: Int): List<XFocusDispatch> {
+        val previousPath = focusWindowPathToRoot(previousFocusWindowId)
+        val targetPath = focusWindowPathToRoot(focusWindowId)
+        if (previousPath.isEmpty() || targetPath.isEmpty()) {
+            return focusChangeDispatches(previousFocusWindowId, XFocusEventType.FocusOut) +
+                focusChangeDispatches(focusWindowId, XFocusEventType.FocusIn)
+        }
+
+        val previousIds = previousPath.map { it.id }
+        val targetIds = targetPath.map { it.id }
+        val commonId = previousIds.firstOrNull { it in targetIds }
+            ?: return focusChangeDispatches(previousFocusWindowId, XFocusEventType.FocusOut) +
+                focusChangeDispatches(focusWindowId, XFocusEventType.FocusIn)
+        val previousCommonIndex = previousIds.indexOf(commonId)
+        val targetCommonIndex = targetIds.indexOf(commonId)
+        val result = mutableListOf<XFocusDispatch>()
+
+        fun append(type: XFocusEventType, path: List<XWindow>, index: Int, detail: Int) {
+            val window = path[index]
+            val sinks = eventSelectionsForWindow(window.id, XEventMasks.FocusChange)
+            if (sinks.isEmpty()) return
+            val event = XFocusEvent(
+                type = type,
+                windowId = window.id,
+                detail = detail,
+            )
+            for (sink in sinks) result += XFocusDispatch(sink = sink, event = event)
+        }
+
+        if (targetCommonIndex == 0) {
+            append(XFocusEventType.FocusOut, previousPath, 0, XNotifyDetail.Ancestor)
+            for (index in 1 until previousCommonIndex) {
+                append(XFocusEventType.FocusOut, previousPath, index, XNotifyDetail.Virtual)
+            }
+            append(XFocusEventType.FocusIn, targetPath, 0, XNotifyDetail.Inferior)
+        } else if (previousCommonIndex == 0) {
+            append(XFocusEventType.FocusOut, previousPath, 0, XNotifyDetail.Inferior)
+            for (index in (targetCommonIndex - 1) downTo 1) {
+                append(XFocusEventType.FocusIn, targetPath, index, XNotifyDetail.Virtual)
+            }
+            append(XFocusEventType.FocusIn, targetPath, 0, XNotifyDetail.Ancestor)
+        } else {
+            append(XFocusEventType.FocusOut, previousPath, 0, XNotifyDetail.Nonlinear)
+            for (index in 1 until previousCommonIndex) {
+                append(XFocusEventType.FocusOut, previousPath, index, XNotifyDetail.NonlinearVirtual)
+            }
+            for (index in (targetCommonIndex - 1) downTo 1) {
+                append(XFocusEventType.FocusIn, targetPath, index, XNotifyDetail.NonlinearVirtual)
+            }
+            append(XFocusEventType.FocusIn, targetPath, 0, XNotifyDetail.Nonlinear)
+        }
+
+        return result
     }
 
     private fun focusChangeDispatches(windowId: Int, type: XFocusEventType): List<XFocusDispatch> {
@@ -1315,6 +1369,9 @@ internal class X11State(
             )
         }
     }
+
+    private fun focusWindowPathToRoot(windowId: Int): List<XWindow> =
+        if (windowId in 0..1 || windowId == X11Ids.RootWindow) emptyList() else windowPathToRoot(windowId)
 
     private fun revertFocusIfCurrentFocusNotViewable(): List<XFocusDispatch> {
         val previousFocusWindowId = focusWindowId
@@ -1332,8 +1389,7 @@ internal class X11State(
         focusWindowId = newFocusWindowId
         focusRevertTo = newRevertTo
         if (previousFocusWindowId == newFocusWindowId) return emptyList()
-        return focusChangeDispatches(previousFocusWindowId, XFocusEventType.FocusOut) +
-            focusChangeDispatches(newFocusWindowId, XFocusEventType.FocusIn)
+        return focusChangeDispatches(previousFocusWindowId, newFocusWindowId)
     }
 
     private fun revertedFocusTarget(previousFocusWindowId: Int, removedWindows: Set<Int>): Pair<Int, Int> =
