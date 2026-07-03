@@ -226,6 +226,36 @@ class AwtPrimitiveDockerTest {
         )
     }
 
+    @Test
+    fun `awt menu dropdown robot screenshot roughly matches xvfb reference`() {
+        assumeDockerAndImage(CLIENT_IMAGE)
+        assumeDockerAndImage(REFERENCE_IMAGE)
+        val reference = runRobotProbeAgainstXvfb(
+            mainClass = "VisualMenuDropdownProbe",
+            source = VisualMenuDropdownProbeSource,
+        )
+        val actual = runRobotProbeAgainstKotlinServer(
+            port = 6218,
+            title = "AWT Menu Dropdown Parity Probe",
+            mainClass = "VisualMenuDropdownProbe",
+            source = VisualMenuDropdownProbeSource,
+        )
+
+        assertContains(actual.text, "AWT Menu Dropdown Parity Probe")
+        assertContains(actual.text, "RENDER.")
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected Kotlin SVG export to retain framebuffer images for the menu dropdown probe")
+        assertTrue(
+            actual.exportedFramebuffers.any { it.width == 360 && it.height == 240 } &&
+                actual.exportedFramebuffers.any { it.width == 230 && it.height == 140 },
+            "Menu dropdown windows should expose framebuffer-backed surfaces for both owner and dropdown; exported=${actual.exportedFramebuffers}\n${actual.text}",
+        )
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin menu-dropdown Robot screenshot",
+        )
+    }
+
     private fun assertVisualCaptureClose(
         expected: VisualProbeCapture,
         actual: VisualProbeCapture,
@@ -1356,6 +1386,140 @@ class AwtPrimitiveDockerTest {
                     g.drawString("popup menu", 22, 136);
                     g.setColor(Color.WHITE);
                     g.drawString("actions", 16, 22);
+                  } finally {
+                    g.dispose();
+                  }
+                }
+              }
+            }
+            """.trimIndent()
+
+        val VisualMenuDropdownProbeSource =
+            """
+            import java.awt.AlphaComposite;
+            import java.awt.Color;
+            import java.awt.Dimension;
+            import java.awt.Font;
+            import java.awt.Graphics;
+            import java.awt.Graphics2D;
+            import java.awt.Point;
+            import java.awt.Rectangle;
+            import java.awt.RenderingHints;
+            import java.awt.Robot;
+            import java.awt.image.BufferedImage;
+            import java.io.ByteArrayOutputStream;
+            import java.util.Base64;
+            import javax.imageio.ImageIO;
+            import javax.swing.BorderFactory;
+            import javax.swing.JComponent;
+            import javax.swing.JFrame;
+            import javax.swing.JMenu;
+            import javax.swing.JMenuBar;
+            import javax.swing.JPopupMenu;
+            import javax.swing.SwingUtilities;
+
+            public class VisualMenuDropdownProbe {
+              public static void main(String[] args) throws Exception {
+                final JFrame[] frameHolder = new JFrame[1];
+                final JPopupMenu[] popupHolder = new JPopupMenu[1];
+                SwingUtilities.invokeAndWait(() -> {
+                  JPopupMenu.setDefaultLightWeightPopupEnabled(false);
+
+                  JFrame frame = new JFrame("AWT Menu Dropdown Parity Probe");
+                  frame.setUndecorated(true);
+                  frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+                  frame.setBounds(40, 40, 360, 240);
+                  JMenuBar menuBar = new JMenuBar();
+                  menuBar.setBorder(BorderFactory.createEmptyBorder());
+                  menuBar.setOpaque(true);
+                  menuBar.setBackground(new Color(36, 52, 76));
+                  JMenu menu = new JMenu("Actions");
+                  menu.setForeground(Color.WHITE);
+                  menu.setOpaque(true);
+                  menu.setBackground(new Color(36, 52, 76));
+                  menuBar.add(menu);
+                  frame.setJMenuBar(menuBar);
+                  OwnerComponent owner = new OwnerComponent();
+                  frame.setContentPane(owner);
+                  frame.setVisible(true);
+                  owner.paintImmediately(0, 0, 360, 240);
+
+                  JPopupMenu popup = menu.getPopupMenu();
+                  popup.setLightWeightPopupEnabled(false);
+                  popup.setBorder(BorderFactory.createEmptyBorder());
+                  DropdownComponent dropdown = new DropdownComponent();
+                  dropdown.setPreferredSize(new Dimension(230, 140));
+                  popup.add(dropdown);
+                  popup.setPopupSize(230, 140);
+                  popup.show(menu, 0, menu.getHeight());
+                  popup.paintImmediately(0, 0, 230, 140);
+
+                  frameHolder[0] = frame;
+                  popupHolder[0] = popup;
+                });
+                Thread.sleep(1000);
+                Point origin = frameHolder[0].getLocationOnScreen();
+                BufferedImage image = new Robot().createScreenCapture(new Rectangle(origin.x, origin.y, 360, 240));
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                ImageIO.write(image, "png", output);
+                System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
+                System.out.flush();
+                long holdMillis = Long.getLong("visualProbe.holdMillis", 0L);
+                if (holdMillis > 0L) {
+                  Thread.sleep(holdMillis);
+                }
+                SwingUtilities.invokeAndWait(() -> {
+                  popupHolder[0].setVisible(false);
+                  frameHolder[0].dispose();
+                });
+              }
+
+              static final class OwnerComponent extends JComponent {
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(new Color(20, 30, 50));
+                    g.fillRect(0, 0, getWidth(), getHeight());
+                    g.setColor(new Color(230, 50, 44));
+                    g.fillRect(18, 20, 104, 62);
+                    g.setComposite(AlphaComposite.SrcOver.derive(0.56f));
+                    g.setColor(new Color(42, 168, 255));
+                    g.fillRect(74, 50, 138, 96);
+                    g.setComposite(AlphaComposite.SrcOver);
+                    g.setColor(new Color(255, 225, 64));
+                    g.fillRect(24, 172, 312, 34);
+                    g.setColor(new Color(238, 244, 250));
+                    g.setFont(new Font("SansSerif", Font.BOLD, 22));
+                    g.drawString("owner", 26, 136);
+                  } finally {
+                    g.dispose();
+                  }
+                }
+              }
+
+              static final class DropdownComponent extends JComponent {
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(new Color(245, 248, 252));
+                    g.fillRect(0, 0, getWidth(), getHeight());
+                    g.setColor(new Color(36, 52, 76));
+                    g.fillRect(0, 0, getWidth(), 32);
+                    g.setColor(new Color(64, 196, 125));
+                    g.fillRect(18, 48, 86, 58);
+                    g.setComposite(AlphaComposite.SrcOver.derive(0.72f));
+                    g.setColor(new Color(245, 142, 45));
+                    g.fillOval(84, 58, 104, 62);
+                    g.setComposite(AlphaComposite.SrcOver);
+                    g.setColor(new Color(20, 30, 50));
+                    g.setFont(new Font("SansSerif", Font.BOLD, 20));
+                    g.drawString("dropdown", 22, 126);
+                    g.setColor(Color.WHITE);
+                    g.drawString("actions", 16, 23);
                   } finally {
                     g.dispose();
                   }
