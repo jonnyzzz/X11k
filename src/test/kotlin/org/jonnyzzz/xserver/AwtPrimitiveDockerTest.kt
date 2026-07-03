@@ -434,6 +434,35 @@ class AwtPrimitiveDockerTest {
         )
     }
 
+    @Test
+    fun `awt layered pane glass overlay robot screenshot roughly matches xvfb reference`() {
+        assumeDockerAndImage(CLIENT_IMAGE)
+        assumeDockerAndImage(REFERENCE_IMAGE)
+        val reference = runRobotProbeAgainstXvfb(
+            mainClass = "VisualLayeredOverlayProbe",
+            source = VisualLayeredOverlayProbeSource,
+        )
+        val actual = runRobotProbeAgainstKotlinServer(
+            port = 6225,
+            title = "AWT Layered Overlay Parity Probe",
+            mainClass = "VisualLayeredOverlayProbe",
+            source = VisualLayeredOverlayProbeSource,
+        )
+
+        assertContains(actual.text, "AWT Layered Overlay Parity Probe")
+        assertContains(actual.text, "RENDER.")
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected Kotlin SVG export to retain framebuffer images for the layered-overlay probe")
+        assertTrue(
+            actual.exportedFramebuffers.any { it.width == 360 && it.height == 240 },
+            "Layered overlay Swing rendering should expose the owner framebuffer surface; exported=${actual.exportedFramebuffers}\n${actual.text}",
+        )
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin layered-overlay Robot screenshot",
+        )
+    }
+
     private fun assertVisualCaptureClose(
         expected: VisualProbeCapture,
         actual: VisualProbeCapture,
@@ -2622,6 +2651,169 @@ class AwtPrimitiveDockerTest {
                     g.fillRect(154, 16, 188, 28);
                     g.setColor(new Color(255, 225, 64));
                     g.fillRect(18, 220, 324, 6);
+                  } finally {
+                    g.dispose();
+                  }
+                }
+              }
+            }
+            """.trimIndent()
+
+        val VisualLayeredOverlayProbeSource =
+            """
+            import java.awt.Color;
+            import java.awt.Font;
+            import java.awt.Graphics;
+            import java.awt.Graphics2D;
+            import java.awt.Point;
+            import java.awt.Rectangle;
+            import java.awt.RenderingHints;
+            import java.awt.Robot;
+            import java.awt.image.BufferedImage;
+            import java.io.ByteArrayOutputStream;
+            import java.util.Base64;
+            import javax.imageio.ImageIO;
+            import javax.swing.JButton;
+            import javax.swing.JComponent;
+            import javax.swing.JFrame;
+            import javax.swing.JLabel;
+            import javax.swing.JLayeredPane;
+            import javax.swing.JPanel;
+            import javax.swing.JScrollPane;
+            import javax.swing.JTextArea;
+            import javax.swing.SwingConstants;
+            import javax.swing.SwingUtilities;
+            import javax.swing.border.EmptyBorder;
+
+            public class VisualLayeredOverlayProbe {
+              public static void main(String[] args) throws Exception {
+                final JFrame[] frameHolder = new JFrame[1];
+                final JComponent[] glassHolder = new JComponent[1];
+                SwingUtilities.invokeAndWait(() -> {
+                  JFrame frame = new JFrame("AWT Layered Overlay Parity Probe");
+                  frame.setUndecorated(true);
+                  frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+                  frame.setBounds(40, 40, 360, 240);
+                  LayeredOwnerPanel owner = new LayeredOwnerPanel();
+                  owner.setLayout(null);
+                  frame.setContentPane(owner);
+
+                  JLabel title = new JLabel("overlays");
+                  title.setForeground(Color.WHITE);
+                  title.setFont(new Font("SansSerif", Font.BOLD, 18));
+                  title.setBounds(24, 16, 126, 26);
+                  owner.add(title);
+
+                  JLayeredPane layered = new JLayeredPane();
+                  layered.setOpaque(true);
+                  layered.setBackground(new Color(225, 234, 242));
+                  layered.setBounds(18, 52, 324, 146);
+                  owner.add(layered);
+
+                  JPanel editor = new JPanel(null);
+                  editor.setBackground(new Color(245, 248, 252));
+                  editor.setBounds(8, 8, 220, 122);
+                  JTextArea text = new JTextArea("fun overlay() {\n  hint = visible\n  z = layered\n}");
+                  text.setEditable(false);
+                  text.setFont(new Font("Monospaced", Font.BOLD, 13));
+                  text.setForeground(new Color(20, 30, 50));
+                  text.setBackground(new Color(245, 248, 252));
+                  text.setBorder(new EmptyBorder(8, 10, 8, 10));
+                  JScrollPane textScroll = new JScrollPane(text);
+                  textScroll.setBorder(new EmptyBorder(0, 0, 0, 0));
+                  textScroll.setBounds(0, 0, 220, 122);
+                  editor.add(textScroll);
+                  layered.add(editor, JLayeredPane.DEFAULT_LAYER);
+
+                  JPanel palette = new JPanel(null);
+                  palette.setBackground(new Color(36, 52, 76));
+                  palette.setBounds(238, 10, 72, 118);
+                  JLabel tool = new JLabel("tools", SwingConstants.CENTER);
+                  tool.setFont(new Font("SansSerif", Font.BOLD, 12));
+                  tool.setForeground(Color.WHITE);
+                  tool.setBounds(8, 8, 56, 20);
+                  palette.add(tool);
+                  JButton run = new JButton("Run");
+                  run.setFont(new Font("SansSerif", Font.BOLD, 12));
+                  run.setBounds(8, 38, 56, 28);
+                  palette.add(run);
+                  JButton pin = new JButton("Pin");
+                  pin.setFont(new Font("SansSerif", Font.BOLD, 12));
+                  pin.setBounds(8, 76, 56, 28);
+                  palette.add(pin);
+                  layered.add(palette, JLayeredPane.PALETTE_LAYER);
+
+                  JLabel notification = new JLabel(" indexing ready ");
+                  notification.setOpaque(true);
+                  notification.setForeground(new Color(20, 30, 50));
+                  notification.setBackground(new Color(255, 225, 64));
+                  notification.setFont(new Font("SansSerif", Font.BOLD, 13));
+                  notification.setBounds(92, 88, 124, 30);
+                  layered.add(notification, JLayeredPane.POPUP_LAYER);
+
+                  OverlayGlassPane glass = new OverlayGlassPane();
+                  frame.setGlassPane(glass);
+                  glass.setVisible(true);
+                  glassHolder[0] = glass;
+
+                  frame.setVisible(true);
+                  owner.paintImmediately(0, 0, 360, 240);
+                  layered.paintImmediately(0, 0, layered.getWidth(), layered.getHeight());
+                  glass.paintImmediately(0, 0, 360, 240);
+                  frameHolder[0] = frame;
+                });
+                Thread.sleep(1000);
+                Point origin = frameHolder[0].getLocationOnScreen();
+                BufferedImage image = new Robot().createScreenCapture(new Rectangle(origin.x, origin.y, 360, 240));
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                ImageIO.write(image, "png", output);
+                System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
+                System.out.flush();
+                long holdMillis = Long.getLong("visualProbe.holdMillis", 0L);
+                if (holdMillis > 0L) {
+                  Thread.sleep(holdMillis);
+                }
+                SwingUtilities.invokeAndWait(() -> frameHolder[0].dispose());
+              }
+
+              static final class OverlayGlassPane extends JComponent {
+                OverlayGlassPane() {
+                  setOpaque(false);
+                  setFont(new Font("SansSerif", Font.BOLD, 12));
+                }
+
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(new Color(230, 50, 44));
+                    g.drawRect(34, 72, 184, 80);
+                    g.drawRect(35, 73, 182, 78);
+                    g.setColor(new Color(42, 168, 255));
+                    g.fillRect(34, 164, 98, 24);
+                    g.setColor(Color.WHITE);
+                    g.drawString("glass hint", 46, 181);
+                  } finally {
+                    g.dispose();
+                  }
+                }
+              }
+
+              static final class LayeredOwnerPanel extends JPanel {
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(new Color(20, 30, 50));
+                    g.fillRect(0, 0, getWidth(), getHeight());
+                    g.setColor(new Color(230, 50, 44));
+                    g.fillRect(18, 16, 128, 28);
+                    g.setColor(new Color(42, 168, 255));
+                    g.fillRect(154, 16, 188, 28);
+                    g.setColor(new Color(255, 225, 64));
+                    g.fillRect(18, 208, 324, 18);
                   } finally {
                     g.dispose();
                   }
