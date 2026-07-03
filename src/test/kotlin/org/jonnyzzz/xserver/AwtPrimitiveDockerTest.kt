@@ -287,6 +287,37 @@ class AwtPrimitiveDockerTest {
         )
     }
 
+    @Test
+    fun `awt tooltip popup robot screenshot roughly matches xvfb reference`() {
+        assumeDockerAndImage(CLIENT_IMAGE)
+        assumeDockerAndImage(REFERENCE_IMAGE)
+        val reference = runRobotProbeAgainstXvfb(
+            mainClass = "VisualTooltipProbe",
+            source = VisualTooltipProbeSource,
+        )
+        val actual = runRobotProbeAgainstKotlinServer(
+            port = 6220,
+            title = "AWT Tooltip Parity Probe",
+            mainClass = "VisualTooltipProbe",
+            source = VisualTooltipProbeSource,
+        )
+
+        assertContains(actual.text, "AWT Tooltip Parity Probe")
+        assertContains(actual.text, "RENDER.")
+        assertContains(actual.text, """label="sun-awt-X11-XPanelPeer" geometry=154,136 190x82""")
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected Kotlin SVG export to retain framebuffer images for the tooltip probe")
+        assertTrue(
+            actual.exportedFramebuffers.any { it.width == 360 && it.height == 240 } &&
+                actual.exportedFramebuffers.any { it.width in 188..192 && it.height in 80..84 },
+            "Tooltip popup rendering should expose framebuffer surfaces for both owner and tooltip; exported=${actual.exportedFramebuffers}\n${actual.text}",
+        )
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin tooltip-popup Robot screenshot",
+        )
+    }
+
     private fun assertVisualCaptureClose(
         expected: VisualProbeCapture,
         actual: VisualProbeCapture,
@@ -1679,6 +1710,175 @@ class AwtPrimitiveDockerTest {
                   component.setBackground(index == 0 ? new Color(36, 52, 76) : new Color(245, 248, 252));
                   component.setOpaque(true);
                   return component;
+                }
+              }
+            }
+            """.trimIndent()
+
+        val VisualTooltipProbeSource =
+            """
+            import java.awt.AlphaComposite;
+            import java.awt.Color;
+            import java.awt.Dimension;
+            import java.awt.Font;
+            import java.awt.Graphics;
+            import java.awt.Graphics2D;
+            import java.awt.Point;
+            import java.awt.Rectangle;
+            import java.awt.RenderingHints;
+            import java.awt.Robot;
+            import java.awt.event.MouseEvent;
+            import java.awt.image.BufferedImage;
+            import java.io.ByteArrayOutputStream;
+            import java.util.Base64;
+            import javax.imageio.ImageIO;
+            import javax.swing.JComponent;
+            import javax.swing.JFrame;
+            import javax.swing.JToolTip;
+            import javax.swing.SwingUtilities;
+            import javax.swing.ToolTipManager;
+
+            public class VisualTooltipProbe {
+              public static void main(String[] args) throws Exception {
+                final JFrame[] frameHolder = new JFrame[1];
+                final TargetComponent[] targetHolder = new TargetComponent[1];
+                SwingUtilities.invokeAndWait(() -> {
+                  ToolTipManager manager = ToolTipManager.sharedInstance();
+                  manager.setEnabled(true);
+                  manager.setLightWeightPopupEnabled(false);
+                  manager.setInitialDelay(0);
+                  manager.setReshowDelay(0);
+                  manager.setDismissDelay(60000);
+
+                  JFrame frame = new JFrame("AWT Tooltip Parity Probe");
+                  frame.setUndecorated(true);
+                  frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+                  frame.setBounds(40, 40, 360, 240);
+                  OwnerPanel owner = new OwnerPanel();
+                  owner.setLayout(null);
+                  frame.setContentPane(owner);
+
+                  TargetComponent target = new TargetComponent();
+                  target.setBounds(42, 44, 154, 74);
+                  target.setToolTipText("Semantic tooltip");
+                  owner.add(target);
+                  manager.registerComponent(target);
+
+                  frame.setVisible(true);
+                  owner.paintImmediately(0, 0, 360, 240);
+                  target.paintImmediately(0, 0, 154, 74);
+
+                  long now = System.currentTimeMillis();
+                  MouseEvent entered = new MouseEvent(target, MouseEvent.MOUSE_ENTERED, now, 0, 28, 28, 1, false);
+                  MouseEvent moved = new MouseEvent(target, MouseEvent.MOUSE_MOVED, now + 1, 0, 28, 28, 1, false);
+                  manager.mouseEntered(entered);
+                  manager.mouseMoved(moved);
+
+                  frameHolder[0] = frame;
+                  targetHolder[0] = target;
+                });
+                Thread.sleep(1000);
+                Point origin = frameHolder[0].getLocationOnScreen();
+                BufferedImage image = new Robot().createScreenCapture(new Rectangle(origin.x, origin.y, 360, 240));
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                ImageIO.write(image, "png", output);
+                System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
+                System.out.flush();
+                long holdMillis = Long.getLong("visualProbe.holdMillis", 0L);
+                if (holdMillis > 0L) {
+                  Thread.sleep(holdMillis);
+                }
+                SwingUtilities.invokeAndWait(() -> {
+                  ToolTipManager.sharedInstance().unregisterComponent(targetHolder[0]);
+                  frameHolder[0].dispose();
+                });
+              }
+
+              static final class OwnerPanel extends JComponent {
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(new Color(20, 30, 50));
+                    g.fillRect(0, 0, getWidth(), getHeight());
+                    g.setColor(new Color(230, 50, 44));
+                    g.fillRect(18, 20, 104, 62);
+                    g.setComposite(AlphaComposite.SrcOver.derive(0.54f));
+                    g.setColor(new Color(42, 168, 255));
+                    g.fillRect(74, 50, 138, 96);
+                    g.setComposite(AlphaComposite.SrcOver);
+                    g.setColor(new Color(255, 225, 64));
+                    g.fillRect(24, 172, 312, 34);
+                    g.setColor(new Color(238, 244, 250));
+                    g.setFont(new Font("SansSerif", Font.BOLD, 22));
+                    g.drawString("tooltip owner", 26, 136);
+                  } finally {
+                    g.dispose();
+                  }
+                }
+              }
+
+              static final class TargetComponent extends JComponent {
+                @Override
+                public Point getToolTipLocation(MouseEvent event) {
+                  return new Point(72, 52);
+                }
+
+                @Override
+                public JToolTip createToolTip() {
+                  JToolTip tip = new PaintedToolTip();
+                  tip.setComponent(this);
+                  return tip;
+                }
+
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(new Color(245, 248, 252));
+                    g.fillRect(0, 0, getWidth(), getHeight());
+                    g.setColor(new Color(36, 52, 76));
+                    g.fillRect(0, 0, getWidth(), 26);
+                    g.setColor(new Color(64, 196, 125));
+                    g.fillRect(14, 40, 56, 22);
+                    g.setColor(new Color(20, 30, 50));
+                    g.setFont(new Font("SansSerif", Font.BOLD, 15));
+                    g.drawString("hover target", 14, 24);
+                  } finally {
+                    g.dispose();
+                  }
+                }
+              }
+
+              static final class PaintedToolTip extends JToolTip {
+                PaintedToolTip() {
+                  setPreferredSize(new Dimension(190, 82));
+                  setOpaque(true);
+                }
+
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(new Color(245, 248, 252));
+                    g.fillRect(0, 0, getWidth(), getHeight());
+                    g.setColor(new Color(36, 52, 76));
+                    g.fillRect(0, 0, getWidth(), 28);
+                    g.setColor(new Color(245, 142, 45));
+                    g.fillOval(124, 42, 46, 28);
+                    g.setColor(new Color(64, 196, 125));
+                    g.fillRect(18, 44, 72, 20);
+                    g.setColor(new Color(20, 30, 50));
+                    g.setFont(new Font("SansSerif", Font.BOLD, 17));
+                    g.drawString("tooltip", 18, 66);
+                    g.setColor(Color.WHITE);
+                    g.drawString("details", 14, 21);
+                  } finally {
+                    g.dispose();
+                  }
                 }
               }
             }
