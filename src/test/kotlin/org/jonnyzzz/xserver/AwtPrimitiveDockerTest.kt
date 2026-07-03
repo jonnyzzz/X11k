@@ -196,6 +196,36 @@ class AwtPrimitiveDockerTest {
         )
     }
 
+    @Test
+    fun `awt heavyweight popup menu robot screenshot roughly matches xvfb reference`() {
+        assumeDockerAndImage(CLIENT_IMAGE)
+        assumeDockerAndImage(REFERENCE_IMAGE)
+        val reference = runRobotProbeAgainstXvfb(
+            mainClass = "VisualPopupMenuProbe",
+            source = VisualPopupMenuProbeSource,
+        )
+        val actual = runRobotProbeAgainstKotlinServer(
+            port = 6217,
+            title = "AWT PopupMenu Parity Probe",
+            mainClass = "VisualPopupMenuProbe",
+            source = VisualPopupMenuProbeSource,
+        )
+
+        assertContains(actual.text, "AWT PopupMenu Parity Probe")
+        assertContains(actual.text, "RENDER.")
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected Kotlin SVG export to retain framebuffer images for the heavyweight popup menu probe")
+        assertTrue(
+            actual.exportedFramebuffers.any { it.width == 360 && it.height == 240 } &&
+                actual.exportedFramebuffers.any { it.width == 220 && it.height == 150 },
+            "Heavyweight popup menu windows should expose framebuffer-backed surfaces for both owner and menu; exported=${actual.exportedFramebuffers}\n${actual.text}",
+        )
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin heavyweight-popup-menu Robot screenshot",
+        )
+    }
+
     private fun assertVisualCaptureClose(
         expected: VisualProbeCapture,
         actual: VisualProbeCapture,
@@ -1205,6 +1235,127 @@ class AwtPrimitiveDockerTest {
                     g.drawString("dialog", 22, 152);
                     g.setColor(Color.WHITE);
                     g.drawString("owned", 16, 24);
+                  } finally {
+                    g.dispose();
+                  }
+                }
+              }
+            }
+            """.trimIndent()
+
+        val VisualPopupMenuProbeSource =
+            """
+            import java.awt.AlphaComposite;
+            import java.awt.Color;
+            import java.awt.Dimension;
+            import java.awt.Font;
+            import java.awt.Graphics;
+            import java.awt.Graphics2D;
+            import java.awt.Point;
+            import java.awt.Rectangle;
+            import java.awt.RenderingHints;
+            import java.awt.Robot;
+            import java.awt.image.BufferedImage;
+            import java.io.ByteArrayOutputStream;
+            import java.util.Base64;
+            import javax.imageio.ImageIO;
+            import javax.swing.BorderFactory;
+            import javax.swing.JComponent;
+            import javax.swing.JFrame;
+            import javax.swing.JPopupMenu;
+            import javax.swing.SwingUtilities;
+
+            public class VisualPopupMenuProbe {
+              public static void main(String[] args) throws Exception {
+                final JFrame[] frameHolder = new JFrame[1];
+                final JPopupMenu[] menuHolder = new JPopupMenu[1];
+                SwingUtilities.invokeAndWait(() -> {
+                  JPopupMenu.setDefaultLightWeightPopupEnabled(false);
+
+                  JFrame frame = new JFrame("AWT PopupMenu Parity Probe");
+                  frame.setUndecorated(true);
+                  frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+                  frame.setBounds(40, 40, 360, 240);
+                  frame.setContentPane(new OwnerComponent());
+                  frame.setVisible(true);
+                  ((JComponent) frame.getContentPane()).paintImmediately(0, 0, 360, 240);
+
+                  JPopupMenu menu = new JPopupMenu();
+                  menu.setLightWeightPopupEnabled(false);
+                  menu.setBorder(BorderFactory.createEmptyBorder());
+                  MenuComponent content = new MenuComponent();
+                  content.setPreferredSize(new Dimension(220, 150));
+                  menu.add(content);
+                  menu.setPopupSize(220, 150);
+                  menu.show(frame.getContentPane(), 80, 54);
+                  menu.paintImmediately(0, 0, 220, 150);
+
+                  frameHolder[0] = frame;
+                  menuHolder[0] = menu;
+                });
+                Thread.sleep(1000);
+                Point origin = frameHolder[0].getLocationOnScreen();
+                BufferedImage image = new Robot().createScreenCapture(new Rectangle(origin.x, origin.y, 360, 240));
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                ImageIO.write(image, "png", output);
+                System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
+                System.out.flush();
+                long holdMillis = Long.getLong("visualProbe.holdMillis", 0L);
+                if (holdMillis > 0L) {
+                  Thread.sleep(holdMillis);
+                }
+                SwingUtilities.invokeAndWait(() -> {
+                  menuHolder[0].setVisible(false);
+                  frameHolder[0].dispose();
+                });
+              }
+
+              static final class OwnerComponent extends JComponent {
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(new Color(20, 30, 50));
+                    g.fillRect(0, 0, getWidth(), getHeight());
+                    g.setColor(new Color(230, 50, 44));
+                    g.fillRect(18, 20, 104, 62);
+                    g.setComposite(AlphaComposite.SrcOver.derive(0.54f));
+                    g.setColor(new Color(42, 168, 255));
+                    g.fillRect(74, 50, 138, 96);
+                    g.setComposite(AlphaComposite.SrcOver);
+                    g.setColor(new Color(255, 225, 64));
+                    g.fillRect(24, 172, 312, 34);
+                    g.setColor(new Color(238, 244, 250));
+                    g.setFont(new Font("SansSerif", Font.BOLD, 22));
+                    g.drawString("owner", 26, 136);
+                  } finally {
+                    g.dispose();
+                  }
+                }
+              }
+
+              static final class MenuComponent extends JComponent {
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(new Color(245, 248, 252));
+                    g.fillRect(0, 0, getWidth(), getHeight());
+                    g.setColor(new Color(36, 52, 76));
+                    g.fillRect(0, 0, getWidth(), 30);
+                    g.setColor(new Color(64, 196, 125));
+                    g.fillRect(18, 46, 74, 56);
+                    g.setComposite(AlphaComposite.SrcOver.derive(0.70f));
+                    g.setColor(new Color(245, 142, 45));
+                    g.fillOval(70, 58, 92, 60);
+                    g.setComposite(AlphaComposite.SrcOver);
+                    g.setColor(new Color(20, 30, 50));
+                    g.setFont(new Font("SansSerif", Font.BOLD, 20));
+                    g.drawString("popup menu", 22, 136);
+                    g.setColor(Color.WHITE);
+                    g.drawString("actions", 16, 22);
                   } finally {
                     g.dispose();
                   }
