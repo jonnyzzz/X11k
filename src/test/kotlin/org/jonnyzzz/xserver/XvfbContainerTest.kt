@@ -116,6 +116,39 @@ class XvfbContainerTest {
     }
 
     @Test
+    fun `xcalc robot screenshot and svg framebuffer roughly match xvfb reference`() {
+        assumeDockerAndImage(CLIENT_IMAGE)
+        assumeDockerAndImage(REFERENCE_IMAGE)
+        val reference = runXcalcAgainstXvfb()
+        val actual = runXcalcAgainstKotlinServer(port = 6228)
+
+        assertTrue(actual.text.contains("label=\"Calculator\""), actual.text)
+        assertTrue(
+            actual.text.contains("- PolyText8:") ||
+                actual.text.contains("- ImageText8:") ||
+                actual.text.contains("- PutImage:"),
+            actual.text,
+        )
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected xcalc SVG export to retain framebuffer images\n${actual.svg}\n${actual.text}")
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin xcalc Robot screenshot",
+            coverageTolerance = 0.25,
+            distanceThreshold = 300.0,
+        )
+        assertComposedSvgClose(
+            expected = reference,
+            embeddedFramebuffers = actual.embeddedFramebuffers,
+            ownerWidth = RealClientCaptureWidth,
+            ownerHeight = RealClientCaptureHeight,
+            label = "Kotlin xcalc composed SVG framebuffer",
+            coverageTolerance = 0.25,
+            distanceThreshold = 300.0,
+        )
+    }
+
+    @Test
     fun `window manager smoke exposes independent windows and overlap over http`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         val port = 6209
@@ -270,7 +303,7 @@ class XvfbContainerTest {
                         robot = visualCapture(capture.stdout),
                         text = text,
                         svg = svg,
-                        embeddedFramebuffers = pngDataUris(svg),
+                        embeddedFramebuffers = svgCompositionLayers(svg),
                     )
                 }
         }
@@ -358,7 +391,95 @@ class XvfbContainerTest {
                         robot = visualCapture(capture.stdout),
                         text = text,
                         svg = svg,
-                        embeddedFramebuffers = pngDataUris(svg),
+                        embeddedFramebuffers = svgCompositionLayers(svg),
+                    )
+                }
+        }
+    }
+
+    private fun runXcalcAgainstXvfb(): VisualCapture {
+        GenericContainer(DockerImageName.parse(REFERENCE_IMAGE).asCompatibleSubstituteFor("ubuntu"))
+            .withCommand("sleep", "120")
+            .use { container ->
+                container.start()
+                compileRobotCapture(container)
+                val result = container.execInContainer(
+                    "sh",
+                    "-lc",
+                    """
+                    set -eu
+                    Xvfb :99 -screen 0 640x480x24 >/tmp/xvfb.log 2>&1 &
+                    xvfb=${'$'}!
+                    trap 'kill "${'$'}calc" 2>/dev/null || true; kill "${'$'}xvfb" 2>/dev/null || true' EXIT
+                    for _ in ${'$'}(seq 1 40); do
+                      DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && break
+                      sleep 0.25
+                    done
+                    DISPLAY=:99 ${xcalcCommand()} >/tmp/xcalc.log 2>&1 &
+                    calc=${'$'}!
+                    DISPLAY=:99 java -cp /tmp XRobotCapture
+                    """.trimIndent(),
+                )
+                assertEquals(0, result.exitCode, result.stderr + result.stdout)
+                return visualCapture(result.stdout)
+            }
+    }
+
+    private fun runXcalcAgainstKotlinServer(port: Int): RealClientResult {
+        assumeTrue(isPortAvailable(port), "Port $port is not available")
+        XServer(ServerOptions(host = "0.0.0.0", port = port, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            GenericContainer(DockerImageName.parse(CLIENT_IMAGE).asCompatibleSubstituteFor("ubuntu"))
+                .withCommand("sleep", "120")
+                .use { container ->
+                    container.start()
+                    compileRobotCapture(container)
+                    val display = port - 6000
+                    val startResult = container.execInContainer(
+                        "sh",
+                        "-lc",
+                        """
+                        set -eu
+                        DISPLAY=host.docker.internal:$display \
+                        ${xcalcCommand()} >/tmp/xcalc.log 2>&1 &
+                        echo ${'$'}! >/tmp/xcalc.pid
+                        """.trimIndent(),
+                    )
+                    assertEquals(0, startResult.exitCode, startResult.stderr + startResult.stdout)
+
+                    waitUntil(
+                        failureMessage = {
+                            val log = container.execInContainer("sh", "-lc", "cat /tmp/xcalc.log 2>/dev/null || true").stdout
+                            val text = runCatching { httpGet(port, "/text.txt") }.getOrElse { it.toString() }
+                            "xcalc did not become SVG-ready before timeout\nlog:\n$log\ntext:\n$text"
+                        },
+                    ) {
+                        val text = httpGet(port, "/text.txt")
+                        text.contains("label=\"Calculator\"") &&
+                            text.contains("- PolyText8:")
+                    }
+
+                    val capture = container.execInContainer(
+                        "sh",
+                        "-lc",
+                        """
+                        set -eu
+                        pid=${'$'}(cat /tmp/xcalc.pid)
+                        kill -0 "${'$'}pid"
+                        DISPLAY=host.docker.internal:$display java -cp /tmp XRobotCapture
+                        """.trimIndent(),
+                    )
+                    val text = httpGet(port, "/text.txt")
+                    val svg = httpGet(port, "/screen.svg")
+                    container.execInContainer("sh", "-lc", "kill $(cat /tmp/xcalc.pid) 2>/dev/null || true")
+                    server.close()
+                    serverThread.join(1_000)
+                    assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
+                    return RealClientResult(
+                        robot = visualCapture(capture.stdout),
+                        text = text,
+                        svg = svg,
+                        embeddedFramebuffers = svgCompositionLayers(svg),
                     )
                 }
         }
@@ -412,7 +533,7 @@ class XvfbContainerTest {
         averageTolerance: Double = 0.04,
         distanceThreshold: Double = 45.0,
     ) {
-        val owner = embeddedFramebuffers.lastOrNull { it.width == ownerWidth && it.height == ownerHeight }
+        val owner = embeddedFramebuffers.lastOrNull { it.bytes != null && it.width == ownerWidth && it.height == ownerHeight }
             ?: error("$label did not include an owner framebuffer ${ownerWidth}x$ownerHeight; exported=$embeddedFramebuffers")
         val composed = composeEmbeddedFramebuffers(embeddedFramebuffers)
         val cropped = composed.getSubimage(owner.x, owner.y, expected.width, expected.height)
@@ -426,20 +547,35 @@ class XvfbContainerTest {
         )
     }
 
-    private fun pngDataUris(svg: String): List<EmbeddedPng> =
-        Regex("""<image\b[^>]*>""")
+    private fun svgCompositionLayers(svg: String): List<EmbeddedPng> =
+        Regex("""<(?:image|rect)\b[^>]*>""")
             .findAll(svg)
             .mapNotNull { match ->
                 val tag = match.value
-                val id = Regex("""\bdata-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1) ?: return@mapNotNull null
-                val encoded = Regex("""\bhref="data:image/png;base64,([A-Za-z0-9+/=]+)"""").find(tag)?.groupValues?.get(1) ?: return@mapNotNull null
+                val id = Regex("""\bdata-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1)
                 val x = svgImageAttribute(tag, "x") ?: return@mapNotNull null
                 val y = svgImageAttribute(tag, "y") ?: return@mapNotNull null
                 val width = svgImageAttribute(tag, "width") ?: return@mapNotNull null
                 val height = svgImageAttribute(tag, "height") ?: return@mapNotNull null
+                val encoded = Regex("""\bhref="data:image/png;base64,([A-Za-z0-9+/=]+)"""").find(tag)?.groupValues?.get(1)
+                if (encoded == null) {
+                    if (!tag.hasSvgClass("window-border")) return@mapNotNull null
+                    val fill = Regex("""\bfill="#([0-9a-fA-F]{6})"""").find(tag)?.groupValues?.get(1)?.toInt(16)
+                        ?: return@mapNotNull null
+                    return@mapNotNull EmbeddedPng(
+                        id = id ?: "window-border",
+                        bytes = null,
+                        fill = 0xff00_0000.toInt() or fill,
+                        x = x,
+                        y = y,
+                        width = width,
+                        height = height,
+                    )
+                }
                 EmbeddedPng(
-                    id = id,
+                    id = id ?: "framebuffer",
                     bytes = Base64.getDecoder().decode(encoded),
+                    fill = null,
                     x = x,
                     y = y,
                     width = width,
@@ -459,8 +595,13 @@ class XvfbContainerTest {
         val graphics = image.createGraphics()
         try {
             for (embedded in embeddedFramebuffers) {
-                val layer = ImageIO.read(ByteArrayInputStream(embedded.bytes)) ?: continue
-                graphics.drawImage(layer, embedded.x, embedded.y, embedded.width, embedded.height, null)
+                if (embedded.bytes != null) {
+                    val layer = ImageIO.read(ByteArrayInputStream(embedded.bytes)) ?: continue
+                    graphics.drawImage(layer, embedded.x, embedded.y, embedded.width, embedded.height, null)
+                } else if (embedded.fill != null) {
+                    graphics.color = java.awt.Color(embedded.fill, true)
+                    graphics.fillRect(embedded.x, embedded.y, embedded.width, embedded.height)
+                }
             }
         } finally {
             graphics.dispose()
@@ -581,6 +722,9 @@ class XvfbContainerTest {
         fun xclockCommand(): String =
             "xclock -analog -norender -update 60 -geometry ${RealClientCaptureWidth}x${RealClientCaptureHeight}+${RealClientCaptureX}+${RealClientCaptureY}"
 
+        fun xcalcCommand(): String =
+            "xcalc -geometry ${RealClientCaptureWidth}x${RealClientCaptureHeight}+${RealClientCaptureX}+${RealClientCaptureY}"
+
         val RobotCaptureSource = """
             import java.awt.Rectangle;
             import java.awt.Robot;
@@ -604,7 +748,8 @@ class XvfbContainerTest {
 
     private data class EmbeddedPng(
         val id: String,
-        val bytes: ByteArray,
+        val bytes: ByteArray?,
+        val fill: Int?,
         val x: Int,
         val y: Int,
         val width: Int,

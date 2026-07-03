@@ -487,6 +487,7 @@ internal object SvgScreenRenderer {
                 visibleWindows.forEachIndexed { index, window ->
                     val color = palette[index % palette.size]
                     val strokeWidth = if (window.focused) 8 else 4
+                    renderWindowBorder(this, window, originX = 0, originY = 0)
                     svgElement("g", "clip-path" to "url(#${clipId("screen", window)})") {
                         svgElement(
                             "rect",
@@ -768,6 +769,7 @@ internal object SvgScreenRenderer {
                 }
             }
             subtree.forEach { window ->
+                renderWindowBorder(this, window, originX = rootWindow.x, originY = rootWindow.y)
                 svgElement("g", "clip-path" to "url(#${clipId(clipPrefix, window)})") {
                     windowBackgroundFill(window, snapshot.windows)?.let { fill ->
                         svgElement(
@@ -802,6 +804,20 @@ internal object SvgScreenRenderer {
                 text(RenderCredit.Text)
             }
         }
+    }
+
+    private fun renderWindowBorder(builder: XmlDom, window: XWindowSnapshot, originX: Int, originY: Int) {
+        if (window.borderWidth <= 0) return
+        builder.svgElement(
+            "rect",
+            "class" to "window-border",
+            "data-border-window-id" to window.idHex,
+            "x" to window.x - originX - window.borderWidth,
+            "y" to window.y - originY - window.borderWidth,
+            "width" to window.width + window.borderWidth * 2,
+            "height" to window.height + window.borderWidth * 2,
+            "fill" to pixelColor(window.borderPixel),
+        )
     }
 
     private fun subtreeWindows(snapshot: XScreenSnapshot, rootWindow: XWindowSnapshot): List<XWindowSnapshot> {

@@ -114,6 +114,49 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `root GetImage and SVG compose mapped child window border`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(
+                    createWindowRequest(
+                        WindowId,
+                        x = 10,
+                        y = 8,
+                        width = 5,
+                        height = 4,
+                        borderWidth = 2,
+                        backgroundPixel = Green,
+                        borderPixel = Red,
+                    ),
+                )
+                out.write(mapWindowRequest(WindowId))
+                out.write(getImageRequest(X11Ids.RootWindow, x = 7, y = 5, width = 12, height = 10))
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream(), WindowId)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 12, 0, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 1, 1))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 3, 3))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 7, 6))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 8, 6))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 5, 7))
+
+                val svg = httpGet(server.localPort, "/screen.svg")
+                assertContains(svg, """class="window-border"""")
+                assertContains(svg, """data-border-window-id="0x${WindowId.toString(16)}"""")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `window background pixmap tiles on ClearArea without immediate attribute repaint`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

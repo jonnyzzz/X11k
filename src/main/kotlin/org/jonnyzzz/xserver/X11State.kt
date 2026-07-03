@@ -6702,12 +6702,45 @@ internal class X11State(
         for (window in childrenOf(parentId)) {
             if (!window.mapped || !windowIsViewable(window.id)) continue
             val absolute = absolutePosition(window)
+            val boundingClip = intersectClipLists(parentClip, rootSpaceWindowBoundingClip(window, absolute.first, absolute.second))
+            if (boundingClip.isEmpty()) continue
             val windowClip = intersectClipLists(parentClip, rootSpaceWindowRenderClip(window, absolute.first, absolute.second))
-            if (windowClip.isEmpty()) continue
             if (window.windowClass == XWindowClass.InputOutput) {
+                paintWindowBorderIntoRootImage(window, absolute.first, absolute.second, boundingClip, windowClip, imageX, imageY, imageWidth, imageHeight, pixels)
                 paintWindowIntoRootImage(window, absolute.first, absolute.second, windowClip, imageX, imageY, imageWidth, imageHeight, pixels)
             }
             paintRootChildrenIntoImage(window.id, windowClip, imageX, imageY, imageWidth, imageHeight, pixels)
+        }
+    }
+
+    private fun paintWindowBorderIntoRootImage(
+        window: XWindow,
+        absoluteX: Int,
+        absoluteY: Int,
+        boundingClip: List<XRectangleCommand>,
+        contentClip: List<XRectangleCommand>,
+        imageX: Int,
+        imageY: Int,
+        imageWidth: Int,
+        imageHeight: Int,
+        pixels: IntArray,
+    ) {
+        if (window.borderWidth <= 0) return
+        for (rectangle in boundingClip) {
+            val left = maxOf(imageX, rectangle.x)
+            val top = maxOf(imageY, rectangle.y)
+            val right = minOf(imageX + imageWidth, rectangle.x + rectangle.width)
+            val bottom = minOf(imageY + imageHeight, rectangle.y + rectangle.height)
+            if (right <= left || bottom <= top) continue
+            for (rootY in top until bottom) {
+                for (rootX in left until right) {
+                    if (insideClip(rootX, rootY, contentClip)) continue
+                    val localX = rootX - absoluteX
+                    val localY = rootY - absoluteY
+                    val pixel = windowBorderPixel(window, localX, localY)
+                    pixels[(rootY - imageY) * imageWidth + (rootX - imageX)] = pixel
+                }
+            }
         }
     }
 
@@ -6750,6 +6783,28 @@ internal class X11State(
                 height = rectangle.height,
             )
         }
+    }
+
+    private fun rootSpaceWindowBoundingClip(window: XWindow, absoluteX: Int, absoluteY: Int): List<XRectangleCommand> {
+        val bounding = window.boundingShape ?: defaultWindowShapeRegion(window, XFixes.ShapeBounding)
+        return bounding.map { rectangle ->
+            XRectangleCommand(
+                x = absoluteX + rectangle.x,
+                y = absoluteY + rectangle.y,
+                width = rectangle.width,
+                height = rectangle.height,
+            )
+        }
+    }
+
+    private fun windowBorderPixel(window: XWindow, localX: Int, localY: Int): Int {
+        val pixmap = window.borderPixmapId?.let { pixmaps[it] }
+        if (pixmap != null && pixmap.width > 0 && pixmap.height > 0) {
+            val sourceX = (localX + window.borderWidth).floorMod(pixmap.width)
+            val sourceY = (localY + window.borderWidth).floorMod(pixmap.height)
+            return pixmap.framebuffer.pixelAt(sourceX, sourceY) ?: XFramebuffer.opaque(window.borderPixel)
+        }
+        return XFramebuffer.opaque(window.borderPixel)
     }
 
     private fun insideClip(x: Int, y: Int, clipRectangles: List<XRectangleCommand>?): Boolean =
