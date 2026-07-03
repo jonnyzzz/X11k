@@ -211,9 +211,15 @@ class IntellijCommunitySmokeTest {
         assertFalse(actual.text.contains("Download SDK") || actual.text.contains("Download JDK"), actual.text)
 
         val composedSvg = composeSvgLayers(actual.svgLayers, IntellijCaptureWidth, IntellijCaptureHeight)
-        dumpIntellijParityArtifacts(reference = reference, actual = actual, composedSvg = composedSvg)
+        val composedSvgCapture = visualCapture(composedSvg)
+        dumpIntellijParityArtifacts(
+            reference = reference,
+            actual = actual,
+            composedSvg = composedSvg,
+            composedSvgCapture = composedSvgCapture,
+        )
         assertIntellijVisualClose(reference.robot, actual.robot, "Kotlin Robot IntelliJ capture")
-        assertIntellijVisualClose(reference.robot, visualCapture(composedSvg), "Kotlin SVG-composed IntelliJ framebuffer")
+        assertIntellijVisualClose(reference.robot, composedSvgCapture, "Kotlin SVG-composed IntelliJ framebuffer")
     }
 
     private fun projectRoot(): Path =
@@ -605,6 +611,7 @@ class IntellijCommunitySmokeTest {
         reference: IntellijReferenceCapture,
         actual: IntellijKotlinCapture,
         composedSvg: BufferedImage,
+        composedSvgCapture: VisualCapture,
     ) {
         val directory = File("build/tmp/intellij-community-smoke").also { it.mkdirs() }
         ImageIO.write(reference.robot.image, "png", File(directory, "intellij-xvfb-reference.png"))
@@ -616,6 +623,8 @@ class IntellijCommunitySmokeTest {
         (reference.logs + actual.logs).forEach { artifact ->
             File(directory, artifact.fileName).writeText(artifact.text)
         }
+        dumpIntellijVisualDiff(directory, "intellij-kotlin-robot-vs-xvfb", reference.robot, actual.robot)
+        dumpIntellijVisualDiff(directory, "intellij-kotlin-svg-vs-xvfb", reference.robot, composedSvgCapture)
     }
 
     private fun collectIntellijLogs(
@@ -660,6 +669,44 @@ class IntellijCommunitySmokeTest {
                 appendLine()
             }
         }
+
+    private fun dumpIntellijVisualDiff(
+        directory: File,
+        prefix: String,
+        expected: VisualCapture,
+        actual: VisualCapture,
+    ) {
+        ImageIO.write(visualDiffImage(expected.image, actual.image), "png", File(directory, "$prefix-diff.png"))
+        File(directory, "$prefix-metrics.txt").writeText(
+            buildString {
+                appendLine("expected=$expected")
+                appendLine("actual=$actual")
+                appendLine("coverageRatio=${ratio(actual.nonWhitePixels, expected.nonWhitePixels)}")
+                appendLine("averageRgbDelta=${abs(actual.averageRgb - expected.averageRgb)}")
+                appendLine("sampledDistance=${imageDistance(expected.image, actual.image)}")
+            },
+        )
+    }
+
+    private fun visualDiffImage(expected: BufferedImage, actual: BufferedImage): BufferedImage {
+        val width = maxOf(expected.width, actual.width)
+        val height = maxOf(expected.height, actual.height)
+        val image = BufferedImage(width, height, BufferedImage.TYPE_INT_RGB)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val expectedRgb = if (x < expected.width && y < expected.height) expected.getRGB(x, y) else 0
+                val actualRgb = if (x < actual.width && y < actual.height) actual.getRGB(x, y) else 0
+                val red = (abs(((expectedRgb ushr 16) and 0xff) - ((actualRgb ushr 16) and 0xff)) * 4).coerceAtMost(255)
+                val green = (abs(((expectedRgb ushr 8) and 0xff) - ((actualRgb ushr 8) and 0xff)) * 4).coerceAtMost(255)
+                val blue = (abs((expectedRgb and 0xff) - (actualRgb and 0xff)) * 4).coerceAtMost(255)
+                image.setRGB(x, y, (red shl 16) or (green shl 8) or blue)
+            }
+        }
+        return image
+    }
+
+    private fun ratio(numerator: Int, denominator: Int): String =
+        if (denominator == 0) "n/a" else (numerator.toDouble() / denominator.toDouble()).toString()
 
     private fun visualCapture(stdout: String): VisualCapture {
         val encoded = stdout.lineSequence()
