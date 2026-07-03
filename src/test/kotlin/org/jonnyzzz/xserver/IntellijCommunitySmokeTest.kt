@@ -8,6 +8,7 @@ import org.testcontainers.containers.BindMode
 import org.testcontainers.utility.DockerImageName
 import java.awt.Rectangle
 import java.io.ByteArrayInputStream
+import java.io.File
 import java.awt.image.BufferedImage
 import java.net.Socket
 import java.nio.file.Path
@@ -208,9 +209,10 @@ class IntellijCommunitySmokeTest {
         assertTrue(actual.text.contains("Content window"), actual.text)
         assertTrue(actual.text.contains("Unsupported requests:\n- None."), actual.text)
         assertFalse(actual.text.contains("Download SDK") || actual.text.contains("Download JDK"), actual.text)
-        assertIntellijVisualClose(reference, actual.robot, "Kotlin Robot IntelliJ capture")
 
         val composedSvg = composeSvgLayers(actual.svgLayers, IntellijCaptureWidth, IntellijCaptureHeight)
+        dumpIntellijParityArtifacts(reference = reference, actual = actual, composedSvg = composedSvg)
+        assertIntellijVisualClose(reference, actual.robot, "Kotlin Robot IntelliJ capture")
         assertIntellijVisualClose(reference, visualCapture(composedSvg), "Kotlin SVG-composed IntelliJ framebuffer")
     }
 
@@ -389,6 +391,7 @@ class IntellijCommunitySmokeTest {
                         return IntellijKotlinCapture(
                             robot = visualCapture(capture.stdout),
                             text = snapshot.text,
+                            svg = svg,
                             svgLayers = svgCompositionLayers(svg),
                         )
                     } finally {
@@ -592,6 +595,37 @@ class IntellijCommunitySmokeTest {
         return image
     }
 
+    private fun dumpIntellijParityArtifacts(
+        reference: VisualCapture,
+        actual: IntellijKotlinCapture,
+        composedSvg: BufferedImage,
+    ) {
+        val directory = File("build/tmp/intellij-community-smoke").also { it.mkdirs() }
+        ImageIO.write(reference.image, "png", File(directory, "intellij-xvfb-reference.png"))
+        ImageIO.write(actual.robot.image, "png", File(directory, "intellij-kotlin-robot.png"))
+        ImageIO.write(composedSvg, "png", File(directory, "intellij-kotlin-svg-composed.png"))
+        File(directory, "intellij-kotlin-screen.svg").writeText(actual.svg)
+        File(directory, "intellij-kotlin-text.txt").writeText(actual.text)
+        File(directory, "intellij-kotlin-svg-layers.txt").writeText(svgLayerInventory(actual.svgLayers))
+    }
+
+    private fun svgLayerInventory(layers: List<SvgLayer>): String =
+        buildString {
+            appendLine("count=${layers.size}")
+            layers.forEachIndexed { index, layer ->
+                append(index)
+                append(": id=").append(layer.id)
+                append(" x=").append(layer.x)
+                append(" y=").append(layer.y)
+                append(" width=").append(layer.width)
+                append(" height=").append(layer.height)
+                append(" type=").append(if (layer.bytes != null) "png" else "fill")
+                append(" clipRectangles=").append(layer.clipRectangles.size)
+                if (layer.fill != null) append(" fill=0x").append(layer.fill.toUInt().toString(16))
+                appendLine()
+            }
+        }
+
     private fun visualCapture(stdout: String): VisualCapture {
         val encoded = stdout.lineSequence()
             .firstOrNull { it.startsWith("PNG_BASE64=") }
@@ -693,6 +727,7 @@ class IntellijCommunitySmokeTest {
     private data class IntellijKotlinCapture(
         val robot: VisualCapture,
         val text: String,
+        val svg: String,
         val svgLayers: List<SvgLayer>,
     )
 
