@@ -7502,6 +7502,42 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `QueryPointer ignores descendant when ancestor bounding shape excludes pointer`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val parent = WindowId
+                val child = WindowId + 1
+                out.write(createWindowRequest(parent, x = 10, y = 10, width = 40, height = 30))
+                out.write(createWindowRequest(child, parent = parent, x = 5, y = 5, width = 10, height = 10))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(warpPointerRequest(destinationWindow = child, destinationX = 2, destinationY = 3))
+                out.write(shapeRectanglesRequest(parent, XFixes.ShapeBounding, XShape.OpSet, listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(queryPointerRequest(parent))
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, child)
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(7, u16le(pointer, 2))
+                assertEquals(0, u32le(pointer, 12))
+                assertEquals(17, u16le(pointer, 16))
+                assertEquals(18, u16le(pointer, 18))
+                assertEquals(7, u16le(pointer, 20))
+                assertEquals(8, u16le(pointer, 22))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `TranslateCoordinates validates windows and request length and preserves stream recovery`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
