@@ -55,6 +55,23 @@ run_bounded() {
   fi
 }
 
+run_detached_to_log() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" >>"$LOG" 2>&1 </dev/null &
+  elif command -v perl >/dev/null 2>&1; then
+    perl -MPOSIX=setsid -e '
+      my @cmd = @ARGV;
+      defined(my $pid = fork) or die "fork: $!";
+      exit 0 if $pid;
+      setsid() or die "setsid: $!";
+      open STDIN, "<", "/dev/null" or die "stdin: $!";
+      exec @cmd or die "exec @cmd: $!";
+    ' "$@" >>"$LOG" 2>&1 &
+  else
+    nohup "$@" >>"$LOG" 2>&1 </dev/null &
+  fi
+}
+
 now_seconds() {
   date +%s
 }
@@ -195,13 +212,12 @@ restart_run() {
     return
   fi
   echo "  restarting $agent for $run_dir" | tee -a "$LOG"
-  (
+  run_detached_to_log env \
     RUN_AGENT_TIMEOUT_SECONDS="${RUN_AGENT_RESTART_TIMEOUT_SECONDS:-900}" \
     RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS="${RUN_AGENT_RESTART_NO_OUTPUT_DIAGNOSTICS_SECONDS:-180}" \
     RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS="${RUN_AGENT_RESTART_NO_OUTPUT_TIMEOUT_SECONDS:-300}" \
     RUN_AGENT_PREFLIGHT_WATCH=0 \
     "$BASE_DIR/run-agent.sh" "$agent" "$cwd" "$prompt"
-  ) >>"$LOG" 2>&1 &
 }
 
 while true; do
@@ -241,6 +257,7 @@ while true; do
         fi
       else
         echo "  $run_dir: PID $pid finished" | tee -a "$LOG"
+        rm -f "$pid_file" 2>/dev/null || true
       fi
       continue
     fi

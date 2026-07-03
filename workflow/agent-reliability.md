@@ -24,7 +24,7 @@ A later 2026-06-30 stall was a different orchestration failure, not an X server 
 
 `run-agent.sh` now `exec`s the agent from the run-directory child process, so `PID=` is the real agent PID. It also writes `heartbeat.txt` while the agent runs and emits one early diagnostics file after a fully silent period. Use `RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS` only when a job is expected to print promptly; many `claude -p --output-format text` runs legitimately stay silent until their final answer.
 
-The latest repeat of this pattern was caused by setting `RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300` on a long `claude -p --output-format text` implementation/review prompt. The runner killed the agent after five silent minutes even though text-mode Claude commonly writes no stdout/stderr until completion. The runner now keeps the wall-clock timeout and silence diagnostics, but disables no-output termination for Claude text-mode runs unless `RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT=1` is set.
+An earlier repeat of this pattern was caused by setting `RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300` on a long `claude -p --output-format text` implementation/review prompt. The runner killed the agent after five silent minutes even though text-mode Claude commonly writes no stdout/stderr until completion. That exception later became its own failure mode: Claude review/scout jobs could sit silent with no effective output-idle kill. The runner now keeps output-idle termination enabled for Claude by default; set `RUN_AGENT_CLAUDE_DISABLE_TEXT_NO_OUTPUT_TIMEOUT=1` only for a deliberately long Claude text-mode run where waiting until the wall-clock timeout is acceptable.
 
 The 2026-06-30 20:39Z recurrence was another orchestration stall, not an X server hang:
 
@@ -50,11 +50,13 @@ The 2026-07-01 Gemini scout stall was a runner progress-accounting bug layered o
 
 The 2026-07-02 recurrence exposed a root-agent tooling failure rather than a repo runner failure. A bounded `wait_agent` returned completed results for several old built-in subagents, but a later `close_agent` call against a non-responsive old subagent blocked the whole root turn for more than an hour. Do not use built-in subagent lifecycle tools as part of the Ralph loop. For repo work, start agents only through `run-agent.sh`, and recover them only through `watch-agents.sh` so every timeout has persisted stdout/stderr, `run-info.txt`, heartbeat state, process lists, and JVM thread dumps.
 
-The later 2026-07-02 repeat showed that recovery itself also needs a hard boundary. `ralph-loop.sh` now defaults `RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300`, wraps its stale-agent recovery pulse in `RUN_AGENT_RECOVER_TIMEOUT_SECONDS=180`, and `watch-agents.sh` restarts inherit a 300-second output-idle kill threshold. The kill path still writes diagnostics before termination; the practical change is that restarted or newly launched agents no longer return to an unbounded silent wait by default. Claude text-mode runs still suppress no-output termination unless `RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT=1`, so use Codex/Gemini for bounded quorum slots when prompt latency matters.
+The later 2026-07-02 repeat showed that recovery itself also needs a hard boundary. `ralph-loop.sh` now defaults `RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300`, wraps its stale-agent recovery pulse in `RUN_AGENT_RECOVER_TIMEOUT_SECONDS=180`, and `watch-agents.sh` restarts inherit a 300-second output-idle kill threshold. The kill path still writes diagnostics before termination; the practical change is that restarted or newly launched agents no longer return to an unbounded silent wait by default.
 
-The follow-up recurrence showed one remaining escape hatch: direct `./run-agent.sh ...` invocations still inherited the upstream one-hour wall-clock default and disabled output-idle termination unless the caller set overrides. Direct runner calls now use the same operational defaults as `ralph-loop.sh`: 900 seconds wall clock, diagnostics after 180 seconds without new stdout/stderr bytes, and termination after 300 output-idle seconds. Claude text-mode still keeps the output-idle kill disabled unless `RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT=1`, because it may legitimately produce no text until completion; the wall-clock timeout and diagnostics still apply.
+The follow-up recurrence showed one remaining escape hatch: direct `./run-agent.sh ...` invocations still inherited the upstream one-hour wall-clock default and disabled output-idle termination unless the caller set overrides. Direct runner calls now use the same operational defaults as `ralph-loop.sh`: 900 seconds wall clock, diagnostics after 180 seconds without new stdout/stderr bytes, and termination after 300 output-idle seconds. Claude text-mode uses the same output-idle kill by default; disable it only with `RUN_AGENT_CLAUDE_DISABLE_TEXT_NO_OUTPUT_TIMEOUT=1`.
 
 The next recurrence risk was direct-runner preflight recovery itself. `run-agent.sh` started `watch-agents.sh` before the main run timeout loop existed, so a stuck watcher diagnostic/restart pulse could block the launch without producing a new run heartbeat. Direct preflight recovery is now bounded by `RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS` (default 180 seconds), and `ralph-loop.sh` passes its bounded recovery timeout through to direct-runner preflight.
+
+The 2026-07-03 recurrence had two orchestration causes. First, a Claude review inherited the old text-mode exception and recorded `EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS=0`; diagnostics showed a spawned MCP Steroid stdio JVM waiting in `McpStdioServer.readChunk`, with no active X server test JVM. Second, one-shot `watch-agents.sh` restarts launched `run-agent.sh` in a background subshell tied to the watcher process, so a restarted agent could disappear with a stale `pid.txt` and no `EXIT_CODE`. `run-agent.sh` now keeps Claude output-idle termination enabled by default, and `watch-agents.sh` restarts through a detached `setsid`/POSIX-Perl launcher while cleaning `pid.txt` for finished PIDs.
 
 The 2026-07-03 review pass exposed another non-hang failure mode: an agent launched two Gradle test commands concurrently while reviewing one staged diff. Both commands used the same project build directory and binary test-result store, producing `EOFException` and missing `in-progress-results-generic.bin` failures despite the implementation being correct. Parallel shell reads are fine, but project builds, tests, package tasks, IDE builds, and any command that writes under `build/` or `.gradle/` must be serialized.
 
@@ -128,9 +130,9 @@ For short scout prompts that should either answer quickly or fail with evidence,
 RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300
 ```
 
-For Claude text-mode scout prompts, that kill switch is intentionally ignored unless forced:
+For a deliberately long Claude text-mode run where no-output termination should be disabled:
 
 ```bash
-RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT=1 \
+RUN_AGENT_CLAUDE_DISABLE_TEXT_NO_OUTPUT_TIMEOUT=1 \
 RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300
 ```

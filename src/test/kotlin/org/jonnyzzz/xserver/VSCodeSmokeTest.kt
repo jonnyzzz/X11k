@@ -99,6 +99,38 @@ class VSCodeSmokeTest {
     }
 
     @Test
+    fun `vscode visual region metrics identify code window and mismatch bounds`() {
+        val text = """
+            Window hierarchy and geometry:
+            - 0x26 parent=none label="root" geometry=0,0 20x10 class=InputOutput depth=24 visual=0x28 backgroundPixel=0 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=0
+            - 0x200003 parent=0x26 label="code" geometry=2,1 10x6 class=InputOutput depth=24 visual=0x28 backgroundPixel=0 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=true stack=1
+        """.trimIndent()
+        val expected = solidImage(20, 10, 0xffff_ffff.toInt()).also {
+            fillRect(it, Rectangle(2, 1, 10, 6), 0xff12_3456.toInt())
+        }
+        val actualRobot = solidImage(20, 10, 0xffff_ffff.toInt()).also {
+            fillRect(it, Rectangle(2, 1, 10, 6), 0xff12_3456.toInt())
+            fillRect(it, Rectangle(5, 3, 2, 1), 0xffff_ffff.toInt())
+        }
+        val actualSvg = solidImage(20, 10, 0xffff_ffff.toInt()).also {
+            fillRect(it, Rectangle(2, 1, 10, 6), 0xff12_3456.toInt())
+        }
+
+        val metrics = vscodeVisualRegionMetrics(
+            text = text,
+            expected = visualCapture(expected),
+            actualRobot = visualCapture(actualRobot),
+            actualSvg = visualCapture(actualSvg),
+        )
+
+        assertTrue(metrics.contains("vscodeWindow=2,1 10x6"), metrics)
+        assertTrue(metrics.contains("leftMargin=2"), metrics)
+        assertTrue(metrics.contains("robotInsideWindowCoverageRatio=0.9666666666666667"), metrics)
+        assertTrue(metrics.contains("robotMismatchBounds=5,3 2x1"), metrics)
+        assertTrue(metrics.contains("svgMismatchBounds=none"), metrics)
+    }
+
+    @Test
     fun `vscode from official tarball starts against kotlin x server`() {
         assumeTrue(
             System.getProperty("x.vscodeSmoke") == "true" || System.getenv("X_VSCODE_SMOKE") == "true",
@@ -594,6 +626,21 @@ class VSCodeSmokeTest {
         return Base64.getEncoder().encodeToString(output.toByteArray())
     }
 
+    private fun solidImage(width: Int, height: Int, argb: Int): BufferedImage =
+        BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB).also {
+            fillRect(it, Rectangle(0, 0, width, height), argb)
+        }
+
+    private fun fillRect(image: BufferedImage, rectangle: Rectangle, argb: Int) {
+        val graphics = image.createGraphics()
+        try {
+            graphics.color = java.awt.Color(argb, true)
+            graphics.fillRect(rectangle.x, rectangle.y, rectangle.width, rectangle.height)
+        } finally {
+            graphics.dispose()
+        }
+    }
+
     private fun compileRobotCapture(container: GenericContainer<*>) {
         val result = container.execInContainer(
             "sh",
@@ -690,6 +737,14 @@ class VSCodeSmokeTest {
         File(directory, "vscode-diagnostics.txt").writeText(vscodeDiagnosticsSummary(actual.text, logs))
         dumpVSCodeVisualDiff(directory, "vscode-kotlin-robot-vs-xvfb", reference.robot, actual.robot)
         dumpVSCodeVisualDiff(directory, "vscode-kotlin-svg-vs-xvfb", reference.robot, composedSvgCapture)
+        File(directory, "vscode-visual-region-metrics.txt").writeText(
+            vscodeVisualRegionMetrics(
+                text = actual.text,
+                expected = reference.robot,
+                actualRobot = actual.robot,
+                actualSvg = composedSvgCapture,
+            ),
+        )
         File(directory, "vscode-visual-metrics.txt").writeText(
             buildString {
                 appendLine("screen=${reference.robot.width}x${reference.robot.height}")
@@ -802,6 +857,137 @@ class VSCodeSmokeTest {
             },
         )
     }
+
+    private fun vscodeVisualRegionMetrics(
+        text: String,
+        expected: VisualCapture,
+        actualRobot: VisualCapture,
+        actualSvg: VisualCapture,
+    ): String {
+        val window = largestMappedRootChildWindow(text)
+        return buildString {
+            appendLine("screen=${expected.width}x${expected.height}")
+            appendLine("expectedFullScreen=$expected")
+            appendLine("robotFullScreen=$actualRobot")
+            appendLine("svgFullScreen=$actualSvg")
+            if (window == null) {
+                appendLine("vscodeWindow=none")
+                return@buildString
+            }
+            appendLine("vscodeWindow=${window.x},${window.y} ${window.width}x${window.height}")
+            appendLine("vscodeWindowArea=${window.width * window.height}")
+            appendLine("topMargin=${window.y}")
+            appendLine("leftMargin=${window.x}")
+            appendLine("rightMargin=${(expected.width - window.x - window.width).coerceAtLeast(0)}")
+            appendLine("bottomMargin=${(expected.height - window.y - window.height).coerceAtLeast(0)}")
+            appendLine("expectedInsideWindow=${regionCapture(expected.image, window)}")
+            appendLine("robotInsideWindow=${regionCapture(actualRobot.image, window)}")
+            appendLine("svgInsideWindow=${regionCapture(actualSvg.image, window)}")
+            appendLine("expectedOutsideWindowNonWhitePixels=${outsideRegionNonWhitePixels(expected.image, window)}")
+            appendLine("robotOutsideWindowNonWhitePixels=${outsideRegionNonWhitePixels(actualRobot.image, window)}")
+            appendLine("svgOutsideWindowNonWhitePixels=${outsideRegionNonWhitePixels(actualSvg.image, window)}")
+            appendLine(
+                "robotInsideWindowCoverageRatio=${
+                    ratio(
+                        regionCapture(actualRobot.image, window).nonWhitePixels,
+                        regionCapture(expected.image, window).nonWhitePixels,
+                    )
+                }",
+            )
+            appendLine(
+                "svgInsideWindowCoverageRatio=${
+                    ratio(
+                        regionCapture(actualSvg.image, window).nonWhitePixels,
+                        regionCapture(expected.image, window).nonWhitePixels,
+                    )
+                }",
+            )
+            appendLine("robotInsideWindowSampledDistance=${imageDistance(regionImage(expected.image, window), regionImage(actualRobot.image, window))}")
+            appendLine("svgInsideWindowSampledDistance=${imageDistance(regionImage(expected.image, window), regionImage(actualSvg.image, window))}")
+            appendLine("robotMismatchBounds=${mismatchBounds(expected.image, actualRobot.image).toMetricString()}")
+            appendLine("svgMismatchBounds=${mismatchBounds(expected.image, actualSvg.image).toMetricString()}")
+            appendLine("robotInsideWindowMismatchBounds=${mismatchBounds(regionImage(expected.image, window), regionImage(actualRobot.image, window)).toMetricString()}")
+            appendLine("svgInsideWindowMismatchBounds=${mismatchBounds(regionImage(expected.image, window), regionImage(actualSvg.image, window)).toMetricString()}")
+        }
+    }
+
+    private fun largestMappedRootChildWindow(text: String): Rectangle? {
+        val rootId = Regex("""-\s+(0x[0-9a-fA-F]+)\s+parent=\S+\s+label="root"""")
+            .find(text)
+            ?.groupValues
+            ?.get(1)
+            ?: return null
+        return Regex(
+            """-\s+0x[0-9a-fA-F]+\s+parent=${Regex.escape(rootId)}\b[^\n]*\bgeometry=(-?\d+),(-?\d+)\s+(\d+)x(\d+)[^\n]*\bmapped=true\b""",
+        )
+            .findAll(text)
+            .map { match ->
+                Rectangle(
+                    match.groupValues[1].toInt(),
+                    match.groupValues[2].toInt(),
+                    match.groupValues[3].toInt(),
+                    match.groupValues[4].toInt(),
+                )
+            }
+            .filter { it.width > 0 && it.height > 0 }
+            .maxByOrNull { it.width.toLong() * it.height.toLong() }
+    }
+
+    private fun regionCapture(image: BufferedImage, region: Rectangle): VisualCapture =
+        visualCapture(regionImage(image, region))
+
+    private fun regionImage(image: BufferedImage, region: Rectangle): BufferedImage {
+        val x = region.x.coerceIn(0, image.width)
+        val y = region.y.coerceIn(0, image.height)
+        val right = (region.x + region.width).coerceIn(0, image.width)
+        val bottom = (region.y + region.height).coerceIn(0, image.height)
+        val width = (right - x).coerceAtLeast(1)
+        val height = (bottom - y).coerceAtLeast(1)
+        val copy = BufferedImage(width, height, BufferedImage.TYPE_INT_RGB)
+        val graphics = copy.createGraphics()
+        try {
+            graphics.drawImage(image, 0, 0, width, height, x, y, x + width, y + height, null)
+        } finally {
+            graphics.dispose()
+        }
+        return copy
+    }
+
+    private fun outsideRegionNonWhitePixels(image: BufferedImage, region: Rectangle): Int {
+        var nonWhite = 0
+        for (y in 0 until image.height) {
+            for (x in 0 until image.width) {
+                if (region.contains(x, y)) continue
+                val argb = image.getRGB(x, y)
+                val alpha = (argb ushr 24) and 0xff
+                val rgb = argb and 0x00ff_ffff
+                if (alpha > 0 && rgb != 0x00ff_ffff) nonWhite++
+            }
+        }
+        return nonWhite
+    }
+
+    private fun mismatchBounds(expected: BufferedImage, actual: BufferedImage): Rectangle? {
+        val width = minOf(expected.width, actual.width)
+        val height = minOf(expected.height, actual.height)
+        var minX = Int.MAX_VALUE
+        var minY = Int.MAX_VALUE
+        var maxX = -1
+        var maxY = -1
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                if (rgbDistance(expected.getRGB(x, y), actual.getRGB(x, y)) == 0) continue
+                minX = minOf(minX, x)
+                minY = minOf(minY, y)
+                maxX = maxOf(maxX, x)
+                maxY = maxOf(maxY, y)
+            }
+        }
+        return if (maxX < minX || maxY < minY) null else Rectangle(minX, minY, maxX - minX + 1, maxY - minY + 1)
+    }
+
+    private fun Rectangle?.toMetricString(): String =
+        this?.let { "${it.x},${it.y} ${it.width}x${it.height}" } ?: "none"
 
     private fun vscodeDiagnosticsSummary(text: String, logs: List<VSCodeLogArtifact>): String =
         buildString {

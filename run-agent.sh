@@ -73,11 +73,11 @@ Configuration (env variables):
   RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS
                       Terminate after this many seconds with no new stdout/stderr bytes
                       (default: 300, 0 disables)
-  RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT
-                      Set to 1 to allow RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS for
-                      claude -p text-mode runs. By default those runs only emit
-                      a final answer, so silence triggers diagnostics but not a
-                      no-output kill.
+  RUN_AGENT_CLAUDE_DISABLE_TEXT_NO_OUTPUT_TIMEOUT
+                      Set to 1 to disable RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS for
+                      claude -p text-mode runs. The default keeps the
+                      output-idle kill enabled so review/scout jobs fail closed
+                      after diagnostics instead of silently blocking the loop.
   RUN_AGENT_CLAUDE_SAFE_MODE
                       Run claude with --safe-mode to disable MCP/plugins/hooks
                       for bounded run-agent jobs (default: 1, set 0 to disable)
@@ -368,14 +368,14 @@ RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS="${RUN_AGENT_DIAGNOSTICS_COMMAND_T
 RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS="${RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS:-5}"
 RUN_AGENT_THREAD_DUMP_MAX_JVMS="${RUN_AGENT_THREAD_DUMP_MAX_JVMS:-5}"
 RUN_AGENT_POLL_SECONDS="${RUN_AGENT_POLL_SECONDS:-5}"
-RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT="${RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT:-0}"
+RUN_AGENT_CLAUDE_DISABLE_TEXT_NO_OUTPUT_TIMEOUT="${RUN_AGENT_CLAUDE_DISABLE_TEXT_NO_OUTPUT_TIMEOUT:-0}"
 EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS="$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS"
 NO_OUTPUT_TIMEOUT_NOTE=""
 if [ "$AGENT" = "claude" ] && \
    [ "$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS" -gt 0 ] && \
-   [ "$RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT" != "1" ]; then
+   [ "$RUN_AGENT_CLAUDE_DISABLE_TEXT_NO_OUTPUT_TIMEOUT" = "1" ]; then
   EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS=0
-  NO_OUTPUT_TIMEOUT_NOTE="disabled for claude text output; set RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT=1 to force it"
+  NO_OUTPUT_TIMEOUT_NOTE="disabled for claude text output by RUN_AGENT_CLAUDE_DISABLE_TEXT_NO_OUTPUT_TIMEOUT=1"
 fi
 
 now_seconds() {

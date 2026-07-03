@@ -161,8 +161,8 @@ scripts/run-gradle-bounded.sh test --tests org.jonnyzzz.xserver.VSCodeSmokeTest 
 
 The VSCode parity probe writes its current Xvfb reference, Kotlin Robot capture,
 Kotlin SVG-composed capture, raw `/screen.svg`, `/text.txt`, SVG layer inventory,
-visual diffs, metrics, extension/GLX diagnostics, and VSCode logs under
-`build/tmp/vscode-smoke/`.
+visual diffs, full-screen metrics, visual region metrics, extension/GLX
+diagnostics, and VSCode logs under `build/tmp/vscode-smoke/`.
 
 Run the prototype server:
 
