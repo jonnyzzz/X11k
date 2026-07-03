@@ -25,7 +25,7 @@ It can run the first Docker smoke matrix against real X clients:
 - `twm` with overlapping app windows
 - IntelliJ IDEA Community from GitHub releases in an opt-in heavyweight smoke
 
-The graphical apps are still compatibility smoke tests rather than full visual conformance tests. Rendering now includes the maintained window model, `PutImage` pixel data, XRender fills/composites/glyphs, painted pixmap/offscreen surfaces in SVG previews, and automated Xvfb-vs-Kotlin parity coverage for deterministic Java2D/AWT primitives through both Robot screenshots and SVG-exported framebuffers. More X drawing semantics are still pending, especially GL/JCEF-backed paths and broader app-managed surface presentation.
+The graphical apps are still compatibility smoke tests rather than full visual conformance tests. Rendering now includes the maintained window model, `PutImage` pixel data, XRender fills/composites/glyphs, painted pixmap/offscreen surfaces in SVG previews, and automated Xvfb-vs-Kotlin Robot parity coverage for deterministic Java2D/AWT primitives and overlapping Swing windows. The single-window primitive probe also compares the Kotlin server's SVG-exported framebuffer against the Xvfb reference. More X drawing semantics are still pending, especially GL/JCEF-backed paths and broader app-managed surface presentation.
 
 The same TCP port also serves HTTP for agent observation:
 

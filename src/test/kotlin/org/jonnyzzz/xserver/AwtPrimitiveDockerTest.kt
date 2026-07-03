@@ -74,8 +74,16 @@ class AwtPrimitiveDockerTest {
     fun `awt robot screenshot roughly matches xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
-        val reference = runRobotProbeAgainstXvfb()
-        val actual = runRobotProbeAgainstKotlinServer(port = 6213)
+        val reference = runRobotProbeAgainstXvfb(
+            mainClass = "VisualParityProbe",
+            source = VisualParityProbeSource,
+        )
+        val actual = runRobotProbeAgainstKotlinServer(
+            port = 6213,
+            title = "AWT Visual Parity Probe",
+            mainClass = "VisualParityProbe",
+            source = VisualParityProbeSource,
+        )
 
         assertContains(actual.text, "AWT Visual Parity Probe")
         assertContains(actual.text, "RENDER.")
@@ -94,6 +102,37 @@ class AwtPrimitiveDockerTest {
             expected = reference,
             actual = exportedFramebuffer,
             label = "Kotlin SVG exported framebuffer",
+        )
+    }
+
+    @Test
+    fun `awt overlapping windows robot screenshot roughly matches xvfb reference`() {
+        assumeDockerAndImage(CLIENT_IMAGE)
+        assumeDockerAndImage(REFERENCE_IMAGE)
+        val reference = runRobotProbeAgainstXvfb(
+            mainClass = "VisualOverlapProbe",
+            source = VisualOverlapProbeSource,
+        )
+        val actual = runRobotProbeAgainstKotlinServer(
+            port = 6214,
+            title = "AWT Overlap Parity Probe",
+            mainClass = "VisualOverlapProbe",
+            source = VisualOverlapProbeSource,
+        )
+
+        assertContains(actual.text, "AWT Overlap Parity Probe")
+        assertContains(actual.text, "overlaps")
+        assertContains(actual.text, "RENDER.")
+        assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected Kotlin SVG export to retain framebuffer images for the overlapping window probe")
+        assertTrue(
+            actual.exportedFramebuffers.any { it.width == 360 && it.height == 240 } &&
+                actual.exportedFramebuffers.any { it.width == 230 && it.height == 165 },
+            "Overlapping Java windows should expose framebuffer-backed surfaces for both top-level windows; exported=${actual.exportedFramebuffers}\n${actual.text}",
+        )
+        assertVisualCaptureClose(
+            expected = reference,
+            actual = actual.robot,
+            label = "Kotlin overlapping-window Robot screenshot",
         )
     }
 
@@ -191,12 +230,15 @@ class AwtPrimitiveDockerTest {
         }
     }
 
-    private fun runRobotProbeAgainstXvfb(): VisualProbeCapture {
+    private fun runRobotProbeAgainstXvfb(
+        mainClass: String,
+        source: String,
+    ): VisualProbeCapture {
         GenericContainer(DockerImageName.parse(REFERENCE_IMAGE).asCompatibleSubstituteFor("ubuntu"))
             .withCommand("sleep", "120")
             .use { container ->
                 container.start()
-                compileProbe(container, "VisualParityProbe", VisualParityProbeSource)
+                compileProbe(container, mainClass, source)
                 val result = container.execInContainer(
                     "sh",
                     "-lc",
@@ -204,13 +246,13 @@ class AwtPrimitiveDockerTest {
                     set -eu
                     Xvfb :99 -screen 0 640x480x24 >/tmp/xvfb.log 2>&1 &
                     xvfb=${'$'}!
+                    trap 'kill "${'$'}xvfb" 2>/dev/null || true' EXIT
                     for _ in ${'$'}(seq 1 40); do
                       DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && break
                       sleep 0.25
                     done
-                    DISPLAY=:99 java -cp /tmp -Djava.awt.headless=false -Dsun.java2d.xrender=True -Dsun.java2d.opengl=false VisualParityProbe
+                    DISPLAY=:99 java -cp /tmp -Djava.awt.headless=false -Dsun.java2d.xrender=True -Dsun.java2d.opengl=false $mainClass
                     status=${'$'}?
-                    kill "${'$'}xvfb" 2>/dev/null || true
                     exit "${'$'}status"
                     """.trimIndent(),
                 )
@@ -219,7 +261,12 @@ class AwtPrimitiveDockerTest {
             }
     }
 
-    private fun runRobotProbeAgainstKotlinServer(port: Int): KotlinVisualProbeResult {
+    private fun runRobotProbeAgainstKotlinServer(
+        port: Int,
+        title: String,
+        mainClass: String,
+        source: String,
+    ): KotlinVisualProbeResult {
         assumeTrue(isPortAvailable(port), "Port $port is not available")
         XServer(ServerOptions(host = "0.0.0.0", port = port, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -227,7 +274,7 @@ class AwtPrimitiveDockerTest {
                 .withCommand("sleep", "120")
                 .use { container ->
                     container.start()
-                    compileProbe(container, "VisualParityProbe", VisualParityProbeSource)
+                    compileProbe(container, mainClass, source)
                     val display = port - 6000
                     val startResult = container.execInContainer(
                         "sh",
@@ -239,7 +286,7 @@ class AwtPrimitiveDockerTest {
                           -Dsun.java2d.xrender=True \
                           -Dsun.java2d.opengl=false \
                           -DvisualProbe.holdMillis=60000 \
-                          VisualParityProbe >/tmp/visual-parity.log 2>&1 &
+                          $mainClass >/tmp/visual-parity.log 2>&1 &
                         echo ${'$'}! >/tmp/visual-parity.pid
                         """.trimIndent(),
                     )
@@ -255,7 +302,7 @@ class AwtPrimitiveDockerTest {
                         val log = container.execInContainer("sh", "-lc", "cat /tmp/visual-parity.log 2>/dev/null || true")
                         val currentText = httpGet(port, "/text.txt")
                         log.stdout.contains("PNG_BASE64=") &&
-                            currentText.contains("AWT Visual Parity Probe") &&
+                            currentText.contains(title) &&
                             currentText.contains("RENDER.") &&
                             httpGet(port, "/screen.svg").hasSvgClass("framebuffer-image")
                     }
@@ -353,7 +400,9 @@ class AwtPrimitiveDockerTest {
             }
         }
         val pixels = image.width * image.height
-        val samples = VisualProbeSamplePoints.associateWith { point -> image.getRGB(point.first, point.second) }
+        val samples = VisualProbeSamplePoints
+            .filter { point -> point.first in 0 until image.width && point.second in 0 until image.height }
+            .associateWith { point -> image.getRGB(point.first, point.second) }
         return VisualProbeCapture(
             width = image.width,
             height = image.height,
@@ -762,6 +811,111 @@ class AwtPrimitiveDockerTest {
 
                     g.setColor(new Color(255, 255, 255));
                     g.drawLine(20, 216, 338, 204);
+                  } finally {
+                    g.dispose();
+                  }
+                }
+              }
+            }
+            """.trimIndent()
+
+        val VisualOverlapProbeSource =
+            """
+            import java.awt.AlphaComposite;
+            import java.awt.Color;
+            import java.awt.Font;
+            import java.awt.Graphics;
+            import java.awt.Graphics2D;
+            import java.awt.Point;
+            import java.awt.Rectangle;
+            import java.awt.RenderingHints;
+            import java.awt.Robot;
+            import java.awt.image.BufferedImage;
+            import java.io.ByteArrayOutputStream;
+            import java.util.Base64;
+            import javax.imageio.ImageIO;
+            import javax.swing.JComponent;
+            import javax.swing.JFrame;
+            import javax.swing.SwingUtilities;
+
+            public class VisualOverlapProbe {
+              public static void main(String[] args) throws Exception {
+                final JFrame[] frames = new JFrame[2];
+                SwingUtilities.invokeAndWait(() -> {
+                  JFrame lower = new JFrame("AWT Overlap Parity Probe lower");
+                  lower.setUndecorated(true);
+                  lower.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+                  lower.setBounds(40, 40, 360, 240);
+                  lower.setContentPane(new LayerComponent(false));
+                  lower.setVisible(true);
+                  ((JComponent) lower.getContentPane()).paintImmediately(0, 0, 360, 240);
+
+                  JFrame upper = new JFrame("AWT Overlap Parity Probe upper");
+                  upper.setUndecorated(true);
+                  upper.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+                  upper.setBounds(150, 95, 230, 165);
+                  upper.setContentPane(new LayerComponent(true));
+                  upper.setVisible(true);
+                  upper.toFront();
+                  ((JComponent) upper.getContentPane()).paintImmediately(0, 0, 230, 165);
+
+                  frames[0] = lower;
+                  frames[1] = upper;
+                });
+                Thread.sleep(1000);
+                Point origin = frames[0].getLocationOnScreen();
+                BufferedImage image = new Robot().createScreenCapture(new Rectangle(origin.x, origin.y, 360, 240));
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                ImageIO.write(image, "png", output);
+                System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
+                System.out.flush();
+                long holdMillis = Long.getLong("visualProbe.holdMillis", 0L);
+                if (holdMillis > 0L) {
+                  Thread.sleep(holdMillis);
+                }
+                SwingUtilities.invokeAndWait(() -> {
+                  frames[1].dispose();
+                  frames[0].dispose();
+                });
+              }
+
+              static final class LayerComponent extends JComponent {
+                private final boolean upper;
+
+                LayerComponent(boolean upper) {
+                  this.upper = upper;
+                }
+
+                @Override
+                protected void paintComponent(Graphics graphics) {
+                  Graphics2D g = (Graphics2D) graphics.create();
+                  try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    if (upper) {
+                      g.setColor(new Color(30, 42, 70));
+                      g.fillRect(0, 0, getWidth(), getHeight());
+                      g.setComposite(AlphaComposite.SrcOver.derive(0.82f));
+                      g.setColor(new Color(64, 196, 125));
+                      g.fillOval(18, 18, 142, 108);
+                      g.setComposite(AlphaComposite.SrcOver);
+                      g.setColor(new Color(255, 216, 64));
+                      g.fillRect(106, 42, 90, 76);
+                      g.setColor(Color.WHITE);
+                      g.setFont(new Font("SansSerif", Font.BOLD, 22));
+                      g.drawString("upper", 28, 146);
+                    } else {
+                      g.setColor(new Color(20, 30, 50));
+                      g.fillRect(0, 0, getWidth(), getHeight());
+                      g.setColor(new Color(230, 50, 44));
+                      g.fillRect(20, 20, 110, 70);
+                      g.setComposite(AlphaComposite.SrcOver.derive(0.58f));
+                      g.setColor(new Color(42, 168, 255));
+                      g.fillRect(78, 54, 132, 92);
+                      g.setComposite(AlphaComposite.SrcOver);
+                      g.setColor(new Color(238, 244, 250));
+                      g.setFont(new Font("SansSerif", Font.BOLD, 22));
+                      g.drawString("lower", 26, 142);
+                    }
                   } finally {
                     g.dispose();
                   }
