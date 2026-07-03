@@ -614,6 +614,7 @@ internal object SvgScreenRenderer {
             .firstOrNull { window.id in it.matchingWindowIds }
             ?: candidates.firstOrNull()
             ?: return
+        if (!shouldUsePixmapSurface(snapshot, window, pixmap)) return
         builder.element("section", "class" to "primary-surface") {
             element("header") {
                 element("strong") { text("Best painted surface") }
@@ -1032,9 +1033,7 @@ internal object SvgScreenRenderer {
             .firstOrNull { window.id in it.matchingWindowIds }
         val pixmapSurface = pixmap?.let(::pixmapDisplaySurface)
         if (pixmapSurface != null) {
-            val windowPaintIndex = snapshot.latestFramebufferPaintIndex(window.id, window.generation)
-            val pixmapPaintIndex = snapshot.latestFramebufferPaintIndex(pixmap.id, pixmap.generation)
-            if (windowPaintIndex < 0 || pixmapPaintIndex > windowPaintIndex) return pixmapSurface
+            if (shouldUsePixmapSurface(snapshot, window, pixmap)) return pixmapSurface
         }
         window.framebufferDataUri?.let {
             return XDisplaySurface(
@@ -1059,6 +1058,12 @@ internal object SvgScreenRenderer {
             pixmapIdHex = pixmap.idHex,
             pictureIdHex = pixmap.retainedPictureIdHex,
         )
+    }
+
+    private fun shouldUsePixmapSurface(snapshot: XScreenSnapshot, window: XWindowSnapshot, pixmap: XPixmapSnapshot): Boolean {
+        val windowPaintIndex = snapshot.latestFramebufferPaintIndex(window.id, window.generation)
+        val pixmapPaintIndex = snapshot.latestFramebufferPaintIndex(pixmap.id, pixmap.generation)
+        return windowPaintIndex < 0 || pixmapPaintIndex > windowPaintIndex
     }
 
     // Covering pixmap matching is a presentation heuristic for IDE backing stores;

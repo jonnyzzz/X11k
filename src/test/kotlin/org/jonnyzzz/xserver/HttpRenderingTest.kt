@@ -660,6 +660,13 @@ class HttpRenderingTest {
                 assertContains(svg, """data-source="window-framebuffer"""")
                 assertFalse(svg.contains("""class="framebuffer-image backing-pixmap-image""""))
                 assertFalse(svg.contains("""data-source="matching-pixmap""""))
+
+                val html = httpGet(server.localPort, "/").body
+                assertContains(html, "direct window target")
+                assertFalse(
+                    html.contains("Best painted surface"),
+                    "HTML preview must not promote a stale backing pixmap after the window framebuffer is newer",
+                )
             }
 
             server.close()
