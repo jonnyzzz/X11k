@@ -34,13 +34,13 @@ the `jonnyzzz-x/x11-reference:latest` comparison image; the normal
 The AWT/Swing Java2D probes compare client-side `Robot` captures against Xvfb for deterministic primitives, overlapping Swing windows, owned popup windows, owned dialog windows, heavyweight popup menus, menu dropdown popups, combo-box dropdowns, Swing tooltips, dense `JTable`/`JTree` scroll-pane content, standard form controls such as text fields, checkboxes, sliders, progress bars, buttons, and text areas, IDE-style tabbed split-pane layouts with lists and editor text, desktop-pane internal-frame layouts, and layered/glass-pane overlays. They also compare the Kotlin server's exported SVG framebuffer for the single-window primitive, dense Swing, form-controls, tabbed split-pane, desktop-pane, and layered-overlay probes, plus the composed SVG framebuffer stack for overlapping windows and heavyweight popup surfaces. The `xlogo`, `xclock`, `xeyes`, `xcalc`, and `xterm` real-client probes now compare both Robot output and composed SVG output against Xvfb with rough rasterization tolerance for core `FillPoly` edge coverage, `PutImage` clock-face rasterization, shaped `RENDER.Trapezoids` eyes/pupils, mapped child-window borders, and synthetic fixed-font `ImageText8` text. IntelliJ still needs broader SVG/HTML parity coverage for larger retained surfaces and GL/JCEF-backed paths.
 
 The IntelliJ smoke is excluded from default `test` because it downloads the current GitHub release tarball.
-Build `jonnyzzz-x/x11-client:latest` first with `./gradlew dockerBuildX11Client`, then run it explicitly with `-Dx.intellijSmoke=true`.
+Build `jonnyzzz-x/x11-client:latest` first with `scripts/run-gradle-bounded.sh dockerBuildX11Client`, then run it explicitly with `-Dx.intellijSmoke=true`.
 
 Build all local Docker images before the default Docker-backed test matrix:
 
 ```bash
-./gradlew dockerBuildX11Images
-./gradlew test
+scripts/run-gradle-bounded.sh dockerBuildX11Images
+scripts/run-gradle-bounded.sh test
 ```
 
 ## Differential Output

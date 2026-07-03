@@ -58,10 +58,13 @@ The next recurrence risk was direct-runner preflight recovery itself. `run-agent
 
 The 2026-07-03 review pass exposed another non-hang failure mode: an agent launched two Gradle test commands concurrently while reviewing one staged diff. Both commands used the same project build directory and binary test-result store, producing `EOFException` and missing `in-progress-results-generic.bin` failures despite the implementation being correct. Parallel shell reads are fine, but project builds, tests, package tasks, IDE builds, and any command that writes under `build/` or `.gradle/` must be serialized.
 
+The current root-side adjustment is `scripts/run-gradle-bounded.sh`. It serializes Gradle with a repository lock, always uses `--no-daemon --max-workers=1 -Dkotlin.incremental=false`, enforces a wall-clock timeout, and writes `jps` plus Java thread dumps before terminating the Gradle process tree. Use it for routine local verification instead of bare `./gradlew` unless a one-off experiment explicitly needs different Gradle flags.
+
 ## Required Practice
 
-- Start long commands through `timeout` or with `RUN_AGENT_TIMEOUT_SECONDS` set.
+- Start long commands through `timeout`, `scripts/run-gradle-bounded.sh`, or with `RUN_AGENT_TIMEOUT_SECONDS` set.
 - Never run Gradle, Maven, IDE build, test, package, or other build-directory-writing commands in parallel for this repository. Queue them one at a time, using `--no-daemon --max-workers=1 -Dkotlin.incremental=false` for Gradle checks unless a task explicitly needs different settings.
+- Prefer `scripts/run-gradle-bounded.sh <tasks...>` for Gradle checks. It holds the repo Gradle lock and captures JVM diagnostics before killing a timed-out run.
 - Before killing a suspected stuck JVM workload, collect `jps -lm` plus `jcmd <pid> Thread.print` or `jstack <pid>`.
 - Before restarting a silent run-agent, inspect its `heartbeat.txt`, `run-info.txt`, any `DIAGNOSTICS=...` entries, and stdout/stderr sizes.
 - For agents that print startup text and then may idle, trust `OUTPUT_IDLE_SECONDS`, not total output size.
@@ -111,6 +114,12 @@ RUN_AGENT_TIMEOUT_SECONDS=900 \
 RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS=180 \
 RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300 \
 timeout 990 ./ralph-loop.sh review codex
+```
+
+Use this shape for repository Gradle checks:
+
+```bash
+GRADLE_TIMEOUT_SECONDS=1800 scripts/run-gradle-bounded.sh test --console=plain
 ```
 
 For short scout prompts that should either answer quickly or fail with evidence, keep or lower:

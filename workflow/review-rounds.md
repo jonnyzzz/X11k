@@ -23,7 +23,7 @@ Outcome:
 When available, run:
 
 ```bash
-RUN_AGENT_TIMEOUT_SECONDS=1800 ./run-agent.sh claude /Users/jonnyzzz/Work/jonnyzzz-x /Users/jonnyzzz/Work/jonnyzzz-x/THE_PROMPT_v5_review.md
+RUN_AGENT_TIMEOUT_SECONDS=1800 ./ralph-loop.sh review codex
 ```
 
 or the local equivalent provided by the environment, and append findings here before changing the roadmap.

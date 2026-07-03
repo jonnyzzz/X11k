@@ -67,14 +67,14 @@ The test suite starts with:
 ## Development
 
 ```bash
-./gradlew test
+scripts/run-gradle-bounded.sh test
 ```
 
 Docker integration tests require Docker to be available to the current user. Build the local test/demo images before running Docker-backed tests:
 
 ```bash
-./gradlew dockerBuildX11Images
-./gradlew test
+scripts/run-gradle-bounded.sh dockerBuildX11Images
+scripts/run-gradle-bounded.sh test
 ```
 
 There are two local images:
@@ -85,7 +85,7 @@ There are two local images:
 Build only the reusable X11 client image before running heavyweight GUI demos:
 
 ```bash
-./gradlew dockerBuildX11Client
+scripts/run-gradle-bounded.sh dockerBuildX11Client
 ```
 
 The IntelliJ release archive is intentionally not baked into the image; `run-intellij`
@@ -97,14 +97,14 @@ container by default so the mounted repository opens directly.
 The IntelliJ Community smoke is intentionally opt-in because it downloads a large GitHub release artifact:
 
 ```bash
-./gradlew dockerBuildX11Client
-./gradlew test --tests org.jonnyzzz.xserver.IntellijCommunitySmokeTest -Dx.intellijSmoke=true
+scripts/run-gradle-bounded.sh dockerBuildX11Client
+scripts/run-gradle-bounded.sh test --tests org.jonnyzzz.xserver.IntellijCommunitySmokeTest -Dx.intellijSmoke=true
 ```
 
 Run the prototype server:
 
 ```bash
-./gradlew run --args='--host 0.0.0.0 --port 6000'
+GRADLE_TIMEOUT_SECONDS=3600 scripts/run-gradle-bounded.sh run --args='--host 0.0.0.0 --port 6000'
 ```
 
 Then point simple X clients at it with `DISPLAY=host:0`, or open `http://host:6000/` to inspect the maintained server model as SVG/text.
@@ -112,7 +112,7 @@ Then point simple X clients at it with `DISPLAY=host:0`, or open `http://host:60
 Run the 4K/100 DPI IntelliJ Docker demo:
 
 ```bash
-./gradlew installDist dockerBuildX11Client
+scripts/run-gradle-bounded.sh installDist dockerBuildX11Client
 docker rm -f x-demo-server x-demo-idea
 docker run -d --name x-demo-server \
   -p 6000:6000 -p 16000:6000 \
