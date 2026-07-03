@@ -878,17 +878,18 @@ class XvfbContainerTest {
                 val encoded = Regex("""\bhref="data:image/png;base64,([A-Za-z0-9+/=]+)"""").find(tag)?.groupValues?.get(1)
                 if (encoded == null) {
                     if (!tag.hasSvgClass("window-border")) return@mapNotNull null
+                    val borderId = Regex("""\bdata-border-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1)
                     val fill = Regex("""\bfill="#([0-9a-fA-F]{6})"""").find(tag)?.groupValues?.get(1)?.toInt(16)
                         ?: return@mapNotNull null
                     return@mapNotNull EmbeddedPng(
-                        id = id ?: "window-border",
+                        id = borderId ?: id ?: "window-border",
                         bytes = null,
                         fill = 0xff00_0000.toInt() or fill,
                         x = x,
                         y = y,
                         width = width,
                         height = height,
-                        clipRectangles = emptyList(),
+                        clipRectangles = svgClipPathId(tag)?.let { clipRectangles[it] }.orEmpty(),
                     )
                 }
                 EmbeddedPng(
@@ -899,11 +900,16 @@ class XvfbContainerTest {
                     y = y,
                     width = width,
                     height = height,
-                    clipRectangles = id?.let { clipRectangles["clip-screen-${it.removePrefix("0x")}"] }.orEmpty(),
+                    clipRectangles = svgClipPathId(tag)
+                        ?.let { clipRectangles[it] }
+                        ?: id?.let { clipRectangles["clip-screen-${it.removePrefix("0x")}"] }.orEmpty(),
                 )
             }
             .toList()
     }
+
+    private fun svgClipPathId(tag: String): String? =
+        Regex("""\bclip-path="url\(#([^)"']+)\)"""").find(tag)?.groupValues?.get(1)
 
     private fun svgClipRectangles(svg: String): Map<String, List<Rectangle>> =
         Regex("""<clipPath\b[^>]*\bid="([^"]+)"[^>]*>(.*?)</clipPath>""", setOf(RegexOption.DOT_MATCHES_ALL))
@@ -957,7 +963,16 @@ class XvfbContainerTest {
                     }
                 } else if (embedded.fill != null) {
                     graphics.color = java.awt.Color(embedded.fill, true)
-                    graphics.fillRect(embedded.x, embedded.y, embedded.width, embedded.height)
+                    if (embedded.clipRectangles.isEmpty()) {
+                        graphics.fillRect(embedded.x, embedded.y, embedded.width, embedded.height)
+                    } else {
+                        val originalClip = graphics.clip
+                        for (clip in embedded.clipRectangles) {
+                            graphics.clip = clip
+                            graphics.fillRect(embedded.x, embedded.y, embedded.width, embedded.height)
+                        }
+                        graphics.clip = originalClip
+                    }
                 }
             }
         } finally {

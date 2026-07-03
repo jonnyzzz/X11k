@@ -6,6 +6,7 @@ import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class HttpRenderingTest {
     @Test
@@ -1151,6 +1152,92 @@ class HttpRenderingTest {
                 assertContains(visibleJson, """"visibleX":15,"visibleY":15,"visibleWidth":40,"visibleHeight":30,"mapped":true""")
                 val visibleSvg = httpGet(server.localPort, "/screen.svg").body
                 assertContains(visibleSvg, "mapped hidden child")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `screen svg clips child window border with bounding clip path`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val parent = 0x0020_0010
+                val child = 0x0020_0011
+                val boundingOnly = 0x0020_0012
+                out.write(createWindowRequest(parent, x = 10, y = 10, width = 80, height = 70))
+                out.write(changePropertyRequest(parent, "parent clipped border"))
+                out.write(
+                    shapeRectanglesRequest(
+                        window = parent,
+                        kind = XFixes.ShapeBounding,
+                        rectangles = listOf(XRectangleCommand(0, 0, 65, 70)),
+                    ),
+                )
+                out.write(createWindowRequest(child, parent = parent, x = 55, y = 8, width = 50, height = 20))
+                out.write(changePropertyRequest(child, "child clipped border"))
+                out.write(
+                    shapeRectanglesRequest(
+                        window = child,
+                        kind = XFixes.ShapeClip,
+                        rectangles = listOf(XRectangleCommand(10, 5, 20, 10)),
+                    ),
+                )
+                out.write(createWindowRequest(boundingOnly, parent = parent, x = 5, y = 40, width = 20, height = 10))
+                out.write(changePropertyRequest(boundingOnly, "explicit bounding default clip border"))
+                out.write(
+                    shapeRectanglesRequest(
+                        window = boundingOnly,
+                        kind = XFixes.ShapeBounding,
+                        rectangles = listOf(XRectangleCommand(-1, -1, 22, 12)),
+                    ),
+                )
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(mapWindowRequest(boundingOnly))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                val borderClip = Regex("""<clipPath\b(?=[^>]*\bid="clip-screen-border-200011")[\s\S]*?</clipPath>""")
+                    .find(svg)
+                    ?.value
+                    .orEmpty()
+                assertContains(borderClip, """x="64"""")
+                assertContains(borderClip, """y="17"""")
+                assertContains(borderClip, """width="11"""")
+                assertContains(borderClip, """height="22"""")
+                val borderGroup = Regex("""<g clip-path="url\(#clip-screen-border-200011\)">[\s\S]*?</g>""")
+                    .find(svg)
+                    ?.value
+                    .orEmpty()
+                assertContains(borderGroup, """class="window-border"""")
+                assertContains(borderGroup, """data-border-window-id="0x200011"""")
+                assertContains(borderGroup, """clip-path="url(#clip-screen-border-200011)"""")
+                assertTrue(
+                    Regex("""<rect\b(?=[^>]*\bx="64")(?=[^>]*\by="23")(?=[^>]*\bwidth="11")(?=[^>]*\bheight="10")""")
+                        .containsMatchIn(borderGroup),
+                    "Border rectangles must include the area inside the nominal content bounds but outside the reduced ShapeClip: $borderGroup",
+                )
+                val contentGroup = Regex("""<g clip-path="url\(#clip-screen-200011\)">[\s\S]*?</g>""")
+                    .find(svg)
+                    ?.value
+                    .orEmpty()
+                assertFalse(
+                    contentGroup.contains("""class="window-border""""),
+                    "Semantic border rectangles must be clipped by the border clip, not the content clip: $contentGroup",
+                )
+                val boundingOnlyBorderGroup = Regex("""<g clip-path="url\(#clip-screen-border-200012\)">[\s\S]*?</g>""")
+                    .find(svg)
+                    ?.value
+                    .orEmpty()
+                assertContains(boundingOnlyBorderGroup, """data-border-window-id="0x200012"""")
             }
 
             server.close()

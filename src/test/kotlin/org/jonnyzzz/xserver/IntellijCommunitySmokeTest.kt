@@ -6,6 +6,7 @@ import org.testcontainers.DockerClientFactory
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.BindMode
 import org.testcontainers.utility.DockerImageName
+import java.awt.Rectangle
 import java.io.ByteArrayInputStream
 import java.awt.image.BufferedImage
 import java.net.Socket
@@ -39,6 +40,34 @@ class IntellijCommunitySmokeTest {
         assertEquals(listOf(24, 48), images.map { it.y })
         assertEquals(listOf(10, 20), images.map { it.width })
         assertEquals(listOf(10, 20), images.map { it.height })
+    }
+
+    @Test
+    fun `intellij smoke svg composition parser keeps borders and clip paths`() {
+        val svg =
+            """
+            <svg>
+              <defs>
+                <clipPath id="clip-screen-20"><rect x="1" y="2" width="3" height="4"/></clipPath>
+              </defs>
+              <image data-window-id="0x20" clip-path="url(#clip-screen-20)" x="12" y="24" width="10" height="10" href="data:image/png;base64,aGVsbG8="/>
+              <rect class="window-border" data-border-window-id="0x21" clip-path="url(#clip-screen-20)" x="7" y="8" width="9" height="10" fill="#112233"/>
+            </svg>
+            """.trimIndent()
+
+        val layers = svgCompositionLayers(svg)
+
+        assertEquals(listOf("0x20", "0x21"), layers.map { it.id })
+        assertEquals("hello", layers[0].bytes?.decodeToString())
+        assertEquals(listOf(Rectangle(1, 2, 3, 4)), layers[0].clipRectangles)
+        assertEquals(null, layers[0].fill)
+        assertEquals(null, layers[1].bytes)
+        assertEquals(0xff11_2233.toInt(), layers[1].fill)
+        assertEquals(listOf(Rectangle(1, 2, 3, 4)), layers[1].clipRectangles)
+        assertEquals(7, layers[1].x)
+        assertEquals(8, layers[1].y)
+        assertEquals(9, layers[1].width)
+        assertEquals(10, layers[1].height)
     }
 
     @Test
@@ -181,7 +210,7 @@ class IntellijCommunitySmokeTest {
         assertFalse(actual.text.contains("Download SDK") || actual.text.contains("Download JDK"), actual.text)
         assertIntellijVisualClose(reference, actual.robot, "Kotlin Robot IntelliJ capture")
 
-        val composedSvg = composeEmbeddedPngs(actual.embeddedPngs, IntellijCaptureWidth, IntellijCaptureHeight)
+        val composedSvg = composeSvgLayers(actual.svgLayers, IntellijCaptureWidth, IntellijCaptureHeight)
         assertIntellijVisualClose(reference, visualCapture(composedSvg), "Kotlin SVG-composed IntelliJ framebuffer")
     }
 
@@ -360,7 +389,7 @@ class IntellijCommunitySmokeTest {
                         return IntellijKotlinCapture(
                             robot = visualCapture(capture.stdout),
                             text = snapshot.text,
-                            embeddedPngs = pngDataUris(svg),
+                            svgLayers = svgCompositionLayers(svg),
                         )
                     } finally {
                         container.execInContainer("sh", "-lc", "kill $(cat /tmp/idea-parity.pid 2>/dev/null || pgrep -f run-intellij) 2>/dev/null || true")
@@ -395,6 +424,76 @@ class IntellijCommunitySmokeTest {
 
     private fun svgIntAttribute(tag: String, name: String): Int? =
         Regex("""\b$name="(-?\d+)"""").find(tag)?.groupValues?.get(1)?.toInt()
+
+    private fun svgCompositionLayers(svg: String): List<SvgLayer> {
+        val clipRectangles = svgClipRectangles(svg)
+        return Regex("""<(?:image|rect)\b[^>]*>""")
+            .findAll(svg)
+            .mapNotNull { match ->
+                val tag = match.value
+                val x = svgIntAttribute(tag, "x") ?: return@mapNotNull null
+                val y = svgIntAttribute(tag, "y") ?: return@mapNotNull null
+                val width = svgIntAttribute(tag, "width") ?: return@mapNotNull null
+                val height = svgIntAttribute(tag, "height") ?: return@mapNotNull null
+                val encoded = Regex("""\bhref="data:image/png;base64,([A-Za-z0-9+/=]+)""").find(tag)?.groupValues?.get(1)
+                if (encoded == null) {
+                    if (!tag.hasSvgClass("window-border")) return@mapNotNull null
+                    val id = Regex("""\bdata-border-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1) ?: "window-border"
+                    val fill = Regex("""\bfill="#([0-9a-fA-F]{6})"""").find(tag)?.groupValues?.get(1)?.toInt(16)
+                        ?: return@mapNotNull null
+                    return@mapNotNull SvgLayer(
+                        id = id,
+                        bytes = null,
+                        fill = 0xff00_0000.toInt() or fill,
+                        x = x,
+                        y = y,
+                        width = width,
+                        height = height,
+                        clipRectangles = svgClipPathId(tag)?.let { clipRectangles[it] }.orEmpty(),
+                    )
+                }
+                val id = Regex("""\bdata-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1) ?: "framebuffer"
+                SvgLayer(
+                    id = id,
+                    bytes = Base64.getDecoder().decode(encoded),
+                    fill = null,
+                    x = x,
+                    y = y,
+                    width = width,
+                    height = height,
+                    clipRectangles = svgClipPathId(tag)
+                        ?.let { clipRectangles[it] }
+                        ?: clipRectangles["clip-screen-${id.removePrefix("0x")}"].orEmpty(),
+                )
+            }
+            .toList()
+    }
+
+    private fun svgClipPathId(tag: String): String? =
+        Regex("""\bclip-path="url\(#([^)"']+)\)"""").find(tag)?.groupValues?.get(1)
+
+    private fun svgClipRectangles(svg: String): Map<String, List<Rectangle>> =
+        Regex("""<clipPath\b[^>]*\bid="([^"]+)"[^>]*>(.*?)</clipPath>""", setOf(RegexOption.DOT_MATCHES_ALL))
+            .findAll(svg)
+            .associate { match ->
+                val rectangles = Regex("""<rect\b[^>]*>""")
+                    .findAll(match.groupValues[2])
+                    .mapNotNull { rect ->
+                        val tag = rect.value
+                        val x = svgIntAttribute(tag, "x") ?: return@mapNotNull null
+                        val y = svgIntAttribute(tag, "y") ?: return@mapNotNull null
+                        val width = svgIntAttribute(tag, "width") ?: return@mapNotNull null
+                        val height = svgIntAttribute(tag, "height") ?: return@mapNotNull null
+                        Rectangle(x, y, width, height)
+                    }
+                    .toList()
+                match.groupValues[1] to rectangles
+            }
+
+    private fun String.hasSvgClass(className: String): Boolean =
+        Regex("""\bclass="([^"]*)"""")
+            .findAll(this)
+            .any { match -> match.groupValues[1].split(' ').any { it == className } }
 
     private fun imageStats(id: String, bytes: ByteArray): ImageStats {
         val image = ImageIO.read(ByteArrayInputStream(bytes)) ?: return ImageStats(id, 0, 0, 0, 0, emptyList())
@@ -454,15 +553,38 @@ class IntellijCommunitySmokeTest {
         }
         """.trimIndent()
 
-    private fun composeEmbeddedPngs(images: List<EmbeddedPng>, width: Int, height: Int): BufferedImage {
+    private fun composeSvgLayers(layers: List<SvgLayer>, width: Int, height: Int): BufferedImage {
         val image = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
         val graphics = image.createGraphics()
         try {
             graphics.color = java.awt.Color.WHITE
             graphics.fillRect(0, 0, width, height)
-            for (embedded in images) {
-                val layer = ImageIO.read(ByteArrayInputStream(embedded.bytes)) ?: continue
-                graphics.drawImage(layer, embedded.x, embedded.y, embedded.width, embedded.height, null)
+            for (embedded in layers) {
+                if (embedded.bytes != null) {
+                    val layer = ImageIO.read(ByteArrayInputStream(embedded.bytes)) ?: continue
+                    if (embedded.clipRectangles.isEmpty()) {
+                        graphics.drawImage(layer, embedded.x, embedded.y, embedded.width, embedded.height, null)
+                    } else {
+                        val originalClip = graphics.clip
+                        for (clip in embedded.clipRectangles) {
+                            graphics.clip = clip
+                            graphics.drawImage(layer, embedded.x, embedded.y, embedded.width, embedded.height, null)
+                        }
+                        graphics.clip = originalClip
+                    }
+                } else if (embedded.fill != null) {
+                    graphics.color = java.awt.Color(embedded.fill, true)
+                    if (embedded.clipRectangles.isEmpty()) {
+                        graphics.fillRect(embedded.x, embedded.y, embedded.width, embedded.height)
+                    } else {
+                        val originalClip = graphics.clip
+                        for (clip in embedded.clipRectangles) {
+                            graphics.clip = clip
+                            graphics.fillRect(embedded.x, embedded.y, embedded.width, embedded.height)
+                        }
+                        graphics.clip = originalClip
+                    }
+                }
             }
         } finally {
             graphics.dispose()
@@ -571,7 +693,18 @@ class IntellijCommunitySmokeTest {
     private data class IntellijKotlinCapture(
         val robot: VisualCapture,
         val text: String,
-        val embeddedPngs: List<EmbeddedPng>,
+        val svgLayers: List<SvgLayer>,
+    )
+
+    private data class SvgLayer(
+        val id: String,
+        val bytes: ByteArray?,
+        val fill: Int?,
+        val x: Int,
+        val y: Int,
+        val width: Int,
+        val height: Int,
+        val clipRectangles: List<Rectangle>,
     )
 
     private data class VisualCapture(

@@ -481,13 +481,25 @@ internal object SvgScreenRenderer {
                             base = XRectangleCommand(window.visibleX, window.visibleY, window.visibleWidth, window.visibleHeight),
                         )
                     }
+                    svgElement("clipPath", "id" to clipId("screen-border", window), "clipPathUnits" to "userSpaceOnUse") {
+                        renderBorderClipRectangles(
+                            builder = this,
+                            window = window,
+                            windowsById = windowsById,
+                            originX = 0,
+                            originY = 0,
+                            base = XRectangleCommand(0, 0, snapshot.width, snapshot.height),
+                        )
+                    }
                 }
             }
             svgElement("g", "font-family" to "monospace", "font-size" to 32) {
                 visibleWindows.forEachIndexed { index, window ->
                     val color = palette[index % palette.size]
                     val strokeWidth = if (window.focused) 8 else 4
-                    renderWindowBorder(this, window, originX = 0, originY = 0)
+                    svgElement("g", "clip-path" to "url(#${clipId("screen-border", window)})") {
+                        renderWindowBorder(this, window, originX = 0, originY = 0, clipId = clipId("screen-border", window))
+                    }
                     svgElement("g", "clip-path" to "url(#${clipId("screen", window)})") {
                         svgElement(
                             "rect",
@@ -761,6 +773,16 @@ internal object SvgScreenRenderer {
                             ),
                         )
                     }
+                    svgElement("clipPath", "id" to clipId("$clipPrefix-border", window), "clipPathUnits" to "userSpaceOnUse") {
+                        renderBorderClipRectangles(
+                            builder = this,
+                            window = window,
+                            windowsById = windowsById,
+                            originX = rootWindow.x,
+                            originY = rootWindow.y,
+                            base = XRectangleCommand(0, 0, rootWindow.width, rootWindow.height),
+                        )
+                    }
                 }
             }
             windowBackgroundFill(rootWindow, snapshot.windows)?.let { fill ->
@@ -769,7 +791,15 @@ internal object SvgScreenRenderer {
                 }
             }
             subtree.forEach { window ->
-                renderWindowBorder(this, window, originX = rootWindow.x, originY = rootWindow.y)
+                svgElement("g", "clip-path" to "url(#${clipId("$clipPrefix-border", window)})") {
+                    renderWindowBorder(
+                        builder = this,
+                        window = window,
+                        originX = rootWindow.x,
+                        originY = rootWindow.y,
+                        clipId = clipId("$clipPrefix-border", window),
+                    )
+                }
                 svgElement("g", "clip-path" to "url(#${clipId(clipPrefix, window)})") {
                     windowBackgroundFill(window, snapshot.windows)?.let { fill ->
                         svgElement(
@@ -806,16 +836,42 @@ internal object SvgScreenRenderer {
         }
     }
 
-    private fun renderWindowBorder(builder: XmlDom, window: XWindowSnapshot, originX: Int, originY: Int) {
+    private fun renderWindowBorder(builder: XmlDom, window: XWindowSnapshot, originX: Int, originY: Int, clipId: String) {
         if (window.borderWidth <= 0) return
+        val left = window.x - originX
+        val top = window.y - originY
+        for (rectangle in windowBorderRectangles(window)) {
+            renderWindowBorderRect(
+                builder = builder,
+                window = window,
+                x = left + rectangle.x,
+                y = top + rectangle.y,
+                width = rectangle.width,
+                height = rectangle.height,
+                clipId = clipId,
+            )
+        }
+    }
+
+    private fun renderWindowBorderRect(
+        builder: XmlDom,
+        window: XWindowSnapshot,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        clipId: String,
+    ) {
+        if (width <= 0 || height <= 0) return
         builder.svgElement(
             "rect",
             "class" to "window-border",
             "data-border-window-id" to window.idHex,
-            "x" to window.x - originX - window.borderWidth,
-            "y" to window.y - originY - window.borderWidth,
-            "width" to window.width + window.borderWidth * 2,
-            "height" to window.height + window.borderWidth * 2,
+            "clip-path" to "url(#$clipId)",
+            "x" to x,
+            "y" to y,
+            "width" to width,
+            "height" to height,
             "fill" to pixelColor(window.borderPixel),
         )
     }
@@ -1191,7 +1247,7 @@ internal object SvgScreenRenderer {
         originY: Int,
         base: XRectangleCommand,
     ) {
-        var rectangles = window.renderShape?.mapNotNull { rectangle ->
+        var rectangles = windowRenderShape(window).mapNotNull { rectangle ->
             intersectRectangles(
                 XRectangleCommand(
                     x = window.x - originX + rectangle.x,
@@ -1201,31 +1257,28 @@ internal object SvgScreenRenderer {
                 ),
                 base,
             )
-        } ?: listOf(base)
+        }
         var parentId = window.parentId
         while (parentId != X11Ids.RootWindow) {
             val ancestor = windowsById[parentId] ?: break
-            val ancestorShape = ancestor.renderShape
-            if (ancestorShape != null) {
-                val ancestorVisible = XRectangleCommand(
-                    ancestor.visibleX - originX,
-                    ancestor.visibleY - originY,
-                    ancestor.visibleWidth,
-                    ancestor.visibleHeight,
+            val ancestorVisible = XRectangleCommand(
+                ancestor.visibleX - originX,
+                ancestor.visibleY - originY,
+                ancestor.visibleWidth,
+                ancestor.visibleHeight,
+            )
+            val ancestorRectangles = windowRenderShape(ancestor).mapNotNull { rectangle ->
+                intersectRectangles(
+                    XRectangleCommand(
+                        x = ancestor.x - originX + rectangle.x,
+                        y = ancestor.y - originY + rectangle.y,
+                        width = rectangle.width,
+                        height = rectangle.height,
+                    ),
+                    ancestorVisible,
                 )
-                val ancestorRectangles = ancestorShape.mapNotNull { rectangle ->
-                    intersectRectangles(
-                        XRectangleCommand(
-                            x = ancestor.x - originX + rectangle.x,
-                            y = ancestor.y - originY + rectangle.y,
-                            width = rectangle.width,
-                            height = rectangle.height,
-                        ),
-                        ancestorVisible,
-                    )
-                }
-                rectangles = intersectRectangleSets(rectangles, ancestorRectangles)
             }
+            rectangles = intersectRectangleSets(rectangles, ancestorRectangles)
             parentId = ancestor.parentId
         }
         for (rectangle in rectangles) {
@@ -1237,6 +1290,105 @@ internal object SvgScreenRenderer {
                 "height" to rectangle.height,
             )
         }
+    }
+
+    private fun renderBorderClipRectangles(
+        builder: XmlDom,
+        window: XWindowSnapshot,
+        windowsById: Map<Int, XWindowSnapshot>,
+        originX: Int,
+        originY: Int,
+        base: XRectangleCommand,
+    ) {
+        var rectangles = windowBoundingShape(window).mapNotNull { rectangle ->
+            intersectRectangles(
+                XRectangleCommand(
+                    x = window.x - originX + rectangle.x,
+                    y = window.y - originY + rectangle.y,
+                    width = rectangle.width,
+                    height = rectangle.height,
+                ),
+                base,
+            )
+        }
+        var parentId = window.parentId
+        while (parentId != X11Ids.RootWindow) {
+            val ancestor = windowsById[parentId] ?: break
+            val ancestorRectangles = windowRenderShape(ancestor).mapNotNull { rectangle ->
+                intersectRectangles(
+                    XRectangleCommand(
+                        x = ancestor.x - originX + rectangle.x,
+                        y = ancestor.y - originY + rectangle.y,
+                        width = rectangle.width,
+                        height = rectangle.height,
+                    ),
+                    base,
+                )
+            }
+            rectangles = intersectRectangleSets(rectangles, ancestorRectangles)
+            parentId = ancestor.parentId
+        }
+        for (rectangle in rectangles) {
+            builder.svgElement(
+                "rect",
+                "x" to rectangle.x,
+                "y" to rectangle.y,
+                "width" to rectangle.width,
+                "height" to rectangle.height,
+            )
+        }
+    }
+
+    private fun windowBoundingShape(window: XWindowSnapshot): List<XRectangleCommand> =
+        window.boundingShape ?: listOf(
+            XRectangleCommand(
+                x = -window.borderWidth,
+                y = -window.borderWidth,
+                width = window.width + window.borderWidth * 2,
+                height = window.height + window.borderWidth * 2,
+            ),
+        )
+
+    private fun windowRenderShape(window: XWindowSnapshot): List<XRectangleCommand> =
+        intersectRectangleSets(windowBoundingShape(window), windowClipShape(window))
+
+    private fun windowClipShape(window: XWindowSnapshot): List<XRectangleCommand> =
+        window.clipShape ?: listOf(XRectangleCommand(0, 0, window.width, window.height))
+
+    private fun windowBorderRectangles(window: XWindowSnapshot): List<XRectangleCommand> =
+        subtractRectangleSets(windowBoundingShape(window), windowRenderShape(window))
+
+    private fun subtractRectangleSets(
+        rectangles: List<XRectangleCommand>,
+        cuts: List<XRectangleCommand>,
+    ): List<XRectangleCommand> =
+        cuts.fold(rectangles) { remaining, cut ->
+            remaining.flatMap { rectangle -> subtractRectangle(rectangle, cut) }
+        }
+
+    private fun subtractRectangle(
+        rectangle: XRectangleCommand,
+        cut: XRectangleCommand,
+    ): List<XRectangleCommand> {
+        val intersection = intersectRectangles(rectangle, cut) ?: return listOf(rectangle)
+        val result = mutableListOf<XRectangleCommand>()
+        val rectangleRight = rectangle.x + rectangle.width
+        val rectangleBottom = rectangle.y + rectangle.height
+        val intersectionRight = intersection.x + intersection.width
+        val intersectionBottom = intersection.y + intersection.height
+        if (intersection.y > rectangle.y) {
+            result += XRectangleCommand(rectangle.x, rectangle.y, rectangle.width, intersection.y - rectangle.y)
+        }
+        if (intersectionBottom < rectangleBottom) {
+            result += XRectangleCommand(rectangle.x, intersectionBottom, rectangle.width, rectangleBottom - intersectionBottom)
+        }
+        if (intersection.x > rectangle.x) {
+            result += XRectangleCommand(rectangle.x, intersection.y, intersection.x - rectangle.x, intersection.height)
+        }
+        if (intersectionRight < rectangleRight) {
+            result += XRectangleCommand(intersectionRight, intersection.y, rectangleRight - intersectionRight, intersection.height)
+        }
+        return result
     }
 
     private fun intersectRectangleSets(first: List<XRectangleCommand>, second: List<XRectangleCommand>): List<XRectangleCommand> =
