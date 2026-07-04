@@ -360,7 +360,9 @@ Read and follow $RELIABILITY_FILE before choosing tools.
 - Prefer shell/source inspection for run-agent research and review work.
 - Use MCP Steroid only when the prompt explicitly requires IDE semantic APIs.
 - Do not spawn nested review quorums or unbounded subagents.
-- Use scripts/run-gradle-bounded.sh for Gradle/build/test work and scripts/run-bounded-experiment.sh for blocking non-Gradle experiments.
+- Use scripts/run-supervised.sh for long repository work when launching commands manually.
+- Prefer scripts/run-supervised.sh gradle ... for Gradle/build/test work and scripts/run-supervised.sh experiment -- ... for blocking non-Gradle experiments.
+- Use scripts/run-gradle-bounded.sh or scripts/run-bounded-experiment.sh directly only when a prompt explicitly needs to bypass the supervised stale-agent preflight.
 - Collect jps/jcmd/jstack diagnostics before terminating suspected JVM hangs.
 - Never run Gradle/Maven/IDE build/test/package commands in parallel in this repository; serialize build-directory-writing commands.
 

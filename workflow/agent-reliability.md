@@ -80,9 +80,12 @@ The next recurrence showed that successful recovery can still create a concurren
 
 The 2026-07-04 follow-up closed the same evidence gap for Gradle signal exits. `scripts/run-gradle-bounded.sh` now handles `TERM`, `INT`, and `HUP` by writing the same `DIAGNOSTICS=...` bundle used for wall-clock and output-idle timeouts before it terminates the Gradle process tree and releases the repository lock. This matters when an outer supervisor, terminal interruption, or root-agent timeout kills a verification run: the next retry must start by reading `runs/gradle-bounded/latest/run-info.txt` and the recorded diagnostics instead of relaunching blindly.
 
+The latest adjustment is a single front-door wrapper: `scripts/run-supervised.sh`. It runs the bounded stale-agent recovery pulse first, dispatches Gradle checks through `scripts/run-gradle-bounded.sh`, dispatches ad hoc repros through `scripts/run-bounded-experiment.sh`, and runs role agents through `ralph-loop.sh`. If the command exits non-zero, it prints the latest `run-info.txt` path plus any recorded `DIAGNOSTICS=` / `GRADLE_DIAGNOSTICS=` entries. Use this wrapper by default so every retry starts from recovered agent state and every timeout points directly at the forensic bundle.
+
 ## Required Practice
 
-- Start long commands through `scripts/run-bounded-experiment.sh`, `timeout`, `scripts/run-gradle-bounded.sh`, or with `RUN_AGENT_TIMEOUT_SECONDS` set.
+- Start long commands through `scripts/run-supervised.sh` unless a lower-level wrapper is explicitly needed.
+- Use `scripts/run-supervised.sh gradle ...` for Gradle/build/test work and `scripts/run-supervised.sh experiment -- ...` for blocking non-Gradle repros. The script performs stale-agent recovery before the run and prints the latest diagnostic target on failure.
 - Never run Gradle, Maven, IDE build, test, package, or other build-directory-writing commands in parallel for this repository. Queue them one at a time, using `--no-daemon --max-workers=1 -Dkotlin.incremental=false` for Gradle checks unless a task explicitly needs different settings.
 - Prefer `scripts/run-gradle-bounded.sh <tasks...>` for Gradle checks. It holds the repo Gradle lock and captures JVM diagnostics before killing a timed-out run.
 - Treat `runs/gradle-bounded/run_*/heartbeat.txt`, `run-info.txt`, `stdout.txt`, and `stderr.txt` as the first stop for a suspected Gradle stall. `GRADLE_NO_OUTPUT_DIAGNOSTICS_SECONDS` controls the first diagnostic snapshot, and `GRADLE_NO_OUTPUT_TIMEOUT_SECONDS` controls the automatic kill.
@@ -144,7 +147,15 @@ The 2026-07-04 follow-up closed the same evidence gap for Gradle signal exits. `
 
 ## Runner Timeout Knobs
 
-Use these defaults unless a specific run justifies changing them:
+Use the supervised wrapper unless a specific run justifies changing it:
+
+```bash
+scripts/run-supervised.sh review codex
+scripts/run-supervised.sh gradle test --console=plain
+scripts/run-supervised.sh experiment -- sh -lc 'your repro command here'
+```
+
+Use these lower-level defaults only when bypassing the supervised preflight:
 
 ```bash
 RUN_AGENT_TIMEOUT_SECONDS=900 \
@@ -153,7 +164,7 @@ RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300 \
 timeout 990 ./ralph-loop.sh review codex
 ```
 
-Use this shape for repository Gradle checks:
+Use this lower-level shape for repository Gradle checks:
 
 ```bash
 GRADLE_TIMEOUT_SECONDS=1800 \
@@ -162,7 +173,7 @@ GRADLE_NO_OUTPUT_TIMEOUT_SECONDS=900 \
 scripts/run-gradle-bounded.sh test --console=plain
 ```
 
-Use this shape for non-Gradle experiments:
+Use this lower-level shape for non-Gradle experiments:
 
 ```bash
 EXPERIMENT_TIMEOUT_SECONDS=900 \

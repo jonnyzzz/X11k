@@ -317,6 +317,16 @@ acquire_lock() {
     fi
     if (( waited >= LOCK_WAIT_TIMEOUT_SECONDS )); then
       echo "Timed out waiting ${LOCK_WAIT_TIMEOUT_SECONDS}s for Gradle lock: $LOCK_DIR" >&2
+      if [[ -n "${RUN_INFO_FILE:-}" ]]; then
+        if [[ -n "$owner" ]] && kill -0 "$owner" 2>/dev/null; then
+          diagnose_gradle "gradle-lock-wait-timeout-${LOCK_WAIT_TIMEOUT_SECONDS}s-owner-${owner}" "$owner" "${GRADLE_ARGS[@]}"
+        fi
+        {
+          echo "TIMEOUT_REASON=gradle-lock-wait-timeout-${LOCK_WAIT_TIMEOUT_SECONDS}s"
+          echo "LOCK_OWNER_PID=${owner:-unknown}"
+          echo "EXIT_CODE=124"
+        } >> "$RUN_INFO_FILE" 2>/dev/null || true
+      fi
       exit 124
     fi
     echo "Waiting for Gradle lock held by PID ${owner:-unknown}: $LOCK_DIR (${waited}s)" >&2
@@ -325,10 +335,6 @@ acquire_lock() {
   echo "$$" >"$LOCK_DIR/pid"
   trap cleanup_run_state EXIT
 }
-
-acquire_lock
-
-cleanup_stale_testcontainers
 
 RUN_ID="run_$(date -u +%Y%m%d-%H%M%S)-$$"
 THIS_RUN_DIR="$RUN_DIR/$RUN_ID"
@@ -354,6 +360,10 @@ echo "Running: $ROOT/gradlew ${GRADLE_ARGS[*]}" >&2
   echo "STDERR=$STDERR_FILE"
   echo "LATEST=$RUN_DIR/latest"
 } > "$RUN_INFO_FILE"
+
+acquire_lock
+
+cleanup_stale_testcontainers
 
 "$ROOT/gradlew" "${GRADLE_ARGS[@]}" > >(tee "$STDOUT_FILE") 2> >(tee "$STDERR_FILE" >&2) &
 GRADLE_PID="$!"
