@@ -22,6 +22,7 @@ RUN_AGENT_RESTART_STALE="${RUN_AGENT_RESTART_STALE:-0}"
 RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS="${RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS:-20}"
 RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS="${RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS:-5}"
 RUN_AGENT_THREAD_DUMP_MAX_JVMS="${RUN_AGENT_THREAD_DUMP_MAX_JVMS:-5}"
+RUN_AGENT_ABANDONED_SECONDS="${RUN_AGENT_ABANDONED_SECONDS:-120}"
 
 if [ "$RUN_AGENT_TERMINATE_STALE" = "1" ] && [ "$RUN_AGENT_DIAGNOSE_STALE" != "1" ]; then
   echo "RUN_AGENT_TERMINATE_STALE=1 requires RUN_AGENT_DIAGNOSE_STALE=1" >&2
@@ -100,11 +101,45 @@ latest_output_age() {
   echo "$((now - latest))s"
 }
 
+run_age_seconds() {
+  local run_dir="$1"
+  local marker_mtime now
+  marker_mtime="$(file_mtime "$run_dir/run-info.txt")"
+  if [ "$marker_mtime" -le 0 ]; then
+    marker_mtime="$(file_mtime "$run_dir")"
+  fi
+  if [ "$marker_mtime" -le 0 ]; then
+    echo 0
+    return
+  fi
+  now="$(now_seconds)"
+  echo "$((now - marker_mtime))"
+}
+
 run_info_value() {
   local run_dir="$1"
   local key="$2"
   awk -F= -v key="$key" '$1 == key { print substr($0, length(key) + 2); exit }' \
     "$run_dir/run-info.txt" 2>/dev/null || true
+}
+
+run_info_has_key() {
+  local run_dir="$1"
+  local key="$2"
+  awk -F= -v key="$key" '$1 == key { found = 1; exit } END { exit found ? 0 : 1 }' \
+    "$run_dir/run-info.txt" 2>/dev/null
+}
+
+mark_abandoned_run() {
+  local run_dir="$1"
+  local reason="$2"
+  if run_info_has_key "$run_dir" WATCH_ABANDONED_UTC; then
+    return
+  fi
+  {
+    echo "WATCH_ABANDONED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "WATCH_ABANDONED_REASON=$reason"
+  } >>"$run_dir/run-info.txt" 2>/dev/null || true
 }
 
 descendant_pids() {
@@ -266,43 +301,81 @@ while true; do
     [ -n "$run_dir" ] || continue
     found=1
     pid_file="$run_dir/pid.txt"
+    pid=""
+    pid_source=""
     if [ -f "$pid_file" ]; then
       pid=$(cat "$pid_file" || true)
       if [ -z "$pid" ]; then
-        echo "  $run_dir: PID file empty" | tee -a "$LOG"
-        continue
-      fi
-      if ps -p "$pid" >/dev/null 2>&1; then
-        output_age="$(latest_output_age "$run_dir")"
-        stale_note=""
-        stale=false
-        if [[ "$output_age" =~ ^[0-9]+s$ ]]; then
-          age_number="${output_age%s}"
-          if [ "$age_number" -ge "$RUN_AGENT_STALE_SECONDS" ]; then
-            stale_note=" STALE_OUTPUT"
-            stale=true
+        pid="$(run_info_value "$run_dir" PID)"
+        if [ -n "$pid" ]; then
+          pid_source="run-info after empty pid file"
+        else
+          age_number="$(run_age_seconds "$run_dir")"
+          if [ "$age_number" -ge "$RUN_AGENT_ABANDONED_SECONDS" ]; then
+            mark_abandoned_run "$run_dir" "empty-pid-file-no-run-info-pid"
+            echo "  $run_dir: abandoned (empty pid file, no run-info PID, age=${age_number}s)" | tee -a "$LOG"
+          else
+            echo "  $run_dir: starting (empty pid file, age=${age_number}s)" | tee -a "$LOG"
           fi
-        fi
-        echo "  $run_dir: PID $pid running output_age=$output_age$stale_note" | tee -a "$LOG"
-        if [ "$stale" = true ] && [ "$RUN_AGENT_DIAGNOSE_STALE" = "1" ]; then
-          diagnose_run "$run_dir" "$pid" "stale-output-${RUN_AGENT_STALE_SECONDS}s"
-          if [ "$RUN_AGENT_TERMINATE_STALE" = "1" ]; then
-            terminate_run "$run_dir" "$pid"
-            if [ "$RUN_AGENT_RESTART_STALE" = "1" ]; then
-              restart_run "$run_dir"
-            fi
-          fi
+          continue
         fi
       else
-        echo "  $run_dir: PID $pid finished" | tee -a "$LOG"
-        rm -f "$pid_file" 2>/dev/null || true
+        pid_source="pid file"
       fi
-      continue
-    fi
-    if rg -q "EXIT_CODE=" "$run_dir/run-info.txt" 2>/dev/null; then
+    elif rg -q "EXIT_CODE=" "$run_dir/run-info.txt" 2>/dev/null; then
       echo "  $run_dir: finished (exit recorded)" | tee -a "$LOG"
+      continue
     else
-      echo "  $run_dir: unknown (no pid/exit)" | tee -a "$LOG"
+      pid="$(run_info_value "$run_dir" PID)"
+      if [ -n "$pid" ]; then
+        pid_source="run-info without pid file"
+        if ps -p "$pid" >/dev/null 2>&1; then
+          printf '%s\n' "$pid" >"$pid_file" 2>/dev/null || true
+          echo "  $run_dir: restored missing pid.txt from run-info PID $pid" | tee -a "$LOG"
+        fi
+      else
+        age_number="$(run_age_seconds "$run_dir")"
+        if [ "$age_number" -ge "$RUN_AGENT_ABANDONED_SECONDS" ]; then
+          mark_abandoned_run "$run_dir" "no-pid-no-exit"
+          echo "  $run_dir: abandoned (no pid/exit, age=${age_number}s)" | tee -a "$LOG"
+        else
+          echo "  $run_dir: starting (no pid/exit, age=${age_number}s)" | tee -a "$LOG"
+        fi
+        continue
+      fi
+    fi
+
+    if ps -p "$pid" >/dev/null 2>&1; then
+      output_age="$(latest_output_age "$run_dir")"
+      stale_note=""
+      stale=false
+      if [[ "$output_age" =~ ^[0-9]+s$ ]]; then
+        age_number="${output_age%s}"
+        if [ "$age_number" -ge "$RUN_AGENT_STALE_SECONDS" ]; then
+          stale_note=" STALE_OUTPUT"
+          stale=true
+        fi
+      fi
+      echo "  $run_dir: PID $pid running output_age=$output_age source=$pid_source$stale_note" | tee -a "$LOG"
+      if [ "$stale" = true ] && [ "$RUN_AGENT_DIAGNOSE_STALE" = "1" ]; then
+        diagnose_run "$run_dir" "$pid" "stale-output-${RUN_AGENT_STALE_SECONDS}s"
+        if [ "$RUN_AGENT_TERMINATE_STALE" = "1" ]; then
+          terminate_run "$run_dir" "$pid"
+          if [ "$RUN_AGENT_RESTART_STALE" = "1" ]; then
+            restart_run "$run_dir"
+          fi
+        fi
+      fi
+    else
+      echo "  $run_dir: PID $pid finished without exit record (source=$pid_source)" | tee -a "$LOG"
+      rm -f "$pid_file" 2>/dev/null || true
+      age_number="$(run_age_seconds "$run_dir")"
+      if [ "$age_number" -ge "$RUN_AGENT_ABANDONED_SECONDS" ]; then
+        mark_abandoned_run "$run_dir" "pid-$pid-not-running-no-exit"
+        echo "  $run_dir: abandoned (PID $pid not running, no exit, age=${age_number}s)" | tee -a "$LOG"
+      else
+        echo "  $run_dir: waiting for exit record (PID $pid not running, age=${age_number}s)" | tee -a "$LOG"
+      fi
     fi
   done < <(ls -td "$RUNS_DIR"/run_* 2>/dev/null | head -n "$RUN_AGENT_WATCH_LIMIT")
 

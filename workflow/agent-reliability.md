@@ -62,6 +62,8 @@ The 2026-07-03 review pass exposed another non-hang failure mode: an agent launc
 
 The current root-side adjustment is `scripts/run-gradle-bounded.sh`. It serializes Gradle with a repository lock, always uses `--no-daemon --max-workers=1 -Dkotlin.incremental=false`, enforces a wall-clock timeout, and writes `jps` plus Java thread dumps before terminating the Gradle process tree. Use it for routine local verification instead of bare `./gradlew` unless a one-off experiment explicitly needs different Gradle flags.
 
+The 2026-07-04 follow-up exposed one more stale-run blind spot: a runner can be interrupted after writing `run-info.txt` but before writing `EXIT_CODE` or while `pid.txt` has already been removed. Older watcher output reported those directories as `unknown (no pid/exit)` forever, which made status checks look stuck even when the recorded PID had long exited. `watch-agents.sh` now recovers a missing `pid.txt` from `PID=` in `run-info.txt` when that process is still alive, so stale diagnostics and terminate/restart still work. If the recorded PID is gone, or there is no PID at all, the watcher waits only `RUN_AGENT_ABANDONED_SECONDS` (default 120) before appending `WATCH_ABANDONED_UTC` / `WATCH_ABANDONED_REASON` to `run-info.txt` and reporting the run as abandoned.
+
 ## Required Practice
 
 - Start long commands through `timeout`, `scripts/run-gradle-bounded.sh`, or with `RUN_AGENT_TIMEOUT_SECONDS` set.
@@ -92,6 +94,7 @@ The current root-side adjustment is `scripts/run-gradle-bounded.sh`. It serializ
   Destructive recovery flags intentionally require `RUN_AGENT_WATCH_ONCE=1`; do not run terminate/restart in the periodic watcher loop.
 
 - Keep routine run monitoring bounded to recent runs or active PID files. The local `runs/` tree is large enough that whole-history scans can time out.
+- Treat `abandoned` watcher lines as completed forensic records, not live agents. Inspect their `run-info.txt` and diagnostics if needed, but do not wait for them; the watcher has confirmed there is no live PID to recover.
 - Do not let run-agents spawn additional unbounded review subagents. Quorum reviews should be scheduled by the root agent with explicit timeouts, or replaced by a bounded local review for trivial changes.
 - Do not ask run-agent research/review scouts to use MCP Steroid by default. Shell-based inspection is enough for most gap selection and avoids MCP stdio waits inside a silent text-mode agent.
 - When a run times out, inspect the generated `DIAGNOSTICS=...` file in `run-info.txt` before retrying. Agent and watcher diagnostics now include Docker/Testcontainers state for `jonnyzzz-x` client/reference containers and Ryuk, so use those sections to distinguish container download/startup/extract work from JVM or X server deadlocks.
