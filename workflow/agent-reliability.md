@@ -88,6 +88,8 @@ The top-level front doors now follow the same rule. `scripts/run-supervised.sh` 
 
 The IntelliJ README screenshot helper follows the same wrapper-first rule. Refresh it through `scripts/run-supervised.sh experiment -- scripts/update-intellij-readme-screenshot.sh`; the helper also has a local timeout fallback for its internal Docker, Playwright, npm, and JVM-diagnostic subprocesses. It explicitly launches IDEA with the native launcher and fails closed if fresh logs or renderer text expose `ide.script.launcher.used` / script-launcher notification state, so stale warning balloons cannot silently overwrite `docs/images/intellij-demo-renderer.png`.
 
+The lower-level local timeout fallbacks now also terminate descendant process trees consistently. This covers `run-agent.sh` preflight/diagnostic commands, `watch-agents.sh` diagnostic commands, Gradle diagnostic helpers, and bounded experiment diagnostic helpers on systems without `/opt/homebrew/bin/timeout`, `gtimeout`, or `timeout`. The main Gradle, experiment, and agent child processes already wrote diagnostics and killed descendants; the remaining gap was helper subprocesses that could leave a nested JVM/CLI child alive after the fallback killed only the direct shell.
+
 ## Required Practice
 
 - Start long commands through `scripts/run-supervised.sh` unless a lower-level wrapper is explicitly needed.

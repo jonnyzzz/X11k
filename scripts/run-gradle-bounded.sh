@@ -63,6 +63,49 @@ timeout_bin() {
 
 TIMEOUT_BIN="$(timeout_bin || true)"
 
+bounded_descendant_pids() {
+  local frontier="$1"
+  local children pid
+  while [[ -n "$frontier" ]]; do
+    children=""
+    for pid in $frontier; do
+      children="$children $(pgrep -P "$pid" 2>/dev/null || true)"
+    done
+    # shellcheck disable=SC2086
+    set -- $children
+    [[ "$#" -gt 0 ]] || break
+    printf '%s\n' "$@"
+    frontier="$*"
+  done
+}
+
+terminate_bounded_tree() {
+  local root_pid="$1"
+  local pids extra_pids
+  pids="$(
+    {
+      printf '%s\n' "$root_pid"
+      bounded_descendant_pids "$root_pid"
+    } | awk 'NF && !seen[$0]++ { print }'
+  )"
+  # shellcheck disable=SC2086
+  kill -TERM $pids 2>/dev/null || true
+  sleep 1
+  extra_pids="$(
+    for pid in $pids; do
+      bounded_descendant_pids "$pid"
+    done | awk 'NF { print }'
+  )"
+  pids="$(
+    {
+      printf '%s\n' $pids
+      printf '%s\n' $extra_pids
+    } | awk 'NF && !seen[$0]++ { print }'
+  )"
+  # shellcheck disable=SC2086
+  kill -KILL $pids 2>/dev/null || true
+}
+
 run_bounded() {
   local seconds="$1"
   shift
@@ -82,9 +125,7 @@ run_bounded() {
       now="$(date +%s)"
       elapsed=$((now - start))
       if (( elapsed >= seconds )); then
-        kill -TERM "$pid" 2>/dev/null || true
-        sleep 1
-        kill -KILL "$pid" 2>/dev/null || true
+        terminate_bounded_tree "$pid"
         wait "$pid" 2>/dev/null || true
         return 124
       fi
