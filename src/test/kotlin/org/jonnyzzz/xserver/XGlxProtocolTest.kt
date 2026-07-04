@@ -1503,10 +1503,13 @@ class XGlxProtocolTest {
         withServer { socket ->
             socket.soTimeout = 2_000
             val pbuffer = 0x0020_0e00
+            val powerOfTwoPbuffer = 0x0020_0e01
             val eventMask = 0x3456
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePbuffer, createPbufferBody(pbuffer, width = 13, height = 11))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.ChangeDrawableAttributes, changeDrawableAttributesBody(pbuffer, XGlx.EventMask to eventMask))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetDrawableAttributes, u32(pbuffer))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePbuffer, createPbufferBody(powerOfTwoPbuffer, width = 1, height = 1))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetDrawableAttributes, u32(powerOfTwoPbuffer))
             writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
 
             val attributesReply = readReply(socket.getInputStream())
@@ -1524,12 +1527,28 @@ class XGlxProtocolTest {
             assertEquals(1, attributes.getValue(XGlx.PreservedContents))
             assertEquals(XGlx.PbufferBit, attributes.getValue(XGlx.DrawableType))
 
+            val powerOfTwoAttributesReply = readReply(socket.getInputStream())
+            assertEquals(5, u16le(powerOfTwoAttributesReply, 2))
+            val powerOfTwoAttributes = attributeMap(powerOfTwoAttributesReply, offset = 32, count = u32le(powerOfTwoAttributesReply, 8))
+            assertEquals(1, powerOfTwoAttributes.getValue(XGlx.Width))
+            assertEquals(1, powerOfTwoAttributes.getValue(XGlx.Height))
+            assertEquals(XGlx.TextureRectangleExt, powerOfTwoAttributes.getValue(XGlx.TextureTargetExt))
+
             val pointer = readReply(socket.getInputStream())
-            assertEquals(4, u16le(pointer, 2))
+            assertEquals(6, u16le(pointer, 2))
             val json = httpGet(socket, "/state.json")
             assertTrue(
-                json.contains(""""glxPbuffers":[{"id":"0x${pbuffer.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"width":13,"height":11,"eventMask":$eventMask}]"""),
+                json.contains(
+                    """"glxPbuffers":[{"id":"0x${pbuffer.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"width":13,"height":11,"eventMask":$eventMask},{"id":"0x${powerOfTwoPbuffer.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"width":1,"height":1,"eventMask":0}]""",
+                ),
                 json,
+            )
+            val text = httpGet(socket, "/text.txt")
+            assertTrue(
+                text.contains(
+                    "CreatePbuffer minor=27 screen=0 fbconfig=0x${XGlx.RootFbConfigId.toString(16)} pbuffer=0x${powerOfTwoPbuffer.toString(16)} attribs=2 attrs=[0x8041=1, 0x8040=1]",
+                ),
+                text,
             )
         }
     }

@@ -50,7 +50,7 @@ class VSCodeSmokeTest {
             - None.
 
             GLX operations:
-            - #8 QueryServerString minor=19 screen=0 name=3 value=GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es_profile
+            - #8 QueryServerString minor=19 screen=0 name=3 value=GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile
             - #7 SetClientInfo2ARB minor=35 layout=spec client=1.4 versions=17 glBytes=1 glxBytes=54 glExtensions= glxExtensions=GLX_ARB_create_context GLX_ARB_create_context_profile
             - #6 GetFBConfigs minor=21 screen=0
             - #1 QueryVersion minor=7 client=1.4
@@ -71,7 +71,7 @@ class VSCodeSmokeTest {
         assertTrue(summary.contains("vscodeSupportedExtensions=GLX RENDER SYNC XFIXES"), summary)
         assertTrue(summary.contains("vscodeGlxOperations=GetFBConfigs QueryServerString QueryVersion SetClientInfo2ARB"), summary)
         assertTrue(
-            summary.contains("vscodeServerGlxExtensions=GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es_profile"),
+            summary.contains("vscodeServerGlxExtensions=GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es2_profile GLX_EXT_create_context_es_profile"),
             summary,
         )
         assertTrue(summary.contains("vscodeClientGlxExtensions=GLX_ARB_create_context GLX_ARB_create_context_profile"), summary)

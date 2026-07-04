@@ -5590,7 +5590,7 @@ internal class X11Connection(
             attributes += XGlx.FbConfigId to glxPixmap.fbConfigId
             attributes += XGlx.DrawableType to XGlx.PixmapBit
         } else if (glxPbuffer != null) {
-            attributes += XGlx.TextureTargetExt to glxTextureTarget(glxPbuffer.width, glxPbuffer.height)
+            attributes += XGlx.TextureTargetExt to XGlx.TextureRectangleExt
             attributes += XGlx.EventMask to glxPbuffer.eventMask
             attributes += XGlx.FbConfigId to glxPbuffer.fbConfigId
             attributes += XGlx.PreservedContents to 1
@@ -5706,6 +5706,17 @@ internal class X11Connection(
             XGlx.serverString(name)
                 .replace(Regex("""\s+"""), " ")
                 .take(240)
+        fun attributeList(offset: Int, countOffset: Int): String {
+            if (body.size < countOffset + 4) return "[]"
+            val count = byteOrder.u32(body, countOffset).toUInt().toLong()
+            if (count > 64) return "[count=$count]"
+            val end = offset.toLong() + count * 8L
+            if (end > body.size) return "[malformed count=$count]"
+            return (0 until count.toInt()).joinToString(prefix = "[", postfix = "]") { index ->
+                val pairOffset = offset + index * 8
+                "${byteOrder.u32(body, pairOffset).toHex()}=${byteOrder.u32(body, pairOffset + 4)}"
+            }
+        }
         return when (minorOpcode) {
             XGlx.QueryVersion -> "client=${u32(0)}.${u32(4)}"
             3 -> "context=${hex(0)} visual=${hex(4)} screen=${u32(8)} direct=${body.getOrNull(16)?.toInt() == 1}"
@@ -5722,13 +5733,13 @@ internal class X11Connection(
             XGlx.CreateNewContext -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} renderType=${hex(12)} direct=${body.getOrNull(20)?.toInt() == 1}"
             XGlx.QueryContext -> "context=${hex(0)}"
             XGlx.MakeContextCurrent -> "oldTag=${hex(0)} drawable=${hex(4)} readDrawable=${hex(8)} context=${hex(12)}"
-            XGlx.CreatePbuffer -> "screen=${u32(0)} fbconfig=${hex(4)} pbuffer=${hex(8)} attribs=${u32(12)}"
+            XGlx.CreatePbuffer -> "screen=${u32(0)} fbconfig=${hex(4)} pbuffer=${hex(8)} attribs=${u32(12)} attrs=${attributeList(16, 12)}"
             XGlx.DestroyPbuffer -> "pbuffer=${hex(0)}"
             XGlx.GetDrawableAttributes -> "drawable=${hex(0)}"
             XGlx.ChangeDrawableAttributes -> "drawable=${hex(0)} attribs=${u32(4)}"
             XGlx.CreateWindow -> "screen=${u32(0)} fbconfig=${hex(4)} window=${hex(8)} glxWindow=${hex(12)} attribs=${u32(16)}"
             XGlx.DestroyWindow -> "glxWindow=${hex(0)}"
-            XGlx.CreateContextAttribsARB -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} share=${hex(12)} direct=${body.getOrNull(16)?.toInt() == 1} attribs=${u32(20)}"
+            XGlx.CreateContextAttribsARB -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} share=${hex(12)} direct=${body.getOrNull(16)?.toInt() == 1} attribs=${u32(20)} attrs=${attributeList(24, 20)}"
             XGlx.Render -> "contextTag=${hex(0)} bytes=${(body.size - 4).coerceAtLeast(0)}"
             XGlx.RenderLarge -> "contextTag=${hex(0)} dataBytes=${u32(8)} request=${if (body.size >= 12) "${byteOrder.u16(body, 4)}/${byteOrder.u16(body, 6)}" else "n/a"}"
             XGlx.WaitGL, XGlx.WaitX -> "contextTag=${hex(0)}"

@@ -16,7 +16,7 @@ internal object XGlx {
     const val BadWindow = FirstError + 12
     const val MajorVersion = 1
     const val MinorVersion = 4
-    const val Extensions = "GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es_profile"
+    const val Extensions = "GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile"
 
     const val Render = 1
     const val RenderLarge = 2
