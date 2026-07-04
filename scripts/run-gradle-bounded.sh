@@ -10,6 +10,9 @@ POLL_SECONDS="${GRADLE_POLL_SECONDS:-5}"
 DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS="${GRADLE_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS:-20}"
 THREAD_DUMP_TIMEOUT_SECONDS="${GRADLE_THREAD_DUMP_TIMEOUT_SECONDS:-8}"
 THREAD_DUMP_MAX_JVMS="${GRADLE_THREAD_DUMP_MAX_JVMS:-8}"
+DOCKER_DIAGNOSTICS="${GRADLE_DOCKER_DIAGNOSTICS:-1}"
+STALE_TESTCONTAINERS_CLEANUP="${GRADLE_STALE_TESTCONTAINERS_CLEANUP:-1}"
+STALE_TESTCONTAINERS_SECONDS="${GRADLE_STALE_TESTCONTAINERS_SECONDS:-3600}"
 
 usage() {
   cat <<USAGE
@@ -24,10 +27,12 @@ Environment:
   GRADLE_LOCK_WAIT_TIMEOUT_SECONDS=$LOCK_WAIT_TIMEOUT_SECONDS
   GRADLE_RUN_DIR=$RUN_DIR
   GRADLE_LOCK_DIR=$LOCK_DIR
+  GRADLE_DOCKER_DIAGNOSTICS=$DOCKER_DIAGNOSTICS
+  GRADLE_STALE_TESTCONTAINERS_CLEANUP=$STALE_TESTCONTAINERS_CLEANUP
 
-On timeout the script writes jps plus jcmd/jstack thread dumps before
-terminating the Gradle process tree. Use -- to pass Gradle arguments that start
-with a dash.
+On timeout the script writes jps, jcmd/jstack thread dumps, and Docker/Testcontainers
+diagnostics before terminating the Gradle process tree. Use -- to pass Gradle
+arguments that start with a dash.
 USAGE
 }
 
@@ -98,6 +103,86 @@ descendant_pids() {
     printf '%s\n' "$@"
     frontier="$*"
   done
+}
+
+iso_to_seconds() {
+  local value="${1%%.*}"
+  if date -u -j -f "%Y-%m-%dT%H:%M:%S" "$value" +%s >/dev/null 2>&1; then
+    date -u -j -f "%Y-%m-%dT%H:%M:%S" "$value" +%s
+  else
+    date -u -d "$value" +%s 2>/dev/null || echo 0
+  fi
+}
+
+docker_relevant_container_ids() {
+  command -v docker >/dev/null 2>&1 || return 0
+  {
+    docker ps -aq --filter "label=org.testcontainers=true" 2>/dev/null || true
+    docker ps -aq --filter "ancestor=testcontainers/ryuk" 2>/dev/null || true
+    docker ps -aq --filter "ancestor=jonnyzzz-x/x11-client:latest" 2>/dev/null || true
+    docker ps -aq --filter "ancestor=jonnyzzz-x/x11-reference:latest" 2>/dev/null || true
+  } | awk 'NF && !seen[$0]++ { print }'
+}
+
+diagnose_docker_state() {
+  [[ "$DOCKER_DIAGNOSTICS" == "1" ]] || return 0
+  command -v docker >/dev/null 2>&1 || {
+    echo "docker not found"
+    return 0
+  }
+  echo
+  echo "== docker ps =="
+  run_bounded "$DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" docker ps --format 'table {{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Names}}\t{{.Ports}}' 2>&1 || true
+  echo
+  echo "== relevant docker containers =="
+  local ids
+  ids="$(docker_relevant_container_ids || true)"
+  if [[ -z "${ids:-}" ]]; then
+    echo "none"
+    return 0
+  fi
+  for id in $ids; do
+    echo "-- container $id --"
+    run_bounded "$DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" docker inspect \
+      --format 'name={{.Name}} image={{.Config.Image}} status={{.State.Status}} started={{.State.StartedAt}} labels={{json .Config.Labels}} cmd={{json .Config.Cmd}}' \
+      "$id" 2>&1 || true
+    run_bounded "$DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" docker top "$id" auxww 2>&1 || true
+    echo "-- logs $id --"
+    run_bounded "$DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" docker logs --tail 120 "$id" 2>&1 || true
+  done
+}
+
+cleanup_stale_testcontainers() {
+  [[ "$STALE_TESTCONTAINERS_CLEANUP" == "1" ]] || return 0
+  command -v docker >/dev/null 2>&1 || return 0
+  local stopped running id started started_seconds now age stale_ids
+  stopped="$(docker ps -aq --filter "label=org.testcontainers=true" \
+    --filter "status=exited" --filter "status=created" --filter "status=dead" 2>/dev/null || true)"
+  if [[ -n "$stopped" ]]; then
+    echo "Removing stopped Testcontainers: $(echo "$stopped" | tr '\n' ' ')" >&2
+    # shellcheck disable=SC2086
+    run_bounded "$DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" docker rm -f $stopped >/dev/null 2>&1 || true
+  fi
+  running="$(docker ps -q --filter "label=org.testcontainers=true" 2>/dev/null || true)"
+  [[ -n "$running" ]] || return 0
+  now="$(date +%s)"
+  stale_ids=""
+  for id in $running; do
+    started="$(docker inspect --format '{{.State.StartedAt}}' "$id" 2>/dev/null || true)"
+    [[ -n "$started" ]] || continue
+    started_seconds="$(iso_to_seconds "$started")"
+    [[ "$started_seconds" =~ ^[0-9]+$ ]] || continue
+    (( started_seconds > 0 )) || continue
+    age=$((now - started_seconds))
+    if (( age >= STALE_TESTCONTAINERS_SECONDS )); then
+      stale_ids="${stale_ids:+$stale_ids }$id"
+    fi
+  done
+  if [[ -n "$stale_ids" ]]; then
+    echo "Removing stale running Testcontainers older than ${STALE_TESTCONTAINERS_SECONDS}s: $stale_ids" >&2
+    # shellcheck disable=SC2086
+    run_bounded "$DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" docker rm -f $stale_ids >/dev/null 2>&1 || true
+  fi
 }
 
 terminate_tree() {
@@ -181,6 +266,7 @@ diagnose_gradle_timeout() {
         echo "jcmd/jstack not found"
       fi
     done
+    diagnose_docker_state
   } >"$diag_file" 2>&1 || true
   echo "GRADLE_DIAGNOSTICS=$diag_file" >&2
 }
@@ -210,6 +296,8 @@ acquire_lock() {
 }
 
 acquire_lock
+
+cleanup_stale_testcontainers
 
 GRADLE_ARGS=(--no-daemon --max-workers=1 -Dkotlin.incremental=false "$@")
 echo "Running: $ROOT/gradlew ${GRADLE_ARGS[*]}" >&2

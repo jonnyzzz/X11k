@@ -94,7 +94,7 @@ The current root-side adjustment is `scripts/run-gradle-bounded.sh`. It serializ
 - Keep routine run monitoring bounded to recent runs or active PID files. The local `runs/` tree is large enough that whole-history scans can time out.
 - Do not let run-agents spawn additional unbounded review subagents. Quorum reviews should be scheduled by the root agent with explicit timeouts, or replaced by a bounded local review for trivial changes.
 - Do not ask run-agent research/review scouts to use MCP Steroid by default. Shell-based inspection is enough for most gap selection and avoids MCP stdio waits inside a silent text-mode agent.
-- When a run times out, inspect the generated `DIAGNOSTICS=...` file in `run-info.txt` before retrying.
+- When a run times out, inspect the generated `DIAGNOSTICS=...` file in `run-info.txt` before retrying. Agent and watcher diagnostics now include Docker/Testcontainers state for `jonnyzzz-x` client/reference containers and Ryuk, so use those sections to distinguish container download/startup/extract work from JVM or X server deadlocks.
 - On macOS, install GNU coreutils or make sure `gtimeout` is available if you need hard time limits around watcher diagnostics. Without either `timeout` or `gtimeout`, the watcher still runs but cannot bound individual `jps`/`jcmd`/`jstack` calls.
 - Treat built-in subagents as scarce stateful resources. After a bounded `wait_agent`, close only agents that have returned a final status, and close them individually. Do not call `close_agent` for a non-responsive agent and do not wrap `close_agent` calls in a parallel tool batch; one blocked close can stall the whole root agent.
 - Run a one-shot diagnostic/recovery watcher before every new implementation/review batch. This is now the default `run-agent.sh` preflight (`RUN_AGENT_PREFLIGHT_RECOVER_STALE=1`); use the explicit command when recovering outside a new agent launch:
@@ -123,6 +123,8 @@ Use this shape for repository Gradle checks:
 ```bash
 GRADLE_TIMEOUT_SECONDS=1800 scripts/run-gradle-bounded.sh test --console=plain
 ```
+
+`scripts/run-gradle-bounded.sh` also captures Docker/Testcontainers state on timeout and removes stopped/dead Testcontainers before starting. It removes still-running Testcontainers only after `GRADLE_STALE_TESTCONTAINERS_SECONDS` (default 3600), which keeps normal heavyweight IntelliJ/VSCode runs intact while clearing leaks from killed runs.
 
 For short scout prompts that should either answer quickly or fail with evidence, keep or lower:
 

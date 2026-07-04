@@ -437,6 +437,43 @@ descendant_pids() {
   done
 }
 
+docker_relevant_container_ids() {
+  command -v docker >/dev/null 2>&1 || return 0
+  {
+    docker ps -aq --filter "label=org.testcontainers=true" 2>/dev/null || true
+    docker ps -aq --filter "ancestor=testcontainers/ryuk" 2>/dev/null || true
+    docker ps -aq --filter "ancestor=jonnyzzz-x/x11-client:latest" 2>/dev/null || true
+    docker ps -aq --filter "ancestor=jonnyzzz-x/x11-reference:latest" 2>/dev/null || true
+  } | awk 'NF && !seen[$0]++ { print }'
+}
+
+dump_docker_diagnostics() {
+  command -v docker >/dev/null 2>&1 || {
+    echo "docker not found"
+    return 0
+  }
+  echo
+  echo "== docker ps =="
+  run_bounded "$RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" docker ps --format 'table {{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Names}}\t{{.Ports}}' 2>&1 || true
+  echo
+  echo "== relevant docker containers =="
+  local ids
+  ids="$(docker_relevant_container_ids || true)"
+  if [ -z "${ids:-}" ]; then
+    echo "none"
+    return 0
+  fi
+  for id in $ids; do
+    echo "-- container $id --"
+    run_bounded "$RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" docker inspect \
+      --format 'name={{.Name}} image={{.Config.Image}} status={{.State.Status}} started={{.State.StartedAt}} labels={{json .Config.Labels}} cmd={{json .Config.Cmd}}' \
+      "$id" 2>&1 || true
+    run_bounded "$RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" docker top "$id" auxww 2>&1 || true
+    echo "-- logs $id --"
+    run_bounded "$RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" docker logs --tail 120 "$id" 2>&1 || true
+  done
+}
+
 dump_diagnostics() {
   local reason="$1"
   local safe_reason diag_file
@@ -502,6 +539,7 @@ dump_diagnostics() {
         fi
       done
     fi
+    dump_docker_diagnostics
     echo
     echo "== stdout tail =="
     tail -120 "$STDOUT_FILE" 2>/dev/null || true
