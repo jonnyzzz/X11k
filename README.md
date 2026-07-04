@@ -146,8 +146,9 @@ copied into the same diagnostics directory, including pid-suffixed JCEF/Chromium
 logs and Mesa/EGL debug output in the run log.
 
 The VSCode/Electron smoke is also opt-in because it downloads the current stable
-VSCode tarball. It records the Kotlin server text/SVG view, a compact extension
-and GLX diagnostics summary, and VSCode logs under `build/tmp/vscode-smoke/`;
+VSCode tarball. It records the Kotlin server text/SVG/HTML view, a compact
+extension and GLX diagnostics summary, and VSCode logs under
+`build/tmp/vscode-smoke/`;
 set `-Dx.vscodeUrl=...` or `X_VSCODE_URL=...` to pin a specific archive instead
 of the official latest-stable endpoint:
 
@@ -164,9 +165,10 @@ scripts/run-gradle-bounded.sh test --tests org.jonnyzzz.xserver.VSCodeSmokeTest 
 ```
 
 The VSCode parity probe writes its current Xvfb reference, Kotlin Robot capture,
-Kotlin SVG-composed capture, raw `/screen.svg`, `/text.txt`, SVG layer inventory,
-visual diffs, full-screen metrics, visual region metrics, extension/GLX
-diagnostics, and VSCode logs under `build/tmp/vscode-smoke/`.
+Kotlin SVG-composed capture, raw `/screen.svg`, `/text.txt`, raw `/` HTML,
+SVG layer inventory, HTML per-window preview inventory, visual diffs,
+full-screen metrics, visual region metrics, extension/GLX diagnostics, and
+VSCode logs under `build/tmp/vscode-smoke/`.
 
 Run the prototype server:
 

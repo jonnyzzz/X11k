@@ -21,6 +21,7 @@ import javax.imageio.ImageIO
 import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -96,6 +97,39 @@ class VSCodeSmokeTest {
         assertEquals(listOf("0xvisible"), layers.map { it.id })
         assertEquals(0xff00_0000.toInt(), image.getRGB(0, 0), "Hidden image should not be composed over the black background")
         assertEquals(0xff12_3456.toInt(), image.getRGB(1, 0), "Visible image should be composed")
+    }
+
+    @Test
+    fun `vscode html preview parser identifies large code window surfaces`() {
+        val html = """
+            <section class="window-contents">
+              <article class="preview">
+                <header><strong>0x200003</strong> <span>0x200003</span> 1279x899 focused</header>
+                <svg class="window-preview-svg" viewBox="0 0 1279 899" aria-label="0x200003">
+                  <image class="framebuffer-image" data-window-id="0x200003" data-source="window-framebuffer" x="0" y="0" width="1279" height="899" href="data:image/png;base64,aGVsbG8="/>
+                </svg>
+              </article>
+            </section>
+        """.trimIndent()
+        val text = """
+            Window hierarchy and geometry:
+            - 0x26 parent=0x0 label="root" geometry=0,0 1280x900 class=InputOutput mapped=true
+            - 0x200003 parent=0x26 label="0x200003" geometry=0,0 1279x899 class=InputOutput mapped=true focused=true
+        """.trimIndent()
+
+        val previews = htmlWindowPreviewSurfaces(html)
+
+        assertEquals(1, previews.size)
+        assertEquals("0x200003", previews.single().label)
+        assertEquals(1279, previews.single().viewWidth)
+        assertEquals(899, previews.single().viewHeight)
+        assertEquals("window-framebuffer", previews.single().source)
+        assertEquals("0x200003", previews.single().windowId)
+        assertVSCodeHtmlPreviewHasLargeSurface(html)
+        assertVSCodeHtmlPreviewHasLargeSurface(html, text)
+        assertFailsWith<AssertionError> {
+            assertVSCodeHtmlPreviewHasLargeSurface(html, "Window hierarchy and geometry:\n- no mapped root child")
+        }
     }
 
     @Test
@@ -177,24 +211,24 @@ class VSCodeSmokeTest {
                             dumpVSCodeArtifactsBestEffort(container, port, t)
                             throw t
                         }
-                        dumpVSCodeArtifacts(
-                            text = snapshot.text,
-                            svg = httpGet(port, "/screen.svg"),
-                            logs = collectVSCodeLogs(container),
-                        )
+                        val text = httpGet(port, "/text.txt")
+                        val svg = httpGet(port, "/screen.svg")
+                        val html = httpGet(port, "/")
+                        dumpVSCodeArtifacts(text = text, svg = svg, html = html, logs = collectVSCodeLogs(container))
                         val running = container.execInContainer("sh", "-lc", "kill -0 $(cat /tmp/vscode.pid)")
                         assertEquals(0, running.exitCode, "VSCode exited early\n${vscodeRunLog(container)}")
                         assertTrue(
-                            hasVSCodeWindowEvidence(snapshot.text),
-                            "VSCode smoke should expose a labeled editor window in the HTTP report\n${snapshot.text}",
+                            hasVSCodeWindowEvidence(text),
+                            "VSCode smoke should expose a labeled editor window in the HTTP report\n$text",
                         )
                         assertTrue(
-                            snapshot.text.contains("Unsupported requests:\n- None."),
-                            "VSCode smoke should not leave unsupported protocol requests in the target-client trace\n${snapshot.text}",
+                            text.contains("Unsupported requests:\n- None."),
+                            "VSCode smoke should not leave unsupported protocol requests in the target-client trace\n$text",
                         )
+                        assertVSCodeHtmlPreviewHasLargeSurface(html, text)
                         assertTrue(
                             snapshot.stats.any { it.hasVisibleContent() },
-                            "VSCode screen SVG should contain non-white rendered pixels, got ${snapshot.stats}\n${snapshot.text}",
+                            "VSCode screen SVG should contain non-white rendered pixels, got ${snapshot.stats}\n$text",
                         )
                     } finally {
                         container.execInContainer("sh", "-lc", "kill $(cat /tmp/vscode.pid 2>/dev/null || pgrep -f '/opt/vscode/code') 2>/dev/null || true")
@@ -235,6 +269,7 @@ class VSCodeSmokeTest {
         val composedSvgCapture = visualCapture(composedSvg)
 
         dumpVSCodeParityArtifacts(reference, actual, composedSvg, composedSvgCapture)
+        assertVSCodeHtmlPreviewHasLargeSurface(actual.html, actual.text)
         assertVSCodeVisualClose(reference.robot, actual.robot, "Kotlin Robot VSCode capture")
         assertVSCodeVisualClose(reference.robot, composedSvgCapture, "Kotlin SVG-composed VSCode framebuffer")
     }
@@ -439,11 +474,14 @@ class VSCodeSmokeTest {
                             )
                             assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
                             val svg = httpGet(port, "/screen.svg")
+                            val html = httpGet(port, "/")
+                            val text = httpGet(port, "/text.txt")
                             val logs = collectVSCodeLogs(container, prefix = "vscode-kotlin")
                             return VSCodeKotlinCapture(
                                 robot = visualCapture(capture.stdout),
-                                text = snapshot.text,
+                                text = text,
                                 svg = svg,
+                                html = html,
                                 svgLayers = svgCompositionLayers(svg),
                                 logs = logs,
                             )
@@ -591,6 +629,69 @@ class VSCodeSmokeTest {
             .findAll(this)
             .any { match -> match.groupValues[1].split(' ').any { it == className } }
 
+    private fun htmlWindowPreviewSurfaces(html: String): List<HtmlPreviewSurface> =
+        Regex(
+            """<svg\b(?=[^>]*\bclass="[^"]*\bwindow-preview-svg\b)([^>]*)>(.*?)</svg>""",
+            setOf(RegexOption.DOT_MATCHES_ALL),
+        )
+            .findAll(html)
+            .flatMap { svgMatch ->
+                val svgTag = svgMatch.groupValues[1]
+                val body = svgMatch.groupValues[2]
+                val viewBoxParts = svgStringAttribute(svgTag, "viewBox")
+                    ?.trim()
+                    ?.split(Regex("""\s+"""))
+                    .orEmpty()
+                val viewWidth = viewBoxParts.getOrNull(2)?.toDoubleOrNull()?.toInt() ?: 0
+                val viewHeight = viewBoxParts.getOrNull(3)?.toDoubleOrNull()?.toInt() ?: 0
+                val label = svgStringAttribute(svgTag, "aria-label").orEmpty()
+                Regex("""<image\b[^>]*>""")
+                    .findAll(body)
+                    .mapNotNull { imageMatch ->
+                        val imageTag = imageMatch.value
+                        if (!imageTag.hasSvgClass("framebuffer-image")) return@mapNotNull null
+                        val source = svgStringAttribute(imageTag, "data-source") ?: return@mapNotNull null
+                        HtmlPreviewSurface(
+                            label = label,
+                            viewWidth = viewWidth,
+                            viewHeight = viewHeight,
+                            windowId = svgStringAttribute(imageTag, "data-window-id").orEmpty(),
+                            pixmapId = svgStringAttribute(imageTag, "data-pixmap-id"),
+                            pictureId = svgStringAttribute(imageTag, "data-picture-id"),
+                            source = source,
+                            x = svgIntAttribute(imageTag, "x") ?: 0,
+                            y = svgIntAttribute(imageTag, "y") ?: 0,
+                            width = svgIntAttribute(imageTag, "width") ?: 0,
+                            height = svgIntAttribute(imageTag, "height") ?: 0,
+                        )
+                    }
+            }
+            .toList()
+
+    private fun assertVSCodeHtmlPreviewHasLargeSurface(html: String, text: String = "") {
+        assertTrue(html.contains("""class="window-contents""""), "VSCode HTML capture must include the window preview section")
+        val codeWindowId = largestMappedRootChildWindowId(text)
+        val previews = htmlWindowPreviewSurfaces(html)
+        if (text.isNotBlank()) {
+            assertTrue(
+                codeWindowId != null,
+                "VSCode text capture must expose a mapped root-child window id for HTML preview correlation\n$text",
+            )
+        }
+        val largeCodePreviews = previews.filter {
+            (if (codeWindowId == null) it.label.contains("code", ignoreCase = true) || it.label.matches(Regex("""0x[0-9a-fA-F]+""")) else it.windowId == codeWindowId) &&
+                it.viewWidth >= 640 &&
+                it.viewHeight >= 360 &&
+                it.width >= 640 &&
+                it.height >= 360 &&
+                it.source in setOf("window-framebuffer", "matching-pixmap", "retained-picture")
+        }
+        assertTrue(
+            largeCodePreviews.isNotEmpty(),
+            "VSCode HTML capture must expose a large Code window framebuffer/backing surface, codeWindowId=$codeWindowId previews=$previews",
+        )
+    }
+
     private fun imageStats(id: String, bytes: ByteArray): VSCodeImageStats {
         val image = ImageIO.read(ByteArrayInputStream(bytes)) ?: return VSCodeImageStats(id, 0, 0, 0, 0, emptyList())
         var count = 0
@@ -711,10 +812,14 @@ class VSCodeSmokeTest {
         return image
     }
 
-    private fun dumpVSCodeArtifacts(text: String, svg: String, logs: List<VSCodeLogArtifact>) {
+    private fun dumpVSCodeArtifacts(text: String, svg: String, html: String? = null, logs: List<VSCodeLogArtifact>) {
         val directory = vscodeSmokeArtifactsDirectory()
         File(directory, "vscode-kotlin-text.txt").writeText(text)
         File(directory, "vscode-kotlin-screen.svg").writeText(svg)
+        html?.let {
+            File(directory, "vscode-kotlin.html").writeText(it)
+            File(directory, "vscode-kotlin-html-previews.txt").writeText(htmlPreviewInventory(htmlWindowPreviewSurfaces(it)))
+        }
         File(directory, "vscode-diagnostics.txt").writeText(vscodeDiagnosticsSummary(text, logs))
         logs.forEach { artifact -> File(directory, artifact.fileName).writeText(artifact.text) }
     }
@@ -730,8 +835,10 @@ class VSCodeSmokeTest {
         ImageIO.write(actual.robot.image, "png", File(directory, "vscode-kotlin-robot.png"))
         ImageIO.write(composedSvg, "png", File(directory, "vscode-kotlin-svg-composed.png"))
         File(directory, "vscode-kotlin-screen.svg").writeText(actual.svg)
+        File(directory, "vscode-kotlin.html").writeText(actual.html)
         File(directory, "vscode-kotlin-text.txt").writeText(actual.text)
         File(directory, "vscode-kotlin-svg-layers.txt").writeText(svgLayerInventory(actual.svgLayers))
+        File(directory, "vscode-kotlin-html-previews.txt").writeText(htmlPreviewInventory(htmlWindowPreviewSurfaces(actual.html)))
         val logs = reference.logs + actual.logs
         logs.forEach { artifact -> File(directory, artifact.fileName).writeText(artifact.text) }
         File(directory, "vscode-diagnostics.txt").writeText(vscodeDiagnosticsSummary(actual.text, logs))
@@ -766,6 +873,7 @@ class VSCodeSmokeTest {
             .getOrElse { "Failed to fetch /text.txt: ${it::class.qualifiedName}: ${it.message}" }
         val svg = runCatching { httpGet(port, "/screen.svg") }
             .getOrElse { "<!-- Failed to fetch /screen.svg: ${it::class.qualifiedName}: ${it.message} -->" }
+        val html = runCatching { httpGet(port, "/") }.getOrNull()
         val logs = runCatching { collectVSCodeLogs(container) }
             .getOrElse {
                 listOf(
@@ -778,7 +886,7 @@ class VSCodeSmokeTest {
                 fileName = "vscode-kotlin-smoke-failure.log",
                 text = "${failure::class.qualifiedName}: ${failure.message}",
             )
-        dumpVSCodeArtifacts(text = text, svg = svg, logs = logs)
+        dumpVSCodeArtifacts(text = text, svg = svg, html = html, logs = logs)
     }
 
     private fun vscodeSmokeArtifactsDirectory(): File =
@@ -836,6 +944,25 @@ class VSCodeSmokeTest {
                 append(" type=").append(if (layer.bytes != null) "png" else "fill")
                 append(" clipRectangles=").append(layer.clipRectangles.size)
                 if (layer.fill != null) append(" fill=0x").append(layer.fill.toUInt().toString(16))
+                appendLine()
+            }
+        }
+
+    private fun htmlPreviewInventory(previews: List<HtmlPreviewSurface>): String =
+        buildString {
+            appendLine("count=${previews.size}")
+            previews.forEachIndexed { index, preview ->
+                append(index)
+                append(": label=").append(preview.label)
+                append(" view=").append(preview.viewWidth).append('x').append(preview.viewHeight)
+                append(" window=").append(preview.windowId)
+                append(" source=").append(preview.source)
+                preview.pixmapId?.let { append(" pixmap=").append(it) }
+                preview.pictureId?.let { append(" picture=").append(it) }
+                append(" x=").append(preview.x)
+                append(" y=").append(preview.y)
+                append(" width=").append(preview.width)
+                append(" height=").append(preview.height)
                 appendLine()
             }
         }
@@ -912,25 +1039,34 @@ class VSCodeSmokeTest {
     }
 
     private fun largestMappedRootChildWindow(text: String): Rectangle? {
+        val match = largestMappedRootChildWindowMatch(text) ?: return null
+        return Rectangle(
+            match.groupValues[2].toInt(),
+            match.groupValues[3].toInt(),
+            match.groupValues[4].toInt(),
+            match.groupValues[5].toInt(),
+        )
+    }
+
+    private fun largestMappedRootChildWindowId(text: String): String? =
+        largestMappedRootChildWindowMatch(text)?.groupValues?.get(1)
+
+    private fun largestMappedRootChildWindowMatch(text: String): MatchResult? {
         val rootId = Regex("""-\s+(0x[0-9a-fA-F]+)\s+parent=\S+\s+label="root"""")
             .find(text)
             ?.groupValues
             ?.get(1)
             ?: return null
         return Regex(
-            """-\s+0x[0-9a-fA-F]+\s+parent=${Regex.escape(rootId)}\b[^\n]*\bgeometry=(-?\d+),(-?\d+)\s+(\d+)x(\d+)[^\n]*\bmapped=true\b""",
+            """-\s+(0x[0-9a-fA-F]+)\s+parent=${Regex.escape(rootId)}\b[^\n]*\bgeometry=(-?\d+),(-?\d+)\s+(\d+)x(\d+)[^\n]*\bmapped=true\b""",
         )
             .findAll(text)
-            .map { match ->
-                Rectangle(
-                    match.groupValues[1].toInt(),
-                    match.groupValues[2].toInt(),
-                    match.groupValues[3].toInt(),
-                    match.groupValues[4].toInt(),
-                )
+            .filter { match ->
+                val width = match.groupValues[4].toInt()
+                val height = match.groupValues[5].toInt()
+                width > 0 && height > 0
             }
-            .filter { it.width > 0 && it.height > 0 }
-            .maxByOrNull { it.width.toLong() * it.height.toLong() }
+            .maxByOrNull { match -> match.groupValues[4].toLong() * match.groupValues[5].toLong() }
     }
 
     private fun regionCapture(image: BufferedImage, region: Rectangle): VisualCapture =
@@ -1199,6 +1335,7 @@ class VSCodeSmokeTest {
         val robot: VisualCapture,
         val text: String,
         val svg: String,
+        val html: String,
         val svgLayers: List<SvgLayer>,
         val logs: List<VSCodeLogArtifact>,
     )
@@ -1212,6 +1349,20 @@ class VSCodeSmokeTest {
         val width: Int,
         val height: Int,
         val clipRectangles: List<Rectangle>,
+    )
+
+    private data class HtmlPreviewSurface(
+        val label: String,
+        val viewWidth: Int,
+        val viewHeight: Int,
+        val windowId: String,
+        val pixmapId: String?,
+        val pictureId: String?,
+        val source: String,
+        val x: Int,
+        val y: Int,
+        val width: Int,
+        val height: Int,
     )
 
     private data class VisualCapture(
