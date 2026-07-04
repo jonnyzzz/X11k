@@ -76,6 +76,8 @@ The 2026-07-04 follow-up found one remaining outer-timeout blind spot. `ralph-lo
 
 The 2026-07-04 repeated-stall pattern showed that recovery also needs a retry budget. A stale run may now be restarted by `watch-agents.sh` only up to `RUN_AGENT_RESTART_MAX_ATTEMPTS` (default 1). Restarted runs record `RESTART_ROOT`, `RESTART_OF`, and `RESTART_ATTEMPT` in `run-info.txt`; the stale run records `WATCH_RESTART_*` fields. The watcher rotates the restarted job across `RUN_AGENT_RESTART_AGENTS` (default `codex,gemini,claude`) when `RUN_AGENT_RESTART_ROTATE_AGENT=1`, so a silent Claude/Codex/Gemini failure does not simply restart the same CLI until the root loop appears stuck again.
 
+The 2026-07-04 follow-up closed the same evidence gap for Gradle signal exits. `scripts/run-gradle-bounded.sh` now handles `TERM`, `INT`, and `HUP` by writing the same `DIAGNOSTICS=...` bundle used for wall-clock and output-idle timeouts before it terminates the Gradle process tree and releases the repository lock. This matters when an outer supervisor, terminal interruption, or root-agent timeout kills a verification run: the next retry must start by reading `runs/gradle-bounded/latest/run-info.txt` and the recorded diagnostics instead of relaunching blindly.
+
 ## Required Practice
 
 - Start long commands through `scripts/run-bounded-experiment.sh`, `timeout`, `scripts/run-gradle-bounded.sh`, or with `RUN_AGENT_TIMEOUT_SECONDS` set.
@@ -134,6 +136,7 @@ The 2026-07-04 repeated-stall pattern showed that recovery also needs a retry bu
 
 - Use `./ralph-loop.sh <role>` for routine research/implementation/review/test agent work. It runs the recovery watcher before the agent, applies the standard wall-clock/no-output diagnostics settings, and wraps `run-agent.sh` in an outer process timeout.
 - If `./ralph-loop.sh <role>` exits from the outer timeout, inspect `runs/latest/run-info.txt` for `SIGNAL=TERM` and `DIAGNOSTICS=...`; the signal path should now contain process lists, `jps`, JVM thread dumps when present, Docker/Testcontainers state, and stdout/stderr tails.
+- If `scripts/run-gradle-bounded.sh` exits after an external signal, inspect `runs/gradle-bounded/latest/run-info.txt` for `TIMEOUT_REASON=gradle-signal-*` and the recorded `DIAGNOSTICS=...` path before rerunning the same task.
 - Keep direct-runner preflight recovery bounded with `RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS` (default 180 seconds). If that fires, inspect `runs/agent-watch.log` before retrying.
 
 ## Runner Timeout Knobs

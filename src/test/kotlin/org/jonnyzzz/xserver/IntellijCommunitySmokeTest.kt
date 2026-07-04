@@ -168,6 +168,9 @@ class IntellijCommunitySmokeTest {
         assertTrue(metrics.contains("robotInsideFrameMismatchBounds=5,5 2x3"), metrics)
         assertTrue(metrics.contains("svgMismatchBounds=none"), metrics)
         assertTrue(metrics.contains("svgInsideFrameMismatchBounds=none"), metrics)
+        assertTrue(metrics.contains("robotVsSvgSampledDistance="), metrics)
+        assertTrue(metrics.contains("robotVsSvgMismatchBounds=0,0 1280x900"), metrics)
+        assertTrue(metrics.contains("robotVsSvgInsideFrameMismatchBounds=5,5 2x3"), metrics)
     }
 
     @Test
@@ -1086,6 +1089,7 @@ class IntellijCommunitySmokeTest {
         File(directory, "intellij-glx-jcef-diagnostics.txt").writeText(intellijGlxJcefDiagnosticsSummary(logs, kotlinText = actual.text))
         dumpIntellijVisualDiff(directory, "intellij-kotlin-robot-vs-xvfb", reference.robot, actual.robot)
         dumpIntellijVisualDiff(directory, "intellij-kotlin-svg-vs-xvfb", reference.robot, composedSvgCapture)
+        dumpIntellijVisualDiff(directory, "intellij-kotlin-robot-vs-svg", actual.robot, composedSvgCapture)
         File(directory, "intellij-visual-region-metrics.txt").writeText(
             intellijVisualRegionMetrics(
                 text = actual.text,
@@ -1343,10 +1347,14 @@ class IntellijCommunitySmokeTest {
             )
             appendLine("robotInsideFrameSampledDistance=${imageDistance(regionImage(expected.image, frame), regionImage(actualRobot.image, frame))}")
             appendLine("svgInsideFrameSampledDistance=${imageDistance(regionImage(expected.image, frame), regionImage(actualSvg.image, frame))}")
+            appendLine("robotVsSvgSampledDistance=${imageDistance(actualRobot.image, actualSvg.image)}")
+            appendLine("robotVsSvgInsideFrameSampledDistance=${imageDistance(regionImage(actualRobot.image, frame), regionImage(actualSvg.image, frame))}")
             appendLine("robotMismatchBounds=${mismatchBounds(expected.image, actualRobot.image).toMetricString()}")
             appendLine("svgMismatchBounds=${mismatchBounds(expected.image, actualSvg.image).toMetricString()}")
+            appendLine("robotVsSvgMismatchBounds=${mismatchBounds(actualRobot.image, actualSvg.image).toMetricString()}")
             appendLine("robotInsideFrameMismatchBounds=${mismatchBounds(regionImage(expected.image, frame), regionImage(actualRobot.image, frame)).toMetricString()}")
             appendLine("svgInsideFrameMismatchBounds=${mismatchBounds(regionImage(expected.image, frame), regionImage(actualSvg.image, frame)).toMetricString()}")
+            appendLine("robotVsSvgInsideFrameMismatchBounds=${mismatchBounds(regionImage(actualRobot.image, frame), regionImage(actualSvg.image, frame)).toMetricString()}")
         }
     }
 

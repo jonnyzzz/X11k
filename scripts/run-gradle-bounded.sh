@@ -360,8 +360,26 @@ GRADLE_PID="$!"
 echo "PID=$GRADLE_PID" >> "$RUN_INFO_FILE"
 echo "$GRADLE_PID" > "$PID_FILE"
 
-trap 'terminate_tree "$GRADLE_PID"; cleanup_run_state; exit 143' TERM
-trap 'terminate_tree "$GRADLE_PID"; cleanup_run_state; exit 130' INT
+handle_signal() {
+  local signal="$1"
+  local exit_code="$2"
+  if [[ -n "${GRADLE_PID:-}" ]] && kill -0 "$GRADLE_PID" 2>/dev/null; then
+    echo "Gradle wrapper received ${signal}; collecting JVM diagnostics before termination." >&2
+    diagnose_gradle "gradle-signal-${signal}" "$GRADLE_PID" "${GRADLE_ARGS[@]}"
+    terminate_tree "$GRADLE_PID"
+    wait "$GRADLE_PID" 2>/dev/null || true
+  fi
+  {
+    echo "TIMEOUT_REASON=gradle-signal-${signal}"
+    echo "EXIT_CODE=$exit_code"
+  } >> "$RUN_INFO_FILE" 2>/dev/null || true
+  cleanup_run_state
+  exit "$exit_code"
+}
+
+trap 'handle_signal TERM 143' TERM
+trap 'handle_signal INT 130' INT
+trap 'handle_signal HUP 129' HUP
 
 start_seconds="$(date +%s)"
 last_heartbeat_seconds=0
