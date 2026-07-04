@@ -406,6 +406,16 @@ class XGlxProtocolTest {
             val direct = readReply(socket.getInputStream())
             assertEquals(8, u16le(direct, 2))
             assertEquals(1, direct[8].toInt())
+
+            val text = httpGet(socket, "/text.txt")
+            assertTrue(
+                text.contains("Error minor=19 request=QueryServerString error=2 badValue=0x1 sequence=3"),
+                text,
+            )
+            assertTrue(
+                text.contains("Error minor=6 request=IsDirect error=16 badValue=0x0 sequence=7"),
+                text,
+            )
         }
     }
 

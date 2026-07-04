@@ -11841,6 +11841,13 @@ internal class X11Connection(
     }
 
     private fun writeError(error: Int, opcode: Int, minorOpcode: Int = 0, badValue: Int) {
+        if (opcode == XGlx.MajorOpcode) {
+            state.recordGlxOperation(
+                minorOpcode = minorOpcode,
+                operation = "Error",
+                detail = "request=${XGlx.operationName(minorOpcode)} error=$error badValue=${badValue.toHex()} sequence=$sequence",
+            )
+        }
         val bytes = ByteArray(32)
         bytes[0] = 0
         bytes[1] = error.toByte()

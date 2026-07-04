@@ -754,6 +754,7 @@ class IntellijCommunitySmokeTest {
                     try {
                         waitForVisibleIntellijPixels(port)
                         Thread.sleep(5_000)
+                        val svg = httpGet(port, "/screen.svg")
                         val capture = execIntellijShell(
                             container,
                             """
@@ -764,7 +765,6 @@ class IntellijCommunitySmokeTest {
                             """.trimIndent(),
                         )
                         assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
-                        val svg = httpGet(port, "/screen.svg")
                         val html = httpGet(port, "/")
                         val text = httpGet(port, "/text.txt")
                         val logs = collectIntellijLogs(
