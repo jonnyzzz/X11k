@@ -6,6 +6,7 @@ import org.testcontainers.DockerClientFactory
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.utility.DockerImageName
 import java.io.ByteArrayInputStream
+import java.awt.Rectangle
 import java.awt.image.BufferedImage
 import java.io.File
 import java.net.ServerSocket
@@ -621,6 +622,7 @@ class AwtPrimitiveDockerTest {
         val directory = awtArtifactsDirectory()
         ImageIO.write(expected.image, "png", File(directory, "$safeLabel-reference.png"))
         ImageIO.write(actual.image, "png", File(directory, "$safeLabel-actual.png"))
+        ImageIO.write(visualDiffImage(expected.image, actual.image), "png", File(directory, "$safeLabel-diff.png"))
         File(directory, "$safeLabel-metrics.txt").writeText(
             buildString {
                 appendLine("expected=$expected")
@@ -628,6 +630,8 @@ class AwtPrimitiveDockerTest {
                 appendLine("coverageRatio=${ratio(actual.nonBackgroundPixels, expected.nonBackgroundPixels)}")
                 appendLine("averageRgbDelta=${abs(actual.averageRgb - expected.averageRgb)}")
                 appendLine("sampledDistance=${imageDistance(expected.image, actual.image)}")
+                appendLine("mismatchBounds=${mismatchBounds(expected.image, actual.image).toMetricString()}")
+                appendLine("mismatchSamples=${mismatchSamples(expected.image, actual.image)}")
             },
         )
     }
@@ -980,16 +984,92 @@ class AwtPrimitiveDockerTest {
         assertTrue(abs(expected - actual) <= tolerance, message)
     }
 
-    private fun imageDistance(reference: java.awt.image.BufferedImage, actual: java.awt.image.BufferedImage): Double {
+    private fun imageDistance(reference: BufferedImage, actual: BufferedImage): Double {
+        val width = minOf(reference.width, actual.width)
+        val height = minOf(reference.height, actual.height)
+        if (width == 0 || height == 0) return Double.POSITIVE_INFINITY
         var total = 0L
         var samples = 0
-        for (y in 0 until reference.height step 3) {
-            for (x in 0 until reference.width step 3) {
+        for (y in 0 until height step 3) {
+            for (x in 0 until width step 3) {
                 total += rgbDistance(reference.getRGB(x, y), actual.getRGB(x, y))
                 samples++
             }
         }
         return total.toDouble() / samples.toDouble()
+    }
+
+    private fun mismatchBounds(expected: BufferedImage, actual: BufferedImage): Rectangle? {
+        val width = maxOf(expected.width, actual.width)
+        val height = maxOf(expected.height, actual.height)
+        var minX = Int.MAX_VALUE
+        var minY = Int.MAX_VALUE
+        var maxX = -1
+        var maxY = -1
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val expectedRgb = if (x < expected.width && y < expected.height) expected.getRGB(x, y) else null
+                val actualRgb = if (x < actual.width && y < actual.height) actual.getRGB(x, y) else null
+                if (expectedRgb == actualRgb) continue
+                minX = minOf(minX, x)
+                minY = minOf(minY, y)
+                maxX = maxOf(maxX, x)
+                maxY = maxOf(maxY, y)
+            }
+        }
+        return if (maxX < minX || maxY < minY) null else Rectangle(minX, minY, maxX - minX + 1, maxY - minY + 1)
+    }
+
+    private fun Rectangle?.toMetricString(): String =
+        this?.let { "${it.x},${it.y} ${it.width}x${it.height}" } ?: "none"
+
+    private fun mismatchSamples(expected: BufferedImage, actual: BufferedImage, limit: Int = 12): String {
+        val width = maxOf(expected.width, actual.width)
+        val height = maxOf(expected.height, actual.height)
+        val samples = mutableListOf<String>()
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val expectedRgb = if (x < expected.width && y < expected.height) expected.getRGB(x, y) else null
+                val actualRgb = if (x < actual.width && y < actual.height) actual.getRGB(x, y) else null
+                if (expectedRgb == actualRgb) continue
+                samples += "$x,$y expected=${expectedRgb?.hexArgb() ?: "missing"} actual=${actualRgb?.hexArgb() ?: "missing"} " +
+                    "delta=${if (expectedRgb != null && actualRgb != null) rgbDistance(expectedRgb, actualRgb) else "missing"}"
+                if (samples.size == limit) return samples.joinToString("; ") + "; ..."
+            }
+        }
+        return if (samples.isEmpty()) "none" else samples.joinToString("; ")
+    }
+
+    private fun visualDiffImage(expected: BufferedImage, actual: BufferedImage): BufferedImage {
+        val width = maxOf(expected.width, actual.width)
+        val height = maxOf(expected.height, actual.height)
+        val image = BufferedImage(width, height, BufferedImage.TYPE_INT_RGB)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val expectedRgb = if (x < expected.width && y < expected.height) expected.getRGB(x, y) else null
+                val actualRgb = if (x < actual.width && y < actual.height) actual.getRGB(x, y) else null
+                image.setRGB(
+                    x,
+                    y,
+                    when {
+                        expectedRgb == null && actualRgb == null -> 0
+                        expectedRgb == null -> 0x00ff00
+                        actualRgb == null -> 0xff00ff
+                        else -> amplifiedDiffRgb(expectedRgb, actualRgb)
+                    },
+                )
+            }
+        }
+        return image
+    }
+
+    private fun amplifiedDiffRgb(expectedArgb: Int, actualArgb: Int): Int {
+        val alpha = (abs(((expectedArgb ushr 24) and 0xff) - ((actualArgb ushr 24) and 0xff)) * 4).coerceAtMost(255)
+        val red = (abs(((expectedArgb ushr 16) and 0xff) - ((actualArgb ushr 16) and 0xff)) * 4).coerceAtMost(255)
+        val green = (abs(((expectedArgb ushr 8) and 0xff) - ((actualArgb ushr 8) and 0xff)) * 4).coerceAtMost(255)
+        val blue = (abs((expectedArgb and 0xff) - (actualArgb and 0xff)) * 4).coerceAtMost(255)
+        if (alpha > 0 && red == 0 && green == 0 && blue == 0) return 0xffff00
+        return (red shl 16) or (green shl 8) or blue
     }
 
     private fun rgbDistance(left: Int, right: Int): Int =
