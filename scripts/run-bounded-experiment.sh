@@ -12,6 +12,7 @@ DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS="${EXPERIMENT_DIAGNOSTICS_COMMAND_TIMEOUT_SE
 THREAD_DUMP_TIMEOUT_SECONDS="${EXPERIMENT_THREAD_DUMP_TIMEOUT_SECONDS:-8}"
 THREAD_DUMP_MAX_JVMS="${EXPERIMENT_THREAD_DUMP_MAX_JVMS:-8}"
 DOCKER_DIAGNOSTICS="${EXPERIMENT_DOCKER_DIAGNOSTICS:-1}"
+MIRROR_OUTPUT="${EXPERIMENT_MIRROR_OUTPUT:-1}"
 
 usage() {
   cat <<USAGE
@@ -26,9 +27,12 @@ Environment:
   EXPERIMENT_NO_OUTPUT_DIAGNOSTICS_SECONDS=$NO_OUTPUT_DIAGNOSTICS_SECONDS
   EXPERIMENT_NO_OUTPUT_TIMEOUT_SECONDS=$NO_OUTPUT_TIMEOUT_SECONDS
   EXPERIMENT_RUN_DIR=$RUN_DIR
+  EXPERIMENT_MIRROR_OUTPUT=$MIRROR_OUTPUT
 
 Each run writes stdout, stderr, run-info.txt, heartbeat.txt, and timeout
-diagnostics under EXPERIMENT_RUN_DIR/run_YYYYMMDD-HHMMSS-PID.
+diagnostics under EXPERIMENT_RUN_DIR/run_YYYYMMDD-HHMMSS-PID. By default
+stdout/stderr are also mirrored to this terminal; set EXPERIMENT_MIRROR_OUTPUT=0
+for fully quiet persisted-output runs.
 USAGE
 }
 
@@ -259,21 +263,46 @@ CMDLINE="$(printf '%q ' "$@")"
   echo "TIMEOUT_SECONDS=$TIMEOUT_SECONDS"
   echo "NO_OUTPUT_DIAGNOSTICS_SECONDS=$NO_OUTPUT_DIAGNOSTICS_SECONDS"
   echo "NO_OUTPUT_TIMEOUT_SECONDS=$NO_OUTPUT_TIMEOUT_SECONDS"
+  echo "MIRROR_OUTPUT=$MIRROR_OUTPUT"
   echo "STDOUT=$STDOUT_FILE"
   echo "STDERR=$STDERR_FILE"
   echo "LATEST=$RUN_DIR/latest"
 } > "$RUN_INFO_FILE"
 
-(
-  cd "$ROOT"
-  exec "$@" >"$STDOUT_FILE" 2>"$STDERR_FILE"
-) &
+if [[ "$MIRROR_OUTPUT" == "1" ]]; then
+  (
+    cd "$ROOT"
+    exec "$@" > >(tee "$STDOUT_FILE") 2> >(tee "$STDERR_FILE" >&2)
+  ) &
+else
+  (
+    cd "$ROOT"
+    exec "$@" >"$STDOUT_FILE" 2>"$STDERR_FILE"
+  ) &
+fi
 COMMAND_PID="$!"
 echo "PID=$COMMAND_PID" >> "$RUN_INFO_FILE"
 echo "$COMMAND_PID" > "$PID_FILE"
 
 echo "RUN_DIR=$THIS_RUN_DIR"
 echo "PID=$COMMAND_PID"
+
+handle_signal() {
+  local signal="$1"
+  local exit_code="$2"
+  dump_diagnostics "signal-${signal}"
+  terminate_tree "$COMMAND_PID"
+  wait "$COMMAND_PID" 2>/dev/null || true
+  rm -f "$PID_FILE"
+  {
+    echo "TIMEOUT_REASON=signal-${signal}"
+    echo "EXIT_CODE=$exit_code"
+  } >> "$RUN_INFO_FILE"
+  exit "$exit_code"
+}
+
+trap 'handle_signal TERM 143' TERM
+trap 'handle_signal INT 130' INT
 
 EXIT_CODE=0
 START_SECONDS="$(date +%s)"

@@ -70,6 +70,8 @@ The 2026-07-04 follow-up exposed one more stale-run blind spot: a runner can be 
 
 The 2026-07-04 root-side workflow is now wrapper-first. Local implementation, review, and test prompts tell agents to follow this file and to use `scripts/run-gradle-bounded.sh` or `scripts/run-bounded-experiment.sh` instead of bare build/test commands. The agent runner reliability preamble says the same thing, so new agents inherit the policy even when older generic prompt text still mentions MCP Steroid for builds. `run-agent.sh`, `scripts/run-gradle-bounded.sh`, and `scripts/run-bounded-experiment.sh` maintain a `latest` symlink in their run directories, making the first diagnostic target stable: `runs/latest`, `runs/gradle-bounded/latest`, or `runs/bounded-experiments/latest`.
 
+One more local visibility failure was that `scripts/run-bounded-experiment.sh` persisted stdout/stderr to files but did not mirror them to the terminal. That made long but healthy Docker/IDE experiments look silent to the root agent until completion. The wrapper now mirrors output by default while keeping the persisted files and diagnostics; set `EXPERIMENT_MIRROR_OUTPUT=0` only when a deliberately quiet run is more useful. External TERM/INT signals also trigger a diagnostic bundle before the child process tree is terminated.
+
 ## Required Practice
 
 - Start long commands through `scripts/run-bounded-experiment.sh`, `timeout`, `scripts/run-gradle-bounded.sh`, or with `RUN_AGENT_TIMEOUT_SECONDS` set.
@@ -77,7 +79,7 @@ The 2026-07-04 root-side workflow is now wrapper-first. Local implementation, re
 - Prefer `scripts/run-gradle-bounded.sh <tasks...>` for Gradle checks. It holds the repo Gradle lock and captures JVM diagnostics before killing a timed-out run.
 - Treat `runs/gradle-bounded/run_*/heartbeat.txt`, `run-info.txt`, `stdout.txt`, and `stderr.txt` as the first stop for a suspected Gradle stall. `GRADLE_NO_OUTPUT_DIAGNOSTICS_SECONDS` controls the first diagnostic snapshot, and `GRADLE_NO_OUTPUT_TIMEOUT_SECONDS` controls the automatic kill.
 - For the most recent Gradle stall, start with `runs/gradle-bounded/latest/run-info.txt`; for the most recent non-Gradle experiment, start with `runs/bounded-experiments/latest/run-info.txt`; for the most recent run-agent, start with `runs/latest/run-info.txt`.
-- Prefer `scripts/run-bounded-experiment.sh -- <command> [args...]` for ad hoc non-Gradle repros and experiments so timeout failures leave a persisted diagnostic bundle.
+- Prefer `scripts/run-bounded-experiment.sh -- <command> [args...]` for ad hoc non-Gradle repros and experiments so timeout failures leave a persisted diagnostic bundle. Its default `EXPERIMENT_MIRROR_OUTPUT=1` also streams child stdout/stderr to the current terminal, which makes healthy long experiments visibly active while still preserving `stdout.txt` and `stderr.txt`.
 - Before killing a suspected stuck JVM workload, collect `jps -lm` plus `jcmd <pid> Thread.print` or `jstack <pid>`.
 - Before restarting a silent run-agent, inspect its `heartbeat.txt`, `run-info.txt`, any `DIAGNOSTICS=...` entries, and stdout/stderr sizes.
 - For agents that print startup text and then may idle, trust `OUTPUT_IDLE_SECONDS`, not total output size.
