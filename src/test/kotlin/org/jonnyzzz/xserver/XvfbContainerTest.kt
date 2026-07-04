@@ -75,6 +75,7 @@ class XvfbContainerTest {
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runXlogoAgainstXvfb()
         val actual = runXlogoAgainstKotlinServer(port = 6226)
+        dumpRealClientArtifacts("xlogo", actual)
 
         assertTrue(actual.text.contains("label=\"xlogo\""), actual.text)
         assertTrue(actual.text.contains("- FillPoly:"), actual.text)
@@ -95,6 +96,7 @@ class XvfbContainerTest {
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runXclockAgainstXvfb()
         val actual = runXclockAgainstKotlinServer(port = 6227)
+        dumpRealClientArtifacts("xclock", actual)
 
         assertTrue(actual.text.contains("label=\"xclock\""), actual.text)
         assertTrue(actual.text.contains("- PutImage:"), actual.text)
@@ -123,6 +125,7 @@ class XvfbContainerTest {
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runXcalcAgainstXvfb()
         val actual = runXcalcAgainstKotlinServer(port = 6228)
+        dumpRealClientArtifacts("xcalc", actual)
 
         assertTrue(actual.text.contains("label=\"Calculator\""), actual.text)
         assertTrue(
@@ -156,6 +159,7 @@ class XvfbContainerTest {
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runXeyesAgainstXvfb()
         val actual = runXeyesAgainstKotlinServer(port = 6229)
+        dumpRealClientArtifacts("xeyes", actual)
 
         assertTrue(actual.text.contains("label=\"xeyes\""), actual.text)
         assertTrue(actual.text.contains("- RENDER.Trapezoids:"), actual.text)
@@ -184,6 +188,7 @@ class XvfbContainerTest {
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runXtermAgainstXvfb()
         val actual = runXtermAgainstKotlinServer(port = 6230)
+        dumpRealClientArtifacts("xterm", actual)
 
         assertTrue(actual.text.contains("label=\"xterm-parity\""), actual.text)
         assertTrue(
@@ -220,6 +225,7 @@ class XvfbContainerTest {
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runWindowManagerAgainstXvfb()
         val actual = runWindowManagerAgainstKotlinServer(port = 6209)
+        dumpRealClientArtifacts("window-manager", actual)
 
         assertTrue(actual.text.contains("Focus:"), actual.text)
         assertTrue(actual.text.contains("Overlap and focus:"), actual.text)
@@ -975,11 +981,89 @@ class XvfbContainerTest {
     }
 
     private fun dumpVisualCapturePair(label: String, expected: VisualCapture, actual: VisualCapture) {
-        val safeLabel = label.lowercase().replace(Regex("""[^a-z0-9]+"""), "-").trim('-')
-        val directory = File("build/tmp/xvfb-container-test").also { it.mkdirs() }
+        val safeLabel = safeArtifactLabel(label)
+        val directory = xvfbContainerArtifactsDirectory()
         ImageIO.write(expected.image, "png", File(directory, "$safeLabel-reference.png"))
         ImageIO.write(actual.image, "png", File(directory, "$safeLabel-actual.png"))
+        File(directory, "$safeLabel-metrics.txt").writeText(
+            buildString {
+                appendLine("expected=$expected")
+                appendLine("actual=$actual")
+                appendLine("coverageRatio=${ratio(actual.nonBackgroundPixels, expected.nonBackgroundPixels)}")
+                appendLine("averageRgbDelta=${abs(actual.averageRgb - expected.averageRgb)}")
+                appendLine("sampledDistance=${imageDistance(expected.image, actual.image)}")
+            },
+        )
     }
+
+    private fun dumpRealClientArtifacts(label: String, actual: RealClientResult) {
+        val safeLabel = safeArtifactLabel(label)
+        val directory = xvfbContainerArtifactsDirectory()
+        File(directory, "$safeLabel-actual.txt").writeText(actual.text)
+        File(directory, "$safeLabel-actual.svg").writeText(actual.svg)
+        File(directory, "$safeLabel-svg-layers.txt").writeText(svgLayerInventory(actual.embeddedFramebuffers))
+        ImageIO.write(actual.robot.image, "png", File(directory, "$safeLabel-kotlin-robot.png"))
+        File(directory, "$safeLabel-kotlin-metrics.txt").writeText(
+            buildString {
+                appendLine("robot=${actual.robot}")
+                appendLine("embeddedFramebuffers=${actual.embeddedFramebuffers.size}")
+            },
+        )
+    }
+
+    private fun dumpRealClientArtifacts(label: String, actual: XlogoResult) {
+        val safeLabel = safeArtifactLabel(label)
+        val directory = xvfbContainerArtifactsDirectory()
+        File(directory, "$safeLabel-actual.txt").writeText(actual.text)
+        File(directory, "$safeLabel-actual.svg").writeText(actual.svg)
+        File(directory, "$safeLabel-svg-layers.txt").writeText(svgLayerInventory(actual.embeddedFramebuffers))
+        ImageIO.write(actual.robot.image, "png", File(directory, "$safeLabel-kotlin-robot.png"))
+        File(directory, "$safeLabel-kotlin-metrics.txt").writeText(
+            buildString {
+                appendLine("robot=${actual.robot}")
+                appendLine("embeddedFramebuffers=${actual.embeddedFramebuffers.size}")
+            },
+        )
+    }
+
+    private fun svgLayerInventory(layers: List<EmbeddedPng>): String =
+        buildString {
+            appendLine("count=${layers.size}")
+            layers.forEachIndexed { index, layer ->
+                val imageSummary = layer.bytes?.let { bytes ->
+                    ImageIO.read(ByteArrayInputStream(bytes))?.let { image ->
+                        "png=${image.width}x${image.height} nonBackgroundPixels=${nonBackgroundPixels(image)}"
+                    }
+                } ?: "fill=${layer.fill?.let { "0x${it.toUInt().toString(16).padStart(8, '0')}" } ?: "none"}"
+                appendLine(
+                    "$index: id=${layer.id} x=${layer.x} y=${layer.y} width=${layer.width} height=${layer.height} " +
+                        "$imageSummary clips=${layer.clipRectangles.joinToString { "${it.x},${it.y} ${it.width}x${it.height}" }}",
+                )
+            }
+        }
+
+    private fun nonBackgroundPixels(image: BufferedImage): Int {
+        var count = 0
+        for (y in 0 until image.height) {
+            for (x in 0 until image.width) {
+                if (rgbDistance(image.getRGB(x, y), RealClientBackground) > 8) count++
+            }
+        }
+        return count
+    }
+
+    private fun xvfbContainerArtifactsDirectory(): File =
+        File("build/tmp/xvfb-container-test").also { it.mkdirs() }
+
+    private fun safeArtifactLabel(label: String): String =
+        label.lowercase().replace(Regex("""[^a-z0-9]+"""), "-").trim('-')
+
+    private fun ratio(actual: Int, expected: Int): Double =
+        if (expected == 0) {
+            if (actual == 0) 1.0 else Double.POSITIVE_INFINITY
+        } else {
+            actual.toDouble() / expected.toDouble()
+        }
 
     private fun assertComposedSvgClose(
         expected: VisualCapture,

@@ -7,6 +7,7 @@ import org.testcontainers.containers.GenericContainer
 import org.testcontainers.utility.DockerImageName
 import java.io.ByteArrayInputStream
 import java.awt.image.BufferedImage
+import java.io.File
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.Base64
@@ -543,6 +544,7 @@ class AwtPrimitiveDockerTest {
         actual: VisualProbeCapture,
         label: String,
     ) {
+        dumpAwtVisualCapturePair(label, expected, actual)
         assertEquals(expected.width, actual.width, "$label content width should match Xvfb reference")
         assertEquals(expected.height, actual.height, "$label content height should match Xvfb reference")
         assertClose(
@@ -571,6 +573,90 @@ class AwtPrimitiveDockerTest {
             "$label should stay visually close to Xvfb reference\nreference=$expected\nactual=$actual",
         )
     }
+
+    private fun dumpAwtProbeArtifacts(
+        title: String,
+        text: String,
+        svg: String,
+        html: String,
+        stats: List<ImageStats>,
+        log: String,
+    ) {
+        val safeLabel = safeArtifactLabel(title)
+        val directory = awtArtifactsDirectory()
+        File(directory, "$safeLabel-text.txt").writeText(text)
+        File(directory, "$safeLabel-screen.svg").writeText(svg)
+        File(directory, "$safeLabel.html").writeText(html)
+        File(directory, "$safeLabel-log.txt").writeText(log)
+        File(directory, "$safeLabel-svg-layers.txt").writeText(
+            buildString {
+                appendLine("count=${stats.size}")
+                stats.forEachIndexed { index, stat ->
+                    appendLine(
+                        "$index: id=${stat.id} width=${stat.width} height=${stat.height} " +
+                            "nonWhitePixels=${stat.nonWhitePixels} samples=${stat.samples.joinToString(" ")}",
+                    )
+                }
+            },
+        )
+    }
+
+    private fun dumpAwtVisualProbeArtifacts(title: String, result: KotlinVisualProbeResult) {
+        val safeLabel = safeArtifactLabel(title)
+        val directory = awtArtifactsDirectory()
+        File(directory, "$safeLabel-text.txt").writeText(result.text)
+        File(directory, "$safeLabel-screen.svg").writeText(result.svg)
+        File(directory, "$safeLabel-svg-layers.txt").writeText(embeddedPngInventory(result.embeddedFramebuffers))
+        ImageIO.write(result.robot.image, "png", File(directory, "$safeLabel-kotlin-robot.png"))
+        File(directory, "$safeLabel-kotlin-metrics.txt").writeText(
+            buildString {
+                appendLine("robot=${result.robot}")
+                appendLine("exportedFramebuffers=${result.exportedFramebuffers.joinToString()}")
+            },
+        )
+    }
+
+    private fun dumpAwtVisualCapturePair(label: String, expected: VisualProbeCapture, actual: VisualProbeCapture) {
+        val safeLabel = safeArtifactLabel(label)
+        val directory = awtArtifactsDirectory()
+        ImageIO.write(expected.image, "png", File(directory, "$safeLabel-reference.png"))
+        ImageIO.write(actual.image, "png", File(directory, "$safeLabel-actual.png"))
+        File(directory, "$safeLabel-metrics.txt").writeText(
+            buildString {
+                appendLine("expected=$expected")
+                appendLine("actual=$actual")
+                appendLine("coverageRatio=${ratio(actual.nonBackgroundPixels, expected.nonBackgroundPixels)}")
+                appendLine("averageRgbDelta=${abs(actual.averageRgb - expected.averageRgb)}")
+                appendLine("sampledDistance=${imageDistance(expected.image, actual.image)}")
+            },
+        )
+    }
+
+    private fun embeddedPngInventory(layers: List<EmbeddedPng>): String =
+        buildString {
+            appendLine("count=${layers.size}")
+            layers.forEachIndexed { index, layer ->
+                val stat = imageStats(layer.id, layer.bytes)
+                appendLine(
+                    "$index: id=${layer.id} x=${layer.x} y=${layer.y} width=${layer.width} height=${layer.height} " +
+                        "pngWidth=${stat.width} pngHeight=${stat.height} nonWhitePixels=${stat.nonWhitePixels} " +
+                        "samples=${stat.samples.joinToString(" ")}",
+                )
+            }
+        }
+
+    private fun awtArtifactsDirectory(): File =
+        File("build/tmp/awt-primitive-docker").also { it.mkdirs() }
+
+    private fun safeArtifactLabel(label: String): String =
+        label.lowercase().replace(Regex("""[^a-z0-9]+"""), "-").trim('-')
+
+    private fun ratio(actual: Int, expected: Int): Double =
+        if (expected == 0) {
+            if (actual == 0) 1.0 else Double.POSITIVE_INFINITY
+        } else {
+            actual.toDouble() / expected.toDouble()
+        }
 
     private fun assertExportedFramebufferClose(
         expected: VisualProbeCapture,
@@ -659,9 +745,11 @@ class AwtPrimitiveDockerTest {
                     val stats = images.map { imageStats(it.id, it.bytes) }
 
                     val logResult = container.execInContainer("sh", "-lc", "kill $(cat /tmp/awt-primitive.pid) 2>/dev/null || true; cat /tmp/awt-primitive.log")
+                    val log = logResult.stdout + logResult.stderr
+                    dumpAwtProbeArtifacts(title, text, svg, html, stats, log)
                     server.close()
                     serverThread.join(1_000)
-                    return ProbeResult(text, svg, html, stats, logResult.stdout + logResult.stderr)
+                    return ProbeResult(text, svg, html, stats, log)
                 }
         }
     }
@@ -759,10 +847,8 @@ class AwtPrimitiveDockerTest {
                         kill "${'$'}pid" 2>/dev/null || true
                         """.trimIndent(),
                     )
-                    server.close()
-                    serverThread.join(1_000)
                     assertEquals(0, log.exitCode, log.stderr + log.stdout)
-                    return KotlinVisualProbeResult(
+                    val result = KotlinVisualProbeResult(
                         robot = visualProbeCapture(log.stdout),
                         text = text,
                         svg = svg,
@@ -771,6 +857,10 @@ class AwtPrimitiveDockerTest {
                         },
                         embeddedFramebuffers = pngDataUris(svg),
                     )
+                    dumpAwtVisualProbeArtifacts(title, result)
+                    server.close()
+                    serverThread.join(1_000)
+                    return result
                 }
         }
     }
