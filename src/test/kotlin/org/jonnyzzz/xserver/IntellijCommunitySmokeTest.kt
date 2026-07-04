@@ -518,6 +518,11 @@ class IntellijCommunitySmokeTest {
     private fun intellijContainer(image: String): GenericContainer<*> =
         GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
             .withFileSystemBind(cleanProjectExport().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
+            .withFileSystemBind(
+                projectRoot().resolve("docker/x11-client/run-intellij.sh").toString(),
+                "/usr/local/bin/run-intellij",
+                BindMode.READ_ONLY,
+            )
             .withFileSystemBind(intellijCacheDir().toString(), "/tmp/idea-cache", BindMode.READ_WRITE)
             .withEnv("IDEA_CACHE_DIR", "/tmp/idea-cache")
             .withCommand("sleep", "900")
@@ -588,6 +593,8 @@ class IntellijCommunitySmokeTest {
                     command -v run-intellij
                     command -v git
                     test -d /tmp/idea-cache
+                    test -x /usr/local/bin/run-intellij
+                    cksum /usr/local/bin/run-intellij >/tmp/run-intellij-cksum.log
                     if [ -n "${url.orEmpty()}" ]; then
                       export IDEA_URL="${url.orEmpty()}"
                     fi
@@ -625,6 +632,7 @@ class IntellijCommunitySmokeTest {
                     if grep -q "Download JDK" /tmp/idea-log/idea.log; then echo "unexpected Download JDK log"; exit 1; fi
                     if grep -q "Cannot Run Git" /tmp/idea-log/idea.log; then echo "unexpected Cannot Run Git log"; exit 1; fi
                     if grep -q "Project is not trusted" /tmp/idea-log/idea.log; then echo "unexpected Project is not trusted log"; exit 1; fi
+                    grep -q -- "-Dremote.x11.workaround=false" /tmp/idea-extra.vmoptions
                     sleep 5
                     DISPLAY=:99 java -cp /tmp XIntellijRobotCapture
                     """.trimIndent(),
@@ -633,7 +641,11 @@ class IntellijCommunitySmokeTest {
                     container = container,
                     prefix = "intellij-xvfb",
                     runLogPath = "/tmp/idea-run-xvfb.log",
-                    extraLogs = listOf("/tmp/xdpyinfo-glx-xvfb.log" to "intellij-xvfb-glx-xdpyinfo.log"),
+                    extraLogs = listOf(
+                        "/tmp/xdpyinfo-glx-xvfb.log" to "intellij-xvfb-glx-xdpyinfo.log",
+                        "/tmp/idea-extra.vmoptions" to "intellij-xvfb-idea-extra.vmoptions",
+                        "/tmp/run-intellij-cksum.log" to "intellij-xvfb-run-intellij-cksum.log",
+                    ),
                 )
                 assertEquals(0, result.exitCode, result.stderr + result.stdout)
                 IntellijReferenceCapture(
@@ -665,6 +677,8 @@ class IntellijCommunitySmokeTest {
                         command -v run-intellij
                         command -v git
                         test -d /tmp/idea-cache
+                        test -x /usr/local/bin/run-intellij
+                        cksum /usr/local/bin/run-intellij >/tmp/run-intellij-cksum.log
                         if [ -n "${url.orEmpty()}" ]; then
                           export IDEA_URL="${url.orEmpty()}"
                         fi
@@ -695,6 +709,7 @@ class IntellijCommunitySmokeTest {
                         if grep -q "Download JDK" /tmp/idea-log/idea.log; then echo "unexpected Download JDK log"; exit 1; fi
                         if grep -q "Cannot Run Git" /tmp/idea-log/idea.log; then echo "unexpected Cannot Run Git log"; exit 1; fi
                         if grep -q "Project is not trusted" /tmp/idea-log/idea.log; then echo "unexpected Project is not trusted log"; exit 1; fi
+                        grep -q -- "-Dremote.x11.workaround=false" /tmp/idea-extra.vmoptions
                         """.trimIndent(),
                     )
                     assertEquals(0, startResult.exitCode, startResult.stderr + startResult.stdout)
@@ -718,7 +733,11 @@ class IntellijCommunitySmokeTest {
                             container = container,
                             prefix = "intellij-kotlin",
                             runLogPath = "/tmp/idea-run-parity.log",
-                            extraLogs = listOf("/tmp/xdpyinfo-glx-kotlin.log" to "intellij-kotlin-glx-xdpyinfo.log"),
+                            extraLogs = listOf(
+                                "/tmp/xdpyinfo-glx-kotlin.log" to "intellij-kotlin-glx-xdpyinfo.log",
+                                "/tmp/idea-extra.vmoptions" to "intellij-kotlin-idea-extra.vmoptions",
+                                "/tmp/run-intellij-cksum.log" to "intellij-kotlin-run-intellij-cksum.log",
+                            ),
                         )
                         return IntellijKotlinCapture(
                             robot = visualCapture(capture.stdout),

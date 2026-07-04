@@ -29,6 +29,7 @@ class VSCodeSmokeTest {
     private companion object {
         const val VSCodeCaptureWidth = 1280
         const val VSCodeCaptureHeight = 900
+        const val VSCodeContainerCommandTimeoutSeconds = 180
     }
 
     @Test
@@ -204,15 +205,12 @@ class VSCodeSmokeTest {
 
         XServer(ServerOptions(host = "0.0.0.0", port = port, width = 1280, height = 900)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
-            GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
-                .withFileSystemBind(cleanProjectExport().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
-                .withCommand("sleep", "900")
+            vscodeContainer(image)
                 .use { container ->
                     container.start()
                     val display = port - 6000
-                    val startResult = container.execInContainer(
-                        "sh",
-                        "-lc",
+                    val startResult = execVSCodeShell(
+                        container,
                         """
                         set -eu
                         command -v run-vscode
@@ -237,7 +235,7 @@ class VSCodeSmokeTest {
                         val svg = httpGet(port, "/screen.svg")
                         val html = httpGet(port, "/")
                         dumpVSCodeArtifacts(text = text, svg = svg, html = html, logs = collectVSCodeLogs(container))
-                        val running = container.execInContainer("sh", "-lc", "kill -0 $(cat /tmp/vscode.pid)")
+                        val running = execContainerShell(container, 30, "kill -0 $(cat /tmp/vscode.pid)")
                         assertEquals(0, running.exitCode, "VSCode exited early\n${vscodeRunLog(container)}")
                         assertTrue(
                             hasVSCodeWindowEvidence(text),
@@ -250,7 +248,11 @@ class VSCodeSmokeTest {
                             "VSCode screen SVG should contain non-white rendered pixels, got ${snapshot.stats}\n$text",
                         )
                     } finally {
-                        container.execInContainer("sh", "-lc", "kill $(cat /tmp/vscode.pid 2>/dev/null || pgrep -f '/opt/vscode/code') 2>/dev/null || true")
+                        execContainerShell(
+                            container,
+                            30,
+                            "kill $(cat /tmp/vscode.pid 2>/dev/null || pgrep -f '/opt/vscode/code') 2>/dev/null || true",
+                        )
                     }
                 }
             server.close()
@@ -344,6 +346,22 @@ class VSCodeSmokeTest {
             DockerClientFactory.instance().client().inspectImageCmd(image).exec()
         }.isSuccess
 
+    private fun vscodeContainer(image: String): GenericContainer<*> =
+        GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
+            .withFileSystemBind(cleanProjectExport().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
+            .withFileSystemBind(
+                projectRoot().resolve("docker/x11-client/run-vscode.sh").toString(),
+                "/usr/local/bin/run-vscode",
+                BindMode.READ_ONLY,
+            )
+            .withCommand("sleep", "900")
+
+    private fun execContainerShell(container: GenericContainer<*>, timeoutSeconds: Int, script: String) =
+        container.execInContainer("timeout", "${timeoutSeconds}s", "sh", "-lc", script)
+
+    private fun execVSCodeShell(container: GenericContainer<*>, script: String) =
+        execContainerShell(container, VSCodeContainerCommandTimeoutSeconds, script)
+
     private fun httpGet(port: Int, path: String): String =
         Socket("127.0.0.1", port).use { socket ->
             socket.soTimeout = 5_000
@@ -383,15 +401,12 @@ class VSCodeSmokeTest {
     }
 
     private fun runVSCodeAgainstXvfb(image: String, url: String?): VSCodeReferenceCapture =
-        GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
-            .withFileSystemBind(cleanProjectExport().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
-            .withCommand("sleep", "900")
+        vscodeContainer(image)
             .use { container ->
                 container.start()
                 compileRobotCapture(container)
-                val result = container.execInContainer(
-                    "sh",
-                    "-lc",
+                val result = execVSCodeShell(
+                    container,
                     """
                     set -eu
                     command -v Xvfb
@@ -454,16 +469,13 @@ class VSCodeSmokeTest {
             ),
         ).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
-            GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
-                .withFileSystemBind(cleanProjectExport().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
-                .withCommand("sleep", "900")
+            vscodeContainer(image)
                 .use { container ->
                     container.start()
                     compileRobotCapture(container)
                     val display = port - 6000
-                    val startResult = container.execInContainer(
-                        "sh",
-                        "-lc",
+                    val startResult = execVSCodeShell(
+                        container,
                         """
                         set -eu
                         command -v run-vscode
@@ -482,9 +494,9 @@ class VSCodeSmokeTest {
                         try {
                             val snapshot = waitForVisibleVSCodePixels(port)
                             Thread.sleep(3_000)
-                            val capture = container.execInContainer(
-                                "sh",
-                                "-lc",
+                            val capture = execContainerShell(
+                                container,
+                                60,
                                 """
                                 set -eu
                                 pid=${'$'}(cat /tmp/vscode.pid)
@@ -510,7 +522,11 @@ class VSCodeSmokeTest {
                             throw t
                         }
                     } finally {
-                        container.execInContainer("sh", "-lc", "kill $(cat /tmp/vscode.pid 2>/dev/null || pgrep -f '/opt/vscode/code') 2>/dev/null || true")
+                        execContainerShell(
+                            container,
+                            30,
+                            "kill $(cat /tmp/vscode.pid 2>/dev/null || pgrep -f '/opt/vscode/code') 2>/dev/null || true",
+                        )
                         server.close()
                         serverThread.join(1_000)
                     }
@@ -763,9 +779,9 @@ class VSCodeSmokeTest {
     }
 
     private fun compileRobotCapture(container: GenericContainer<*>) {
-        val result = container.execInContainer(
-            "sh",
-            "-lc",
+        val result = execContainerShell(
+            container,
+            60,
             "cat > /tmp/XVSCodeRobotCapture.java <<'JAVA'\n${robotCaptureSource()}\nJAVA\njavac /tmp/XVSCodeRobotCapture.java",
         )
         assertEquals(0, result.exitCode, result.stderr + result.stdout)
@@ -913,9 +929,9 @@ class VSCodeSmokeTest {
         projectRoot().resolve("build/tmp/vscode-smoke").toFile().also { it.mkdirs() }
 
     private fun collectVSCodeLogs(container: GenericContainer<*>, prefix: String = "vscode-kotlin"): List<VSCodeLogArtifact> {
-        val dynamicLogs = container.execInContainer(
-            "sh",
-            "-lc",
+        val dynamicLogs = execContainerShell(
+            container,
+            30,
             "if [ -d /tmp/vscode-log ]; then find /tmp/vscode-log -maxdepth 4 -type f -print | sort | head -80; fi",
         )
         val paths = (
@@ -927,9 +943,9 @@ class VSCodeSmokeTest {
                 }
             ).distinct()
         return paths.mapNotNull { path ->
-            val result = container.execInContainer(
-                "sh",
-                "-lc",
+            val result = execContainerShell(
+                container,
+                30,
                 "if [ -f '$path' ]; then cat '$path'; fi",
             )
             if (result.exitCode == 0 && result.stdout.isNotEmpty()) {
@@ -941,7 +957,7 @@ class VSCodeSmokeTest {
     }
 
     private fun vscodeRunLog(container: GenericContainer<*>): String =
-        container.execInContainer("sh", "-lc", "cat /tmp/vscode-run.log 2>/dev/null || true").stdout
+        execContainerShell(container, 30, "cat /tmp/vscode-run.log 2>/dev/null || true").stdout
 
     private fun vscodeLogArtifactName(prefix: String, path: String): String {
         val cleaned = path
