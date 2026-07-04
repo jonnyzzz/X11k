@@ -52,6 +52,14 @@ Refresh this screenshot after visible renderer changes so the README tracks the 
 ALLOW_NPX_PLAYWRIGHT=1 scripts/update-intellij-readme-screenshot.sh
 ```
 
+Recent `xcalc` SVG-composition parity sample:
+
+| Xvfb reference | Kotlin SVG-composed framebuffer |
+| --- | --- |
+| ![xcalc Xvfb reference](docs/images/xcalc-xvfb-reference.png) | ![xcalc Kotlin SVG-composed framebuffer](docs/images/xcalc-kotlin-svg.png) |
+
+Current `xcalc` sampled distance is `0.9572`; display frame, display text, and keypad regions are pixel-exact against the Xvfb reference in the latest parity run.
+
 Recent `xterm` SVG-composition parity sample:
 
 | Xvfb reference | Kotlin SVG-composed framebuffer |

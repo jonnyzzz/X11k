@@ -140,15 +140,70 @@ class XCoreDrawingProtocolTest {
                 assertMapAndExpose(socket.getInputStream(), WindowId)
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xffff_ffff.toInt(), pixelAt(image, 12, 0, 0))
-                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 1, 1))
-                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 3, 3))
-                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 7, 6))
-                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 8, 6))
-                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 5, 7))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 12, 1, 1))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 3, 3))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 5, 5))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 9, 8))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 10, 8))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 7, 9))
 
                 val svg = httpGet(server.localPort, "/screen.svg")
                 assertContains(svg, """class="window-border"""")
                 assertContains(svg, """data-border-window-id="0x${WindowId.toString(16)}"""")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `root GetImage composes child at bordered parent content origin`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val child = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(
+                    createWindowRequest(
+                        WindowId,
+                        x = 10,
+                        y = 8,
+                        width = 6,
+                        height = 5,
+                        borderWidth = 1,
+                        backgroundPixel = Green,
+                        borderPixel = Red,
+                    ),
+                )
+                out.write(
+                    createWindowRequest(
+                        child,
+                        parent = WindowId,
+                        x = 0,
+                        y = 0,
+                        width = 2,
+                        height = 2,
+                        backgroundPixel = Blue,
+                    ),
+                )
+                out.write(mapWindowRequest(WindowId))
+                out.write(mapWindowRequest(child))
+                out.write(getImageRequest(X11Ids.RootWindow, x = 9, y = 7, width = 8, height = 7))
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream(), WindowId)
+                assertMapAndExpose(socket.getInputStream(), child)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 8, 0, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 8, 1, 1))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 8, 2, 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 8, 2, 2))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 8, 3, 3))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 8, 4, 2))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 8, 1, 2))
             }
 
             server.close()
@@ -192,12 +247,12 @@ class XCoreDrawingProtocolTest {
 
                 assertMapAndExpose(socket.getInputStream(), WindowId)
                 val image = readReply(socket.getInputStream())
-                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 1, 1))
-                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 2, 1))
-                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 12, 3, 1))
-                assertEquals(0xffff_ff00.toInt(), pixelAt(image, 12, 1, 2))
-                assertEquals(0xff00_0000.toInt(), pixelAt(image, 12, 2, 2))
-                assertEquals(0xffff_00ff.toInt(), pixelAt(image, 12, 3, 2))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 4, 4))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 5, 4))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 12, 6, 4))
+                assertEquals(0xffff_ff00.toInt(), pixelAt(image, 12, 4, 5))
+                assertEquals(0xff00_0000.toInt(), pixelAt(image, 12, 5, 5))
+                assertEquals(0xffff_00ff.toInt(), pixelAt(image, 12, 6, 5))
                 assertEquals(0xff12_3456.toInt(), pixelAt(image, 12, 7, 7))
 
                 val svg = httpGet(server.localPort, "/screen.svg")
@@ -205,8 +260,8 @@ class XCoreDrawingProtocolTest {
                 assertContains(svg, """data-border-window-id="0x${WindowId.toString(16)}"""")
                 assertContains(svg, """data-border-pixmap-id="0x${PixmapId.toString(16)}"""")
                 assertContains(svg, """class="window-border-pixmap-image"""")
-                assertContains(svg, """x="8"""")
-                assertContains(svg, """y="6"""")
+                assertContains(svg, """x="11"""")
+                assertContains(svg, """y="9"""")
                 assertContains(svg, """fill="url(#screen-border-pattern-${WindowId.toString(16)}-${PixmapId.toString(16)})"""")
                 assertFalse(svg.contains("""fill="#000000""""))
 
@@ -4031,6 +4086,55 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ClearArea with ParentRelative background includes child border in parent pixmap origin`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val child = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent, width = 6, height = 5))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2, drawable = parent))
+                out.write(createGcRequest(GcId, foreground = Red, drawable = parent))
+                out.write(
+                    putImage24PixelsRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 2,
+                        pixels = listOf(Red, Green, Blue, 0x0000_0000),
+                    ),
+                )
+                out.write(changeWindowBackgroundPixmapRequest(parent, PixmapId))
+                out.write(
+                    createWindowRequest(
+                        child,
+                        parent = parent,
+                        x = 1,
+                        y = 0,
+                        width = 2,
+                        height = 2,
+                        borderWidth = 1,
+                        backgroundPixmap = XWindowBackground.ParentRelative,
+                    ),
+                )
+                out.write(clearAreaRequest(child, x = 0, y = 0, width = 0, height = 0))
+                out.write(getImageRequest(child, x = 0, y = 0, width = 2, height = 2))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 2, 0, 0))
+                assertEquals(0xff00_0000.toInt(), pixelAt(image, 2, 1, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 2, 0, 1))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 2, 1, 1))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ClearArea with background None leaves framebuffer contents unchanged`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -7799,6 +7903,44 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `QueryPointer treats a bordered window border as part of the input bounds`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 10, y = 10, width = 4, height = 4, borderWidth = 2))
+                out.write(mapWindowRequest(WindowId))
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream(), WindowId)
+                server.input.click(10, 10)
+                out.write(queryPointerRequest())
+                out.write(queryPointerRequest(WindowId))
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(WindowId, u32le(pointer, 12))
+                assertEquals(10, u16le(pointer, 16))
+                assertEquals(10, u16le(pointer, 18))
+
+                val windowPointer = readReply(socket.getInputStream())
+                assertEquals(1, windowPointer[0].toInt())
+                assertEquals(X11Ids.RootWindow, u32le(windowPointer, 8))
+                assertEquals(0, u32le(windowPointer, 12))
+                assertEquals(10, u16le(windowPointer, 16))
+                assertEquals(10, u16le(windowPointer, 18))
+                assertEquals(-2, i16le(windowPointer, 20))
+                assertEquals(-2, i16le(windowPointer, 22))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `WarpPointer moves pointer relative to current root position when destination is None`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -7857,6 +7999,45 @@ class XCoreDrawingProtocolTest {
                 assertEquals(12, u16le(pointer, 16))
                 assertEquals(12, u16le(pointer, 18))
                 assertEquals(WindowId, u32le(pointer, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `WarpPointer source rectangle can include a bordered window border`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 10, y = 10, width = 4, height = 4, borderWidth = 2))
+                out.write(mapWindowRequest(WindowId))
+                out.write(warpPointerRequest(destinationWindow = 0, destinationX = 10, destinationY = 10))
+                out.write(
+                    warpPointerRequest(
+                        sourceWindow = WindowId,
+                        sourceX = -2,
+                        sourceY = -2,
+                        sourceWidth = 2,
+                        sourceHeight = 2,
+                        destinationWindow = 0,
+                        destinationX = 50,
+                        destinationY = 50,
+                    ),
+                )
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream(), WindowId)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(5, u16le(pointer, 2))
+                assertEquals(60, u16le(pointer, 16))
+                assertEquals(60, u16le(pointer, 18))
+                assertEquals(0, u32le(pointer, 12))
             }
             server.close()
             serverThread.join(1_000)
@@ -7932,6 +8113,38 @@ class XCoreDrawingProtocolTest {
                 assertEquals(WindowId, u32le(pointer, 12))
                 assertEquals(29, u16le(pointer, 16))
                 assertEquals(29, u16le(pointer, 18))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `WarpPointer clamps movement to active pointer grab confine window border`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 10, y = 10, width = 4, height = 4, borderWidth = 2))
+                out.write(mapWindowRequest(WindowId))
+                out.write(grabPointerRequest(WindowId, confineTo = WindowId))
+                out.write(warpPointerRequest(destinationWindow = 0, destinationX = 0, destinationY = 0))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream(), WindowId)
+                val grab = readReply(socket.getInputStream())
+                assertEquals(1, grab[0].toInt())
+                assertEquals(0, grab[1].toInt() and 0xff)
+                assertEquals(3, u16le(grab, 2))
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(WindowId, u32le(pointer, 12))
+                assertEquals(10, u16le(pointer, 16))
+                assertEquals(10, u16le(pointer, 18))
             }
             server.close()
             serverThread.join(1_000)
@@ -8363,6 +8576,32 @@ class XCoreDrawingProtocolTest {
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(1, pointer[0].toInt())
                 assertEquals(1, pointer[1].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GrabPointer accepts confine window when only its border intersects root`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val confine = WindowId + 1
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(confine, x = -3, y = 10, width = 1, height = 1, borderWidth = 2))
+                out.write(mapWindowRequest(confine))
+                out.write(grabPointerRequest(X11Ids.RootWindow, confineTo = confine))
+                out.flush()
+
+                assertMapAndExpose(input, confine)
+                val grab = readReply(input)
+                assertEquals(1, grab[0].toInt())
+                assertEquals(0, grab[1].toInt() and 0xff)
+                assertEquals(3, u16le(grab, 2))
             }
             server.close()
             serverThread.join(1_000)
@@ -12475,7 +12714,7 @@ class XCoreDrawingProtocolTest {
                 val out = socket.getOutputStream()
                 val input = socket.getInputStream()
                 out.write(createWindowRequest(lower, x = 10, y = 10, width = 20, height = 20, borderWidth = 5, eventMask = XEventMasks.VisibilityChange))
-                out.write(createWindowRequest(upper, x = 5, y = 5, width = 5, height = 5))
+                out.write(createWindowRequest(upper, x = 10, y = 10, width = 5, height = 5))
                 out.write(mapWindowRequest(lower))
                 out.write(mapWindowRequest(upper))
                 out.write(queryPointerRequest())

@@ -1355,7 +1355,7 @@ class HttpRenderingTest {
                 val parent = 0x0020_0010
                 val child = 0x0020_0011
                 val boundingOnly = 0x0020_0012
-                out.write(createWindowRequest(parent, x = 10, y = 10, width = 80, height = 70))
+                out.write(createWindowRequest(parent, x = 10, y = 10, width = 80, height = 70, borderWidth = 1))
                 out.write(changePropertyRequest(parent, "parent clipped border"))
                 out.write(
                     shapeRectanglesRequest(
@@ -1364,7 +1364,7 @@ class HttpRenderingTest {
                         rectangles = listOf(XRectangleCommand(0, 0, 65, 70)),
                     ),
                 )
-                out.write(createWindowRequest(child, parent = parent, x = 55, y = 8, width = 50, height = 20))
+                out.write(createWindowRequest(child, parent = parent, x = 55, y = 8, width = 50, height = 20, borderWidth = 1))
                 out.write(changePropertyRequest(child, "child clipped border"))
                 out.write(
                     shapeRectanglesRequest(
@@ -1373,7 +1373,7 @@ class HttpRenderingTest {
                         rectangles = listOf(XRectangleCommand(10, 5, 20, 10)),
                     ),
                 )
-                out.write(createWindowRequest(boundingOnly, parent = parent, x = 5, y = 40, width = 20, height = 10))
+                out.write(createWindowRequest(boundingOnly, parent = parent, x = 5, y = 40, width = 20, height = 10, borderWidth = 1))
                 out.write(changePropertyRequest(boundingOnly, "explicit bounding default clip border"))
                 out.write(
                     shapeRectanglesRequest(
@@ -1393,9 +1393,9 @@ class HttpRenderingTest {
                     .find(svg)
                     ?.value
                     .orEmpty()
-                assertContains(borderClip, """x="64"""")
-                assertContains(borderClip, """y="17"""")
-                assertContains(borderClip, """width="11"""")
+                assertContains(borderClip, """x="66"""")
+                assertContains(borderClip, """y="19"""")
+                assertContains(borderClip, """width="10"""")
                 assertContains(borderClip, """height="22"""")
                 val borderGroup = Regex("""<g clip-path="url\(#clip-screen-border-200011\)">[\s\S]*?</g>""")
                     .find(svg)
@@ -1405,7 +1405,7 @@ class HttpRenderingTest {
                 assertContains(borderGroup, """data-border-window-id="0x200011"""")
                 assertContains(borderGroup, """clip-path="url(#clip-screen-border-200011)"""")
                 assertTrue(
-                    Regex("""<rect\b(?=[^>]*\bx="64")(?=[^>]*\by="23")(?=[^>]*\bwidth="11")(?=[^>]*\bheight="10")""")
+                    Regex("""<rect\b(?=[^>]*\bx="66")(?=[^>]*\by="25")(?=[^>]*\bwidth="11")(?=[^>]*\bheight="10")""")
                         .containsMatchIn(borderGroup),
                     "Border rectangles must include the area inside the nominal content bounds but outside the reduced ShapeClip: $borderGroup",
                 )
@@ -1475,6 +1475,36 @@ class HttpRenderingTest {
                     Regex("""<rect\b(?=[^>]*\bwidth="25")(?=[^>]*\bheight="20")""").containsMatchIn(childClip),
                     "Parent preview clip path must include ancestor SHAPE clipping, not only ancestor geometry",
                 )
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `screen svg retains a border-only visible window in semantic layers`() {
+        XServer(ServerOptions(port = 0, width = 23, height = 20)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val borderOnly = 0x0020_0010
+                out.write(createWindowRequest(borderOnly, x = 22, y = 5, width = 4, height = 4, borderWidth = 1))
+                out.write(changePropertyRequest(borderOnly, "border-only visible target"))
+                out.write(mapWindowRequest(borderOnly))
+                out.flush()
+                Thread.sleep(100)
+
+                val state = httpGet(server.localPort, "/state.json").body
+                assertContains(state, """"id":"0x200010"""")
+                assertContains(state, """"visibleWidth":0,"visibleHeight":0,"mapped":true""")
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "border-only visible target")
+                assertContains(svg, """data-border-window-id="0x200010"""")
             }
 
             server.close()
@@ -1706,6 +1736,7 @@ class HttpRenderingTest {
         height: Int,
         parent: Int = X11Ids.RootWindow,
         backgroundPixmap: Int? = null,
+        borderWidth: Int = 0,
     ): ByteArray {
         val bytes = ByteArray(32 + if (backgroundPixmap == null) 0 else 4)
         bytes[0] = 1
@@ -1717,7 +1748,7 @@ class HttpRenderingTest {
         put16le(bytes, 14, y)
         put16le(bytes, 16, width)
         put16le(bytes, 18, height)
-        put16le(bytes, 20, 1)
+        put16le(bytes, 20, borderWidth)
         put16le(bytes, 22, 1)
         put32le(bytes, 24, X11Ids.RootVisual)
         if (backgroundPixmap != null) {

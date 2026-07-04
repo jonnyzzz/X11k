@@ -1119,8 +1119,8 @@ internal class X11State(
     private fun windowBoundsInRoot(window: XWindow): XRectangleCommand {
         val absolute = absolutePosition(window)
         return XRectangleCommand(
-            x = absolute.first,
-            y = absolute.second,
+            x = absolute.first - window.borderWidth,
+            y = absolute.second - window.borderWidth,
             width = window.width + window.borderWidth * 2,
             height = window.height + window.borderWidth * 2,
         )
@@ -2569,11 +2569,11 @@ internal class X11State(
     @Synchronized
     fun windowIntersectsRootBounds(id: Int): Boolean {
         val window = windows[id] ?: return false
-        val absolute = absolutePosition(window)
-        return absolute.first < width &&
-            absolute.second < height &&
-            absolute.first + window.width > 0 &&
-            absolute.second + window.height > 0
+        val bounds = windowBoundsInRoot(window)
+        return bounds.x < width &&
+            bounds.y < height &&
+            bounds.x + bounds.width > 0 &&
+            bounds.y + bounds.height > 0
     }
 
     private fun passiveButtonGrabConflicts(left: XPassiveButtonGrab, right: XPassiveButtonGrab): Boolean =
@@ -3728,8 +3728,8 @@ internal class X11State(
                 XResolvedWindowBackground.None -> XResolvedWindowBackground.None
 
                 is XResolvedWindowBackground.Pixmap -> parentBackground.copy(
-                    xOrigin = parentBackground.xOrigin - window.x,
-                    yOrigin = parentBackground.yOrigin - window.y,
+                    xOrigin = parentBackground.xOrigin - window.x - window.borderWidth,
+                    yOrigin = parentBackground.yOrigin - window.y - window.borderWidth,
                 )
 
                 is XResolvedWindowBackground.Pixel -> parentBackground
@@ -7205,8 +7205,8 @@ internal class X11State(
                 val boundingShape = child.boundingShape ?: defaultWindowShapeRegion(child, XFixes.ShapeBounding)
                 boundingShape.map { rectangle ->
                     XRectangleCommand(
-                        x = child.x + rectangle.x,
-                        y = child.y + rectangle.y,
+                        x = child.x + child.borderWidth + rectangle.x,
+                        y = child.y + child.borderWidth + rectangle.y,
                         width = rectangle.width,
                         height = rectangle.height,
                     )
@@ -9278,8 +9278,8 @@ internal class X11State(
                 val parentAbsolute = windows[parentId]?.let { absolutePosition(it) } ?: (0 to 0)
                 val oldParentId = window.parentId
                 window.parentId = parentId
-                window.x = absolute.first - parentAbsolute.first
-                window.y = absolute.second - parentAbsolute.second
+                window.x = absolute.first - parentAbsolute.first - window.borderWidth
+                window.y = absolute.second - parentAbsolute.second - window.borderWidth
                 sideEffects += XSaveSetSideEffect.ReparentNotify(reparentNotifySinks(window, oldParentId))
                 if (window.mapped) {
                     sideEffects += XSaveSetSideEffect.VisibilityNotify(visibilityNotifySinks(visibilityBefore))
@@ -9662,14 +9662,14 @@ internal class X11State(
     }
 
     private fun absolutePosition(window: XWindow): Pair<Int, Int> {
-        var x = window.x
-        var y = window.y
+        var x = window.x + window.borderWidth
+        var y = window.y + window.borderWidth
         var parentId = window.parentId
         val visited = mutableSetOf(window.id)
         while (parentId != 0 && parentId != X11Ids.RootWindow && visited.add(parentId)) {
             val parent = windows[parentId] ?: break
-            x += parent.x
-            y += parent.y
+            x += parent.x + parent.borderWidth
+            y += parent.y + parent.borderWidth
             parentId = parent.parentId
         }
         return x to y
@@ -9679,7 +9679,7 @@ internal class X11State(
         val absolute = absolutePosition(window)
         val localX = pointerX - absolute.first
         val localY = pointerY - absolute.second
-        if (localX !in 0 until window.width || localY !in 0 until window.height) return false
+        if (!windowContainsPointer(window, pointerX, pointerY, absolute)) return false
         val effectiveWidth = if (sourceWidth == 0) window.width - sourceX else sourceWidth
         val effectiveHeight = if (sourceHeight == 0) window.height - sourceY else sourceHeight
         if (effectiveWidth <= 0 || effectiveHeight <= 0) return false
@@ -9696,12 +9696,12 @@ internal class X11State(
         var clampedX = x.coerceIn(0, width - 1)
         var clampedY = y.coerceIn(0, height - 1)
         val confineWindow = confineWindowId?.let { windows[it] } ?: return clampedX to clampedY
-        val absolute = absolutePosition(confineWindow)
+        val bounds = windowBoundsInRoot(confineWindow)
         // Match the grab validity rule: a viewable confine window remains active while it intersects root.
-        val left = maxOf(absolute.first, 0)
-        val top = maxOf(absolute.second, 0)
-        val right = minOf(absolute.first + confineWindow.width, width)
-        val bottom = minOf(absolute.second + confineWindow.height, height)
+        val left = maxOf(bounds.x, 0)
+        val top = maxOf(bounds.y, 0)
+        val right = minOf(bounds.x + bounds.width, width)
+        val bottom = minOf(bounds.y + bounds.height, height)
         if (right <= left || bottom <= top) return clampedX to clampedY
         clampedX = clampedX.coerceIn(left, right - 1)
         clampedY = clampedY.coerceIn(top, bottom - 1)
@@ -9771,10 +9771,12 @@ internal class X11State(
             .firstOrNull { window ->
                 if (!window.mapped) return@firstOrNull false
                 val absolute = absolutePosition(window)
-                rootX >= absolute.first &&
-                    rootY >= absolute.second &&
-                    rootX < absolute.first + window.width &&
-                    rootY < absolute.second + window.height &&
+                visibilityRegionsInRoot(window).any { region ->
+                    rootX >= region.x &&
+                        rootY >= region.y &&
+                        rootX < region.x + region.width &&
+                        rootY < region.y + region.height
+                } &&
                     windowInputShapeContains(window, rootX, rootY, absolute)
             }
 
@@ -9795,13 +9797,13 @@ internal class X11State(
     private fun windowContainsPointer(window: XWindow, rootX: Int, rootY: Int, absolute: Pair<Int, Int>): Boolean =
         window.mapped &&
             windowIsViewable(window.id) &&
-            visibleBounds(window, absolute.first, absolute.second)?.let { bounds ->
+            visibilityRegionsInRoot(window).any { bounds ->
                 rootX >= bounds.x &&
                     rootY >= bounds.y &&
                     rootX < bounds.x + bounds.width &&
                     rootY < bounds.y + bounds.height &&
                     windowInputShapeContains(window, rootX, rootY, absolute)
-            } == true
+            }
 
     private fun windowInputShapeContains(window: XWindow, rootX: Int, rootY: Int, absolute: Pair<Int, Int>): Boolean {
         val inputClip = intersectClips(window.boundingShape, window.inputShape) ?: return true

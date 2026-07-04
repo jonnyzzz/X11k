@@ -15,6 +15,7 @@ Usage:
   scripts/run-supervised.sh gradle [gradle args...]
   scripts/run-supervised.sh experiment -- <command> [args...]
   scripts/run-supervised.sh agent <agent> <prompt-file>
+  scripts/run-supervised.sh review-quorum <prompt-file>
   scripts/run-supervised.sh research [agent]
   scripts/run-supervised.sh implementation [agent]
   scripts/run-supervised.sh review [agent]
@@ -196,6 +197,14 @@ case "$cmd" in
       exit 2
     fi
     run_with_recovery agent "$ROOT/ralph-loop.sh" agent "$1" "$2"
+    ;;
+  review-quorum)
+    shift
+    if [[ "$#" -ne 1 ]]; then
+      usage >&2
+      exit 2
+    fi
+    run_with_recovery review "$ROOT/scripts/run-review-quorum.sh" "$1"
     ;;
   research|implementation|review|test)
     role="$cmd"

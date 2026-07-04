@@ -476,8 +476,7 @@ internal object SvgScreenRenderer {
             it.windowClass == XWindowClass.InputOutput &&
                 it.mapped &&
                 it.id != X11Ids.RootWindow &&
-                it.visibleWidth > 0 &&
-                it.visibleHeight > 0
+                (it.visibleWidth > 0 && it.visibleHeight > 0 || hasVisibleBorderInScreen(it, snapshot, windowsById))
         }
         with(builder) {
             comment(RenderCredit.Text)
@@ -586,6 +585,33 @@ internal object SvgScreenRenderer {
                 }
             }
         }
+    }
+
+    private fun hasVisibleBorderInScreen(
+        window: XWindowSnapshot,
+        snapshot: XScreenSnapshot,
+        windowsById: Map<Int, XWindowSnapshot>,
+    ): Boolean {
+        if (window.borderWidth <= 0) return false
+        var left = window.x - window.borderWidth
+        var top = window.y - window.borderWidth
+        var right = window.x + window.width + window.borderWidth
+        var bottom = window.y + window.height + window.borderWidth
+        var parent = windowsById[window.parentId]
+        val visited = mutableSetOf(window.id)
+        while (parent != null && parent.id != X11Ids.RootWindow && visited.add(parent.id)) {
+            if (!parent.mapped) return false
+            left = maxOf(left, parent.x)
+            top = maxOf(top, parent.y)
+            right = minOf(right, parent.x + parent.width)
+            bottom = minOf(bottom, parent.y + parent.height)
+            parent = windowsById[parent.parentId]
+        }
+        left = maxOf(left, 0)
+        top = maxOf(top, 0)
+        right = minOf(right, snapshot.width)
+        bottom = minOf(bottom, snapshot.height)
+        return right > left && bottom > top
     }
 
     private fun renderCaptureSvgContent(builder: XmlDom, snapshot: XScreenSnapshot) {
