@@ -6279,9 +6279,13 @@ internal class X11State(
         }
         fun alpha(pixel: Int): Int = (pixel ushr 24) and 0xff
         fun premultiplied(pixel: Int, shift: Int): Double = ((pixel ushr shift) and 0xff) * alpha(pixel) / 255.0
-        val outAlpha = interpolate(alpha(p00).toDouble(), alpha(p10).toDouble(), alpha(p01).toDouble(), alpha(p11).toDouble())
-            .roundToInt()
-            .coerceIn(0, 255)
+        fun channelValue(value: Double): Int =
+            floor(value)
+                .toInt()
+                .coerceIn(0, 255)
+        val outAlpha = channelValue(
+            interpolate(alpha(p00).toDouble(), alpha(p10).toDouble(), alpha(p01).toDouble(), alpha(p11).toDouble()),
+        )
         if (outAlpha == 0) return 0
         fun channel(shift: Int): Int {
             val premultipliedChannel = interpolate(
@@ -6290,7 +6294,7 @@ internal class X11State(
                 premultiplied(p01, shift),
                 premultiplied(p11, shift),
             )
-            return (premultipliedChannel * 255.0 / outAlpha).roundToInt().coerceIn(0, 255)
+            return channelValue(premultipliedChannel * 255.0 / outAlpha)
         }
         return (outAlpha shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
     }

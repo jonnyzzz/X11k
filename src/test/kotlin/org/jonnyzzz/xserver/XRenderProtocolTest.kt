@@ -1277,7 +1277,7 @@ class XRenderProtocolTest {
                 out.flush()
 
                 val image = readReply(socket.getInputStream())
-                assertEquals(0x8000_fe00.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 0))
+                assertEquals(0x7f00_ff00, pixelAt(image, imageWidth = 1, x = 0, y = 0))
             }
             server.close()
             serverThread.join(1_000)
@@ -10438,11 +10438,115 @@ class XRenderProtocolTest {
                 out.flush()
 
                 val image = readReply(socket.getInputStream())
-                assertEquals(0xff80_8000.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 0))
-                assertEquals(0xff80_007f.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 1))
-                assertEquals(0x8000_fe00.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 2))
+                assertEquals(0xff7f_7f00.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 0))
+                assertEquals(0xff7f_0080.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 1))
+                assertEquals(0x7f00_ff00, pixelAt(image, imageWidth = 1, x = 0, y = 2))
                 assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 3))
-                assertEquals(0xff80_8000.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 4))
+                assertEquals(0xff7f_7f00.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 4))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER good and best filters match Xvfb transformed repeated pixmap strips`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 4, height = 2))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                listOf(
+                    RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                    RenderColor(red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff),
+                    RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                    RenderColor(red = 0xffff, green = 0xffff, blue = 0x0000, alpha = 0xffff),
+                    RenderColor(red = 0xffff, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                    RenderColor(red = 0x0000, green = 0xffff, blue = 0xffff, alpha = 0xffff),
+                    RenderColor(red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff),
+                    RenderColor(red = 0x4000, green = 0x4000, blue = 0x4000, alpha = 0xffff),
+                ).forEachIndexed { index, color ->
+                    out.write(
+                        renderFillRectangles(
+                            PixmapPictureId,
+                            x = index % 4,
+                            y = index / 4,
+                            width = 1,
+                            height = 1,
+                            red = color.red,
+                            green = color.green,
+                            blue = color.blue,
+                            alpha = color.alpha,
+                        ),
+                    )
+                }
+                out.write(renderChangePicture(PixmapPictureId, repeat = XRender.RepeatNormal))
+                out.write(
+                    renderSetPictureTransform(
+                        PixmapPictureId,
+                        listOf(
+                            0x0001_0000,
+                            0,
+                            -0x0003_c000,
+                            0,
+                            0x0001_0000,
+                            0x0000_4000,
+                            0,
+                            0,
+                            0x0001_0000,
+                        ),
+                    ),
+                )
+                listOf("nearest", "bilinear", "good", "best").forEachIndexed { index, filter ->
+                    out.write(renderSetPictureFilter(PixmapPictureId, filter, values = emptyList()))
+                    out.write(
+                        renderComposite(
+                            PixmapPictureId,
+                            PictureId,
+                            operation = XRender.OpSrc,
+                            destinationX = 0,
+                            destinationY = index,
+                            width = 8,
+                            height = 1,
+                        ),
+                    )
+                }
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 4))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertPixelRow(
+                    image,
+                    imageWidth = 8,
+                    y = 0,
+                    expected = listOf(
+                        0xffff_0000.toInt(),
+                        0xff00_ff00.toInt(),
+                        0xff00_00ff.toInt(),
+                        0xffff_ff00.toInt(),
+                        0xffff_0000.toInt(),
+                        0xff00_ff00.toInt(),
+                        0xff00_00ff.toInt(),
+                        0xffff_ff00.toInt(),
+                    ),
+                )
+                val bilinearRow = listOf(
+                    0xffbf_3f3f.toInt(),
+                    0xff0f_cf6f.toInt(),
+                    0xff63_63c3.toInt(),
+                    0xffdb_9b1b.toInt(),
+                    0xffbf_3f3f.toInt(),
+                    0xff0f_cf6f.toInt(),
+                    0xff63_63c3.toInt(),
+                    0xffdb_9b1b.toInt(),
+                )
+                assertPixelRow(image, imageWidth = 8, y = 1, expected = bilinearRow)
+                assertPixelRow(image, imageWidth = 8, y = 2, expected = bilinearRow)
+                assertPixelRow(image, imageWidth = 8, y = 3, expected = bilinearRow)
             }
             server.close()
             serverThread.join(1_000)
@@ -11745,7 +11849,7 @@ class XRenderProtocolTest {
                 out.flush()
 
                 val image = readReply(socket.getInputStream())
-                assertEquals(0xff80_8080.toInt(), pixelAt(image, imageWidth = 2, x = 0, y = 0))
+                assertEquals(0xff7f_7f7f.toInt(), pixelAt(image, imageWidth = 2, x = 0, y = 0))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 2, x = 1, y = 0))
             }
             server.close()
@@ -11801,8 +11905,8 @@ class XRenderProtocolTest {
 
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xffff_ffff.toInt(), pixelAt(image, imageWidth = 4, x = 0, y = 0))
-                assertEquals(0xff80_8080.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 0))
-                assertEquals(0xff80_8080.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 0))
+                assertEquals(0xff7f_7f7f.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 0))
+                assertEquals(0xff7f_7f7f.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 0))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 3, y = 0))
             }
             server.close()
@@ -15237,6 +15341,13 @@ class XRenderProtocolTest {
 
     private fun pixelAt(reply: ByteArray, imageWidth: Int, x: Int, y: Int): Int =
         u32le(reply, 32 + (y * imageWidth + x) * 4)
+
+    private fun assertPixelRow(reply: ByteArray, imageWidth: Int, y: Int, expected: List<Int>) {
+        val actual = expected.indices.map { x -> pixelAt(reply, imageWidth, x, y) }
+        expected.forEachIndexed { x, pixel ->
+            assertEquals(pixel, actual[x], "pixel at $x,$y row=${actual.map { it.toUInt().toString(16) }}")
+        }
+    }
 
     private fun putFixedPoint(bytes: ByteArray, offset: Int, x: Int, y: Int) {
         putFixed(bytes, offset, x)
