@@ -86,6 +86,34 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij html preview parser identifies large retained surfaces`() {
+        val html =
+            """
+            <section class="window-contents">
+              <article class="preview">
+                <header><strong>Content window</strong> <span>0x200004</span> 1260x860 focused</header>
+                <svg class="window-preview-svg" viewBox="0 0 1260 860" aria-label="Content window">
+                  <image class="framebuffer-image backing-pixmap-image" data-window-id="0x200004" data-pixmap-id="0x300001" data-picture-id="0x300002" data-source="retained-picture" x="0" y="0" width="1260" height="860" href="data:image/png;base64,aGVsbG8="/>
+                </svg>
+              </article>
+            </section>
+            """.trimIndent()
+
+        val previews = htmlWindowPreviewSurfaces(html)
+
+        assertEquals(1, previews.size)
+        assertEquals("Content window", previews.single().label)
+        assertEquals(1260, previews.single().viewWidth)
+        assertEquals(860, previews.single().viewHeight)
+        assertEquals("retained-picture", previews.single().source)
+        assertEquals("0x200004", previews.single().windowId)
+        assertEquals("0x300001", previews.single().pixmapId)
+        assertEquals("0x300002", previews.single().pictureId)
+        assertIntellijHtmlPreviewHasLargeSurface(html)
+        assertIntellijHtmlPreviewHasLargeSurface(html, """- 0x200004 parent=0x1 label="Content window" geometry=0,0 1260x860 mapped=true""")
+    }
+
+    @Test
     fun `intellij visual region metrics identify frame and margins`() {
         val text =
             """
@@ -405,10 +433,6 @@ class IntellijCommunitySmokeTest {
         val reference = runIntellijAgainstXvfb(referenceImage, url)
         val actual = runIntellijAgainstKotlinServer(port, clientImage, url)
 
-        assertTrue(actual.text.contains("Content window"), actual.text)
-        assertTrue(actual.text.contains("Unsupported requests:\n- None."), actual.text)
-        assertFalse(actual.text.contains("Download SDK") || actual.text.contains("Download JDK"), actual.text)
-
         val composedSvg = composeSvgLayers(actual.svgLayers, IntellijCaptureWidth, IntellijCaptureHeight)
         val composedSvgCapture = visualCapture(composedSvg)
         dumpIntellijParityArtifacts(
@@ -417,6 +441,12 @@ class IntellijCommunitySmokeTest {
             composedSvg = composedSvg,
             composedSvgCapture = composedSvgCapture,
         )
+
+        assertTrue(actual.text.contains("Content window"), actual.text)
+        assertIntellijHtmlPreviewHasLargeSurface(actual.html, actual.text)
+        assertTrue(actual.text.contains("Unsupported requests:\n- None."), actual.text)
+        assertFalse(actual.text.contains("Download SDK") || actual.text.contains("Download JDK"), actual.text)
+
         assertIntellijVisualClose(reference.robot, actual.robot, "Kotlin Robot IntelliJ capture")
         assertIntellijVisualClose(reference.robot, composedSvgCapture, "Kotlin SVG-composed IntelliJ framebuffer")
     }
@@ -656,7 +686,7 @@ class IntellijCommunitySmokeTest {
                     )
                     assertEquals(0, startResult.exitCode, startResult.stderr + startResult.stdout)
                     try {
-                        val snapshot = waitForVisibleIntellijPixels(port)
+                        waitForVisibleIntellijPixels(port)
                         Thread.sleep(5_000)
                         val capture = execIntellijShell(
                             container,
@@ -669,6 +699,8 @@ class IntellijCommunitySmokeTest {
                         )
                         assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
                         val svg = httpGet(port, "/screen.svg")
+                        val html = httpGet(port, "/")
+                        val text = httpGet(port, "/text.txt")
                         val logs = collectIntellijLogs(
                             container = container,
                             prefix = "intellij-kotlin",
@@ -677,8 +709,9 @@ class IntellijCommunitySmokeTest {
                         )
                         return IntellijKotlinCapture(
                             robot = visualCapture(capture.stdout),
-                            text = snapshot.text,
+                            text = text,
                             svg = svg,
+                            html = html,
                             svgLayers = svgCompositionLayers(svg),
                             logs = logs,
                         )
@@ -829,6 +862,70 @@ class IntellijCommunitySmokeTest {
             .findAll(this)
             .any { match -> match.groupValues[1].split(' ').any { it == className } }
 
+    private fun htmlWindowPreviewSurfaces(html: String): List<HtmlPreviewSurface> =
+        Regex(
+            """<svg\b(?=[^>]*\bclass="[^"]*\bwindow-preview-svg\b)([^>]*)>(.*?)</svg>""",
+            setOf(RegexOption.DOT_MATCHES_ALL),
+        )
+            .findAll(html)
+            .flatMap { svgMatch ->
+                val svgTag = svgMatch.groupValues[1]
+                val body = svgMatch.groupValues[2]
+                val viewBoxParts = svgStringAttribute(svgTag, "viewBox")
+                    ?.trim()
+                    ?.split(Regex("""\s+"""))
+                    .orEmpty()
+                val viewWidth = viewBoxParts.getOrNull(2)?.toDoubleOrNull()?.toInt() ?: 0
+                val viewHeight = viewBoxParts.getOrNull(3)?.toDoubleOrNull()?.toInt() ?: 0
+                val label = svgStringAttribute(svgTag, "aria-label").orEmpty()
+                Regex("""<image\b[^>]*>""")
+                    .findAll(body)
+                    .mapNotNull { imageMatch ->
+                        val imageTag = imageMatch.value
+                        if (!imageTag.hasSvgClass("framebuffer-image")) return@mapNotNull null
+                        val source = svgStringAttribute(imageTag, "data-source") ?: return@mapNotNull null
+                        HtmlPreviewSurface(
+                            label = label,
+                            viewWidth = viewWidth,
+                            viewHeight = viewHeight,
+                            windowId = svgStringAttribute(imageTag, "data-window-id").orEmpty(),
+                            pixmapId = svgStringAttribute(imageTag, "data-pixmap-id"),
+                            pictureId = svgStringAttribute(imageTag, "data-picture-id"),
+                            source = source,
+                            x = svgIntAttribute(imageTag, "x") ?: 0,
+                            y = svgIntAttribute(imageTag, "y") ?: 0,
+                            width = svgIntAttribute(imageTag, "width") ?: 0,
+                            height = svgIntAttribute(imageTag, "height") ?: 0,
+                        )
+                    }
+            }
+            .toList()
+
+    private fun assertIntellijHtmlPreviewHasLargeSurface(html: String, text: String = "") {
+        assertTrue(html.contains("""class="window-contents""""), "IntelliJ HTML capture must include the window preview section")
+        assertTrue(html.contains("Content window"), "IntelliJ HTML capture must include the IDE content-window label")
+        val contentWindowIds = contentWindowIdsFromText(text)
+        val previews = htmlWindowPreviewSurfaces(html)
+        val largeContentPreviews = previews.filter {
+            (if (contentWindowIds.isEmpty()) it.label.contains("Content window") else it.windowId in contentWindowIds) &&
+                it.viewWidth >= 640 &&
+                it.viewHeight >= 360 &&
+                it.width >= 640 &&
+                it.height >= 360 &&
+                it.source in setOf("window-framebuffer", "matching-pixmap", "retained-picture")
+        }
+        assertTrue(
+            largeContentPreviews.isNotEmpty(),
+            "IntelliJ HTML capture must expose a large Content window framebuffer/backing surface, previews=$previews",
+        )
+    }
+
+    private fun contentWindowIdsFromText(text: String): Set<String> =
+        Regex("""-\s+(0x[0-9a-fA-F]+)\b[^\n]*\blabel="Content window"""")
+            .findAll(text)
+            .map { it.groupValues[1] }
+            .toSet()
+
     private fun imageStats(id: String, bytes: ByteArray): ImageStats {
         val image = ImageIO.read(ByteArrayInputStream(bytes)) ?: return ImageStats(id, 0, 0, 0, 0, emptyList())
         var count = 0
@@ -937,8 +1034,10 @@ class IntellijCommunitySmokeTest {
         ImageIO.write(actual.robot.image, "png", File(directory, "intellij-kotlin-robot.png"))
         ImageIO.write(composedSvg, "png", File(directory, "intellij-kotlin-svg-composed.png"))
         File(directory, "intellij-kotlin-screen.svg").writeText(actual.svg)
+        File(directory, "intellij-kotlin.html").writeText(actual.html)
         File(directory, "intellij-kotlin-text.txt").writeText(actual.text)
         File(directory, "intellij-kotlin-svg-layers.txt").writeText(svgLayerInventory(actual.svgLayers))
+        File(directory, "intellij-kotlin-html-previews.txt").writeText(htmlPreviewInventory(htmlWindowPreviewSurfaces(actual.html)))
         val logs = reference.logs + actual.logs
         dumpIntellijLogArtifacts(logs)
         File(directory, "intellij-glx-jcef-diagnostics.txt").writeText(intellijGlxJcefDiagnosticsSummary(logs, kotlinText = actual.text))
@@ -1107,6 +1206,25 @@ class IntellijCommunitySmokeTest {
                 append(" type=").append(if (layer.bytes != null) "png" else "fill")
                 append(" clipRectangles=").append(layer.clipRectangles.size)
                 if (layer.fill != null) append(" fill=0x").append(layer.fill.toUInt().toString(16))
+                appendLine()
+            }
+        }
+
+    private fun htmlPreviewInventory(previews: List<HtmlPreviewSurface>): String =
+        buildString {
+            appendLine("count=${previews.size}")
+            previews.forEachIndexed { index, preview ->
+                append(index)
+                append(": label=").append(preview.label)
+                append(" view=").append(preview.viewWidth).append('x').append(preview.viewHeight)
+                append(" window=").append(preview.windowId)
+                append(" source=").append(preview.source)
+                preview.pixmapId?.let { append(" pixmap=").append(it) }
+                preview.pictureId?.let { append(" picture=").append(it) }
+                append(" x=").append(preview.x)
+                append(" y=").append(preview.y)
+                append(" width=").append(preview.width)
+                append(" height=").append(preview.height)
                 appendLine()
             }
         }
@@ -1361,6 +1479,7 @@ class IntellijCommunitySmokeTest {
         val robot: VisualCapture,
         val text: String,
         val svg: String,
+        val html: String,
         val svgLayers: List<SvgLayer>,
         val logs: List<IntellijLogArtifact>,
     )
@@ -1379,6 +1498,20 @@ class IntellijCommunitySmokeTest {
         val width: Int,
         val height: Int,
         val clipRectangles: List<Rectangle>,
+    )
+
+    private data class HtmlPreviewSurface(
+        val label: String,
+        val viewWidth: Int,
+        val viewHeight: Int,
+        val windowId: String,
+        val pixmapId: String?,
+        val pictureId: String?,
+        val source: String,
+        val x: Int,
+        val y: Int,
+        val width: Int,
+        val height: Int,
     )
 
     private data class VisualCapture(

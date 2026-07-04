@@ -135,8 +135,9 @@ under `build/tmp/intellij-community-smoke/project`, so untracked run artifacts d
 not leak into the IDE project tree or visual comparison.
 
 The parity probe writes its current Xvfb reference, Kotlin Robot capture,
-Kotlin SVG-composed capture, raw `/screen.svg`, `/text.txt`, and SVG layer
-inventory plus visual diffs, metrics, and IntelliJ client logs under
+Kotlin SVG-composed capture, raw `/screen.svg`, `/`, `/text.txt`, SVG layer
+inventory, and HTML per-window preview inventory plus visual diffs, metrics,
+and IntelliJ client logs under
 `build/tmp/intellij-community-smoke/`, including a GLX/JCEF diagnostics summary
 and visual region metrics when the opt-in parity path runs.
 Add `-Dx.intellijDebug=true` or `X_INTELLIJ_DEBUG=true` to the smoke or parity
