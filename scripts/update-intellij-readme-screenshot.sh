@@ -11,8 +11,9 @@ IMAGE="${X_INTELLIJ_IMAGE:-jonnyzzz-x/x11-client:latest}"
 OUT="${OUT:-$ROOT/docs/images/intellij-demo-renderer.png}"
 RUN_DIR="${RUN_DIR:-$ROOT/runs/intellij-readme-screenshot}"
 PROJECT_EXPORT_DIR="${PROJECT_EXPORT_DIR:-$RUN_DIR/project}"
+IDEA_CACHE_DIR="${IDEA_CACHE_DIR:-$RUN_DIR/idea-cache}"
 IDEA_PROJECT_CONTAINER="${IDEA_PROJECT_CONTAINER:-/workspace/jonnyzzz-x}"
-READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-180}"
+READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-600}"
 READY_SETTLE_SECONDS="${READY_SETTLE_SECONDS:-8}"
 CAPTURE_TIMEOUT_SECONDS="${CAPTURE_TIMEOUT_SECONDS:-120}"
 BUILD_TIMEOUT_SECONDS="${BUILD_TIMEOUT_SECONDS:-900}"
@@ -200,7 +201,7 @@ if [[ -z "$TIMEOUT_BIN" ]]; then
   TIMEOUT_BIN="$(timeout_bin || true)"
 fi
 
-mkdir -p "$RUN_DIR" "$(dirname "$OUT")"
+mkdir -p "$RUN_DIR" "$IDEA_CACHE_DIR" "$(dirname "$OUT")"
 SERVER_LOG="$RUN_DIR/server.log"
 IDEA_CONTAINER="x-readme-idea-$PORT"
 SERVER_PID=""
@@ -213,6 +214,20 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+container_file() {
+  local path="$1"
+  local tmp
+  if [[ "$(docker inspect "$IDEA_CONTAINER" --format '{{.State.Running}}' 2>/dev/null || true)" == "true" ]]; then
+    docker exec "$IDEA_CONTAINER" sh -lc "cat '$path' 2>/dev/null || true" 2>/dev/null || true
+    return 0
+  fi
+  tmp="$(mktemp "$RUN_DIR/container-file.XXXXXX")" || return 0
+  if docker cp "$IDEA_CONTAINER:$path" "$tmp" 2>/dev/null; then
+    cat "$tmp"
+  fi
+  rm -f "$tmp"
+}
 
 run_timed() {
   local seconds="$1"
@@ -299,10 +314,10 @@ diagnose_readiness_failure() {
     docker logs "$IDEA_CONTAINER" 2>&1 | tail -200 || true
     echo
     echo "---- IntelliJ run log ----"
-    docker exec "$IDEA_CONTAINER" sh -lc 'tail -200 /tmp/idea-run-readme.log 2>/dev/null || true' 2>/dev/null || true
+    container_file /tmp/idea-run-readme.log | tail -200 || true
     echo
     echo "---- IntelliJ idea.log ----"
-    docker exec "$IDEA_CONTAINER" sh -lc 'tail -240 /tmp/idea-log/idea.log 2>/dev/null || true' 2>/dev/null || true
+    container_file /tmp/idea-log/idea.log | tail -240 || true
     echo
     echo "---- IntelliJ JVM threads ----"
     docker exec "$IDEA_CONTAINER" sh -lc 'pid=$(pgrep -f "com.intellij.idea.Main" | head -1); if [ -n "$pid" ]; then jcmd "$pid" Thread.print | sed -n "1,260p"; else jps -lm || true; fi' 2>/dev/null || true
@@ -339,8 +354,8 @@ dismiss_intellij_readme_notifications() {
 
 assert_intellij_readme_launcher_state() {
   local run_log idea_log text svg
-  run_log="$(docker exec "$IDEA_CONTAINER" sh -lc 'cat /tmp/idea-run-readme.log 2>/dev/null || true' 2>/dev/null || true)"
-  idea_log="$(docker exec "$IDEA_CONTAINER" sh -lc 'tail -400 /tmp/idea-log/idea.log 2>/dev/null || true' 2>/dev/null || true)"
+  run_log="$(container_file /tmp/idea-run-readme.log)"
+  idea_log="$(container_file /tmp/idea-log/idea.log | tail -400)"
   text="$(curl -fsS "http://127.0.0.1:$PORT/text.txt" 2>/dev/null || true)"
   svg="$(curl -fsS "http://127.0.0.1:$PORT/screen.svg" 2>/dev/null || true)"
   if ! printf '%s\n' "$run_log" | grep -qx '\[run-intellij\] launcher=/opt/idea/bin/idea'; then
@@ -385,6 +400,8 @@ done
 echo "Launching IntelliJ README screenshot container $IDEA_CONTAINER with native launcher."
 docker run -d --name "$IDEA_CONTAINER" \
   -v "$PROJECT_EXPORT_DIR:$IDEA_PROJECT_CONTAINER" \
+  -v "$IDEA_CACHE_DIR:/tmp/idea-cache" \
+  -e IDEA_CACHE_DIR=/tmp/idea-cache \
   "$IMAGE" \
   sh -lc "DISPLAY=host.docker.internal:$DISPLAY_NUMBER IDEA_PROJECT=$IDEA_PROJECT_CONTAINER IDEA_TRUST_PROJECT=true IDEA_LAUNCHER=native run-intellij >/tmp/idea-run-readme.log 2>&1" \
   >"$RUN_DIR/container.id"
@@ -398,6 +415,12 @@ while (( SECONDS < deadline )); do
   if intellij_screenshot_ready "$text" "$svg"; then
     ready=1
     break
+  fi
+  container_state="$(docker inspect "$IDEA_CONTAINER" --format '{{.State.Running}} {{.State.ExitCode}}' 2>/dev/null || true)"
+  if [[ "$container_state" != true\ * ]]; then
+    echo "IntelliJ README screenshot container exited before readiness: ${container_state:-missing}" >&2
+    diagnose_readiness_failure
+    exit 1
   fi
   if (( SECONDS - last_progress >= 15 )); then
     mapped="$(printf '%s\n' "$text" | awk -F': ' '/^Mapped windows:/ { print $2; exit }')"

@@ -59,6 +59,7 @@ internal object XGlx {
     const val ExtensionsName = 3
 
     const val RgbaType = 0x8014
+    const val RgbaBit = 0x00000001
     const val RootFbConfigId = X11Ids.RootVisual
     const val ShareContextExt = 0x800A
     const val VisualIdExt = 0x800B
@@ -85,10 +86,33 @@ internal object XGlx {
     const val LargestPbuffer = 0x801C
     const val PbufferHeight = 0x8040
     const val PbufferWidth = 0x8041
+    const val ConfigCaveat = 0x0020
+    const val XVisualType = 0x0022
+    const val TransparentType = 0x0023
+    const val TransparentIndexValue = 0x0024
+    const val TransparentRedValue = 0x0025
+    const val TransparentGreenValue = 0x0026
+    const val TransparentBlueValue = 0x0027
+    const val TransparentAlphaValue = 0x0028
+    const val TrueColor = 0x8002
+    const val None = 0x8000
+    const val DontCare = -1
+    const val SwapMethodOml = 0x8060
+    const val SwapUndefinedOml = 0x8063
+    const val VisualSelectGroupSgix = 0x8028
+    const val BindToTextureRgbExt = 0x20D0
+    const val BindToTextureRgbaExt = 0x20D1
+    const val BindToMipmapTextureExt = 0x20D2
+    const val BindToTextureTargetsExt = 0x20D3
     const val YInvertedExt = 0x20D4
     const val TextureTargetExt = 0x20D6
+    const val Texture1DBitExt = 0x00000001
+    const val Texture2DBitExt = 0x00000002
+    const val TextureRectangleBitExt = 0x00000004
     const val Texture2DExt = 0x20DC
     const val TextureRectangleExt = 0x20DD
+    const val OptimalPbufferWidthSgix = 0x8019
+    const val OptimalPbufferHeightSgix = 0x801A
 
     fun operationName(minorOpcode: Int): String =
         when (minorOpcode) {
@@ -184,41 +208,54 @@ internal object XGlx {
 
     fun fbConfig(): IntArray {
         val pairs = listOf(
-            0x800B to X11Ids.RootVisual,
-            0x8013 to RootFbConfigId,
+            VisualIdExt to X11Ids.RootVisual,
+            FbConfigId to RootFbConfigId,
             0x8012 to 1,
             4 to 1,
-            0x8011 to 0x00000001,
+            RenderType to RgbaBit,
             5 to 0,
             6 to 0,
-            2 to 24,
+            2 to 32,
             3 to 0,
             7 to 0,
             8 to 8,
             9 to 8,
             10 to 8,
-            11 to 0,
+            11 to 8,
             14 to 0,
             15 to 0,
             16 to 0,
             17 to 0,
-            12 to 24,
-            13 to 0,
-            0x22 to 0x8002,
-            0x20 to 0x8000,
-            0x23 to 0x8000,
-            0x25 to 0,
-            0x26 to 0,
-            0x27 to 0,
-            0x28 to 0,
-            0x24 to 0,
-            0x8010 to (WindowBit or PixmapBit or PbufferBit),
+            12 to 0,
+            13 to 8,
+            XVisualType to TrueColor,
+            ConfigCaveat to None,
+            TransparentType to None,
+            TransparentRedValue to DontCare,
+            TransparentGreenValue to DontCare,
+            TransparentBlueValue to DontCare,
+            TransparentAlphaValue to DontCare,
+            TransparentIndexValue to 0,
+            SwapMethodOml to SwapUndefinedOml,
+            100001 to 0,
+            100000 to 0,
+            VisualSelectGroupSgix to 0,
+            DrawableType to (WindowBit or PixmapBit or PbufferBit),
+            BindToTextureRgbExt to 1,
+            BindToTextureRgbaExt to 1,
+            BindToMipmapTextureExt to 0,
+            BindToTextureTargetsExt to (Texture2DBitExt or TextureRectangleBitExt),
+            YInvertedExt to DontCare,
             MaxPbufferWidth to 4096,
             MaxPbufferHeight to 4096,
             MaxPbufferPixels to 4096 * 4096,
-            100001 to 0,
-            100000 to 0,
+            OptimalPbufferWidthSgix to 0,
+            OptimalPbufferHeightSgix to 0,
+            0 to 0,
         )
+        check(pairs.size == FbConfigAttributePairs) {
+            "GLX FBConfig must contain $FbConfigAttributePairs pairs, got ${pairs.size}"
+        }
         val values = IntArray(FbConfigAttributePairs * 2)
         var offset = 0
         for ((attribute, value) in pairs) {

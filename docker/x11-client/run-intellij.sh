@@ -63,7 +63,7 @@ if [ ! -x "$IDEA_HOME/bin/idea.sh" ]; then
     echo "[run-intellij] downloading IDEA archive: $IDEA_URL -> $idea_archive" >&2
     tmp_archive="$idea_archive.tmp.$$"
     rm -f "$tmp_archive"
-    if ! curl -fL "$IDEA_URL" -o "$tmp_archive"; then
+    if ! curl -fL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 30 --speed-limit 1024 --speed-time 30 "$IDEA_URL" -o "$tmp_archive"; then
       rm -f "$tmp_archive"
       exit 1
     fi
