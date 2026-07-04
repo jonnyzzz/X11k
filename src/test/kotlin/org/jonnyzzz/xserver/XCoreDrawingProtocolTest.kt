@@ -7608,6 +7608,54 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `SHAPE Offset emits cursor notify when input shape moves away from pointer`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val parent = WindowId
+                val child = WindowId + 1
+                val cursor = PixmapId + 90
+                out.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createCursorRequest(cursor, source = PixmapId, mask = 0))
+                out.write(createWindowRequest(parent, x = 10, y = 10, width = 40, height = 30))
+                out.write(createWindowRequest(child, parent = parent, x = 5, y = 5, width = 10, height = 10, cursor = cursor))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(warpPointerRequest(destinationWindow = child, destinationX = 2, destinationY = 3))
+                out.write(shapeRectanglesRequest(child, XFixes.ShapeInput, XShape.OpSet, listOf(XRectangleCommand(0, 0, 10, 10))))
+                out.write(xfixesSelectCursorInputRequest(X11Ids.RootWindow))
+                out.write(shapeOffsetRequest(child, XFixes.ShapeInput, dx = 20, dy = 0))
+                out.write(queryPointerRequest(parent))
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, child)
+                assertXFixesCursorNotify(
+                    input.readExactly(32),
+                    sequence = 10,
+                    window = X11Ids.RootWindow,
+                    cursorSerial = 3,
+                    timestamp = 2,
+                )
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(11, u16le(pointer, 2))
+                assertEquals(0, u32le(pointer, 12))
+                assertEquals(17, u16le(pointer, 16))
+                assertEquals(18, u16le(pointer, 18))
+                assertEquals(7, u16le(pointer, 20))
+                assertEquals(8, u16le(pointer, 22))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `QueryPointer ignores descendant when ancestor bounding shape excludes pointer`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -20398,6 +20446,15 @@ class XCoreDrawingProtocolTest {
             put16le(body, offset + 6, rectangle.height)
         }
         return request(XShape.MajorOpcode, XShape.Rectangles, body)
+    }
+
+    private fun shapeOffsetRequest(window: Int, kind: Int, dx: Int, dy: Int): ByteArray {
+        val body = ByteArray(12)
+        body[0] = kind.toByte()
+        put32le(body, 4, window)
+        put16le(body, 8, dx)
+        put16le(body, 10, dy)
+        return request(XShape.MajorOpcode, XShape.Offset, body)
     }
 
     private fun xfixesGetCursorImageRequest(): ByteArray =
