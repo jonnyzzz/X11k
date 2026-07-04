@@ -10710,6 +10710,78 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER linear gradient matches Xvfb reflected transformed IntelliJ samples`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 72 to 2,
+                        p2 = 168 to 2,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0x9292, green = 0xb7b7, blue = 0xffff, alpha = 0xffff),
+                            RenderColor(red = 0x3636, green = 0x6a6a, blue = 0xcece, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatReflect))
+                out.write(
+                    renderSetPictureTransform(
+                        GradientPictureId,
+                        listOf(
+                            0x0001_0000,
+                            0,
+                            0xfca8_0000.toInt(),
+                            0,
+                            0x0001_0000,
+                            0xfcb7_0000.toInt(),
+                            0,
+                            0,
+                            0x0001_0000,
+                        ),
+                    ),
+                )
+                listOf(927, 928, 952, 976, 1000, 1023, 1024, 1048, 1072).forEachIndexed { index, sourceX ->
+                    out.write(
+                        renderComposite(
+                            GradientPictureId,
+                            PictureId,
+                            operation = XRender.OpSrc,
+                            sourceX = sourceX,
+                            sourceY = 843,
+                            destinationX = index,
+                            destinationY = 0,
+                            width = 1,
+                            height = 1,
+                        ),
+                    )
+                }
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 9, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff92_b7ff.toInt(), pixelAt(image, imageWidth = 9, x = 0, y = 0))
+                assertEquals(0xff92_b7ff.toInt(), pixelAt(image, imageWidth = 9, x = 1, y = 0))
+                assertEquals(0xff7b_a3f2.toInt(), pixelAt(image, imageWidth = 9, x = 2, y = 0))
+                assertEquals(0xff64_90e6.toInt(), pixelAt(image, imageWidth = 9, x = 3, y = 0))
+                assertEquals(0xff4d_7dda.toInt(), pixelAt(image, imageWidth = 9, x = 4, y = 0))
+                assertEquals(0xff36_6ace.toInt(), pixelAt(image, imageWidth = 9, x = 5, y = 0))
+                assertEquals(0xff36_6ace.toInt(), pixelAt(image, imageWidth = 9, x = 6, y = 0))
+                assertEquals(0xff4d_7edb.toInt(), pixelAt(image, imageWidth = 9, x = 7, y = 0))
+                assertEquals(0xff64_91e7.toInt(), pixelAt(image, imageWidth = 9, x = 8, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER radial gradient composites sampled source pixels`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
