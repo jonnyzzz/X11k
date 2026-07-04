@@ -110,6 +110,10 @@ Configuration (env variables):
   RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS
                       Wall-clock timeout for the preflight watch/recovery pulse
                       (default: 180, 0 disables)
+  RUN_AGENT_RESTART_ROOT / RUN_AGENT_RESTART_OF / RUN_AGENT_RESTART_ATTEMPT
+                      Metadata written by watch-agents.sh when a stale run is
+                      restarted. These fields make repeated-restart loops
+                      auditable and enforceable by the watcher.
 
 Exported to agent process:
   RUNS_DIR            Absolute path to the runs directory
@@ -612,6 +616,18 @@ NO_OUTPUT_TIMEOUT_SECONDS=$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS
 EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS=$EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS
 CLAUDE_SAFE_MODE=$RUN_AGENT_CLAUDE_SAFE_MODE
 CODEX_ISOLATED=$RUN_AGENT_CODEX_ISOLATED"
+if [ -n "${RUN_AGENT_RESTART_ROOT:-}" ]; then
+  RUN_INFO_BLOCK="$RUN_INFO_BLOCK
+RESTART_ROOT=$RUN_AGENT_RESTART_ROOT"
+fi
+if [ -n "${RUN_AGENT_RESTART_OF:-}" ]; then
+  RUN_INFO_BLOCK="$RUN_INFO_BLOCK
+RESTART_OF=$RUN_AGENT_RESTART_OF"
+fi
+if [ -n "${RUN_AGENT_RESTART_ATTEMPT:-}" ]; then
+  RUN_INFO_BLOCK="$RUN_INFO_BLOCK
+RESTART_ATTEMPT=$RUN_AGENT_RESTART_ATTEMPT"
+fi
 if [ -n "$CODEX_HOME_OVERRIDE" ]; then
   RUN_INFO_BLOCK="$RUN_INFO_BLOCK
 CODEX_HOME=$CODEX_HOME_OVERRIDE"

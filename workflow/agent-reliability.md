@@ -74,6 +74,8 @@ One more local visibility failure was that `scripts/run-bounded-experiment.sh` p
 
 The 2026-07-04 follow-up found one remaining outer-timeout blind spot. `ralph-loop.sh` wraps `run-agent.sh` with a process timeout, but a `TERM` delivered by that outer guard used to make `run-agent.sh` terminate the agent tree without first writing a diagnostic bundle. `run-agent.sh` now handles `TERM`/`INT`/`HUP` by writing the same `DIAGNOSTICS=...` bundle used for no-output and wall-clock timeouts before killing descendants. `ralph-loop.sh` also refuses bounded runs when neither `timeout` nor `gtimeout` is installed, instead of silently falling back to an unbounded shell command.
 
+The 2026-07-04 repeated-stall pattern showed that recovery also needs a retry budget. A stale run may now be restarted by `watch-agents.sh` only up to `RUN_AGENT_RESTART_MAX_ATTEMPTS` (default 1). Restarted runs record `RESTART_ROOT`, `RESTART_OF`, and `RESTART_ATTEMPT` in `run-info.txt`; the stale run records `WATCH_RESTART_*` fields. The watcher rotates the restarted job across `RUN_AGENT_RESTART_AGENTS` (default `codex,gemini,claude`) when `RUN_AGENT_RESTART_ROTATE_AGENT=1`, so a silent Claude/Codex/Gemini failure does not simply restart the same CLI until the root loop appears stuck again.
+
 ## Required Practice
 
 - Start long commands through `scripts/run-bounded-experiment.sh`, `timeout`, `scripts/run-gradle-bounded.sh`, or with `RUN_AGENT_TIMEOUT_SECONDS` set.
@@ -105,6 +107,16 @@ The 2026-07-04 follow-up found one remaining outer-timeout blind spot. `ralph-lo
   ```
 
   Destructive recovery flags intentionally require `RUN_AGENT_WATCH_ONCE=1`; do not run terminate/restart in the periodic watcher loop.
+
+- Keep stale restart loops capped. Defaults are:
+
+  ```bash
+  RUN_AGENT_RESTART_MAX_ATTEMPTS=1
+  RUN_AGENT_RESTART_ROTATE_AGENT=1
+  RUN_AGENT_RESTART_AGENTS=codex,gemini,claude
+  ```
+
+  If a restarted run also stalls, inspect its `RESTART_ROOT` chain and diagnostics instead of increasing the retry count blindly.
 
 - Keep routine run monitoring bounded to recent runs or active PID files. The local `runs/` tree is large enough that whole-history scans can time out.
 - Treat `abandoned` watcher lines as completed forensic records, not live agents. Inspect their `run-info.txt` and diagnostics if needed, but do not wait for them; the watcher has confirmed there is no live PID to recover.

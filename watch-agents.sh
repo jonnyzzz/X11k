@@ -23,6 +23,9 @@ RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS="${RUN_AGENT_DIAGNOSTICS_COMMAND_T
 RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS="${RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS:-5}"
 RUN_AGENT_THREAD_DUMP_MAX_JVMS="${RUN_AGENT_THREAD_DUMP_MAX_JVMS:-5}"
 RUN_AGENT_ABANDONED_SECONDS="${RUN_AGENT_ABANDONED_SECONDS:-120}"
+RUN_AGENT_RESTART_MAX_ATTEMPTS="${RUN_AGENT_RESTART_MAX_ATTEMPTS:-1}"
+RUN_AGENT_RESTART_ROTATE_AGENT="${RUN_AGENT_RESTART_ROTATE_AGENT:-1}"
+RUN_AGENT_RESTART_AGENTS="${RUN_AGENT_RESTART_AGENTS:-${RUN_AGENT_AGENTS:-codex,gemini,claude}}"
 
 if [ "$RUN_AGENT_TERMINATE_STALE" = "1" ] && [ "$RUN_AGENT_DIAGNOSE_STALE" != "1" ]; then
   echo "RUN_AGENT_TERMINATE_STALE=1 requires RUN_AGENT_DIAGNOSE_STALE=1" >&2
@@ -128,6 +131,59 @@ run_info_has_key() {
   local key="$2"
   awk -F= -v key="$key" '$1 == key { found = 1; exit } END { exit found ? 0 : 1 }' \
     "$run_dir/run-info.txt" 2>/dev/null
+}
+
+restart_agents_list() {
+  printf '%s\n' "$RUN_AGENT_RESTART_AGENTS" | tr ',' ' ' | awk '
+    {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^[A-Za-z_][A-Za-z0-9_]*$/ && !seen[$i]++) print $i
+      }
+    }'
+}
+
+restart_attempt_for() {
+  local run_dir="$1"
+  local attempt
+  attempt="$(run_info_value "$run_dir" RESTART_ATTEMPT)"
+  case "$attempt" in
+    ''|*[!0-9]*) echo 0 ;;
+    *) echo "$attempt" ;;
+  esac
+}
+
+restart_root_for() {
+  local run_dir="$1"
+  local root
+  root="$(run_info_value "$run_dir" RESTART_ROOT)"
+  if [ -n "$root" ]; then
+    echo "$root"
+  else
+    echo "$run_dir"
+  fi
+}
+
+choose_restart_agent() {
+  local current="$1"
+  local first="" previous="" agent
+  if [ "$RUN_AGENT_RESTART_ROTATE_AGENT" != "1" ]; then
+    echo "$current"
+    return
+  fi
+  while IFS= read -r agent; do
+    [ -n "$agent" ] || continue
+    [ -z "$first" ] && first="$agent"
+    if [ "$previous" = "$current" ]; then
+      echo "$agent"
+      return
+    fi
+    previous="$agent"
+  done < <(restart_agents_list)
+  if [ "$previous" = "$current" ] && [ -n "$first" ] && [ "$first" != "$current" ]; then
+    echo "$first"
+  else
+    echo "${first:-$current}"
+  fi
 }
 
 mark_abandoned_run() {
@@ -276,7 +332,7 @@ terminate_run() {
 
 restart_run() {
   local run_dir="$1"
-  local agent cwd prompt
+  local agent cwd prompt restart_root previous_attempt next_attempt restart_agent
   agent="$(run_info_value "$run_dir" AGENT)"
   cwd="$(run_info_value "$run_dir" CWD)"
   prompt="$run_dir/prompt.md"
@@ -284,13 +340,36 @@ restart_run() {
     echo "  restart skipped: missing AGENT/CWD/prompt for $run_dir" | tee -a "$LOG"
     return
   fi
-  echo "  restarting $agent for $run_dir" | tee -a "$LOG"
+  restart_root="$(restart_root_for "$run_dir")"
+  previous_attempt="$(restart_attempt_for "$run_dir")"
+  next_attempt=$((previous_attempt + 1))
+  if [ "$RUN_AGENT_RESTART_MAX_ATTEMPTS" -ge 0 ] && [ "$next_attempt" -gt "$RUN_AGENT_RESTART_MAX_ATTEMPTS" ]; then
+    {
+      echo "WATCH_RESTART_SKIPPED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "WATCH_RESTART_SKIPPED_REASON=max-attempts-${RUN_AGENT_RESTART_MAX_ATTEMPTS}"
+      echo "WATCH_RESTART_ROOT=$restart_root"
+      echo "WATCH_RESTART_PREVIOUS_ATTEMPT=$previous_attempt"
+    } >>"$run_dir/run-info.txt" 2>/dev/null || true
+    echo "  restart skipped: max attempts reached for root $restart_root (attempt=$previous_attempt max=$RUN_AGENT_RESTART_MAX_ATTEMPTS)" | tee -a "$LOG"
+    return
+  fi
+  restart_agent="$(choose_restart_agent "$agent")"
+  {
+    echo "WATCH_RESTART_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "WATCH_RESTART_ROOT=$restart_root"
+    echo "WATCH_RESTART_NEXT_ATTEMPT=$next_attempt"
+    echo "WATCH_RESTART_AGENT=$restart_agent"
+  } >>"$run_dir/run-info.txt" 2>/dev/null || true
+  echo "  restarting $restart_agent for $run_dir (root=$restart_root attempt=$next_attempt max=$RUN_AGENT_RESTART_MAX_ATTEMPTS previous_agent=$agent)" | tee -a "$LOG"
   run_detached_to_log env \
+    RUN_AGENT_RESTART_ROOT="$restart_root" \
+    RUN_AGENT_RESTART_OF="$run_dir" \
+    RUN_AGENT_RESTART_ATTEMPT="$next_attempt" \
     RUN_AGENT_TIMEOUT_SECONDS="${RUN_AGENT_RESTART_TIMEOUT_SECONDS:-900}" \
     RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS="${RUN_AGENT_RESTART_NO_OUTPUT_DIAGNOSTICS_SECONDS:-180}" \
     RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS="${RUN_AGENT_RESTART_NO_OUTPUT_TIMEOUT_SECONDS:-300}" \
     RUN_AGENT_PREFLIGHT_WATCH=0 \
-    "$BASE_DIR/run-agent.sh" "$agent" "$cwd" "$prompt"
+    "$BASE_DIR/run-agent.sh" "$restart_agent" "$cwd" "$prompt"
 }
 
 while true; do
