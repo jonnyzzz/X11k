@@ -62,13 +62,16 @@ The 2026-07-03 review pass exposed another non-hang failure mode: an agent launc
 
 The current root-side adjustment is `scripts/run-gradle-bounded.sh`. It serializes Gradle with a repository lock, always uses `--no-daemon --max-workers=1 -Dkotlin.incremental=false`, enforces a wall-clock timeout, and writes `jps` plus Java thread dumps before terminating the Gradle process tree. Use it for routine local verification instead of bare `./gradlew` unless a one-off experiment explicitly needs different Gradle flags.
 
+For any non-Gradle experiment that can block on Docker, X clients, IDE startup, network downloads, or JVM subprocesses, use `scripts/run-bounded-experiment.sh -- <command> [args...]`. It creates a per-run directory under `runs/bounded-experiments/`, records stdout/stderr/run-info/heartbeat files, emits diagnostics after output-idle time, and captures process tree, `jps`, `jcmd`/`jstack`, Docker/Testcontainers state, and output tails before killing a timed-out process tree. This wrapper is the default for ad hoc repro commands; Gradle still goes through `scripts/run-gradle-bounded.sh`.
+
 The 2026-07-04 follow-up exposed one more stale-run blind spot: a runner can be interrupted after writing `run-info.txt` but before writing `EXIT_CODE` or while `pid.txt` has already been removed. Older watcher output reported those directories as `unknown (no pid/exit)` forever, which made status checks look stuck even when the recorded PID had long exited. `watch-agents.sh` now recovers a missing `pid.txt` from `PID=` in `run-info.txt` when that process is still alive, so stale diagnostics and terminate/restart still work. If the recorded PID is gone, or there is no PID at all, the watcher waits only `RUN_AGENT_ABANDONED_SECONDS` (default 120) before appending `WATCH_ABANDONED_UTC` / `WATCH_ABANDONED_REASON` to `run-info.txt` and reporting the run as abandoned.
 
 ## Required Practice
 
-- Start long commands through `timeout`, `scripts/run-gradle-bounded.sh`, or with `RUN_AGENT_TIMEOUT_SECONDS` set.
+- Start long commands through `scripts/run-bounded-experiment.sh`, `timeout`, `scripts/run-gradle-bounded.sh`, or with `RUN_AGENT_TIMEOUT_SECONDS` set.
 - Never run Gradle, Maven, IDE build, test, package, or other build-directory-writing commands in parallel for this repository. Queue them one at a time, using `--no-daemon --max-workers=1 -Dkotlin.incremental=false` for Gradle checks unless a task explicitly needs different settings.
 - Prefer `scripts/run-gradle-bounded.sh <tasks...>` for Gradle checks. It holds the repo Gradle lock and captures JVM diagnostics before killing a timed-out run.
+- Prefer `scripts/run-bounded-experiment.sh -- <command> [args...]` for ad hoc non-Gradle repros and experiments so timeout failures leave a persisted diagnostic bundle.
 - Before killing a suspected stuck JVM workload, collect `jps -lm` plus `jcmd <pid> Thread.print` or `jstack <pid>`.
 - Before restarting a silent run-agent, inspect its `heartbeat.txt`, `run-info.txt`, any `DIAGNOSTICS=...` entries, and stdout/stderr sizes.
 - For agents that print startup text and then may idle, trust `OUTPUT_IDLE_SECONDS`, not total output size.
@@ -125,6 +128,15 @@ Use this shape for repository Gradle checks:
 
 ```bash
 GRADLE_TIMEOUT_SECONDS=1800 scripts/run-gradle-bounded.sh test --console=plain
+```
+
+Use this shape for non-Gradle experiments:
+
+```bash
+EXPERIMENT_TIMEOUT_SECONDS=900 \
+EXPERIMENT_NO_OUTPUT_DIAGNOSTICS_SECONDS=180 \
+EXPERIMENT_NO_OUTPUT_TIMEOUT_SECONDS=300 \
+scripts/run-bounded-experiment.sh -- sh -lc 'your repro command here'
 ```
 
 `scripts/run-gradle-bounded.sh` also captures Docker/Testcontainers state on timeout and removes stopped/dead Testcontainers before starting. It removes still-running Testcontainers only after `GRADLE_STALE_TESTCONTAINERS_SECONDS` (default 3600), which keeps normal heavyweight IntelliJ/VSCode runs intact while clearing leaks from killed runs.
