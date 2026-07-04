@@ -79,6 +79,28 @@ class VSCodeSmokeTest {
     }
 
     @Test
+    fun `vscode unsupported request gate rejects protocol gaps`() {
+        assertNoVSCodeUnsupportedRequests(
+            """
+                Unsupported requests:
+                - None.
+            """.trimIndent(),
+            label = "fixture",
+        )
+
+        val failure = assertFailsWith<AssertionError> {
+            assertNoVSCodeUnsupportedRequests(
+                """
+                    Unsupported requests:
+                    - #12 RENDER.MissingGlyphPath opcode=139 minor=99
+                """.trimIndent(),
+                label = "fixture",
+            )
+        }
+        assertTrue(failure.message?.contains("RENDER.MissingGlyphPath") == true, failure.message)
+    }
+
+    @Test
     fun `vscode svg composition skips hidden image layers`() {
         val visible = onePixelPngBase64(0xff12_3456.toInt())
         val hidden = onePixelPngBase64(0xffff_0000.toInt())
@@ -221,10 +243,7 @@ class VSCodeSmokeTest {
                             hasVSCodeWindowEvidence(text),
                             "VSCode smoke should expose a labeled editor window in the HTTP report\n$text",
                         )
-                        assertTrue(
-                            text.contains("Unsupported requests:\n- None."),
-                            "VSCode smoke should not leave unsupported protocol requests in the target-client trace\n$text",
-                        )
+                        assertNoVSCodeUnsupportedRequests(text, label = "VSCode smoke")
                         assertVSCodeHtmlPreviewHasLargeSurface(html, text)
                         assertTrue(
                             snapshot.stats.any { it.hasVisibleContent() },
@@ -270,6 +289,7 @@ class VSCodeSmokeTest {
 
         dumpVSCodeParityArtifacts(reference, actual, composedSvg, composedSvgCapture)
         assertVSCodeHtmlPreviewHasLargeSurface(actual.html, actual.text)
+        assertNoVSCodeUnsupportedRequests(actual.text, label = "VSCode parity")
         assertVSCodeVisualClose(reference.robot, actual.robot, "Kotlin Robot VSCode capture")
         assertVSCodeVisualClose(reference.robot, composedSvgCapture, "Kotlin SVG-composed VSCode framebuffer")
     }
@@ -1146,6 +1166,22 @@ class VSCodeSmokeTest {
             .filter { it.isNotEmpty() && it != "None." }
             .distinct()
             .sorted()
+
+    private fun assertNoVSCodeUnsupportedRequests(text: String, label: String) {
+        assertTrue(
+            text.lineSequence().any { it.trim() == "Unsupported requests:" },
+            "$label should expose unsupported-request diagnostics\n$text",
+        )
+        assertTrue(
+            sectionLines(text, "Unsupported requests:").isNotEmpty(),
+            "$label should expose at least one unsupported-request diagnostic line\n$text",
+        )
+        val unsupported = unsupportedRequestsFromText(text)
+        assertTrue(
+            unsupported.isEmpty(),
+            "$label should not leave unsupported protocol requests in the target-client trace: ${unsupported.joinToString(" ")}\n$text",
+        )
+    }
 
     private fun extensionQueriesFromText(text: String, supported: Boolean): List<String> =
         sectionLines(text, "Extension queries:")
