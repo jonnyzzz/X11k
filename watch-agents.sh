@@ -26,6 +26,14 @@ RUN_AGENT_ABANDONED_SECONDS="${RUN_AGENT_ABANDONED_SECONDS:-120}"
 RUN_AGENT_RESTART_MAX_ATTEMPTS="${RUN_AGENT_RESTART_MAX_ATTEMPTS:-1}"
 RUN_AGENT_RESTART_ROTATE_AGENT="${RUN_AGENT_RESTART_ROTATE_AGENT:-1}"
 RUN_AGENT_RESTART_AGENTS="${RUN_AGENT_RESTART_AGENTS:-${RUN_AGENT_AGENTS:-codex,gemini,claude}}"
+RUN_AGENT_FAIL_ON_RECOVERY="${RUN_AGENT_FAIL_ON_RECOVERY:-0}"
+
+WATCH_STALE_COUNT=0
+WATCH_DIAGNOSTICS_COUNT=0
+WATCH_TERMINATED_COUNT=0
+WATCH_RESTARTED_COUNT=0
+WATCH_RESTART_SKIPPED_COUNT=0
+WATCH_ABANDONED_COUNT=0
 
 if [ "$RUN_AGENT_TERMINATE_STALE" = "1" ] && [ "$RUN_AGENT_DIAGNOSE_STALE" != "1" ]; then
   echo "RUN_AGENT_TERMINATE_STALE=1 requires RUN_AGENT_DIAGNOSE_STALE=1" >&2
@@ -190,12 +198,14 @@ mark_abandoned_run() {
   local run_dir="$1"
   local reason="$2"
   if run_info_has_key "$run_dir" WATCH_ABANDONED_UTC; then
-    return
+    return 1
   fi
   {
     echo "WATCH_ABANDONED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "WATCH_ABANDONED_REASON=$reason"
   } >>"$run_dir/run-info.txt" 2>/dev/null || true
+  WATCH_ABANDONED_COUNT=$((WATCH_ABANDONED_COUNT + 1))
+  return 0
 }
 
 descendant_pids() {
@@ -256,6 +266,7 @@ diagnose_run() {
   local pid="$2"
   local reason="$3"
   local diag_file="$run_dir/watch-diagnostics-${reason}-$(date -u +%Y%m%d-%H%M%S).txt"
+  WATCH_DIAGNOSTICS_COUNT=$((WATCH_DIAGNOSTICS_COUNT + 1))
   {
     echo "REASON=$reason"
     echo "RUN_DIR=$run_dir"
@@ -320,6 +331,7 @@ terminate_run() {
   local pid="$2"
   local pids
   echo "  terminating stale PID $pid for $run_dir" | tee -a "$LOG"
+  WATCH_TERMINATED_COUNT=$((WATCH_TERMINATED_COUNT + 1))
   pids="$(descendant_pids "$pid" | awk 'NF { print }' || true)"
   # shellcheck disable=SC2086
   kill -TERM $pids "$pid" 2>/dev/null || true
@@ -338,6 +350,7 @@ restart_run() {
   prompt="$run_dir/prompt.md"
   if [ -z "$agent" ] || [ -z "$cwd" ] || [ ! -f "$prompt" ]; then
     echo "  restart skipped: missing AGENT/CWD/prompt for $run_dir" | tee -a "$LOG"
+    WATCH_RESTART_SKIPPED_COUNT=$((WATCH_RESTART_SKIPPED_COUNT + 1))
     return
   fi
   restart_root="$(restart_root_for "$run_dir")"
@@ -351,6 +364,7 @@ restart_run() {
       echo "WATCH_RESTART_PREVIOUS_ATTEMPT=$previous_attempt"
     } >>"$run_dir/run-info.txt" 2>/dev/null || true
     echo "  restart skipped: max attempts reached for root $restart_root (attempt=$previous_attempt max=$RUN_AGENT_RESTART_MAX_ATTEMPTS)" | tee -a "$LOG"
+    WATCH_RESTART_SKIPPED_COUNT=$((WATCH_RESTART_SKIPPED_COUNT + 1))
     return
   fi
   restart_agent="$(choose_restart_agent "$agent")"
@@ -361,6 +375,7 @@ restart_run() {
     echo "WATCH_RESTART_AGENT=$restart_agent"
   } >>"$run_dir/run-info.txt" 2>/dev/null || true
   echo "  restarting $restart_agent for $run_dir (root=$restart_root attempt=$next_attempt max=$RUN_AGENT_RESTART_MAX_ATTEMPTS previous_agent=$agent)" | tee -a "$LOG"
+  WATCH_RESTARTED_COUNT=$((WATCH_RESTARTED_COUNT + 1))
   run_detached_to_log env \
     RUN_AGENT_RESTART_ROOT="$restart_root" \
     RUN_AGENT_RESTART_OF="$run_dir" \
@@ -391,7 +406,7 @@ while true; do
         else
           age_number="$(run_age_seconds "$run_dir")"
           if [ "$age_number" -ge "$RUN_AGENT_ABANDONED_SECONDS" ]; then
-            mark_abandoned_run "$run_dir" "empty-pid-file-no-run-info-pid"
+            mark_abandoned_run "$run_dir" "empty-pid-file-no-run-info-pid" || true
             echo "  $run_dir: abandoned (empty pid file, no run-info PID, age=${age_number}s)" | tee -a "$LOG"
           else
             echo "  $run_dir: starting (empty pid file, age=${age_number}s)" | tee -a "$LOG"
@@ -415,7 +430,7 @@ while true; do
       else
         age_number="$(run_age_seconds "$run_dir")"
         if [ "$age_number" -ge "$RUN_AGENT_ABANDONED_SECONDS" ]; then
-          mark_abandoned_run "$run_dir" "no-pid-no-exit"
+          mark_abandoned_run "$run_dir" "no-pid-no-exit" || true
           echo "  $run_dir: abandoned (no pid/exit, age=${age_number}s)" | tee -a "$LOG"
         else
           echo "  $run_dir: starting (no pid/exit, age=${age_number}s)" | tee -a "$LOG"
@@ -433,6 +448,7 @@ while true; do
         if [ "$age_number" -ge "$RUN_AGENT_STALE_SECONDS" ]; then
           stale_note=" STALE_OUTPUT"
           stale=true
+          WATCH_STALE_COUNT=$((WATCH_STALE_COUNT + 1))
         fi
       fi
       echo "  $run_dir: PID $pid running output_age=$output_age source=$pid_source$stale_note" | tee -a "$LOG"
@@ -450,7 +466,7 @@ while true; do
       rm -f "$pid_file" 2>/dev/null || true
       age_number="$(run_age_seconds "$run_dir")"
       if [ "$age_number" -ge "$RUN_AGENT_ABANDONED_SECONDS" ]; then
-        mark_abandoned_run "$run_dir" "pid-$pid-not-running-no-exit"
+        mark_abandoned_run "$run_dir" "pid-$pid-not-running-no-exit" || true
         echo "  $run_dir: abandoned (PID $pid not running, no exit, age=${age_number}s)" | tee -a "$LOG"
       else
         echo "  $run_dir: waiting for exit record (PID $pid not running, age=${age_number}s)" | tee -a "$LOG"
@@ -462,7 +478,16 @@ while true; do
     echo "  no runs found" | tee -a "$LOG"
   fi
 
+  echo "WATCH_SUMMARY stale=$WATCH_STALE_COUNT diagnostics=$WATCH_DIAGNOSTICS_COUNT terminated=$WATCH_TERMINATED_COUNT restarted=$WATCH_RESTARTED_COUNT restart_skipped=$WATCH_RESTART_SKIPPED_COUNT abandoned=$WATCH_ABANDONED_COUNT" | tee -a "$LOG"
+
   if [ "$RUN_AGENT_WATCH_ONCE" = "1" ]; then
+    if [ "$RUN_AGENT_FAIL_ON_RECOVERY" = "1" ] && {
+      [ "$WATCH_TERMINATED_COUNT" -gt 0 ] || \
+      [ "$WATCH_RESTARTED_COUNT" -gt 0 ] || \
+      [ "$WATCH_RESTART_SKIPPED_COUNT" -gt 0 ]; }; then
+      echo "WATCH_RECOVERY_PERFORMED=1" | tee -a "$LOG"
+      exit 124
+    fi
     break
   fi
 

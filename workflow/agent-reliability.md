@@ -76,6 +76,8 @@ The 2026-07-04 follow-up found one remaining outer-timeout blind spot. `ralph-lo
 
 The 2026-07-04 repeated-stall pattern showed that recovery also needs a retry budget. A stale run may now be restarted by `watch-agents.sh` only up to `RUN_AGENT_RESTART_MAX_ATTEMPTS` (default 1). Restarted runs record `RESTART_ROOT`, `RESTART_OF`, and `RESTART_ATTEMPT` in `run-info.txt`; the stale run records `WATCH_RESTART_*` fields. The watcher rotates the restarted job across `RUN_AGENT_RESTART_AGENTS` (default `codex,gemini,claude`) when `RUN_AGENT_RESTART_ROTATE_AGENT=1`, so a silent Claude/Codex/Gemini failure does not simply restart the same CLI until the root loop appears stuck again.
 
+The next recurrence showed that successful recovery can still create a concurrency problem if the loop immediately starts another agent while the recovered prompt is also relaunched. `watch-agents.sh` now prints a machine-readable `WATCH_SUMMARY stale=... diagnostics=... terminated=... restarted=... restart_skipped=... abandoned=...` line and supports `RUN_AGENT_FAIL_ON_RECOVERY=1`. With that flag, a one-shot watcher exits `124` after terminating, restarting, or skipping a restart for a stale run. `run-agent.sh` preflight and `ralph-loop.sh` enable this fail-closed mode by default (`RUN_AGENT_PREFLIGHT_ABORT_AFTER_RECOVERY=1`, `RUN_AGENT_ABORT_AFTER_RECOVERY=1`), so recovery is handled first and the requested new agent launch must be retried after the process state is clean.
+
 The 2026-07-04 follow-up closed the same evidence gap for Gradle signal exits. `scripts/run-gradle-bounded.sh` now handles `TERM`, `INT`, and `HUP` by writing the same `DIAGNOSTICS=...` bundle used for wall-clock and output-idle timeouts before it terminates the Gradle process tree and releases the repository lock. This matters when an outer supervisor, terminal interruption, or root-agent timeout kills a verification run: the next retry must start by reading `runs/gradle-bounded/latest/run-info.txt` and the recorded diagnostics instead of relaunching blindly.
 
 ## Required Practice
@@ -120,6 +122,7 @@ The 2026-07-04 follow-up closed the same evidence gap for Gradle signal exits. `
 
   If a restarted run also stalls, inspect its `RESTART_ROOT` chain and diagnostics instead of increasing the retry count blindly.
 
+- Treat `WATCH_RECOVERY_PERFORMED=1` or a `124` from `run-agent.sh`/`ralph-loop.sh` preflight as a completed recovery pass, not as proof that the requested new agent ran. Inspect `runs/agent-watch.log`, confirm `WATCH_SUMMARY` is clean on a follow-up one-shot watcher, then rerun the intended role.
 - Keep routine run monitoring bounded to recent runs or active PID files. The local `runs/` tree is large enough that whole-history scans can time out.
 - Treat `abandoned` watcher lines as completed forensic records, not live agents. Inspect their `run-info.txt` and diagnostics if needed, but do not wait for them; the watcher has confirmed there is no live PID to recover.
 - Do not let run-agents spawn additional unbounded review subagents. Quorum reviews should be scheduled by the root agent with explicit timeouts, or replaced by a bounded local review for trivial changes.

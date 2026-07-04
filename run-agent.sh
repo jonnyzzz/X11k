@@ -110,6 +110,10 @@ Configuration (env variables):
   RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS
                       Wall-clock timeout for the preflight watch/recovery pulse
                       (default: 180, 0 disables)
+  RUN_AGENT_PREFLIGHT_ABORT_AFTER_RECOVERY
+                      Abort this launch after preflight had to terminate/restart
+                      stale agents (default: 1). This prevents the next prompt
+                      from overlapping a recovery restart; rerun after recovery.
   RUN_AGENT_RESTART_ROOT / RUN_AGENT_RESTART_OF / RUN_AGENT_RESTART_ATTEMPT
                       Metadata written by watch-agents.sh when a stale run is
                       restarted. These fields make repeated-restart loops
@@ -203,6 +207,7 @@ RUN_AGENT_PREFLIGHT_RECOVER_STALE="${RUN_AGENT_PREFLIGHT_RECOVER_STALE:-1}"
 RUN_AGENT_PREFLIGHT_STALE_SECONDS="${RUN_AGENT_PREFLIGHT_STALE_SECONDS:-${RUN_AGENT_STALE_SECONDS:-900}}"
 RUN_AGENT_PREFLIGHT_WATCH_LIMIT="${RUN_AGENT_PREFLIGHT_WATCH_LIMIT:-40}"
 RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS="${RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS:-180}"
+RUN_AGENT_PREFLIGHT_ABORT_AFTER_RECOVERY="${RUN_AGENT_PREFLIGHT_ABORT_AFTER_RECOVERY:-1}"
 
 run_preflight_bounded() {
   local seconds="$1"
@@ -230,9 +235,14 @@ if [ "$RUN_AGENT_PREFLIGHT_WATCH" != "0" ] && \
     RUN_AGENT_DIAGNOSE_STALE=1 \
     RUN_AGENT_TERMINATE_STALE="$RUN_AGENT_PREFLIGHT_RECOVER_STALE" \
     RUN_AGENT_RESTART_STALE="$RUN_AGENT_PREFLIGHT_RECOVER_STALE" \
+    RUN_AGENT_FAIL_ON_RECOVERY="$RUN_AGENT_PREFLIGHT_ABORT_AFTER_RECOVERY" \
     "$BASE_DIR/watch-agents.sh" || {
       _preflight_status=$?
       echo "RUN_AGENT_PREFLIGHT_WATCH_EXIT=$_preflight_status" >&2
+      if [ "$RUN_AGENT_PREFLIGHT_ABORT_AFTER_RECOVERY" = "1" ]; then
+        echo "RUN_AGENT_PREFLIGHT_ABORTED_AFTER_RECOVERY=1" >&2
+        exit "$_preflight_status"
+      fi
     }
 fi
 
