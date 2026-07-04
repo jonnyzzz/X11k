@@ -72,6 +72,8 @@ The 2026-07-04 root-side workflow is now wrapper-first. Local implementation, re
 
 One more local visibility failure was that `scripts/run-bounded-experiment.sh` persisted stdout/stderr to files but did not mirror them to the terminal. That made long but healthy Docker/IDE experiments look silent to the root agent until completion. The wrapper now mirrors output by default while keeping the persisted files and diagnostics; set `EXPERIMENT_MIRROR_OUTPUT=0` only when a deliberately quiet run is more useful. External TERM/INT signals also trigger a diagnostic bundle before the child process tree is terminated.
 
+The 2026-07-04 follow-up found one remaining outer-timeout blind spot. `ralph-loop.sh` wraps `run-agent.sh` with a process timeout, but a `TERM` delivered by that outer guard used to make `run-agent.sh` terminate the agent tree without first writing a diagnostic bundle. `run-agent.sh` now handles `TERM`/`INT`/`HUP` by writing the same `DIAGNOSTICS=...` bundle used for no-output and wall-clock timeouts before killing descendants. `ralph-loop.sh` also refuses bounded runs when neither `timeout` nor `gtimeout` is installed, instead of silently falling back to an unbounded shell command.
+
 ## Required Practice
 
 - Start long commands through `scripts/run-bounded-experiment.sh`, `timeout`, `scripts/run-gradle-bounded.sh`, or with `RUN_AGENT_TIMEOUT_SECONDS` set.
@@ -119,6 +121,7 @@ One more local visibility failure was that `scripts/run-bounded-experiment.sh` p
   ```
 
 - Use `./ralph-loop.sh <role>` for routine research/implementation/review/test agent work. It runs the recovery watcher before the agent, applies the standard wall-clock/no-output diagnostics settings, and wraps `run-agent.sh` in an outer process timeout.
+- If `./ralph-loop.sh <role>` exits from the outer timeout, inspect `runs/latest/run-info.txt` for `SIGNAL=TERM` and `DIAGNOSTICS=...`; the signal path should now contain process lists, `jps`, JVM thread dumps when present, Docker/Testcontainers state, and stdout/stderr tails.
 - Keep direct-runner preflight recovery bounded with `RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS` (default 180 seconds). If that fires, inspect `runs/agent-watch.log` before retrying.
 
 ## Runner Timeout Knobs

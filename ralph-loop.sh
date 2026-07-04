@@ -28,10 +28,13 @@ run_bounded() {
   shift
   local bin
   bin="$(timeout_bin || true)"
-  if [ -n "$bin" ]; then
+  if [ "$seconds" = "0" ]; then
+    "$@"
+  elif [ -n "$bin" ]; then
     "$bin" "$seconds" "$@"
   else
-    "$@"
+    echo "ralph-loop.sh requires timeout or gtimeout for bounded runs (seconds=$seconds): $*" >&2
+    exit 125
   fi
 }
 

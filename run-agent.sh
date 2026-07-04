@@ -560,6 +560,7 @@ AGENT_PID=""
 on_signal() {
   local sig="$1" code="$2"
   if [ -n "$AGENT_PID" ]; then
+    dump_diagnostics "signal-${sig}"
     terminate_agent_tree
   fi
   rm -f "$PID_FILE" 2>/dev/null || true
