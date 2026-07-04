@@ -86,14 +86,18 @@ The test suite starts with:
 ## Development
 
 ```bash
-scripts/run-gradle-bounded.sh test
+scripts/run-supervised.sh gradle test
 ```
+
+Use `scripts/run-supervised.sh` as the default front door for long local work.
+It runs stale-agent recovery first, routes Gradle through the bounded Gradle
+wrapper, and prints the latest diagnostic bundle path on timeout or failure.
 
 Docker integration tests require Docker to be available to the current user. Build the local test/demo images before running Docker-backed tests:
 
 ```bash
-scripts/run-gradle-bounded.sh dockerBuildX11Images
-scripts/run-gradle-bounded.sh test
+scripts/run-supervised.sh gradle dockerBuildX11Images
+scripts/run-supervised.sh gradle test
 ```
 
 There are two local images:
@@ -104,7 +108,7 @@ There are two local images:
 Build only the reusable X11 client image before running heavyweight GUI demos:
 
 ```bash
-scripts/run-gradle-bounded.sh dockerBuildX11Client
+scripts/run-supervised.sh gradle dockerBuildX11Client
 ```
 
 The IntelliJ release archive is intentionally not baked into the image; `run-intellij`
@@ -119,15 +123,15 @@ directly.
 The IntelliJ Community smoke is intentionally opt-in because it downloads a large GitHub release artifact:
 
 ```bash
-scripts/run-gradle-bounded.sh dockerBuildX11Client
-scripts/run-gradle-bounded.sh test --tests org.jonnyzzz.xserver.IntellijCommunitySmokeTest -Dx.intellijSmoke=true
+scripts/run-supervised.sh gradle dockerBuildX11Client
+scripts/run-supervised.sh gradle test --tests org.jonnyzzz.xserver.IntellijCommunitySmokeTest -Dx.intellijSmoke=true
 ```
 
 Run the heavier Xvfb-vs-Kotlin IntelliJ visual parity probe after building both Docker images:
 
 ```bash
-scripts/run-gradle-bounded.sh dockerBuildX11Images
-scripts/run-gradle-bounded.sh test --tests org.jonnyzzz.xserver.IntellijCommunitySmokeTest -Dx.intellijParity=true
+scripts/run-supervised.sh gradle dockerBuildX11Images
+scripts/run-supervised.sh gradle test --tests org.jonnyzzz.xserver.IntellijCommunitySmokeTest -Dx.intellijParity=true
 ```
 
 The IntelliJ smoke and parity containers open a clean tracked-file project export
@@ -154,15 +158,15 @@ set `-Dx.vscodeUrl=...` or `X_VSCODE_URL=...` to pin a specific archive instead
 of the official latest-stable endpoint:
 
 ```bash
-scripts/run-gradle-bounded.sh dockerBuildX11Client
-scripts/run-gradle-bounded.sh test --tests org.jonnyzzz.xserver.VSCodeSmokeTest -Dx.vscodeSmoke=true
+scripts/run-supervised.sh gradle dockerBuildX11Client
+scripts/run-supervised.sh gradle test --tests org.jonnyzzz.xserver.VSCodeSmokeTest -Dx.vscodeSmoke=true
 ```
 
 Run the heavier Xvfb-vs-Kotlin VSCode visual parity probe after building both Docker images:
 
 ```bash
-scripts/run-gradle-bounded.sh dockerBuildX11Images
-scripts/run-gradle-bounded.sh test --tests org.jonnyzzz.xserver.VSCodeSmokeTest -Dx.vscodeParity=true
+scripts/run-supervised.sh gradle dockerBuildX11Images
+scripts/run-supervised.sh gradle test --tests org.jonnyzzz.xserver.VSCodeSmokeTest -Dx.vscodeParity=true
 ```
 
 The VSCode parity probe writes its current Xvfb reference, Kotlin Robot capture,
@@ -174,7 +178,7 @@ VSCode logs under `build/tmp/vscode-smoke/`.
 Run the prototype server:
 
 ```bash
-GRADLE_TIMEOUT_SECONDS=3600 scripts/run-gradle-bounded.sh run --args='--host 0.0.0.0 --port 6000'
+GRADLE_TIMEOUT_SECONDS=3600 scripts/run-supervised.sh gradle run --args='--host 0.0.0.0 --port 6000'
 ```
 
 Then point simple X clients at it with `DISPLAY=host:0`, or open `http://host:6000/` to inspect the maintained server model as SVG/text.
@@ -182,7 +186,7 @@ Then point simple X clients at it with `DISPLAY=host:0`, or open `http://host:60
 Run the 4K/100 DPI IntelliJ Docker demo:
 
 ```bash
-scripts/run-gradle-bounded.sh installDist dockerBuildX11Client
+scripts/run-supervised.sh gradle installDist dockerBuildX11Client
 docker rm -f x-demo-server x-demo-idea
 docker run -d --name x-demo-server \
   -p 6000:6000 -p 16000:6000 \

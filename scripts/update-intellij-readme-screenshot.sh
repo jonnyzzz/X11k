@@ -247,7 +247,7 @@ dismiss_intellij_readme_notifications() {
 }
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-  GRADLE_TIMEOUT_SECONDS="$BUILD_TIMEOUT_SECONDS" "$ROOT/scripts/run-gradle-bounded.sh" installDist dockerBuildX11Client
+  GRADLE_TIMEOUT_SECONDS="$BUILD_TIMEOUT_SECONDS" "$ROOT/scripts/run-supervised.sh" gradle installDist dockerBuildX11Client
 fi
 
 docker rm -f "$IDEA_CONTAINER" >/dev/null 2>&1 || true

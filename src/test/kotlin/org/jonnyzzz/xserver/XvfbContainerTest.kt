@@ -995,9 +995,35 @@ class XvfbContainerTest {
                 appendLine("sampledDistance=${imageDistance(expected.image, actual.image)}")
                 appendLine("mismatchBounds=${mismatchBounds(expected.image, actual.image).toMetricString()}")
                 appendLine("mismatchSamples=${mismatchSamples(expected.image, actual.image)}")
+                if (safeLabel.contains("xcalc")) {
+                    append(xcalcRegionMetrics(expected.image, actual.image))
+                }
             },
         )
     }
+
+    private fun xcalcRegionMetrics(expected: BufferedImage, actual: BufferedImage): String =
+        buildString {
+            appendLine("regionMetrics:")
+            for ((name, region) in XcalcDiagnosticRegions) {
+                val clipped = Rectangle(
+                    region.x,
+                    region.y,
+                    minOf(region.width, expected.width - region.x, actual.width - region.x),
+                    minOf(region.height, expected.height - region.y, actual.height - region.y),
+                )
+                if (clipped.width <= 0 || clipped.height <= 0) continue
+                val expectedRegion = visualCapture(expected.getSubimage(clipped.x, clipped.y, clipped.width, clipped.height))
+                val actualRegion = visualCapture(actual.getSubimage(clipped.x, clipped.y, clipped.width, clipped.height))
+                appendLine(
+                    "$name=${clipped.x},${clipped.y} ${clipped.width}x${clipped.height} " +
+                        "coverageRatio=${ratio(actualRegion.nonBackgroundPixels, expectedRegion.nonBackgroundPixels)} " +
+                        "averageRgbDelta=${abs(actualRegion.averageRgb - expectedRegion.averageRgb)} " +
+                        "sampledDistance=${imageDistance(expectedRegion.image, actualRegion.image)} " +
+                        "mismatchBounds=${mismatchBounds(expectedRegion.image, actualRegion.image).toMetricString()}",
+                )
+            }
+        }
 
     private fun dumpRealClientArtifacts(label: String, actual: RealClientResult) {
         val safeLabel = safeArtifactLabel(label)
@@ -1485,6 +1511,13 @@ class XvfbContainerTest {
         const val RealClientCaptureWidth = 220
         const val RealClientCaptureHeight = 160
         const val RealClientBackground = 0xffff_ffff.toInt()
+        val XcalcDiagnosticRegions = listOf(
+            "topDisplay" to Rectangle(0, 0, RealClientCaptureWidth, 40),
+            "displayFrame" to Rectangle(0, 0, RealClientCaptureWidth, 24),
+            "displayText" to Rectangle(24, 0, 190, 24),
+            "angleModeIndicators" to Rectangle(28, 0, 140, 36),
+            "keypad" to Rectangle(0, 40, RealClientCaptureWidth, RealClientCaptureHeight - 40),
+        )
         const val WindowManagerCaptureX = 20
         const val WindowManagerCaptureY = 20
         const val WindowManagerCaptureWidth = 360

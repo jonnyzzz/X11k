@@ -11,10 +11,11 @@ GRADLE_TIMEOUT_SECONDS="${GRADLE_TIMEOUT_SECONDS:-1800}"
 if [[ "$RUN_PARITY" == "1" ]]; then
   if [[ "$BUILD_IMAGES" == "1" ]]; then
     GRADLE_TIMEOUT_SECONDS="$GRADLE_TIMEOUT_SECONDS" \
-      "$ROOT/scripts/run-gradle-bounded.sh" dockerBuildX11Images --console=plain
+      "$ROOT/scripts/run-supervised.sh" gradle dockerBuildX11Images --console=plain
   fi
   GRADLE_TIMEOUT_SECONDS="$GRADLE_TIMEOUT_SECONDS" \
-    "$ROOT/scripts/run-gradle-bounded.sh" \
+    "$ROOT/scripts/run-supervised.sh" \
+    gradle \
     test \
     --tests org.jonnyzzz.xserver.VSCodeSmokeTest \
     -Dx.vscodeParity=true \
