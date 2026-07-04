@@ -171,7 +171,11 @@ internal object SvgScreenRenderer {
             append("""],"glxContexts":[""")
             snapshot.glxContexts.forEachIndexed { index, context ->
                 if (index > 0) append(',')
-                append("""{"id":"${context.idHex}","fbConfig":"${context.fbConfigIdHex}","screen":${context.screen},"renderType":"${context.renderTypeHex}","profileMask":"${context.profileMaskHex}","direct":${context.direct},"currentDrawDrawable":""")
+                append("""{"id":"${context.idHex}","fbConfig":"${context.fbConfigIdHex}","screen":${context.screen},"renderType":"${context.renderTypeHex}","contextMajor":""")
+                context.contextMajorVersion?.let { append(it) } ?: append("null")
+                append(""","contextMinor":""")
+                context.contextMinorVersion?.let { append(it) } ?: append("null")
+                append(""","profileMask":"${context.profileMaskHex}","direct":${context.direct},"currentDrawDrawable":""")
                 context.currentDrawDrawableIdHex?.let { append('"').append(it).append('"') } ?: append("null")
                 append(""","currentReadDrawable":""")
                 context.currentReadDrawableIdHex?.let { append('"').append(it).append('"') } ?: append("null")

@@ -182,6 +182,14 @@ internal object TextScreenRenderer {
                     append(context.screen)
                     append(" renderType=")
                     append(context.renderTypeHex)
+                    append(" version=")
+                    if (context.contextMajorVersion != null || context.contextMinorVersion != null) {
+                        append(context.contextMajorVersion ?: 0)
+                        append('.')
+                        append(context.contextMinorVersion ?: 0)
+                    } else {
+                        append("unspecified")
+                    }
                     append(" profileMask=")
                     append(context.profileMaskHex)
                     append(" direct=")

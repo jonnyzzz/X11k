@@ -82,6 +82,8 @@ The 2026-07-04 follow-up closed the same evidence gap for Gradle signal exits. `
 
 The latest adjustment is a single front-door wrapper: `scripts/run-supervised.sh`. It runs bounded stale-agent recovery first, automatically verifies that recovery has settled, dispatches Gradle checks through `scripts/run-gradle-bounded.sh`, dispatches ad hoc repros through `scripts/run-bounded-experiment.sh`, and runs role agents through `ralph-loop.sh`. If the command exits non-zero, it prints the latest `run-info.txt` path plus any recorded `DIAGNOSTICS=` / `GRADLE_DIAGNOSTICS=` entries. Use this wrapper by default so every retry starts from recovered agent state and every timeout points directly at the forensic bundle.
 
+The follow-up hardening makes the lower-level helper timeouts self-contained. `run-agent.sh` and `watch-agents.sh` now try `/opt/homebrew/bin/timeout`, `gtimeout`, and `timeout`, then fall back to a local background-process timeout loop. That keeps preflight recovery and individual diagnostic commands bounded even on macOS setups where GNU coreutils is not on `PATH`. `scripts/run-bounded-experiment.sh` now also checks the Homebrew timeout path before using its manual fallback.
+
 ## Required Practice
 
 - Start long commands through `scripts/run-supervised.sh` unless a lower-level wrapper is explicitly needed.
@@ -132,7 +134,7 @@ The latest adjustment is a single front-door wrapper: `scripts/run-supervised.sh
 - For routine 3x review quorum, use `scripts/run-supervised.sh review-quorum <prompt-file>`. It runs one bounded review at a time, rejects empty/no-verdict outputs, stops immediately on a real FAIL verdict, and defaults to three independent Codex reviews because Gemini/Claude have repeatedly been the source of silent CLI stalls in this repository. Override `REVIEW_QUORUM_AGENTS` only for an intentional cross-agent experiment.
 - Do not ask run-agent research/review scouts to use MCP Steroid by default. Shell-based inspection is enough for most gap selection and avoids MCP stdio waits inside a silent text-mode agent.
 - When a run times out, inspect the generated `DIAGNOSTICS=...` file in `run-info.txt` before retrying. Agent and watcher diagnostics now include Docker/Testcontainers state for `jonnyzzz-x` client/reference containers and Ryuk, so use those sections to distinguish container download/startup/extract work from JVM or X server deadlocks.
-- On macOS, install GNU coreutils or make sure `gtimeout` is available if you need hard time limits around watcher diagnostics. Without either `timeout` or `gtimeout`, the watcher still runs but cannot bound individual `jps`/`jcmd`/`jstack` calls.
+- On macOS, prefer installing GNU coreutils or exposing `/opt/homebrew/bin/timeout` / `gtimeout` for better process-group handling. If none is available, the local wrappers still apply a manual fallback timeout around watcher, preflight, and experiment diagnostic commands instead of running those helpers unbounded.
 - Treat built-in subagents as scarce stateful resources. After a bounded `wait_agent`, close only agents that have returned a final status, and close them individually. Do not call `close_agent` for a non-responsive agent and do not wrap `close_agent` calls in a parallel tool batch; one blocked close can stall the whole root agent.
 - Run a one-shot diagnostic/recovery watcher before every new implementation/review batch. This is now the default `run-agent.sh` preflight (`RUN_AGENT_PREFLIGHT_RECOVER_STALE=1`); use the explicit command when recovering outside a new agent launch:
 

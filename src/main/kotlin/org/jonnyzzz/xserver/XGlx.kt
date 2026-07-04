@@ -72,7 +72,11 @@ internal object XGlx {
     const val Width = 0x801D
     const val Height = 0x801E
     const val EventMask = 0x801F
+    const val ContextMajorVersionArb = 0x2091
+    const val ContextMinorVersionArb = 0x2092
     const val ContextProfileMaskArb = 0x9126
+    const val ContextCoreProfileBitArb = 0x00000001
+    const val ContextCompatibilityProfileBitArb = 0x00000002
     const val ContextEs2ProfileBitExt = 0x00000004
     const val WindowBit = 0x00000001
     const val PixmapBit = 0x00000002

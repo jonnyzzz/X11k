@@ -213,17 +213,45 @@ RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS="${RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_S
 RUN_AGENT_PREFLIGHT_RECOVERY_MAX_PASSES="${RUN_AGENT_PREFLIGHT_RECOVERY_MAX_PASSES:-2}"
 RUN_AGENT_PREFLIGHT_ABORT_AFTER_RECOVERY="${RUN_AGENT_PREFLIGHT_ABORT_AFTER_RECOVERY:-0}"
 
-run_preflight_bounded() {
+timeout_bin() {
+  for candidate in /opt/homebrew/bin/timeout gtimeout timeout; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      command -v "$candidate"
+      return
+    fi
+  done
+}
+
+run_bounded() {
   local seconds="$1"
   shift
   if [ "$seconds" = "0" ]; then
     "$@"
-  elif command -v timeout >/dev/null 2>&1; then
-    timeout "$seconds" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$seconds" "$@"
   else
-    "$@"
+    local bin
+    bin="$(timeout_bin || true)"
+    if [ -n "$bin" ]; then
+      "$bin" "$seconds" "$@"
+      return
+    fi
+
+    "$@" &
+    local bounded_pid="$!" start now elapsed status=0
+    start="$(date +%s)"
+    while kill -0 "$bounded_pid" 2>/dev/null; do
+      sleep 1
+      now="$(date +%s)"
+      elapsed=$((now - start))
+      if [ "$elapsed" -ge "$seconds" ]; then
+        kill -TERM "$bounded_pid" 2>/dev/null || true
+        sleep 1
+        kill -KILL "$bounded_pid" 2>/dev/null || true
+        wait "$bounded_pid" 2>/dev/null || true
+        return 124
+      fi
+    done
+    wait "$bounded_pid" || status=$?
+    return "$status"
   fi
 }
 
@@ -234,7 +262,7 @@ if [ "$RUN_AGENT_PREFLIGHT_WATCH" != "0" ] && \
   _preflight_pass=1
   while :; do
     set +e
-    run_preflight_bounded "$RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS" env \
+    run_bounded "$RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS" env \
       RUN_AGENT_IN_PREFLIGHT_WATCH=1 \
       RUN_AGENT_WATCH_ONCE=1 \
       RUN_AGENT_WATCH_LIMIT="$RUN_AGENT_PREFLIGHT_WATCH_LIMIT" \
@@ -444,18 +472,6 @@ output_size() {
   stdout_size="$(wc -c < "$STDOUT_FILE" 2>/dev/null || echo 0)"
   stderr_size="$(wc -c < "$STDERR_FILE" 2>/dev/null || echo 0)"
   echo $((stdout_size + stderr_size))
-}
-
-run_bounded() {
-  local seconds="$1"
-  shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$seconds" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$seconds" "$@"
-  else
-    "$@"
-  fi
 }
 
 descendant_pids() {

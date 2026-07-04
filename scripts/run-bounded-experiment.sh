@@ -57,6 +57,8 @@ run_bounded() {
   shift
   if [[ "$seconds" == "0" ]]; then
     "$@"
+  elif [[ -x /opt/homebrew/bin/timeout ]]; then
+    /opt/homebrew/bin/timeout "$seconds" "$@"
   elif command -v timeout >/dev/null 2>&1; then
     timeout "$seconds" "$@"
   elif command -v gtimeout >/dev/null 2>&1; then

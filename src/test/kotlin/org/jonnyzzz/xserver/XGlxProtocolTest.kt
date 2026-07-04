@@ -363,7 +363,7 @@ class XGlxProtocolTest {
 
             val boundJson = httpGet(socket, "/state.json")
             assertTrue(
-                boundJson.contains(""""glxContexts":[{"id":"0x${contextId.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"renderType":"0x${XGlx.RgbaType.toString(16)}","profileMask":"0x0","direct":false,"currentDrawDrawable":"0x${X11Ids.RootWindow.toString(16)}","currentReadDrawable":"0x${X11Ids.RootWindow.toString(16)}"}]"""),
+                boundJson.contains(""""glxContexts":[{"id":"0x${contextId.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"renderType":"0x${XGlx.RgbaType.toString(16)}","contextMajor":null,"contextMinor":null,"profileMask":"0x0","direct":false,"currentDrawDrawable":"0x${X11Ids.RootWindow.toString(16)}","currentReadDrawable":"0x${X11Ids.RootWindow.toString(16)}"}]"""),
                 boundJson,
             )
 
@@ -1032,6 +1032,8 @@ class XGlxProtocolTest {
                     validContext,
                     direct = false,
                     attributes = listOf(
+                        XGlx.ContextMajorVersionArb to 4,
+                        XGlx.ContextMinorVersionArb to 5,
                         XGlx.RenderType to XGlx.RgbaType,
                         XGlx.ContextProfileMaskArb to XGlx.ContextEs2ProfileBitExt,
                     ),
@@ -1049,6 +1051,7 @@ class XGlxProtocolTest {
             assertEquals(XGlx.ContextEs2ProfileBitExt, attributes.getValue(XGlx.ContextProfileMaskArb))
 
             val text = httpGet(socket, "/text.txt")
+            assertTrue(text.contains("version=4.5"), text)
             assertTrue(text.contains("profileMask=0x${XGlx.ContextEs2ProfileBitExt.toString(16)}"), text)
         }
     }

@@ -50,20 +50,44 @@ if [ "$RUN_AGENT_WATCH_ONCE" != "1" ] && { [ "$RUN_AGENT_TERMINATE_STALE" = "1" 
   exit 2
 fi
 
-TIMEOUT_BIN=""
-if command -v timeout >/dev/null 2>&1; then
-  TIMEOUT_BIN="$(command -v timeout)"
-elif command -v gtimeout >/dev/null 2>&1; then
-  TIMEOUT_BIN="$(command -v gtimeout)"
-fi
+timeout_bin() {
+  for candidate in /opt/homebrew/bin/timeout gtimeout timeout; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      command -v "$candidate"
+      return
+    fi
+  done
+}
+
+TIMEOUT_BIN="$(timeout_bin || true)"
 
 run_bounded() {
   local seconds="$1"
   shift
+  if [ "$seconds" = "0" ]; then
+    "$@"
+    return
+  fi
   if [ -n "$TIMEOUT_BIN" ]; then
     "$TIMEOUT_BIN" "$seconds" "$@"
   else
-    "$@"
+    "$@" &
+    local bounded_pid="$!" start now elapsed status=0
+    start="$(date +%s)"
+    while kill -0 "$bounded_pid" 2>/dev/null; do
+      sleep 1
+      now="$(date +%s)"
+      elapsed=$((now - start))
+      if [ "$elapsed" -ge "$seconds" ]; then
+        kill -TERM "$bounded_pid" 2>/dev/null || true
+        sleep 1
+        kill -KILL "$bounded_pid" 2>/dev/null || true
+        wait "$bounded_pid" 2>/dev/null || true
+        return 124
+      fi
+    done
+    wait "$bounded_pid" || status=$?
+    return "$status"
   fi
 }
 

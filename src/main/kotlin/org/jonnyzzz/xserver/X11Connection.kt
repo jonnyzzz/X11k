@@ -5167,6 +5167,8 @@ internal class X11Connection(
         }
         val attributes = glxAttributePairs(body, 24, attribCount.toInt())
         val renderType = attributes.lastOrNull { (attribute, _) -> attribute == XGlx.RenderType }?.second ?: XGlx.RgbaType
+        val contextMajorVersion = attributes.lastOrNull { (attribute, _) -> attribute == XGlx.ContextMajorVersionArb }?.second
+        val contextMinorVersion = attributes.lastOrNull { (attribute, _) -> attribute == XGlx.ContextMinorVersionArb }?.second
         val profileMask = attributes.lastOrNull { (attribute, _) -> attribute == XGlx.ContextProfileMaskArb }?.second ?: 0
         if (renderType != XGlx.RgbaType) {
             return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = renderType)
@@ -5177,6 +5179,8 @@ internal class X11Connection(
                 fbConfigId = fbConfig,
                 screen = screen,
                 renderType = renderType,
+                contextMajorVersion = contextMajorVersion,
+                contextMinorVersion = contextMinorVersion,
                 profileMask = profileMask,
                 direct = body[16].toInt() != 0,
             ),
