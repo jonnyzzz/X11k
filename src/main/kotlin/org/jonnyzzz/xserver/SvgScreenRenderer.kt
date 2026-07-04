@@ -1,5 +1,14 @@
 package org.jonnyzzz.xserver
 
+import java.awt.image.BufferedImage
+import java.io.ByteArrayOutputStream
+import java.util.Base64
+import java.util.Locale
+import javax.imageio.ImageIO
+import kotlin.math.PI
+import kotlin.math.atan2
+import kotlin.math.roundToInt
+
 internal object SvgScreenRenderer {
     fun html(snapshot: XScreenSnapshot): String =
         XmlDom.html {
@@ -503,6 +512,7 @@ internal object SvgScreenRenderer {
                         originY = 0,
                     )
                 }
+                renderGradientDefinitions(this, snapshot.renderPictures, prefix = "screen-render")
             }
             svgElement("g", "font-family" to "monospace", "font-size" to 32) {
                 visibleWindows.forEachIndexed { index, window ->
@@ -835,6 +845,7 @@ internal object SvgScreenRenderer {
                         originY = rootWindow.y,
                     )
                 }
+                renderGradientDefinitions(this, snapshot.renderPictures, prefix = "$clipPrefix-render")
             }
             windowBackgroundFill(rootWindow, snapshot.windows)?.let { fill ->
                 svgElement("g", "clip-path" to "url(#${clipId(clipPrefix, rootWindow)})") {
@@ -975,6 +986,204 @@ internal object SvgScreenRenderer {
                 "preserveAspectRatio" to "none",
             )
         }
+    }
+
+    private fun renderGradientDefinitions(builder: XmlDom, pictures: List<XRenderPictureSnapshot>, prefix: String) {
+        for (picture in pictures) {
+            picture.radialGradient?.let { gradient ->
+                builder.svgElement(
+                    "radialGradient",
+                    "id" to gradientDefinitionId(prefix, picture, "radial"),
+                    "class" to "render-radial-gradient",
+                    "data-render-kind" to "radial-gradient",
+                    "data-picture-id" to picture.idHex,
+                    "data-inner" to gradient.innerHex,
+                    "data-outer" to gradient.outerHex,
+                    "data-repeat" to picture.repeatName,
+                    "data-transform" to picture.transformHex.joinToString(" "),
+                    "gradientUnits" to "userSpaceOnUse",
+                    "cx" to fixedNumber(gradient.outer.center.x),
+                    "cy" to fixedNumber(gradient.outer.center.y),
+                    "r" to fixedNumber(gradient.outer.radius),
+                    "fx" to fixedNumber(gradient.inner.center.x),
+                    "fy" to fixedNumber(gradient.inner.center.y),
+                    "data-inner-radius" to fixedNumber(gradient.inner.radius),
+                ) {
+                    renderGradientStops(this, gradient.stops, gradient.colors)
+                }
+            }
+            picture.conicalGradient?.let { gradient ->
+                builder.svgElement(
+                    "pattern",
+                    "id" to gradientDefinitionId(prefix, picture, "conical"),
+                    "class" to "render-conical-gradient",
+                    "data-render-kind" to "conical-gradient",
+                    "data-picture-id" to picture.idHex,
+                    "data-center" to gradient.centerHex,
+                    "data-angle" to gradient.angleHex,
+                    "data-repeat" to picture.repeatName,
+                    "data-transform" to picture.transformHex.joinToString(" "),
+                    "data-stops" to gradient.stopHex.joinToString(" "),
+                    "data-colors" to gradient.colorHex.joinToString(" "),
+                    "patternUnits" to "userSpaceOnUse",
+                    "width" to ConicalGradientPreviewSize,
+                    "height" to ConicalGradientPreviewSize,
+                ) {
+                    svgElement(
+                        "image",
+                        "class" to "render-conical-gradient-image",
+                        "data-picture-id" to picture.idHex,
+                        "x" to 0,
+                        "y" to 0,
+                        "width" to ConicalGradientPreviewSize,
+                        "height" to ConicalGradientPreviewSize,
+                        "href" to conicalGradientPreviewDataUri(gradient, picture.repeat, picture.transform),
+                        "preserveAspectRatio" to "none",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun renderGradientStops(builder: XmlDom, stops: List<Int>, colors: List<Int>) {
+        stops.zip(colors).sortedBy { it.first }.forEach { (stop, color) ->
+            builder.svgElement(
+                "stop",
+                "data-stop" to "0x${stop.toUInt().toString(16)}",
+                "data-color" to "0x${color.toUInt().toString(16).padStart(8, '0')}",
+                "offset" to fixedNumber(stop),
+                "stop-color" to pixelColor(color),
+                "stop-opacity" to opacity((color ushr 24) and 0xff),
+            )
+        }
+    }
+
+    private fun conicalGradientPreviewDataUri(
+        gradient: XConicalGradientSnapshot,
+        repeat: Int,
+        transform: List<Int>,
+    ): String {
+        val image = BufferedImage(ConicalGradientPreviewSize, ConicalGradientPreviewSize, BufferedImage.TYPE_INT_ARGB)
+        val pairs = gradient.stops.zip(gradient.colors).sortedBy { it.first }
+        val fixedStops = pairs.map { it.first.fixedToDouble() }
+        val centerX = gradient.center.x.fixedToDouble()
+        val centerY = gradient.center.y.fixedToDouble()
+        val angleRadians = gradient.angle.fixedToDouble() / 180.0 * PI
+        for (y in 0 until ConicalGradientPreviewSize) {
+            for (x in 0 until ConicalGradientPreviewSize) {
+                val sampleX = centerX + (x + 0.5 - ConicalGradientPreviewSize / 2.0)
+                val sampleY = centerY + (y + 0.5 - ConicalGradientPreviewSize / 2.0)
+                val position = transformedPoint(sampleX, sampleY, transform)?.let { sample ->
+                    val radians = normalizeRadians(atan2(sample.second - centerY, sample.first - centerX) + angleRadians)
+                    1.0 - radians / (2.0 * PI)
+                }
+                image.setRGB(x, y, sampleGradientPosition(position, pairs, fixedStops, repeat))
+            }
+        }
+        val bytes = ByteArrayOutputStream()
+        ImageIO.write(image, "png", bytes)
+        return "data:image/png;base64,${Base64.getEncoder().encodeToString(bytes.toByteArray())}"
+    }
+
+    private fun transformedPoint(x: Double, y: Double, transform: List<Int>): Pair<Double, Double>? {
+        if (transform.size != 9 || transform == IdentityTransform) return x to y
+        val m00 = transform[0].fixedToDouble()
+        val m01 = transform[1].fixedToDouble()
+        val m02 = transform[2].fixedToDouble()
+        val m10 = transform[3].fixedToDouble()
+        val m11 = transform[4].fixedToDouble()
+        val m12 = transform[5].fixedToDouble()
+        val m20 = transform[6].fixedToDouble()
+        val m21 = transform[7].fixedToDouble()
+        val m22 = transform[8].fixedToDouble()
+        val w = m20 * x + m21 * y + m22
+        if (w == 0.0) return null
+        return ((m00 * x + m01 * y + m02) / w) to ((m10 * x + m11 * y + m12) / w)
+    }
+
+    private fun sampleGradientPosition(
+        position: Double?,
+        pairs: List<Pair<Int, Int>>,
+        fixedStops: List<Double>,
+        repeat: Int,
+    ): Int {
+        if (pairs.isEmpty()) return 0xff00_0000.toInt()
+        val repeatedPosition = position?.let { repeatPosition(it, fixedStops.first(), fixedStops.last(), repeat) } ?: return 0
+        if (repeat == XRender.RepeatNormal) return normalRepeatPixel(repeatedPosition, pairs, fixedStops)
+        return stopPixel(repeatedPosition, pairs, fixedStops)
+    }
+
+    private fun normalRepeatPixel(position: Double, pairs: List<Pair<Int, Int>>, fixedStops: List<Double>): Int {
+        if (position < fixedStops.first()) {
+            val startStop = fixedStops.last() - 1.0
+            val endStop = fixedStops.first()
+            return interpolatePixel(position, startStop, endStop, pairs.last().second, pairs.first().second)
+        }
+        if (position > fixedStops.last()) {
+            val startStop = fixedStops.last()
+            val endStop = fixedStops.first() + 1.0
+            return interpolatePixel(position, startStop, endStop, pairs.last().second, pairs.first().second)
+        }
+        return stopPixel(position, pairs, fixedStops)
+    }
+
+    private fun stopPixel(position: Double, pairs: List<Pair<Int, Int>>, fixedStops: List<Double>): Int {
+        if (position <= fixedStops.first()) return pairs.first().second
+        for (index in 0 until pairs.lastIndex) {
+            if (position <= fixedStops[index + 1]) {
+                return interpolatePixel(position, fixedStops[index], fixedStops[index + 1], pairs[index].second, pairs[index + 1].second)
+            }
+        }
+        return pairs.last().second
+    }
+
+    private fun repeatPosition(position: Double, start: Double, end: Double, repeat: Int): Double? {
+        if (end <= start) return end
+        return when (repeat) {
+            XRender.RepeatPad -> position.coerceIn(start, end)
+            XRender.RepeatNormal -> wrapPosition(position)
+            XRender.RepeatReflect -> reflectPosition(position)
+            else -> position.takeIf { it in start..end }
+        }
+    }
+
+    private fun wrapPosition(position: Double): Double =
+        ((position % 1.0) + 1.0) % 1.0
+
+    private fun reflectPosition(position: Double): Double {
+        val offset = ((position % 2.0) + 2.0) % 2.0
+        return if (offset <= 1.0) offset else 2.0 - offset
+    }
+
+    private fun interpolatePixel(position: Double, startStop: Double, endStop: Double, startPixel: Int, endPixel: Int): Int {
+        if (endStop <= startStop) return endPixel
+        val ratio = (position - startStop) / (endStop - startStop)
+        fun channel(shift: Int): Int {
+            val start = (startPixel ushr shift) and 0xff
+            val end = (endPixel ushr shift) and 0xff
+            return (start + (end - start) * ratio).roundToInt().coerceIn(0, 255)
+        }
+        return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
+    private fun normalizeRadians(radians: Double): Double =
+        ((radians % (2.0 * PI)) + (2.0 * PI)) % (2.0 * PI)
+
+    private fun gradientDefinitionId(prefix: String, picture: XRenderPictureSnapshot, kind: String): String =
+        "$prefix-$kind-gradient-${picture.idHex.drop(2)}"
+
+    private fun fixedNumber(value: Int): String =
+        decimal(value.fixedToDouble())
+
+    private fun Int.fixedToDouble(): Double =
+        this / 65_536.0
+
+    private fun opacity(alpha: Int): String =
+        decimal(alpha / 255.0)
+
+    private fun decimal(value: Double): String {
+        val text = String.format(Locale.US, "%.6f", value)
+        return text.trimEnd('0').trimEnd('.').ifEmpty { "0" }
     }
 
     private fun windowBorderFill(window: XWindowSnapshot, pixmaps: List<XPixmapSnapshot>, patternPrefix: String): String {
@@ -1606,4 +1815,5 @@ internal object SvgScreenRenderer {
         "#91d7e3",
         "#ed8796",
     )
+    private const val ConicalGradientPreviewSize = 64
 }

@@ -790,6 +790,23 @@ class HttpRenderingTest {
                         angle = 0,
                     ),
                 )
+                out.write(renderChangePictureRepeatRequest(conicalGradient, XRender.RepeatReflect))
+                out.write(
+                    renderSetPictureTransformRequest(
+                        conicalGradient,
+                        listOf(
+                            0x0001_0000,
+                            0,
+                            -8 shl 16,
+                            0,
+                            0x0001_0000,
+                            0,
+                            0,
+                            0,
+                            0x0001_0000,
+                        ),
+                    ),
+                )
                 out.write(renderCompositeRequest(radialGradient, radialPicture, width = 64, height = 64))
                 out.write(renderCompositeRequest(conicalGradient, conicalPicture, width = 64, height = 64))
                 out.write(mapWindowRequest(radialWindow))
@@ -805,6 +822,21 @@ class HttpRenderingTest {
                 assertContains(svg, """data-window-id="0x200002"""")
                 assertContains(svg, """data-source="window-framebuffer"""")
                 assertContains(svg, """href="data:image/png;base64,""")
+                assertContains(svg, """class="render-radial-gradient"""")
+                assertContains(svg, """data-render-kind="radial-gradient"""")
+                assertContains(svg, """data-picture-id="0x200301"""")
+                assertContains(svg, """data-inner="0x200000,0x200000,r=0x0"""")
+                assertContains(svg, """data-outer="0x200000,0x200000,r=0x200000"""")
+                assertContains(svg, """stop-color="#ff0000"""")
+                assertContains(svg, """stop-color="#0000ff"""")
+                assertContains(svg, """class="render-conical-gradient"""")
+                assertContains(svg, """data-render-kind="conical-gradient"""")
+                assertContains(svg, """data-picture-id="0x200302"""")
+                assertContains(svg, """data-center="0x200000,0x200000"""")
+                assertContains(svg, """data-repeat="reflect"""")
+                assertContains(svg, """data-transform="0x10000 0x0 0xfff80000 0x0 0x10000 0x0 0x0 0x0 0x10000"""")
+                assertContains(svg, """data-colors="0xffffff00 0xff0000ff"""")
+                assertContains(svg, """class="render-conical-gradient-image"""")
 
                 val json = httpGet(server.localPort, "/state.json").body
                 assertContains(json, """"kind":"radial-gradient"""")
@@ -1824,6 +1856,30 @@ class HttpRenderingTest {
         put32le(bytes, 20, stops.size)
         stops.forEachIndexed { index, stop -> put32le(bytes, 24 + index * 4, stop) }
         writeRenderColors(bytes, 24 + stops.size * 4, colors)
+        return bytes
+    }
+
+    private fun renderChangePictureRepeatRequest(picture: Int, repeat: Int): ByteArray {
+        val bytes = ByteArray(16)
+        bytes[0] = XRender.MajorOpcode.toByte()
+        bytes[1] = 5
+        put16le(bytes, 2, bytes.size / 4)
+        put32le(bytes, 4, picture)
+        put32le(bytes, 8, XRender.CPRepeat)
+        put32le(bytes, 12, repeat)
+        return bytes
+    }
+
+    private fun renderSetPictureTransformRequest(picture: Int, transform: List<Int>): ByteArray {
+        require(transform.size == 9)
+        val bytes = ByteArray(44)
+        bytes[0] = XRender.MajorOpcode.toByte()
+        bytes[1] = 28
+        put16le(bytes, 2, bytes.size / 4)
+        put32le(bytes, 4, picture)
+        transform.forEachIndexed { index, value ->
+            put32le(bytes, 8 + index * 4, value)
+        }
         return bytes
     }
 
