@@ -7,10 +7,14 @@ WATCH_LIMIT="${SUPERVISED_WATCH_LIMIT:-40}"
 WATCH_STALE_SECONDS="${SUPERVISED_WATCH_STALE_SECONDS:-900}"
 RECOVERY_MAX_PASSES="${SUPERVISED_RECOVERY_MAX_PASSES:-2}"
 ABORT_AFTER_RECOVERY="${SUPERVISED_ABORT_AFTER_RECOVERY:-0}"
+HEALTH_CHECK_BEFORE_WORK="${SUPERVISED_HEALTH_CHECK_BEFORE_WORK:-1}"
+HEALTH_WATCH_LIMIT="${SUPERVISED_HEALTH_WATCH_LIMIT:-20}"
+SIGNAL_GRACE_SECONDS="${SUPERVISED_SIGNAL_GRACE_SECONDS:-30}"
 
 usage() {
   cat <<USAGE
 Usage:
+  scripts/run-supervised.sh health
   scripts/run-supervised.sh recover
   scripts/run-supervised.sh gradle [gradle args...]
   scripts/run-supervised.sh experiment -- <command> [args...]
@@ -32,6 +36,9 @@ Environment:
   SUPERVISED_WATCH_STALE_SECONDS=$WATCH_STALE_SECONDS
   SUPERVISED_RECOVERY_MAX_PASSES=$RECOVERY_MAX_PASSES
   SUPERVISED_ABORT_AFTER_RECOVERY=$ABORT_AFTER_RECOVERY
+  SUPERVISED_HEALTH_CHECK_BEFORE_WORK=$HEALTH_CHECK_BEFORE_WORK
+  SUPERVISED_HEALTH_WATCH_LIMIT=$HEALTH_WATCH_LIMIT
+  SUPERVISED_SIGNAL_GRACE_SECONDS=$SIGNAL_GRACE_SECONDS
 USAGE
 }
 
@@ -165,6 +172,114 @@ print_latest_failure_context() {
   fi
 }
 
+shell_health_check() {
+  local status=0
+  local script
+  for script in \
+    "$ROOT/run-agent.sh" \
+    "$ROOT/watch-agents.sh" \
+    "$ROOT/ralph-loop.sh" \
+    "$ROOT/scripts/run-supervised.sh" \
+    "$ROOT/scripts/run-gradle-bounded.sh" \
+    "$ROOT/scripts/run-bounded-experiment.sh" \
+    "$ROOT/scripts/run-review-quorum.sh" \
+    "$ROOT/scripts/update-intellij-readme-screenshot.sh" \
+    "$ROOT/scripts/update-vscode-readme-screenshots.sh"; do
+    [[ -f "$script" ]] || continue
+    if ! bash -n "$script"; then
+      echo "scripts/run-supervised.sh: shell syntax check failed for $script" >&2
+      status=1
+    fi
+  done
+  return "$status"
+}
+
+health_check() {
+  local mode="${1:-full}"
+  local status=0
+
+  echo "== supervised shell health =="
+  shell_health_check || status="$?"
+
+  if [[ "$mode" != "quick" ]]; then
+    echo
+    echo "== supervised watcher health =="
+    run_bounded "$WATCH_TIMEOUT_SECONDS" env \
+      RUN_AGENT_WATCH_ONCE=1 \
+      RUN_AGENT_WATCH_LIMIT="$HEALTH_WATCH_LIMIT" \
+      RUN_AGENT_STALE_SECONDS="$WATCH_STALE_SECONDS" \
+      RUN_AGENT_DIAGNOSE_STALE=0 \
+      "$ROOT/watch-agents.sh" || status="$?"
+
+    echo
+    echo "== latest diagnostic anchors =="
+    print_latest_failure_context agent || true
+    print_latest_failure_context gradle || true
+    print_latest_failure_context experiment || true
+
+    echo
+    echo "== diagnostic tools =="
+    for tool in jps jcmd jstack docker; do
+      if command -v "$tool" >/dev/null 2>&1; then
+        echo "$tool=$(command -v "$tool")"
+      else
+        echo "$tool=missing"
+      fi
+    done
+  fi
+
+  return "$status"
+}
+
+ACTIVE_CHILD_PID=""
+ACTIVE_CHILD_KIND=""
+
+forward_child_signal() {
+  local signal="$1"
+  local exit_code="$2"
+  local start now elapsed
+  if [[ -n "$ACTIVE_CHILD_PID" ]] && kill -0 "$ACTIVE_CHILD_PID" 2>/dev/null; then
+    echo "scripts/run-supervised.sh: received $signal; forwarding to child PID $ACTIVE_CHILD_PID and waiting up to ${SIGNAL_GRACE_SECONDS}s for diagnostics." >&2
+    kill "-$signal" "$ACTIVE_CHILD_PID" 2>/dev/null || true
+    start="$(date +%s)"
+    while kill -0 "$ACTIVE_CHILD_PID" 2>/dev/null; do
+      sleep 1
+      now="$(date +%s)"
+      elapsed=$((now - start))
+      if (( elapsed >= SIGNAL_GRACE_SECONDS )); then
+        echo "scripts/run-supervised.sh: child PID $ACTIVE_CHILD_PID did not exit after ${SIGNAL_GRACE_SECONDS}s; terminating process tree." >&2
+        terminate_bounded_child "$ACTIVE_CHILD_PID"
+        break
+      fi
+    done
+    wait "$ACTIVE_CHILD_PID" 2>/dev/null || true
+    if [[ -n "$ACTIVE_CHILD_KIND" ]]; then
+      print_latest_failure_context "$ACTIVE_CHILD_KIND" >&2 || true
+    fi
+  fi
+  exit "$exit_code"
+}
+
+run_supervised_child() {
+  local kind="$1"
+  shift
+  local status
+  ACTIVE_CHILD_KIND="$kind"
+  "$@" &
+  ACTIVE_CHILD_PID="$!"
+  trap 'forward_child_signal TERM 143' TERM
+  trap 'forward_child_signal INT 130' INT
+  trap 'forward_child_signal HUP 129' HUP
+  set +e
+  wait "$ACTIVE_CHILD_PID"
+  status="$?"
+  set -e
+  trap - TERM INT HUP
+  ACTIVE_CHILD_PID=""
+  ACTIVE_CHILD_KIND=""
+  return "$status"
+}
+
 recover_stale_agents_once() {
   local fail_on_recovery="$1"
   run_bounded "$WATCH_TIMEOUT_SECONDS" env \
@@ -217,8 +332,11 @@ run_with_recovery() {
     echo "scripts/run-supervised.sh: stale-agent recovery failed or did not settle; inspect runs/agent-watch.log before retrying." >&2
     return "$status"
   fi
+  if [[ "$HEALTH_CHECK_BEFORE_WORK" == "1" ]]; then
+    health_check quick
+  fi
   set +e
-  "$@"
+  run_supervised_child "$kind" "$@"
   status="$?"
   set -e
   if [[ "$status" -ne 0 ]]; then
@@ -229,6 +347,9 @@ run_with_recovery() {
 
 cmd="${1:-}"
 case "$cmd" in
+  health)
+    health_check full
+    ;;
   recover)
     recover_stale_agents
     ;;

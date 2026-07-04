@@ -82,6 +82,10 @@ The 2026-07-04 follow-up closed the same evidence gap for Gradle signal exits. `
 
 The latest adjustment is a single front-door wrapper: `scripts/run-supervised.sh`. It runs bounded stale-agent recovery first, automatically verifies that recovery has settled, dispatches Gradle checks through `scripts/run-gradle-bounded.sh`, dispatches ad hoc repros through `scripts/run-bounded-experiment.sh`, and runs role agents through `ralph-loop.sh`. If the command exits non-zero, it prints the latest `run-info.txt` path plus any recorded `DIAGNOSTICS=` / `GRADLE_DIAGNOSTICS=` entries. Use this wrapper by default so every retry starts from recovered agent state and every timeout points directly at the forensic bundle.
 
+`scripts/run-supervised.sh health` is the default first command after an apparent stall. It runs shell syntax checks for the orchestration scripts, performs a bounded one-shot watcher status check, prints the latest agent/Gradle/experiment diagnostic anchors, and reports whether `jps`, `jcmd`, `jstack`, and Docker are available. Normal `scripts/run-supervised.sh ...` work also runs the shell-health gate before launching the requested child command, so broken wrapper edits fail closed before starting another long experiment.
+
+`scripts/run-supervised.sh` now forwards `TERM`, `INT`, and `HUP` to the active child wrapper and waits up to `SUPERVISED_SIGNAL_GRACE_SECONDS` for that child to write its own diagnostics before forcibly terminating the process tree. This covers outer root-agent interruptions: a killed supervised Gradle/experiment/agent run should still leave the lower-level `DIAGNOSTICS=` / `GRADLE_DIAGNOSTICS=` path in the relevant `latest/run-info.txt`.
+
 The follow-up hardening makes the lower-level helper timeouts self-contained. `run-agent.sh` and `watch-agents.sh` now try `/opt/homebrew/bin/timeout`, `gtimeout`, and `timeout`, then fall back to a local background-process timeout loop. That keeps preflight recovery and individual diagnostic commands bounded even on macOS setups where GNU coreutils is not on `PATH`. `scripts/run-bounded-experiment.sh` now also checks the Homebrew timeout path before using its manual fallback.
 
 The top-level front doors now follow the same rule. `scripts/run-supervised.sh` and `ralph-loop.sh` also fall back to a local elapsed-time loop when no system timeout command is available, returning `124` after sending `TERM` and then `KILL` to the bounded process tree. This keeps recovery, review quorum, role-agent launches, and direct Ralph-loop runs bounded even on a minimal macOS shell.
@@ -95,6 +99,7 @@ IntelliJ parity captures must wait for comparable semantic UI state, not a fixed
 ## Required Practice
 
 - Start long commands through `scripts/run-supervised.sh` unless a lower-level wrapper is explicitly needed.
+- After any apparent stall, run `scripts/run-supervised.sh health` before retrying the implementation loop. Treat a health failure as the next bug to fix before starting more agents or experiments.
 - Use `scripts/run-supervised.sh gradle ...` for Gradle/build/test work and `scripts/run-supervised.sh experiment -- ...` for blocking non-Gradle repros. The script performs stale-agent recovery before the run, verifies a clean watcher pass after any recovery, and prints the latest diagnostic target on failure.
 - Never run Gradle, Maven, IDE build, test, package, or other build-directory-writing commands in parallel for this repository. Queue them one at a time, using `--no-daemon --max-workers=1 -Dkotlin.incremental=false` for Gradle checks unless a task explicitly needs different settings.
 - Prefer `scripts/run-gradle-bounded.sh <tasks...>` for Gradle checks. It holds the repo Gradle lock and captures JVM diagnostics before killing a timed-out run.

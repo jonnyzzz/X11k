@@ -99,7 +99,12 @@ scripts/run-supervised.sh gradle test
 
 Use `scripts/run-supervised.sh` as the default front door for long local work.
 It runs stale-agent recovery first, routes Gradle through the bounded Gradle
-wrapper, and prints the latest diagnostic bundle path on timeout or failure.
+wrapper, runs a quick shell-health gate, and prints the latest diagnostic bundle
+path on timeout or failure. If work appears stuck, start with:
+
+```bash
+scripts/run-supervised.sh health
+```
 
 Docker integration tests require Docker to be available to the current user. Build the local test/demo images before running Docker-backed tests:
 
