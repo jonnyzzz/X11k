@@ -90,6 +90,8 @@ The IntelliJ README screenshot helper follows the same wrapper-first rule. Refre
 
 The lower-level local timeout fallbacks now also terminate descendant process trees consistently. This covers `run-agent.sh` preflight/diagnostic commands, `watch-agents.sh` diagnostic commands, Gradle diagnostic helpers, and bounded experiment diagnostic helpers on systems without `/opt/homebrew/bin/timeout`, `gtimeout`, or `timeout`. The main Gradle, experiment, and agent child processes already wrote diagnostics and killed descendants; the remaining gap was helper subprocesses that could leave a nested JVM/CLI child alive after the fallback killed only the direct shell.
 
+IntelliJ parity captures must wait for comparable semantic UI state, not a fixed sleep after the project frame appears. The `run-intellij` helper opens the project README explicitly, and the heavyweight parity test waits for Project View initialization, `README.md` open, and Markdown preview HTML generation before capturing Xvfb or Kotlin screenshots. If those markers do not appear, treat that as the next root-cause artifact: inspect the dumped IDEA logs and X server traces before changing protocol behavior. This prevents slower Kotlin-side startup from being misclassified as a rendering regression.
+
 ## Required Practice
 
 - Start long commands through `scripts/run-supervised.sh` unless a lower-level wrapper is explicitly needed.

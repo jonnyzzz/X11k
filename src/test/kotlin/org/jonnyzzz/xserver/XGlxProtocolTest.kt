@@ -594,6 +594,141 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX GetString returns stable GL metadata for current context`() {
+        withServer { socket ->
+            val contextId = 0x0020_0130
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(
+                socket,
+                XGlx.MajorOpcode,
+                XGlx.MakeContextCurrent,
+                u32(0) + u32(X11Ids.RootWindow) + u32(X11Ids.RootWindow) + u32(contextId),
+            )
+            readReply(socket.getInputStream())
+
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetString, getStringBody(contextId, XGlx.GlVendor))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetString, getStringBody(contextId, XGlx.GlRenderer))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetString, getStringBody(contextId, XGlx.GlVersion))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetString, getStringBody(contextId, XGlx.GlExtensions))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetString, getStringBody(contextId, XGlx.GlShadingLanguageVersion))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetString, getStringBody(contextId, 0xdead))
+
+            assertEquals(XGlx.GlVendorString, readGlxStringReply(socket.getInputStream()))
+            assertEquals(XGlx.GlRendererString, readGlxStringReply(socket.getInputStream()))
+            assertEquals(XGlx.GlVersionString, readGlxStringReply(socket.getInputStream()))
+            assertEquals(XGlx.GlExtensionsString, readGlxStringReply(socket.getInputStream()))
+            assertEquals(XGlx.GlShadingLanguageVersionString, readGlxStringReply(socket.getInputStream()))
+            assertEquals("", readGlxStringReply(socket.getInputStream()))
+
+            val text = httpGet(socket, "/text.txt")
+            assertTrue(text.contains("GetString minor=129 contextTag=0x${contextId.toString(16)} name=0x1f03 value=${XGlx.GlExtensionsString}"), text)
+        }
+    }
+
+    @Test
+    fun `GLX GetFloatv and GetIntegerv return stable state metadata for current context`() {
+        withServer { socket ->
+            val contextId = 0x0020_0138
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(
+                socket,
+                XGlx.MajorOpcode,
+                XGlx.MakeContextCurrent,
+                u32(0) + u32(X11Ids.RootWindow) + u32(X11Ids.RootWindow) + u32(contextId),
+            )
+            readReply(socket.getInputStream())
+
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, XGlx.GlViewport))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, XGlx.GlMaxTextureSize))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, XGlx.GlMax3DTextureSize))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, XGlx.GlMaxElementsVertices))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, XGlx.GlMaxCubeMapTextureSize))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, 0xdead))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFloatv, getStringBody(contextId, XGlx.GlDepthRange))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFloatv, getStringBody(contextId, XGlx.GlLineWidth))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFloatv, getStringBody(contextId, 0xbeef))
+
+            assertEquals(listOf(0, 0, 640, 480), readGlxIntVectorReply(socket.getInputStream()))
+            assertEquals(listOf(4096), readGlxIntVectorReply(socket.getInputStream()))
+            assertEquals(listOf(2048), readGlxIntVectorReply(socket.getInputStream()))
+            assertEquals(listOf(1_048_576), readGlxIntVectorReply(socket.getInputStream()))
+            assertEquals(listOf(4096), readGlxIntVectorReply(socket.getInputStream()))
+            assertEquals(listOf(0), readGlxIntVectorReply(socket.getInputStream()))
+            assertEquals(listOf(0.0f, 1.0f), readGlxFloatVectorReply(socket.getInputStream()))
+            assertEquals(listOf(1.0f), readGlxFloatVectorReply(socket.getInputStream()))
+            assertEquals(listOf(0.0f), readGlxFloatVectorReply(socket.getInputStream()))
+
+            val text = httpGet(socket, "/text.txt")
+            assertTrue(text.contains("GetIntegerv minor=117 contextTag=0x${contextId.toString(16)} pname=0xba2 values=[0,0,640,480]"), text)
+            assertTrue(text.contains("GetFloatv minor=116 contextTag=0x${contextId.toString(16)} pname=0xb70 values=[0.0,1.0]"), text)
+        }
+    }
+
+    @Test
+    fun `GLX GetString validates length and context tag and recovers stream`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_0131
+            val badTag = 0x0020_0132
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(
+                socket,
+                XGlx.MajorOpcode,
+                XGlx.MakeContextCurrent,
+                u32(0) + u32(X11Ids.RootWindow) + u32(X11Ids.RootWindow) + u32(contextId),
+            )
+            readReply(socket.getInputStream())
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetString, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetString, getStringBody(contextId, XGlx.GlVersion) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetString, getStringBody(badTag, XGlx.GlVersion))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetString, getStringBody(contextId, XGlx.GlVersion))
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.GetString, sequence = 3)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.GetString, sequence = 4)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadContextTag, badValue = badTag, minorOpcode = XGlx.GetString, sequence = 5)
+            assertEquals(XGlx.GlVersionString, readGlxStringReply(socket.getInputStream()))
+        }
+    }
+
+    @Test
+    fun `GLX GetFloatv and GetIntegerv validate length and context tag and recover stream`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_0139
+            val badTag = 0x0020_013a
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFloatv, getStringBody(contextId, XGlx.GlLineWidth) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(badTag, XGlx.GlViewport))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFloatv, getStringBody(contextId, XGlx.GlLineWidth))
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.GetIntegerv, sequence = 2)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.GetFloatv, sequence = 3)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadContextTag, badValue = badTag, minorOpcode = XGlx.GetIntegerv, sequence = 4)
+            assertEquals(listOf(1.0f), readGlxFloatVectorReply(socket.getInputStream()))
+        }
+    }
+
+    @Test
+    fun `GLX GetFloatv and GetIntegerv reject pending large render for context tag`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_013b
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = u32(12) + u32(1), requestNumber = 1, requestTotal = 2))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, XGlx.GlMaxTextureSize))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFloatv, getStringBody(contextId, XGlx.GlLineWidth))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = byteArrayOf(1, 2, 3, 4), requestNumber = 2, requestTotal = 2))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            assertGlxError(socket.getInputStream(), error = XGlx.BadLargeRequest, badValue = XGlx.GetIntegerv, minorOpcode = XGlx.GetIntegerv, sequence = 3)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadLargeRequest, badValue = XGlx.GetFloatv, minorOpcode = XGlx.GetFloatv, sequence = 4)
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(6, u16le(pointer, 2))
+        }
+    }
+
+    @Test
     fun `GLX Render accepts valid context tag and validates missing context`() {
         withServer { socket ->
             socket.soTimeout = 2_000
@@ -1711,6 +1846,24 @@ class XGlxProtocolTest {
         return reply.copyOfRange(32, 32 + length).decodeToString()
     }
 
+    private fun readGlxIntVectorReply(input: InputStream): List<Int> {
+        val reply = readReply(input)
+        val count = u32le(reply, 12)
+        assertEquals(if (count == 1) 0 else count, u32le(reply, 4))
+        if (count == 1) return listOf(u32le(reply, 16))
+        if (count > 1) assertEquals(u32le(reply, 32), u32le(reply, 16))
+        return (0 until count).map { index -> u32le(reply, 32 + index * 4) }
+    }
+
+    private fun readGlxFloatVectorReply(input: InputStream): List<Float> {
+        val reply = readReply(input)
+        val count = u32le(reply, 12)
+        assertEquals(if (count == 1) 0 else count, u32le(reply, 4))
+        if (count == 1) return listOf(Float.fromBits(u32le(reply, 16)))
+        if (count > 1) assertEquals(u32le(reply, 32), u32le(reply, 16))
+        return (0 until count).map { index -> Float.fromBits(u32le(reply, 32 + index * 4)) }
+    }
+
     private fun withServer(block: (Socket) -> Unit) {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1816,6 +1969,9 @@ class XGlxProtocolTest {
         listBase: Int = 1,
     ): ByteArray =
         u32(contextTag) + u32(fontable) + u32(first) + u32(count) + u32(listBase)
+
+    private fun getStringBody(contextTag: Int, name: Int): ByteArray =
+        u32(contextTag) + u32(name)
 
     private fun openFontBody(font: Int, name: String = "fixed"): ByteArray {
         val nameBytes = name.encodeToByteArray()

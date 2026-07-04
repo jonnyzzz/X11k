@@ -22,6 +22,7 @@ set -eu
 : "${IDEA_X11_TRACE_CATEGORIES:=#java.awt.KeyboardFocusManager,#sun.awt.X11.event.XToolkit,#sun.awt.X11.focus.XComponentPeer,#sun.awt.X11.focus.XDecoratedPeer}"
 : "${IDEA_X11_SEPARATE_LOG_CATEGORIES:=#com.intellij.ui.jcef,#sun.awt.X11,#java.awt.KeyboardFocusManager}"
 : "${IDEA_LAUNCHER:=native}"
+: "${IDEA_OPEN_FILE:=}"
 
 if [ -z "$IDEA_TRUST_ALL_PROJECTS" ]; then
   IDEA_TRUST_ALL_PROJECTS="$IDEA_TRUST_PROJECT"
@@ -175,6 +176,10 @@ Running IntelliJ inside jonnyzzz/x X server.
 EOF
 fi
 
+if [ -z "$IDEA_OPEN_FILE" ]; then
+  IDEA_OPEN_FILE="$IDEA_PROJECT/README.md"
+fi
+
 xml_escape() {
   printf '%s' "$1" \
     | sed \
@@ -312,4 +317,8 @@ case "$IDEA_LAUNCHER" in
 esac
 
 echo "[run-intellij] launcher=$idea_launcher" >&2
-exec "$idea_launcher" nosplash "$IDEA_PROJECT"
+if [ -n "$IDEA_OPEN_FILE" ]; then
+  exec "$idea_launcher" nosplash "$IDEA_PROJECT" "$IDEA_OPEN_FILE"
+else
+  exec "$idea_launcher" nosplash "$IDEA_PROJECT"
+fi

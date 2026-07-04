@@ -30,6 +30,9 @@ internal object XGlx {
     const val CopyContext = 10
     const val SwapBuffers = 11
     const val UseXFont = 12
+    const val GetFloatv = 116
+    const val GetIntegerv = 117
+    const val GetString = 129
     const val CreateGLXPixmap = 13
     const val GetVisualConfigs = 14
     const val DestroyGLXPixmap = 15
@@ -113,6 +116,61 @@ internal object XGlx {
     const val TextureRectangleExt = 0x20DD
     const val OptimalPbufferWidthSgix = 0x8019
     const val OptimalPbufferHeightSgix = 0x801A
+    const val GlVendor = 0x1F00
+    const val GlRenderer = 0x1F01
+    const val GlVersion = 0x1F02
+    const val GlExtensions = 0x1F03
+    const val GlShadingLanguageVersion = 0x8B8C
+    const val GlVendorString = "Mesa/X.org"
+    const val GlRendererString = "llvmpipe (jonnyzzz/x)"
+    const val GlVersionString = "2.1 Mesa 26.0.0"
+    const val GlShadingLanguageVersionString = "1.20"
+    const val GlExtensionsString = ""
+    const val GlModelview = 0x1700
+    const val GlActiveTexture0 = 0x84C0
+    const val GlPointSize = 0x0B11
+    const val GlAliasedPointSizeRange = 0x846D
+    const val GlSmoothPointSizeRange = 0x0B12
+    const val GlLineWidth = 0x0B21
+    const val GlAliasedLineWidthRange = 0x846E
+    const val GlSmoothLineWidthRange = 0x0B22
+    const val GlDepthRange = 0x0B70
+    const val GlMatrixMode = 0x0BA0
+    const val GlViewport = 0x0BA2
+    const val GlDepthBits = 0x0D56
+    const val GlRedBits = 0x0D52
+    const val GlGreenBits = 0x0D53
+    const val GlBlueBits = 0x0D54
+    const val GlAlphaBits = 0x0D55
+    const val GlStencilBits = 0x0D57
+    const val GlDoublebuffer = 0x0C32
+    const val GlStereo = 0x0C33
+    const val GlPackAlignment = 0x0D05
+    const val GlUnpackAlignment = 0x0CF5
+    const val GlMaxLights = 0x0D31
+    const val GlMaxTextureSize = 0x0D33
+    const val GlMaxModelviewStackDepth = 0x0D36
+    const val GlMaxProjectionStackDepth = 0x0D38
+    const val GlMaxTextureStackDepth = 0x0D39
+    const val GlMaxViewportDims = 0x0D3A
+    const val GlMax3DTextureSize = 0x8073
+    const val GlMaxElementsVertices = 0x80E8
+    const val GlMaxElementsIndices = 0x80E9
+    const val GlActiveTexture = 0x84E0
+    const val GlMaxTextureUnits = 0x84E2
+    const val GlMaxRenderbufferSize = 0x84E8
+    const val GlMaxCubeMapTextureSize = 0x851C
+    const val GlMaxTextureImageUnits = 0x8872
+    const val GlMaxDrawBuffers = 0x8824
+    const val GlMaxVertexTextureImageUnits = 0x8B4C
+    const val GlMaxCombinedTextureImageUnits = 0x8B4D
+    const val GlCurrentProgram = 0x8B8D
+    const val GlMajorVersion = 0x821B
+    const val GlMinorVersion = 0x821C
+    const val GlNumExtensions = 0x821D
+    const val GlSampleBuffers = 0x80A8
+    const val GlSamples = 0x80A9
+    const val GlMaxTextureMaxAnisotropyExt = 0x84FF
 
     fun operationName(minorOpcode: Int): String =
         when (minorOpcode) {
@@ -128,6 +186,9 @@ internal object XGlx {
             CopyContext -> "CopyContext"
             SwapBuffers -> "SwapBuffers"
             UseXFont -> "UseXFont"
+            GetFloatv -> "GetFloatv"
+            GetIntegerv -> "GetIntegerv"
+            GetString -> "GetString"
             CreateGLXPixmap -> "CreateGLXPixmap"
             GetVisualConfigs -> "GetVisualConfigs"
             DestroyGLXPixmap -> "DestroyGLXPixmap"
@@ -154,12 +215,56 @@ internal object XGlx {
             else -> "Unknown"
         }
 
+    fun glString(name: Int): String =
+        when (name) {
+            GlVendor -> GlVendorString
+            GlRenderer -> GlRendererString
+            GlVersion -> GlVersionString
+            GlExtensions -> GlExtensionsString
+            GlShadingLanguageVersion -> GlShadingLanguageVersionString
+            else -> ""
+        }
+
     fun serverString(name: Int): String =
         when (name) {
             VendorName -> "jonnyzzz/x"
             VersionName -> "$MajorVersion.$MinorVersion"
             ExtensionsName -> Extensions
             else -> ""
+        }
+
+    fun glIntegerValues(pname: Int, screenWidth: Int, screenHeight: Int): IntArray =
+        when (pname) {
+            GlMatrixMode -> intArrayOf(GlModelview)
+            GlViewport -> intArrayOf(0, 0, screenWidth, screenHeight)
+            GlDepthBits -> intArrayOf(24)
+            GlRedBits, GlGreenBits, GlBlueBits, GlAlphaBits -> intArrayOf(8)
+            GlStencilBits -> intArrayOf(8)
+            GlDoublebuffer, GlStereo, GlSampleBuffers, GlSamples, GlCurrentProgram, GlNumExtensions -> intArrayOf(0)
+            GlPackAlignment, GlUnpackAlignment -> intArrayOf(4)
+            GlMaxLights -> intArrayOf(8)
+            GlMaxTextureSize, GlMaxRenderbufferSize, GlMaxCubeMapTextureSize -> intArrayOf(4096)
+            GlMax3DTextureSize -> intArrayOf(2048)
+            GlMaxElementsVertices, GlMaxElementsIndices -> intArrayOf(1_048_576)
+            GlMaxModelviewStackDepth -> intArrayOf(32)
+            GlMaxProjectionStackDepth, GlMaxTextureStackDepth -> intArrayOf(2)
+            GlMaxViewportDims -> intArrayOf(screenWidth, screenHeight)
+            GlActiveTexture -> intArrayOf(GlActiveTexture0)
+            GlMaxTextureUnits, GlMaxTextureImageUnits -> intArrayOf(8)
+            GlMaxVertexTextureImageUnits -> intArrayOf(0)
+            GlMaxCombinedTextureImageUnits -> intArrayOf(8)
+            GlMaxDrawBuffers -> intArrayOf(1)
+            GlMajorVersion -> intArrayOf(2)
+            GlMinorVersion -> intArrayOf(1)
+            else -> intArrayOf(0)
+        }
+
+    fun glFloatValues(pname: Int): FloatArray =
+        when (pname) {
+            GlPointSize, GlLineWidth, GlMaxTextureMaxAnisotropyExt -> floatArrayOf(1.0f)
+            GlAliasedPointSizeRange, GlSmoothPointSizeRange, GlAliasedLineWidthRange, GlSmoothLineWidthRange -> floatArrayOf(1.0f, 1.0f)
+            GlDepthRange -> floatArrayOf(0.0f, 1.0f)
+            else -> floatArrayOf(0.0f)
         }
 
     fun visualConfig(): IntArray =

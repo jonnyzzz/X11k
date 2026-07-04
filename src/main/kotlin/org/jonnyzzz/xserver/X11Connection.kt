@@ -408,6 +408,9 @@ internal class X11Connection(
             XGlx.CopyContext -> glxCopyContext(body)
             XGlx.SwapBuffers -> glxSwapBuffers(body)
             XGlx.UseXFont -> glxUseXFont(body)
+            XGlx.GetFloatv -> glxGetFloatv(body)
+            XGlx.GetIntegerv -> glxGetIntegerv(body)
+            XGlx.GetString -> glxGetString(body)
             XGlx.Render -> glxRender(body)
             XGlx.RenderLarge -> glxRenderLarge(body)
             XGlx.CreateGLXPixmap -> glxCreatePixmap(body)
@@ -5480,6 +5483,66 @@ internal class X11Connection(
         }
     }
 
+    private fun glxGetString(body: ByteArray) {
+        if (body.size != 8) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetString, badValue = 0)
+        val contextTag = byteOrder.u32(body, 0)
+        if (state.glxContext(contextTag) == null) {
+            return writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetString, badValue = contextTag)
+        }
+        if (glxRejectPendingLargeRender(contextTag, XGlx.GetString)) return
+        glxStringReply(XGlx.glString(byteOrder.u32(body, 4)))
+    }
+
+    private fun glxGetFloatv(body: ByteArray) {
+        val pname = glxStateQueryPname(body, XGlx.GetFloatv) ?: return
+        glxFloatVectorReply(XGlx.glFloatValues(pname))
+    }
+
+    private fun glxGetIntegerv(body: ByteArray) {
+        val pname = glxStateQueryPname(body, XGlx.GetIntegerv) ?: return
+        glxIntVectorReply(XGlx.glIntegerValues(pname, state.width, state.height))
+    }
+
+    private fun glxStateQueryPname(body: ByteArray, minorOpcode: Int): Int? {
+        if (body.size != 8) {
+            writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
+            return null
+        }
+        val contextTag = byteOrder.u32(body, 0)
+        if (state.glxContext(contextTag) == null) {
+            writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = contextTag)
+            return null
+        }
+        if (glxRejectPendingLargeRender(contextTag, minorOpcode)) return null
+        return byteOrder.u32(body, 4)
+    }
+
+    private fun glxIntVectorReply(values: IntArray) {
+        val data = if (values.isEmpty()) intArrayOf(0) else values
+        val payloadUnits = if (data.size == 1) 0 else data.size
+        val reply = reply(extra = 0, payloadUnits = payloadUnits)
+        byteOrder.put32(reply, 12, data.size)
+        byteOrder.put32(reply, 16, data.first())
+        if (payloadUnits > 0) putIntArray(reply, 32, data)
+        write(reply)
+    }
+
+    private fun glxFloatVectorReply(values: FloatArray) {
+        val data = if (values.isEmpty()) floatArrayOf(0.0f) else values
+        val payloadUnits = if (data.size == 1) 0 else data.size
+        val reply = reply(extra = 0, payloadUnits = payloadUnits)
+        byteOrder.put32(reply, 12, data.size)
+        byteOrder.put32(reply, 16, data.first().toRawBits())
+        if (payloadUnits > 0) {
+            var offset = 32
+            for (value in data) {
+                byteOrder.put32(reply, offset, value.toRawBits())
+                offset += 4
+            }
+        }
+        write(reply)
+    }
+
     private fun glxRender(body: ByteArray) {
         if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.Render, badValue = 0)
         val contextTag = byteOrder.u32(body, 0)
@@ -5758,6 +5821,9 @@ internal class X11Connection(
             XGlx.CopyContext -> "source=${hex(0)} destination=${hex(4)} mask=${hex(8)} contextTag=${hex(12)}"
             XGlx.SwapBuffers -> "contextTag=${hex(0)} drawable=${hex(4)}"
             XGlx.UseXFont -> "contextTag=${hex(0)} font=${hex(4)} first=${u32(8)} count=${u32(12)} listBase=${u32(16)}"
+            XGlx.GetFloatv -> "contextTag=${hex(0)} pname=${hex(4)} values=${if (body.size >= 8) XGlx.glFloatValues(byteOrder.u32(body, 4)).joinToString(",", "[", "]") else "n/a"}"
+            XGlx.GetIntegerv -> "contextTag=${hex(0)} pname=${hex(4)} values=${if (body.size >= 8) XGlx.glIntegerValues(byteOrder.u32(body, 4), state.width, state.height).joinToString(",", "[", "]") else "n/a"}"
+            XGlx.GetString -> "contextTag=${hex(0)} name=${hex(4)} value=${if (body.size >= 8) XGlx.glString(byteOrder.u32(body, 4)) else "n/a"}"
             XGlx.VendorPrivate, XGlx.VendorPrivateWithReply -> "vendorCode=${hex(0)} bytes=${(body.size - 4).coerceAtLeast(0)}"
             else -> ""
         }

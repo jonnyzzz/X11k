@@ -654,7 +654,7 @@ class IntellijCommunitySmokeTest {
                     fi
                     Xvfb :99 -screen 0 ${IntellijCaptureWidth}x${IntellijCaptureHeight}x24 >/tmp/xvfb.log 2>&1 &
                     xvfb=${'$'}!
-                    trap 'kill "${'$'}idea" 2>/dev/null || true; kill "${'$'}xvfb" 2>/dev/null || true' EXIT
+                    echo "${'$'}xvfb" >/tmp/xvfb.pid
                     for _ in ${'$'}(seq 1 80); do
                       DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && break
                       sleep 0.25
@@ -667,6 +667,7 @@ class IntellijCommunitySmokeTest {
                     IDEA_TRUST_PROJECT=true \
                     run-intellij >/tmp/idea-run-xvfb.log 2>&1 &
                     idea=${'$'}!
+                    echo "${'$'}idea" >/tmp/idea-xvfb.pid
                     opened=0
                     for _ in ${'$'}(seq 1 $IntellijOpenWaitSeconds); do
                       if grep -q "Project frame set to Project(name=" /tmp/idea-log/idea.log 2>/dev/null; then
@@ -689,25 +690,52 @@ class IntellijCommunitySmokeTest {
                     if grep -q "ide.script.launcher.used" /tmp/idea-log/idea.log /tmp/idea-run-xvfb.log 2>/dev/null; then echo "unexpected script launcher warning"; exit 1; fi
                     grep -qx "\\[run-intellij\\] launcher=/opt/idea/bin/idea" /tmp/idea-run-xvfb.log
                     grep -q -- "-Dremote.x11.workaround=false" /tmp/idea-extra.vmoptions
-                    sleep 5
-                    DISPLAY=:99 java -cp /tmp XIntellijRobotCapture
                     """.trimIndent(),
                 )
-                val logs = collectIntellijLogs(
-                    container = container,
-                    prefix = "intellij-xvfb",
-                    runLogPath = "/tmp/idea-run-xvfb.log",
-                    extraLogs = listOf(
-                        "/tmp/xdpyinfo-glx-xvfb.log" to "intellij-xvfb-glx-xdpyinfo.log",
-                        "/tmp/idea-extra.vmoptions" to "intellij-xvfb-idea-extra.vmoptions",
-                        "/tmp/run-intellij-cksum.log" to "intellij-xvfb-run-intellij-cksum.log",
-                    ),
-                )
                 assertEquals(0, result.exitCode, result.stderr + result.stdout)
-                IntellijReferenceCapture(
-                    robot = visualCapture(result.stdout),
-                    logs = logs,
+                val extraLogs = listOf(
+                    "/tmp/xdpyinfo-glx-xvfb.log" to "intellij-xvfb-glx-xdpyinfo.log",
+                    "/tmp/idea-extra.vmoptions" to "intellij-xvfb-idea-extra.vmoptions",
+                    "/tmp/run-intellij-cksum.log" to "intellij-xvfb-run-intellij-cksum.log",
                 )
+                try {
+                    waitForIntellijParityReady(
+                        container = container,
+                        pidPath = "/tmp/idea-xvfb.pid",
+                        label = "Xvfb IntelliJ",
+                        artifactPrefix = "intellij-xvfb",
+                        runLogPath = "/tmp/idea-run-xvfb.log",
+                        extraLogs = extraLogs,
+                    )
+                    val capture = execIntellijShell(
+                        container,
+                        """
+                        set -eu
+                        idea=${'$'}(cat /tmp/idea-xvfb.pid)
+                        xvfb=${'$'}(cat /tmp/xvfb.pid)
+                        kill -0 "${'$'}idea"
+                        kill -0 "${'$'}xvfb"
+                        DISPLAY=:99 java -cp /tmp XIntellijRobotCapture
+                        """.trimIndent(),
+                    )
+                    assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
+                    val logs = collectIntellijLogs(
+                        container = container,
+                        prefix = "intellij-xvfb",
+                        runLogPath = "/tmp/idea-run-xvfb.log",
+                        extraLogs = extraLogs,
+                    )
+                    IntellijReferenceCapture(
+                        robot = visualCapture(capture.stdout),
+                        logs = logs,
+                    )
+                } finally {
+                    execContainerShell(
+                        container,
+                        30,
+                        "kill $(cat /tmp/idea-xvfb.pid 2>/dev/null) $(cat /tmp/xvfb.pid 2>/dev/null) 2>/dev/null || true",
+                    )
+                }
             }
 
     private fun runIntellijAgainstKotlinServer(port: Int, image: String, url: String?): IntellijKotlinCapture {
@@ -771,9 +799,21 @@ class IntellijCommunitySmokeTest {
                         """.trimIndent(),
                     )
                     assertEquals(0, startResult.exitCode, startResult.stderr + startResult.stdout)
+                    val extraLogs = listOf(
+                        "/tmp/xdpyinfo-glx-kotlin.log" to "intellij-kotlin-glx-xdpyinfo.log",
+                        "/tmp/idea-extra.vmoptions" to "intellij-kotlin-idea-extra.vmoptions",
+                        "/tmp/run-intellij-cksum.log" to "intellij-kotlin-run-intellij-cksum.log",
+                    )
                     try {
+                        waitForIntellijParityReady(
+                            container = container,
+                            pidPath = "/tmp/idea-parity.pid",
+                            label = "Kotlin IntelliJ",
+                            artifactPrefix = "intellij-kotlin",
+                            runLogPath = "/tmp/idea-run-parity.log",
+                            extraLogs = extraLogs,
+                        )
                         waitForVisibleIntellijPixels(port)
-                        Thread.sleep(5_000)
                         val svg = httpGet(port, "/screen.svg")
                         val capture = execIntellijShell(
                             container,
@@ -791,11 +831,7 @@ class IntellijCommunitySmokeTest {
                             container = container,
                             prefix = "intellij-kotlin",
                             runLogPath = "/tmp/idea-run-parity.log",
-                            extraLogs = listOf(
-                                "/tmp/xdpyinfo-glx-kotlin.log" to "intellij-kotlin-glx-xdpyinfo.log",
-                                "/tmp/idea-extra.vmoptions" to "intellij-kotlin-idea-extra.vmoptions",
-                                "/tmp/run-intellij-cksum.log" to "intellij-kotlin-run-intellij-cksum.log",
-                            ),
+                            extraLogs = extraLogs,
                         )
                         return IntellijKotlinCapture(
                             robot = visualCapture(capture.stdout),
@@ -816,6 +852,54 @@ class IntellijCommunitySmokeTest {
                     }
                 }
         }
+    }
+
+    private fun waitForIntellijParityReady(
+        container: GenericContainer<*>,
+        pidPath: String,
+        label: String,
+        artifactPrefix: String,
+        runLogPath: String,
+        extraLogs: List<Pair<String, String>>,
+    ) {
+        val deadline = System.currentTimeMillis() + IntellijParityReadyWaitSeconds * 1_000L
+        var lastOutput = ""
+        while (System.currentTimeMillis() < deadline) {
+            val result = execContainerShell(
+                container,
+                30,
+                """
+                set -eu
+                pid=${'$'}(cat '$pidPath')
+                if ! kill -0 "${'$'}pid" 2>/dev/null; then
+                  echo "idea process ${'$'}pid is not running"
+                  exit 3
+                fi
+                missing=""
+                grep -q "Project View initialization completed" /tmp/idea-log/idea.log 2>/dev/null || missing="${'$'}missing project-view"
+                grep -q "fileOpened README.md" /tmp/idea-log/idea.log 2>/dev/null || missing="${'$'}missing readme-opened"
+                grep -q "MarkdownPreviewFileEditor: setHtml finished" /tmp/idea-log/idea.log 2>/dev/null || missing="${'$'}missing markdown-preview"
+                if [ -z "${'$'}missing" ]; then
+                  exit 0
+                fi
+                echo "missing=${'$'}missing"
+                tail -80 /tmp/idea-log/idea.log 2>/dev/null || true
+                exit 1
+                """.trimIndent(),
+            )
+            if (result.exitCode == 0) return
+            lastOutput = result.stdout + result.stderr
+            Thread.sleep(1_000)
+        }
+        dumpIntellijLogArtifacts(
+            collectIntellijLogs(
+                container = container,
+                prefix = artifactPrefix,
+                runLogPath = runLogPath,
+                extraLogs = extraLogs,
+            ),
+        )
+        error("$label did not reach comparable parity capture readiness in ${IntellijParityReadyWaitSeconds}s\n$lastOutput")
     }
 
     private fun pngDataUris(svg: String): List<EmbeddedPng> =
@@ -1718,6 +1802,7 @@ class IntellijCommunitySmokeTest {
         const val IntellijCaptureWidth = 1280
         const val IntellijCaptureHeight = 900
         const val IntellijOpenWaitSeconds = 300
+        const val IntellijParityReadyWaitSeconds = 240
         const val IntellijContainerCommandTimeoutSeconds = 900
     }
 }
