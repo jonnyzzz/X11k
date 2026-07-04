@@ -1045,10 +1045,12 @@ class XGlxProtocolTest {
             assertGlxError(socket.getInputStream(), error = XGlx.BadContext, badValue = badContext, minorOpcode = XGlx.QueryContext, sequence = 2)
             val query = readReply(socket.getInputStream())
             assertEquals(4, u16le(query, 2))
-            assertEquals(6, u32le(query, 8))
+            assertEquals(8, u32le(query, 8))
             val attributes = attributeMap(query, offset = 32, count = u32le(query, 8))
             assertEquals(XGlx.RgbaType, attributes.getValue(XGlx.RenderType))
             assertEquals(XGlx.ContextEs2ProfileBitExt, attributes.getValue(XGlx.ContextProfileMaskArb))
+            assertEquals(4, attributes.getValue(XGlx.ContextMajorVersionArb))
+            assertEquals(5, attributes.getValue(XGlx.ContextMinorVersionArb))
 
             val text = httpGet(socket, "/text.txt")
             assertTrue(text.contains("version=4.5"), text)

@@ -84,6 +84,8 @@ The latest adjustment is a single front-door wrapper: `scripts/run-supervised.sh
 
 The follow-up hardening makes the lower-level helper timeouts self-contained. `run-agent.sh` and `watch-agents.sh` now try `/opt/homebrew/bin/timeout`, `gtimeout`, and `timeout`, then fall back to a local background-process timeout loop. That keeps preflight recovery and individual diagnostic commands bounded even on macOS setups where GNU coreutils is not on `PATH`. `scripts/run-bounded-experiment.sh` now also checks the Homebrew timeout path before using its manual fallback.
 
+The top-level front doors now follow the same rule. `scripts/run-supervised.sh` and `ralph-loop.sh` also fall back to a local elapsed-time loop when no system timeout command is available, returning `124` after sending `TERM` and then `KILL` to the bounded process tree. This keeps recovery, review quorum, role-agent launches, and direct Ralph-loop runs bounded even on a minimal macOS shell.
+
 ## Required Practice
 
 - Start long commands through `scripts/run-supervised.sh` unless a lower-level wrapper is explicitly needed.

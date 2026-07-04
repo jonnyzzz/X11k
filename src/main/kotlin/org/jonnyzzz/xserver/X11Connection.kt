@@ -5387,6 +5387,14 @@ internal class X11Connection(
             attributes += XGlx.ContextProfileMaskArb
             attributes += glxContext.profileMask
         }
+        if (glxContext.contextMajorVersion != null) {
+            attributes += XGlx.ContextMajorVersionArb
+            attributes += glxContext.contextMajorVersion
+        }
+        if (glxContext.contextMinorVersion != null) {
+            attributes += XGlx.ContextMinorVersionArb
+            attributes += glxContext.contextMinorVersion
+        }
         val reply = reply(extra = 0, payloadUnits = attributes.size)
         byteOrder.put32(reply, 8, attributes.size / 2)
         putIntArray(reply, 32, attributes.toIntArray())

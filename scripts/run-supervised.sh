@@ -44,18 +44,74 @@ timeout_bin() {
   done
 }
 
+descendant_pids() {
+  local frontier="$1"
+  local children pid
+  while [[ -n "$frontier" ]]; do
+    children=""
+    for pid in $frontier; do
+      children="$children $(pgrep -P "$pid" 2>/dev/null || true)"
+    done
+    # shellcheck disable=SC2086
+    set -- $children
+    [[ "$#" -gt 0 ]] || break
+    printf '%s\n' "$@"
+    frontier="$*"
+  done
+}
+
+terminate_bounded_child() {
+  local pid="$1"
+  local pids extra_pids
+  pids="$(
+    {
+      printf '%s\n' "$pid"
+      descendant_pids "$pid"
+    } | awk 'NF && !seen[$0]++ { print }'
+  )"
+  # shellcheck disable=SC2086
+  kill -TERM $pids 2>/dev/null || true
+  sleep 1
+  extra_pids="$(
+    for child in $pids; do
+      descendant_pids "$child"
+    done | awk 'NF { print }'
+  )"
+  pids="$(
+    {
+      printf '%s\n' $pids
+      printf '%s\n' $extra_pids
+    } | awk 'NF && !seen[$0]++ { print }'
+  )"
+  # shellcheck disable=SC2086
+  kill -KILL $pids 2>/dev/null || true
+}
+
 run_bounded() {
   local seconds="$1"
   shift
-  local bin
+  local bin pid start now elapsed status
   bin="$(timeout_bin || true)"
   if [[ "$seconds" == "0" ]]; then
     "$@"
   elif [[ -n "$bin" ]]; then
     "$bin" "$seconds" "$@"
   else
-    echo "scripts/run-supervised.sh requires timeout or gtimeout for bounded recovery." >&2
-    return 125
+    "$@" &
+    pid="$!"
+    start="$(date +%s)"
+    while kill -0 "$pid" 2>/dev/null; do
+      sleep 1
+      now="$(date +%s)"
+      elapsed=$((now - start))
+      if (( elapsed >= seconds )); then
+        terminate_bounded_child "$pid"
+        wait "$pid" 2>/dev/null || true
+        return 124
+      fi
+    done
+    wait "$pid" || status=$?
+    return "${status:-0}"
   fi
 }
 
