@@ -6837,6 +6837,51 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ImageText8 uses fixed 6x13 bitmap glyph rows`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val text = "0A+a."
+                val baselineY = 18
+                val originX = 4
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red, background = Blue))
+                out.write(imageText8Request(WindowId, GcId, x = originX, y = baselineY, text = text))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 40, height = 28))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                val top = baselineY - XFramebuffer.TextAscent
+                val glyphRows = listOf(
+                    intArrayOf(0x00, 0x00, 0x08, 0x14, 0x22, 0x22, 0x22, 0x22, 0x22, 0x14, 0x08, 0x00, 0x00),
+                    intArrayOf(0x00, 0x00, 0x08, 0x14, 0x22, 0x22, 0x22, 0x3e, 0x22, 0x22, 0x22, 0x00, 0x00),
+                    intArrayOf(0x00, 0x00, 0x00, 0x00, 0x08, 0x08, 0x3e, 0x08, 0x08, 0x00, 0x00, 0x00, 0x00),
+                    intArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x1c, 0x02, 0x1e, 0x22, 0x26, 0x1a, 0x00, 0x00),
+                    intArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x1c, 0x08, 0x00),
+                )
+                glyphRows.forEachIndexed { glyphIndex, rows ->
+                    rows.forEachIndexed { rowIndex, rowMask ->
+                        for (column in 0 until XFramebuffer.TextCellWidth) {
+                            val expected = if (((rowMask ushr (XFramebuffer.TextCellWidth - 1 - column)) and 1) != 0) {
+                                0xffff_0000.toInt()
+                            } else {
+                                0xff00_00ff.toInt()
+                            }
+                            val x = originX + glyphIndex * XFramebuffer.TextCellWidth + column
+                            val y = top + rowIndex
+                            assertEquals(expected, pixelAt(image, 40, x, y), "text[$glyphIndex] row=$rowIndex column=$column")
+                        }
+                    }
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ImageText8 ignores GC function and clipped text does not render svg overlay`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
