@@ -368,6 +368,7 @@ class IntellijCommunitySmokeTest {
                         check grep -q 'experimental.ui.on.first.startup' /tmp/idea-config/options/other.xml
                         check sh -lc 'find /root/.java/.userPrefs/jetbrains -name prefs.xml -exec grep -l "euacommunity_accepted_version" {} + | grep -q .'
                         check grep -q -- "-Didea.trust.all.projects=true" /tmp/idea-extra.vmoptions
+                        check grep -q -- "-Dremote.x11.workaround=false" /tmp/idea-extra.vmoptions
                         check test -d /tmp/idea-config/plugins
                         check grep -q 'idea.plugins.path=/tmp/idea-config/plugins' /tmp/idea.properties
                         check grep -q "componentStore=/workspace/jonnyzzz-x" /tmp/idea-log/idea.log

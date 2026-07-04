@@ -16,6 +16,7 @@ set -eu
 : "${IDEA_EUA_VERSION:=1.0}"
 : "${IDEA_REGISTER_JBR_SDK:=true}"
 : "${IDEA_DISABLE_ONBOARDING:=true}"
+: "${IDEA_REMOTE_X11_WORKAROUND:=false}"
 : "${IDEA_X11_DEBUG:=false}"
 : "${IDEA_X11_DEBUG_CATEGORIES:=#sun.awt.X11,#sun.awt.X11.XToolkit,#sun.awt.X11.XComponentPeer,#sun.awt.X11.XFramePeer,#sun.awt.X11.XDecoratedPeer,#sun.awt.X11.XErrorHandlerUtil,#sun.awt.X11.XNETProtocol,#sun.awt.X11.XWINProtocol,#sun.awt.X11.xembed,#com.intellij.ui.jcef,#com.intellij.platform.compose,#com.intellij.ide.ui,#com.intellij.openapi.wm.impl.FocusManagerImpl}"
 : "${IDEA_X11_TRACE_CATEGORIES:=#java.awt.KeyboardFocusManager,#sun.awt.X11.event.XToolkit,#sun.awt.X11.focus.XComponentPeer,#sun.awt.X11.focus.XDecoratedPeer}"
@@ -259,6 +260,10 @@ if [ "$IDEA_CONFIRM_CONSENTS" = "false" ]; then
   if [ "$IDEA_TRUST_ALL_PROJECTS" = "true" ]; then
     append_idea_vm_option "-Didea.trust.all.projects=true"
   fi
+fi
+
+if [ -n "$IDEA_REMOTE_X11_WORKAROUND" ]; then
+  append_idea_vm_option "-Dremote.x11.workaround=$IDEA_REMOTE_X11_WORKAROUND"
 fi
 
 if [ "$IDEA_X11_DEBUG" = "true" ]; then
