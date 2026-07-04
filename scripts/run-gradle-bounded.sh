@@ -5,6 +5,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="${GRADLE_RUN_DIR:-$ROOT/runs/gradle-bounded}"
 LOCK_DIR="${GRADLE_LOCK_DIR:-$ROOT/runs/gradle-bounded.lock}"
 TIMEOUT_SECONDS="${GRADLE_TIMEOUT_SECONDS:-1800}"
+NO_OUTPUT_DIAGNOSTICS_SECONDS="${GRADLE_NO_OUTPUT_DIAGNOSTICS_SECONDS:-300}"
+NO_OUTPUT_TIMEOUT_SECONDS="${GRADLE_NO_OUTPUT_TIMEOUT_SECONDS:-900}"
+HEARTBEAT_SECONDS="${GRADLE_HEARTBEAT_SECONDS:-30}"
 LOCK_WAIT_TIMEOUT_SECONDS="${GRADLE_LOCK_WAIT_TIMEOUT_SECONDS:-3600}"
 POLL_SECONDS="${GRADLE_POLL_SECONDS:-5}"
 DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS="${GRADLE_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS:-20}"
@@ -24,15 +27,17 @@ Runs ./gradlew with repository-safe defaults:
 
 Environment:
   GRADLE_TIMEOUT_SECONDS=$TIMEOUT_SECONDS
+  GRADLE_NO_OUTPUT_DIAGNOSTICS_SECONDS=$NO_OUTPUT_DIAGNOSTICS_SECONDS
+  GRADLE_NO_OUTPUT_TIMEOUT_SECONDS=$NO_OUTPUT_TIMEOUT_SECONDS
   GRADLE_LOCK_WAIT_TIMEOUT_SECONDS=$LOCK_WAIT_TIMEOUT_SECONDS
   GRADLE_RUN_DIR=$RUN_DIR
   GRADLE_LOCK_DIR=$LOCK_DIR
   GRADLE_DOCKER_DIAGNOSTICS=$DOCKER_DIAGNOSTICS
   GRADLE_STALE_TESTCONTAINERS_CLEANUP=$STALE_TESTCONTAINERS_CLEANUP
 
-On timeout the script writes jps, jcmd/jstack thread dumps, and Docker/Testcontainers
-diagnostics before terminating the Gradle process tree. Use -- to pass Gradle
-arguments that start with a dash.
+On wall-clock or output-idle timeout the script writes jps, jcmd/jstack thread
+dumps, Docker/Testcontainers diagnostics, and output tails before terminating the
+Gradle process tree. Use -- to pass Gradle arguments that start with a dash.
 USAGE
 }
 
@@ -124,6 +129,13 @@ docker_relevant_container_ids() {
   } | awk 'NF && !seen[$0]++ { print }'
 }
 
+output_size() {
+  local stdout_size stderr_size
+  stdout_size="$(wc -c < "$STDOUT_FILE" 2>/dev/null || echo 0)"
+  stderr_size="$(wc -c < "$STDERR_FILE" 2>/dev/null || echo 0)"
+  echo $((stdout_size + stderr_size))
+}
+
 diagnose_docker_state() {
   [[ "$DOCKER_DIAGNOSTICS" == "1" ]] || return 0
   command -v docker >/dev/null 2>&1 || {
@@ -212,12 +224,24 @@ terminate_tree() {
   kill -KILL $pids 2>/dev/null || true
 }
 
-diagnose_gradle_timeout() {
+cleanup_run_state() {
+  if [[ -n "${PID_FILE:-}" ]]; then
+    rm -f "$PID_FILE"
+  fi
+  rm -rf "$LOCK_DIR"
+}
+
+diagnose_gradle() {
+  local reason="$1"
+  shift
   local gradle_pid="$1"
   shift
-  local diag_file="$RUN_DIR/gradle-timeout-$(date -u +%Y%m%d-%H%M%S).txt"
+  local safe_reason diag_file command_name java_pids
+  safe_reason="$(printf '%s' "$reason" | tr -cd '[:alnum:]_-')"
+  diag_file="$THIS_RUN_DIR/diagnostics-${safe_reason}-$(date -u +%Y%m%d-%H%M%S).txt"
   {
-    echo "REASON=gradle-timeout-${TIMEOUT_SECONDS}s"
+    echo "REASON=$reason"
+    echo "RUN_ID=$RUN_ID"
     echo "ROOT=$ROOT"
     echo "PID=$gradle_pid"
     echo "UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -267,8 +291,15 @@ diagnose_gradle_timeout() {
       fi
     done
     diagnose_docker_state
+    echo
+    echo "== stdout tail =="
+    tail -120 "$STDOUT_FILE" 2>/dev/null || true
+    echo
+    echo "== stderr tail =="
+    tail -120 "$STDERR_FILE" 2>/dev/null || true
   } >"$diag_file" 2>&1 || true
   echo "GRADLE_DIAGNOSTICS=$diag_file" >&2
+  { echo "DIAGNOSTICS=$diag_file" >> "$RUN_INFO_FILE"; } || true
 }
 
 acquire_lock() {
@@ -292,35 +323,102 @@ acquire_lock() {
     sleep 10
   done
   echo "$$" >"$LOCK_DIR/pid"
-  trap 'rm -rf "$LOCK_DIR"' EXIT
+  trap cleanup_run_state EXIT
 }
 
 acquire_lock
 
 cleanup_stale_testcontainers
 
+RUN_ID="run_$(date -u +%Y%m%d-%H%M%S)-$$"
+THIS_RUN_DIR="$RUN_DIR/$RUN_ID"
+mkdir -p "$THIS_RUN_DIR"
+STDOUT_FILE="$THIS_RUN_DIR/stdout.txt"
+STDERR_FILE="$THIS_RUN_DIR/stderr.txt"
+RUN_INFO_FILE="$THIS_RUN_DIR/run-info.txt"
+PID_FILE="$THIS_RUN_DIR/pid.txt"
+
 GRADLE_ARGS=(--no-daemon --max-workers=1 -Dkotlin.incremental=false "$@")
 echo "Running: $ROOT/gradlew ${GRADLE_ARGS[*]}" >&2
-"$ROOT/gradlew" "${GRADLE_ARGS[@]}" &
-GRADLE_PID="$!"
+{
+  echo "RUN_ID=$RUN_ID"
+  echo "RUN_DIR=$THIS_RUN_DIR"
+  echo "ROOT=$ROOT"
+  echo "CMD=$ROOT/gradlew ${GRADLE_ARGS[*]}"
+  echo "TIMEOUT_SECONDS=$TIMEOUT_SECONDS"
+  echo "NO_OUTPUT_DIAGNOSTICS_SECONDS=$NO_OUTPUT_DIAGNOSTICS_SECONDS"
+  echo "NO_OUTPUT_TIMEOUT_SECONDS=$NO_OUTPUT_TIMEOUT_SECONDS"
+  echo "STDOUT=$STDOUT_FILE"
+  echo "STDERR=$STDERR_FILE"
+} > "$RUN_INFO_FILE"
 
-trap 'terminate_tree "$GRADLE_PID"; rm -rf "$LOCK_DIR"; exit 143' TERM
-trap 'terminate_tree "$GRADLE_PID"; rm -rf "$LOCK_DIR"; exit 130' INT
+"$ROOT/gradlew" "${GRADLE_ARGS[@]}" > >(tee "$STDOUT_FILE") 2> >(tee "$STDERR_FILE" >&2) &
+GRADLE_PID="$!"
+echo "PID=$GRADLE_PID" >> "$RUN_INFO_FILE"
+echo "$GRADLE_PID" > "$PID_FILE"
+
+trap 'terminate_tree "$GRADLE_PID"; cleanup_run_state; exit 143' TERM
+trap 'terminate_tree "$GRADLE_PID"; cleanup_run_state; exit 130' INT
 
 start_seconds="$(date +%s)"
+last_heartbeat_seconds=0
+last_output_size=0
+last_output_seconds="$start_seconds"
+no_output_diagnostics_fired=false
 exit_code=0
 while kill -0 "$GRADLE_PID" 2>/dev/null; do
   sleep "$POLL_SECONDS"
   now_seconds="$(date +%s)"
   elapsed_seconds=$((now_seconds - start_seconds))
-  if (( TIMEOUT_SECONDS > 0 && elapsed_seconds >= TIMEOUT_SECONDS )); then
-    echo "Gradle command exceeded ${TIMEOUT_SECONDS}s; collecting JVM diagnostics before termination." >&2
-    diagnose_gradle_timeout "$GRADLE_PID" "${GRADLE_ARGS[@]}"
+  current_output_size="$(output_size)"
+  if [[ "$current_output_size" -ne "$last_output_size" ]]; then
+    last_output_size="$current_output_size"
+    last_output_seconds="$now_seconds"
+    no_output_diagnostics_fired=false
+  fi
+  output_idle_seconds=$((now_seconds - last_output_seconds))
+  if [[ "$HEARTBEAT_SECONDS" -gt 0 ]] && (( now_seconds - last_heartbeat_seconds >= HEARTBEAT_SECONDS )); then
+    {
+      echo "UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "PID=$GRADLE_PID"
+      echo "ELAPSED_SECONDS=$elapsed_seconds"
+      echo "OUTPUT_BYTES=$current_output_size"
+      echo "OUTPUT_IDLE_SECONDS=$output_idle_seconds"
+      ps -p "$GRADLE_PID" -o pid=,ppid=,stat=,etime=,command= 2>/dev/null || true
+    } > "$THIS_RUN_DIR/heartbeat.txt" 2>/dev/null || true
+    last_heartbeat_seconds="$now_seconds"
+  fi
+  if [[ "$no_output_diagnostics_fired" == false ]] && \
+     [[ "$NO_OUTPUT_DIAGNOSTICS_SECONDS" -gt 0 ]] && \
+     (( output_idle_seconds >= NO_OUTPUT_DIAGNOSTICS_SECONDS )); then
+    no_output_diagnostics_fired=true
+    echo "Gradle command produced no new output for ${NO_OUTPUT_DIAGNOSTICS_SECONDS}s; collecting diagnostics and continuing." >&2
+    diagnose_gradle "gradle-no-output-${NO_OUTPUT_DIAGNOSTICS_SECONDS}s" "$GRADLE_PID" "${GRADLE_ARGS[@]}"
+  fi
+  if [[ "$NO_OUTPUT_TIMEOUT_SECONDS" -gt 0 ]] && (( output_idle_seconds >= NO_OUTPUT_TIMEOUT_SECONDS )); then
+    echo "Gradle command produced no new output for ${NO_OUTPUT_TIMEOUT_SECONDS}s; collecting diagnostics before termination." >&2
+    diagnose_gradle "gradle-no-output-timeout-${NO_OUTPUT_TIMEOUT_SECONDS}s" "$GRADLE_PID" "${GRADLE_ARGS[@]}"
     terminate_tree "$GRADLE_PID"
     wait "$GRADLE_PID" 2>/dev/null || true
+    {
+      echo "TIMEOUT_REASON=gradle-no-output-timeout-${NO_OUTPUT_TIMEOUT_SECONDS}s"
+      echo "EXIT_CODE=124"
+    } >> "$RUN_INFO_FILE"
+    exit 124
+  fi
+  if (( TIMEOUT_SECONDS > 0 && elapsed_seconds >= TIMEOUT_SECONDS )); then
+    echo "Gradle command exceeded ${TIMEOUT_SECONDS}s; collecting JVM diagnostics before termination." >&2
+    diagnose_gradle "gradle-timeout-${TIMEOUT_SECONDS}s" "$GRADLE_PID" "${GRADLE_ARGS[@]}"
+    terminate_tree "$GRADLE_PID"
+    wait "$GRADLE_PID" 2>/dev/null || true
+    {
+      echo "TIMEOUT_REASON=gradle-timeout-${TIMEOUT_SECONDS}s"
+      echo "EXIT_CODE=124"
+    } >> "$RUN_INFO_FILE"
     exit 124
   fi
 done
 
 wait "$GRADLE_PID" || exit_code=$?
+echo "EXIT_CODE=$exit_code" >> "$RUN_INFO_FILE"
 exit "$exit_code"
