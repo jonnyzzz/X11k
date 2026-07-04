@@ -136,7 +136,7 @@ internal class X11State(
     private val windows = linkedMapOf<Int, XWindow>()
     private val pixmaps = linkedMapOf<Int, XPixmap>()
     private val gcs = linkedMapOf<Int, XGraphicsContext>()
-    private val fonts = linkedSetOf<Int>()
+    private val fonts = linkedMapOf<Int, XFont>()
     private val cursors = linkedMapOf<Int, XCursor>()
     private var nextCursorGeneration: Long = 1
     private val colormaps = linkedSetOf(X11Ids.DefaultColormap)
@@ -8396,10 +8396,10 @@ internal class X11State(
     fun pixmap(id: Int): XPixmap? = pixmaps[id]
 
     @Synchronized
-    fun hasFont(id: Int): Boolean = fonts.contains(id)
+    fun hasFont(id: Int): Boolean = fonts.containsKey(id)
 
     @Synchronized
-    fun hasFontable(id: Int): Boolean = fonts.contains(id) || gcs.containsKey(id)
+    fun hasFontable(id: Int): Boolean = fonts.containsKey(id) || gcs.containsKey(id)
 
     @Synchronized
     fun canCopyGc(sourceId: Int, destinationId: Int): Boolean {
@@ -8454,7 +8454,7 @@ internal class X11State(
         windows.containsKey(id) ||
             pixmaps.containsKey(id) ||
             gcs.containsKey(id) ||
-            fonts.contains(id) ||
+            fonts.containsKey(id) ||
             cursors.containsKey(id) ||
             colormaps.contains(id) ||
             pictures.containsKey(id) ||
@@ -8615,8 +8615,26 @@ internal class X11State(
     }
 
     @Synchronized
-    fun putFont(id: Int) {
-        fonts += id
+    fun putFont(id: Int, name: String) {
+        fonts[id] = XFont(id = id, name = name)
+    }
+
+    @Synchronized
+    fun textForFont(fontId: Int, text: String): String {
+        val fontName = fonts[fontId]?.name?.lowercase().orEmpty()
+        if (!fontName.contains("symbol")) return text
+        return buildString(text.length) {
+            for (char in text) {
+                append(
+                    when (char.code) {
+                        0xa0 -> '\u03c0'
+                        0xd6 -> '\u221a'
+                        0x60 -> '\u00af'
+                        else -> char
+                    },
+                )
+            }
+        }
     }
 
     @Synchronized
@@ -10571,6 +10589,11 @@ internal data class XGraphicsContext(
         const val ArcPieSlice = 1
     }
 }
+
+internal data class XFont(
+    val id: Int,
+    val name: String,
+)
 
 internal data class XPicture(
     val id: Int,

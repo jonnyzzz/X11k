@@ -7381,6 +7381,93 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `PolyText8 preserves Latin1 superscript two byte`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val baselineY = 18
+                val originX = 4
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Green))
+                out.write(polyText8RawRequest(WindowId, GcId, x = originX, y = baselineY, bytes = byteArrayOf(0xb2.toByte())))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 20, height = 24))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                val top = baselineY - XFramebuffer.TextAscent
+                val glyphRows = intArrayOf(0x00, 0x00, 0x28, 0x08, 0x10, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
+                assertGlyphRows(image, imageWidth = 20, x = originX, y = top, glyphRows = glyphRows)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PolyText8 maps symbol font pi byte`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val symbolFont = WindowId + 0x7790
+                val baselineY = 18
+                val originX = 4
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(openFontRequest(symbolFont, name = "-adobe-symbol-*-*-*-*-*-120-*-*-*-*-*-*"))
+                out.write(createGcRequest(GcId, foreground = Green))
+                out.write(polyTextFontItemRawRequest(WindowId, GcId, x = originX, y = baselineY, font = symbolFont, bytes = byteArrayOf(0xa0.toByte())))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 20, height = 24))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                val top = baselineY - XFramebuffer.TextAscent
+                val glyphRows = intArrayOf(0x00, 0x00, 0x14, 0x00, 0x1c, 0x22, 0x22, 0x22, 0x22, 0x22, 0x1c, 0x00, 0x00)
+                assertGlyphRows(image, imageWidth = 20, x = originX, y = top, glyphRows = glyphRows)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PolyText8 maps symbol font square root bytes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val symbolFont = WindowId + 0x7791
+                val baselineY = 18
+                val originX = 4
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(openFontRequest(symbolFont, name = "-adobe-symbol-*-*-*-*-*-120-*-*-*-*-*-*"))
+                out.write(createGcRequest(GcId, foreground = Green))
+                out.write(polyTextFontItemRawRequest(WindowId, GcId, x = originX, y = baselineY, font = symbolFont, bytes = byteArrayOf(0xd6.toByte(), 0x60)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 24, height = 24))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                val top = baselineY - XFramebuffer.TextAscent
+                val glyphRows = listOf(
+                    intArrayOf(0x00, 0x00, 0x14, 0x00, 0x1c, 0x22, 0x22, 0x22, 0x22, 0x22, 0x1c, 0x00, 0x00),
+                    intArrayOf(0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00),
+                )
+                glyphRows.forEachIndexed { glyphIndex, rows ->
+                    assertGlyphRows(image, imageWidth = 24, x = originX + glyphIndex * XFramebuffer.TextCellWidth, y = top, glyphRows = rows, label = "glyph=$glyphIndex")
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `PolyText16 paints pixmap framebuffer content and honors item delta`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -22226,6 +22313,26 @@ class XCoreDrawingProtocolTest {
         return request(74, 0, body)
     }
 
+    private fun polyText8RawRequest(
+        drawable: Int,
+        gc: Int,
+        x: Int,
+        y: Int,
+        delta: Int = 0,
+        bytes: ByteArray,
+    ): ByteArray {
+        require(bytes.size in 0..254)
+        val body = ByteArray(paddedLength(14 + bytes.size))
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        put16le(body, 8, x)
+        put16le(body, 10, y)
+        body[12] = bytes.size.toByte()
+        body[13] = delta.toByte()
+        bytes.copyInto(body, 14)
+        return request(74, 0, body)
+    }
+
     private fun polyText16Request(drawable: Int, gc: Int, x: Int, y: Int, delta: Int, char2b: List<Pair<Int, Int>>): ByteArray {
         require(char2b.size in 0..254)
         val body = ByteArray(paddedLength(14 + char2b.size * 2))
@@ -22278,6 +22385,28 @@ class XCoreDrawingProtocolTest {
             body[18] = 0
             bytes.copyInto(body, 19)
         }
+        return request(74, 0, body)
+    }
+
+    private fun polyTextFontItemRawRequest(
+        drawable: Int,
+        gc: Int,
+        x: Int,
+        y: Int,
+        font: Int,
+        bytes: ByteArray,
+    ): ByteArray {
+        require(bytes.size in 0..254)
+        val body = ByteArray(paddedLength(19 + bytes.size))
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        put16le(body, 8, x)
+        put16le(body, 10, y)
+        body[12] = 255.toByte()
+        put32be(body, 13, font)
+        body[17] = bytes.size.toByte()
+        body[18] = 0
+        bytes.copyInto(body, 19)
         return request(74, 0, body)
     }
 
@@ -22868,6 +22997,26 @@ class XCoreDrawingProtocolTest {
 
     private fun pixelAt(reply: ByteArray, imageWidth: Int, x: Int, y: Int): Int =
         u32le(reply, 32 + (y * imageWidth + x) * 4)
+
+    private fun assertGlyphRows(
+        reply: ByteArray,
+        imageWidth: Int,
+        x: Int,
+        y: Int,
+        glyphRows: IntArray,
+        label: String = "glyph",
+    ) {
+        glyphRows.forEachIndexed { rowIndex, rowMask ->
+            for (column in 0 until XFramebuffer.TextCellWidth) {
+                val expected = if (((rowMask ushr (XFramebuffer.TextCellWidth - 1 - column)) and 1) != 0) {
+                    0xff00_ff00.toInt()
+                } else {
+                    0xffff_ffff.toInt()
+                }
+                assertEquals(expected, pixelAt(reply, imageWidth, x + column, y + rowIndex), "$label row=$rowIndex column=$column")
+            }
+        }
+    }
 
     private fun installedColormaps(reply: ByteArray): List<Int> {
         val count = u16le(reply, 8)

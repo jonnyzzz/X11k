@@ -5378,19 +5378,34 @@ internal class XFramebuffer(
             val charIndex = column / TextCellWidth
             if (charIndex !in text.indices || row !in 0 until TextCellHeight) return false
             val cellX = column % TextCellWidth
-            val glyphRowOffset = fixedGlyphRowOffset(text[charIndex]) ?: return false
-            val rowMask = FixedGlyphRows[glyphRowOffset + row]
+            val rowMask = fixedGlyphRowMask(text[charIndex], row) ?: return false
             return ((rowMask ushr (TextCellWidth - 1 - cellX)) and 1) != 0
         }
 
-        private fun fixedGlyphRowOffset(char: Char): Int? {
+        private fun fixedGlyphRowMask(char: Char, row: Int): Int? {
+            if (char == '\u00b2') return SuperscriptTwoGlyphRows[row]
+            if (char == '\u03c0') return PiGlyphRows[row]
+            if (char == '\u221a') return SquareRootGlyphRows[row]
+            if (char == '\u00af') return SymbolOverbarGlyphRows[row]
             val code = char.code
             if (code !in FixedGlyphFirst..FixedGlyphLast) return null
-            return (code - FixedGlyphFirst) * TextCellHeight
+            return FixedGlyphRows[(code - FixedGlyphFirst) * TextCellHeight + row]
         }
 
         private const val FixedGlyphFirst = 32
         private const val FixedGlyphLast = 126
+        private val SuperscriptTwoGlyphRows = intArrayOf(
+            0x00, 0x00, 0x28, 0x08, 0x10, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        )
+        private val PiGlyphRows = intArrayOf(
+            0x00, 0x00, 0x14, 0x00, 0x1c, 0x22, 0x22, 0x22, 0x22, 0x22, 0x1c, 0x00, 0x00,
+        )
+        private val SquareRootGlyphRows = intArrayOf(
+            0x00, 0x00, 0x14, 0x00, 0x1c, 0x22, 0x22, 0x22, 0x22, 0x22, 0x1c, 0x00, 0x00,
+        )
+        private val SymbolOverbarGlyphRows = intArrayOf(
+            0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        )
 
         // Public-domain Misc Fixed 6x13 bitmap rows, normalized from BDF high bits to 6-bit row masks.
         private val FixedGlyphRows = intArrayOf(

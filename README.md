@@ -58,7 +58,7 @@ Recent `xcalc` SVG-composition parity sample:
 | --- | --- |
 | ![xcalc Xvfb reference](docs/images/xcalc-xvfb-reference.png) | ![xcalc Kotlin SVG-composed framebuffer](docs/images/xcalc-kotlin-svg.png) |
 
-Current `xcalc` sampled distance is `0.9572`; display frame, display text, and keypad regions are pixel-exact against the Xvfb reference in the latest parity run.
+Current `xcalc` sampled distance is `0.0`; display frame, display text, angle-mode indicators, and keypad regions are pixel-exact against the Xvfb reference in the latest parity run.
 
 Recent `xterm` SVG-composition parity sample:
 

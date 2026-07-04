@@ -6990,7 +6990,7 @@ internal class X11Connection(
         if (body.size != 8 + paddedLength(nameLength)) return writeError(error = 16, opcode = 45, badValue = 0)
         val id = byteOrder.u32(body, 0)
         if (!resourceIdAvailable(id, opcode = 45)) return
-        state.putFont(id)
+        state.putFont(id, pattern(body, offset = 8, length = nameLength))
         own(id)
     }
 
@@ -7871,18 +7871,19 @@ internal class X11Connection(
         if (gc.drawableRootId != drawable.rootId || gc.drawableDepth != drawable.depth) {
             return writeError(error = 8, opcode = opcode, badValue = drawableId)
         }
-        val decoded = decodePolyText(body, is16Bit) ?: return writeError(error = 16, opcode = opcode, badValue = 0)
+        val decoded = decodePolyText(body, is16Bit, gc.fontId) ?: return writeError(error = 16, opcode = opcode, badValue = 0)
         val missingFont = decoded.fontIds.firstOrNull { !state.hasFont(it) }
         if (missingFont != null) return writeError(error = 7, opcode = opcode, badValue = missingFont)
         decoded.fontIds.lastOrNull()?.let { state.updateGc(id = gcId, fontId = it) }
         val runs = decoded.runs
         if (runs.isEmpty()) return
         for (run in runs) {
+            val text = state.textForFont(run.fontId, run.text)
             state.drawText(
                 drawableId = drawableId,
                 x = run.x,
                 baselineY = run.y,
-                text = run.text,
+                text = text,
                 foreground = gc.foreground,
                 clipRectangles = gc.effectiveClipRectangles(),
                 subwindowMode = gc.subwindowMode,
@@ -7898,7 +7899,7 @@ internal class X11Connection(
                 foreground = gc.foreground,
                 background = gc.background,
                 points = runs.map { XPoint(it.x, it.y) },
-                text = runs.joinToString("") { it.text },
+                text = runs.joinToString("") { state.textForFont(it.fontId, it.text) },
                 framebufferBacked = true,
             ),
         )
@@ -7919,7 +7920,7 @@ internal class X11Connection(
         val x = byteOrder.i16(body, 8)
         val y = byteOrder.i16(body, 10)
         val textBytes = body.copyOfRange(12, 12 + byteLength)
-        val text = if (is16Bit) decodeText16(textBytes) else decodeText8(textBytes)
+        val text = state.textForFont(gc.fontId, if (is16Bit) decodeText16(textBytes) else decodeText8(textBytes))
         state.drawText(
             drawableId = drawableId,
             x = x,
@@ -12475,16 +12476,17 @@ internal class X11Connection(
         buildString(bytes.size) {
             for (byte in bytes) {
                 val value = byte.toInt() and 0xff
-                append(if (value in 32..126) value.toChar() else ' ')
+                append(if (value >= 32) value.toChar() else ' ')
             }
         }
 
-    private fun decodePolyText(body: ByteArray, is16Bit: Boolean): XPolyTextDecode? {
+    private fun decodePolyText(body: ByteArray, is16Bit: Boolean, initialFontId: Int): XPolyTextDecode? {
         val runs = mutableListOf<XTextRun>()
         val fontIds = mutableListOf<Int>()
         var offset = 12
         var x = byteOrder.i16(body, 8)
         val y = byteOrder.i16(body, 10)
+        var fontId = initialFontId
         while (offset < body.size) {
             val remaining = body.size - offset
             if (remaining < 2) break
@@ -12494,7 +12496,8 @@ internal class X11Connection(
                     if (remaining <= 3) break
                     return null
                 }
-                fontIds += ByteOrder.MsbFirst.u32(body, offset + 1)
+                fontId = ByteOrder.MsbFirst.u32(body, offset + 1)
+                fontIds += fontId
                 offset += 5
                 continue
             }
@@ -12507,7 +12510,7 @@ internal class X11Connection(
             val bytes = body.copyOfRange(offset + 2, offset + 2 + byteLength)
             val text = if (is16Bit) decodeText16(bytes) else decodeText8(bytes)
             if (text.isNotEmpty()) {
-                runs += XTextRun(x, y, text)
+                runs += XTextRun(x, y, text, fontId)
                 x += text.length * XFramebuffer.TextCellWidth
             }
             offset += 2 + byteLength
@@ -13951,6 +13954,7 @@ private data class XTextRun(
     val x: Int,
     val y: Int,
     val text: String,
+    val fontId: Int,
 )
 
 private data class XPolyTextDecode(
