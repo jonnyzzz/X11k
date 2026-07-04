@@ -262,6 +262,8 @@ esac
 RUN_ID="run_$(date -u +%Y%m%d-%H%M%S)-$$"
 RUN_DIR="$RUNS_DIR/$RUN_ID"
 mkdir -p "$RUN_DIR"
+rm -f "$RUNS_DIR/latest" 2>/dev/null || true
+(cd "$RUNS_DIR" && ln -s "$RUN_ID" latest) 2>/dev/null || true
 cp "$BASE_DIR/run-agent.sh" "$RUN_DIR/run-agent.sh"
 
 CODEX_HOME_OVERRIDE=""
@@ -344,7 +346,8 @@ Read and follow $RELIABILITY_FILE before choosing tools.
 - Prefer shell/source inspection for run-agent research and review work.
 - Use MCP Steroid only when the prompt explicitly requires IDE semantic APIs.
 - Do not spawn nested review quorums or unbounded subagents.
-- Use bounded tests/builds and collect jps/jcmd/jstack diagnostics before terminating suspected JVM hangs.
+- Use scripts/run-gradle-bounded.sh for Gradle/build/test work and scripts/run-bounded-experiment.sh for blocking non-Gradle experiments.
+- Collect jps/jcmd/jstack diagnostics before terminating suspected JVM hangs.
 - Never run Gradle/Maven/IDE build/test/package commands in parallel in this repository; serialize build-directory-writing commands.
 
 This override supersedes older broad "prefer MCP Steroid" prompt text when they conflict.
@@ -600,6 +603,7 @@ CMD=$CMDLINE
 PROMPT=$PROMPT
 STDOUT=$STDOUT_FILE
 STDERR=$STDERR_FILE
+LATEST=$RUNS_DIR/latest
 PID=$AGENT_PID
 TIMEOUT_SECONDS=$RUN_AGENT_TIMEOUT_SECONDS
 NO_OUTPUT_DIAGNOSTICS_SECONDS=$RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS

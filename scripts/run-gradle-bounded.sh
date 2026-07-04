@@ -333,6 +333,8 @@ cleanup_stale_testcontainers
 RUN_ID="run_$(date -u +%Y%m%d-%H%M%S)-$$"
 THIS_RUN_DIR="$RUN_DIR/$RUN_ID"
 mkdir -p "$THIS_RUN_DIR"
+rm -f "$RUN_DIR/latest" 2>/dev/null || true
+(cd "$RUN_DIR" && ln -s "$RUN_ID" latest) 2>/dev/null || true
 STDOUT_FILE="$THIS_RUN_DIR/stdout.txt"
 STDERR_FILE="$THIS_RUN_DIR/stderr.txt"
 RUN_INFO_FILE="$THIS_RUN_DIR/run-info.txt"
@@ -350,6 +352,7 @@ echo "Running: $ROOT/gradlew ${GRADLE_ARGS[*]}" >&2
   echo "NO_OUTPUT_TIMEOUT_SECONDS=$NO_OUTPUT_TIMEOUT_SECONDS"
   echo "STDOUT=$STDOUT_FILE"
   echo "STDERR=$STDERR_FILE"
+  echo "LATEST=$RUN_DIR/latest"
 } > "$RUN_INFO_FILE"
 
 "$ROOT/gradlew" "${GRADLE_ARGS[@]}" > >(tee "$STDOUT_FILE") 2> >(tee "$STDERR_FILE" >&2) &

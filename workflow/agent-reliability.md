@@ -68,12 +68,15 @@ For any non-Gradle experiment that can block on Docker, X clients, IDE startup, 
 
 The 2026-07-04 follow-up exposed one more stale-run blind spot: a runner can be interrupted after writing `run-info.txt` but before writing `EXIT_CODE` or while `pid.txt` has already been removed. Older watcher output reported those directories as `unknown (no pid/exit)` forever, which made status checks look stuck even when the recorded PID had long exited. `watch-agents.sh` now recovers a missing `pid.txt` from `PID=` in `run-info.txt` when that process is still alive, so stale diagnostics and terminate/restart still work. If the recorded PID is gone, or there is no PID at all, the watcher waits only `RUN_AGENT_ABANDONED_SECONDS` (default 120) before appending `WATCH_ABANDONED_UTC` / `WATCH_ABANDONED_REASON` to `run-info.txt` and reporting the run as abandoned.
 
+The 2026-07-04 root-side workflow is now wrapper-first. Local implementation, review, and test prompts tell agents to follow this file and to use `scripts/run-gradle-bounded.sh` or `scripts/run-bounded-experiment.sh` instead of bare build/test commands. The agent runner reliability preamble says the same thing, so new agents inherit the policy even when older generic prompt text still mentions MCP Steroid for builds. `run-agent.sh`, `scripts/run-gradle-bounded.sh`, and `scripts/run-bounded-experiment.sh` maintain a `latest` symlink in their run directories, making the first diagnostic target stable: `runs/latest`, `runs/gradle-bounded/latest`, or `runs/bounded-experiments/latest`.
+
 ## Required Practice
 
 - Start long commands through `scripts/run-bounded-experiment.sh`, `timeout`, `scripts/run-gradle-bounded.sh`, or with `RUN_AGENT_TIMEOUT_SECONDS` set.
 - Never run Gradle, Maven, IDE build, test, package, or other build-directory-writing commands in parallel for this repository. Queue them one at a time, using `--no-daemon --max-workers=1 -Dkotlin.incremental=false` for Gradle checks unless a task explicitly needs different settings.
 - Prefer `scripts/run-gradle-bounded.sh <tasks...>` for Gradle checks. It holds the repo Gradle lock and captures JVM diagnostics before killing a timed-out run.
 - Treat `runs/gradle-bounded/run_*/heartbeat.txt`, `run-info.txt`, `stdout.txt`, and `stderr.txt` as the first stop for a suspected Gradle stall. `GRADLE_NO_OUTPUT_DIAGNOSTICS_SECONDS` controls the first diagnostic snapshot, and `GRADLE_NO_OUTPUT_TIMEOUT_SECONDS` controls the automatic kill.
+- For the most recent Gradle stall, start with `runs/gradle-bounded/latest/run-info.txt`; for the most recent non-Gradle experiment, start with `runs/bounded-experiments/latest/run-info.txt`; for the most recent run-agent, start with `runs/latest/run-info.txt`.
 - Prefer `scripts/run-bounded-experiment.sh -- <command> [args...]` for ad hoc non-Gradle repros and experiments so timeout failures leave a persisted diagnostic bundle.
 - Before killing a suspected stuck JVM workload, collect `jps -lm` plus `jcmd <pid> Thread.print` or `jstack <pid>`.
 - Before restarting a silent run-agent, inspect its `heartbeat.txt`, `run-info.txt`, any `DIAGNOSTICS=...` entries, and stdout/stderr sizes.

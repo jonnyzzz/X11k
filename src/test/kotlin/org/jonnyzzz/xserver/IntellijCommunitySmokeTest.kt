@@ -131,20 +131,28 @@ class IntellijCommunitySmokeTest {
             graphics.fillRect(0, 0, image.width, image.height)
             graphics.dispose()
         }
-        val actual = BufferedImage(1280, 900, BufferedImage.TYPE_INT_RGB).also { image ->
+        val actualRobot = BufferedImage(1280, 900, BufferedImage.TYPE_INT_RGB).also { image ->
             val graphics = image.createGraphics()
             graphics.color = java.awt.Color.WHITE
             graphics.fillRect(0, 0, image.width, image.height)
             graphics.color = java.awt.Color.BLACK
             graphics.fillRect(10, 20, 1260, 860)
+            graphics.color = java.awt.Color.GREEN
+            graphics.fillRect(15, 25, 2, 3)
+            graphics.dispose()
+        }
+        val actualSvg = BufferedImage(1280, 900, BufferedImage.TYPE_INT_RGB).also { image ->
+            val graphics = image.createGraphics()
+            graphics.color = java.awt.Color.BLACK
+            graphics.fillRect(0, 0, image.width, image.height)
             graphics.dispose()
         }
 
         val metrics = intellijVisualRegionMetrics(
             text = text,
             expected = visualCapture(expected),
-            actualRobot = visualCapture(actual),
-            actualSvg = visualCapture(actual),
+            actualRobot = visualCapture(actualRobot),
+            actualSvg = visualCapture(actualSvg),
         )
 
         assertTrue(metrics.contains("ideaFrame=10,20 1260x860"), metrics)
@@ -156,6 +164,10 @@ class IntellijCommunitySmokeTest {
         assertTrue(metrics.contains("robotInsideFrameCoverageRatio=1.0"), metrics)
         assertTrue(metrics.contains("robotOutsideFrameNonWhitePixels=0"), metrics)
         assertTrue(metrics.contains("svgInsideFrameCoverageRatio=1.0"), metrics)
+        assertTrue(metrics.contains("robotMismatchBounds=0,0 1280x900"), metrics)
+        assertTrue(metrics.contains("robotInsideFrameMismatchBounds=5,5 2x3"), metrics)
+        assertTrue(metrics.contains("svgMismatchBounds=none"), metrics)
+        assertTrue(metrics.contains("svgInsideFrameMismatchBounds=none"), metrics)
     }
 
     @Test
@@ -1293,6 +1305,10 @@ class IntellijCommunitySmokeTest {
             )
             appendLine("robotInsideFrameSampledDistance=${imageDistance(regionImage(expected.image, frame), regionImage(actualRobot.image, frame))}")
             appendLine("svgInsideFrameSampledDistance=${imageDistance(regionImage(expected.image, frame), regionImage(actualSvg.image, frame))}")
+            appendLine("robotMismatchBounds=${mismatchBounds(expected.image, actualRobot.image).toMetricString()}")
+            appendLine("svgMismatchBounds=${mismatchBounds(expected.image, actualSvg.image).toMetricString()}")
+            appendLine("robotInsideFrameMismatchBounds=${mismatchBounds(regionImage(expected.image, frame), regionImage(actualRobot.image, frame)).toMetricString()}")
+            appendLine("svgInsideFrameMismatchBounds=${mismatchBounds(regionImage(expected.image, frame), regionImage(actualSvg.image, frame)).toMetricString()}")
         }
     }
 
@@ -1351,6 +1367,28 @@ class IntellijCommunitySmokeTest {
         }
         return nonWhite
     }
+
+    private fun mismatchBounds(expected: BufferedImage, actual: BufferedImage): Rectangle? {
+        val width = minOf(expected.width, actual.width)
+        val height = minOf(expected.height, actual.height)
+        var minX = Int.MAX_VALUE
+        var minY = Int.MAX_VALUE
+        var maxX = -1
+        var maxY = -1
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                if (rgbDistance(expected.getRGB(x, y), actual.getRGB(x, y)) == 0) continue
+                minX = minOf(minX, x)
+                minY = minOf(minY, y)
+                maxX = maxOf(maxX, x)
+                maxY = maxOf(maxY, y)
+            }
+        }
+        return if (maxX < minX || maxY < minY) null else Rectangle(minX, minY, maxX - minX + 1, maxY - minY + 1)
+    }
+
+    private fun Rectangle?.toMetricString(): String =
+        this?.let { "${it.x},${it.y} ${it.width}x${it.height}" } ?: "none"
 
     private fun visualDiffImage(expected: BufferedImage, actual: BufferedImage): BufferedImage {
         val width = maxOf(expected.width, actual.width)
