@@ -424,9 +424,11 @@ class IntellijCommunitySmokeTest {
                         check test -d /tmp/idea-config/plugins
                         check grep -q 'idea.plugins.path=/tmp/idea-config/plugins' /tmp/idea.properties
                         check grep -q "componentStore=/workspace/jonnyzzz-x" /tmp/idea-log/idea.log
+                        check grep -qx "\\[run-intellij\\] launcher=/opt/idea/bin/idea" /tmp/idea-run-smoke.log
                         if grep -q "Download JDK" /tmp/idea-log/idea.log; then echo "unexpected Download JDK log"; exit 1; fi
                         if grep -q "Cannot Run Git" /tmp/idea-log/idea.log; then echo "unexpected Cannot Run Git log"; exit 1; fi
                         if grep -q "Project is not trusted" /tmp/idea-log/idea.log; then echo "unexpected Project is not trusted log"; exit 1; fi
+                        if grep -q "ide.script.launcher.used" /tmp/idea-log/idea.log /tmp/idea-run-smoke.log 2>/dev/null; then echo "unexpected script launcher warning"; exit 1; fi
                         """.trimIndent(),
                     )
                     assertEquals(0, result.exitCode, result.stderr + result.stdout)
@@ -684,6 +686,8 @@ class IntellijCommunitySmokeTest {
                     if grep -q "Download JDK" /tmp/idea-log/idea.log; then echo "unexpected Download JDK log"; exit 1; fi
                     if grep -q "Cannot Run Git" /tmp/idea-log/idea.log; then echo "unexpected Cannot Run Git log"; exit 1; fi
                     if grep -q "Project is not trusted" /tmp/idea-log/idea.log; then echo "unexpected Project is not trusted log"; exit 1; fi
+                    if grep -q "ide.script.launcher.used" /tmp/idea-log/idea.log /tmp/idea-run-xvfb.log 2>/dev/null; then echo "unexpected script launcher warning"; exit 1; fi
+                    grep -qx "\\[run-intellij\\] launcher=/opt/idea/bin/idea" /tmp/idea-run-xvfb.log
                     grep -q -- "-Dremote.x11.workaround=false" /tmp/idea-extra.vmoptions
                     sleep 5
                     DISPLAY=:99 java -cp /tmp XIntellijRobotCapture
@@ -761,6 +765,8 @@ class IntellijCommunitySmokeTest {
                         if grep -q "Download JDK" /tmp/idea-log/idea.log; then echo "unexpected Download JDK log"; exit 1; fi
                         if grep -q "Cannot Run Git" /tmp/idea-log/idea.log; then echo "unexpected Cannot Run Git log"; exit 1; fi
                         if grep -q "Project is not trusted" /tmp/idea-log/idea.log; then echo "unexpected Project is not trusted log"; exit 1; fi
+                        if grep -q "ide.script.launcher.used" /tmp/idea-log/idea.log /tmp/idea-run-parity.log 2>/dev/null; then echo "unexpected script launcher warning"; exit 1; fi
+                        grep -qx "\\[run-intellij\\] launcher=/opt/idea/bin/idea" /tmp/idea-run-parity.log
                         grep -q -- "-Dremote.x11.workaround=false" /tmp/idea-extra.vmoptions
                         """.trimIndent(),
                     )

@@ -21,6 +21,7 @@ set -eu
 : "${IDEA_X11_DEBUG_CATEGORIES:=#sun.awt.X11,#sun.awt.X11.XToolkit,#sun.awt.X11.XComponentPeer,#sun.awt.X11.XFramePeer,#sun.awt.X11.XDecoratedPeer,#sun.awt.X11.XErrorHandlerUtil,#sun.awt.X11.XNETProtocol,#sun.awt.X11.XWINProtocol,#sun.awt.X11.xembed,#com.intellij.ui.jcef,#com.intellij.platform.compose,#com.intellij.ide.ui,#com.intellij.openapi.wm.impl.FocusManagerImpl}"
 : "${IDEA_X11_TRACE_CATEGORIES:=#java.awt.KeyboardFocusManager,#sun.awt.X11.event.XToolkit,#sun.awt.X11.focus.XComponentPeer,#sun.awt.X11.focus.XDecoratedPeer}"
 : "${IDEA_X11_SEPARATE_LOG_CATEGORIES:=#com.intellij.ui.jcef,#sun.awt.X11,#java.awt.KeyboardFocusManager}"
+: "${IDEA_LAUNCHER:=native}"
 
 if [ -z "$IDEA_TRUST_ALL_PROJECTS" ]; then
   IDEA_TRUST_ALL_PROJECTS="$IDEA_TRUST_PROJECT"
@@ -292,4 +293,23 @@ if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
 fi
 export _JAVA_AWT_WM_NONREPARENTING=1
 
-exec "$IDEA_HOME/bin/idea.sh" nosplash "$IDEA_PROJECT"
+case "$IDEA_LAUNCHER" in
+  native)
+    if [ -x "$IDEA_HOME/bin/idea" ]; then
+      idea_launcher="$IDEA_HOME/bin/idea"
+    else
+      echo "Native IDEA launcher is missing: $IDEA_HOME/bin/idea" >&2
+      exit 1
+    fi
+    ;;
+  script)
+    idea_launcher="$IDEA_HOME/bin/idea.sh"
+    ;;
+  *)
+    echo "Unsupported IDEA_LAUNCHER=$IDEA_LAUNCHER; expected native or script" >&2
+    exit 2
+    ;;
+esac
+
+echo "[run-intellij] launcher=$idea_launcher" >&2
+exec "$idea_launcher" nosplash "$IDEA_PROJECT"

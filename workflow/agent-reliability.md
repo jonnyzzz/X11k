@@ -86,6 +86,8 @@ The follow-up hardening makes the lower-level helper timeouts self-contained. `r
 
 The top-level front doors now follow the same rule. `scripts/run-supervised.sh` and `ralph-loop.sh` also fall back to a local elapsed-time loop when no system timeout command is available, returning `124` after sending `TERM` and then `KILL` to the bounded process tree. This keeps recovery, review quorum, role-agent launches, and direct Ralph-loop runs bounded even on a minimal macOS shell.
 
+The IntelliJ README screenshot helper follows the same wrapper-first rule. Refresh it through `scripts/run-supervised.sh experiment -- scripts/update-intellij-readme-screenshot.sh`; the helper also has a local timeout fallback for its internal Docker, Playwright, npm, and JVM-diagnostic subprocesses. It explicitly launches IDEA with the native launcher and fails closed if fresh logs or renderer text expose `ide.script.launcher.used` / script-launcher notification state, so stale warning balloons cannot silently overwrite `docs/images/intellij-demo-renderer.png`.
+
 ## Required Practice
 
 - Start long commands through `scripts/run-supervised.sh` unless a lower-level wrapper is explicitly needed.
@@ -95,6 +97,7 @@ The top-level front doors now follow the same rule. `scripts/run-supervised.sh` 
 - Treat `runs/gradle-bounded/run_*/heartbeat.txt`, `run-info.txt`, `stdout.txt`, and `stderr.txt` as the first stop for a suspected Gradle stall. `GRADLE_NO_OUTPUT_DIAGNOSTICS_SECONDS` controls the first diagnostic snapshot, and `GRADLE_NO_OUTPUT_TIMEOUT_SECONDS` controls the automatic kill.
 - For the most recent Gradle stall, start with `runs/gradle-bounded/latest/run-info.txt`; for the most recent non-Gradle experiment, start with `runs/bounded-experiments/latest/run-info.txt`; for the most recent run-agent, start with `runs/latest/run-info.txt`.
 - Prefer `scripts/run-bounded-experiment.sh -- <command> [args...]` for ad hoc non-Gradle repros and experiments so timeout failures leave a persisted diagnostic bundle. Its default `EXPERIMENT_MIRROR_OUTPUT=1` also streams child stdout/stderr to the current terminal, which makes healthy long experiments visibly active while still preserving `stdout.txt` and `stderr.txt`.
+- Refresh README screenshots through `scripts/run-supervised.sh experiment -- ...` so Docker, IntelliJ/VSCode, Playwright, and capture failures produce bounded experiment diagnostics instead of silent local hangs.
 - Before killing a suspected stuck JVM workload, collect `jps -lm` plus `jcmd <pid> Thread.print` or `jstack <pid>`.
 - Before restarting a silent run-agent, inspect its `heartbeat.txt`, `run-info.txt`, any `DIAGNOSTICS=...` entries, and stdout/stderr sizes.
 - For agents that print startup text and then may idle, trust `OUTPUT_IDLE_SECONDS`, not total output size.

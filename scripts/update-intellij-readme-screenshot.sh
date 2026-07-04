@@ -30,7 +30,11 @@ intellij_screenshot_ready() {
     "$text" == *"Content window"* &&
     "$svg" == *"framebuffer-image"* &&
     "$text" != *"Download SDK"* &&
-    "$text" != *"Download JDK"* ]]
+    "$text" != *"Download JDK"* &&
+    "$text" != *"script launcher"* &&
+    "$text" != *"ide.script.launcher.used"* &&
+    "$svg" != *"script launcher"* &&
+    "$svg" != *"ide.script.launcher.used"* ]]
 }
 
 assert_readiness() {
@@ -126,6 +130,8 @@ run_readiness_self_test() {
   assert_readiness "missing framebuffer" 0 "$ready_text" '<svg></svg>'
   assert_readiness "download sdk modal" 0 $'Mapped windows: 4\nContent window\nDownload SDK?' "$ready_svg"
   assert_readiness "download jdk modal" 0 $'Mapped windows: 4\nContent window\nDownload JDK' "$ready_svg"
+  assert_readiness "script launcher notification" 0 $'Mapped windows: 4\nContent window\nThe IDE seems to be launched with a script launcher' "$ready_svg"
+  assert_readiness "script launcher registry key" 0 $'Mapped windows: 4\nContent window\nide.script.launcher.used' "$ready_svg"
   assert_project_export_guard "default runs export" 1 "$ROOT/runs/intellij-readme-screenshot/project"
   assert_project_export_guard "relative runs export" 1 "runs/intellij-readme-screenshot/project"
   assert_project_export_guard "build tmp export" 1 "$ROOT/build/tmp/intellij-readme-screenshot/project"
@@ -134,23 +140,64 @@ run_readiness_self_test() {
   assert_project_export_guard "outside tmp rejected" 0 "/tmp/intellij-readme-screenshot-project"
 }
 
-if [[ "${INTELLIJ_README_SCREENSHOT_SELF_TEST:-0}" == "1" ]]; then
-  run_readiness_self_test
-  exit 0
-fi
+timeout_bin() {
+  if [[ "${INTELLIJ_README_SCREENSHOT_FORCE_LOCAL_TIMEOUT:-0}" == "1" ]]; then
+    return 1
+  fi
+  for candidate in /opt/homebrew/bin/timeout gtimeout timeout; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      command -v "$candidate"
+      return
+    fi
+  done
+}
+
+descendant_pids() {
+  local frontier="$1"
+  local children pid
+  while [[ -n "$frontier" ]]; do
+    children=""
+    for pid in $frontier; do
+      children="$children $(pgrep -P "$pid" 2>/dev/null || true)"
+    done
+    # shellcheck disable=SC2086
+    set -- $children
+    [[ "$#" -gt 0 ]] || break
+    printf '%s\n' "$@"
+    frontier="$*"
+  done
+}
+
+terminate_timed_child() {
+  local pid="$1"
+  local pids extra_pids
+  pids="$(
+    {
+      printf '%s\n' "$pid"
+      descendant_pids "$pid"
+    } | awk 'NF && !seen[$0]++ { print }'
+  )"
+  # shellcheck disable=SC2086
+  kill -TERM $pids 2>/dev/null || true
+  sleep 1
+  extra_pids="$(
+    for child in $pids; do
+      descendant_pids "$child"
+    done | awk 'NF { print }'
+  )"
+  pids="$(
+    {
+      printf '%s\n' $pids
+      printf '%s\n' $extra_pids
+    } | awk 'NF && !seen[$0]++ { print }'
+  )"
+  # shellcheck disable=SC2086
+  kill -KILL $pids 2>/dev/null || true
+}
 
 TIMEOUT_BIN="${TIMEOUT_BIN:-}"
 if [[ -z "$TIMEOUT_BIN" ]]; then
-  for candidate in /opt/homebrew/bin/timeout gtimeout timeout; do
-    if command -v "$candidate" >/dev/null 2>&1; then
-      TIMEOUT_BIN="$(command -v "$candidate")"
-      break
-    fi
-  done
-fi
-if [[ -z "$TIMEOUT_BIN" ]]; then
-  echo "No timeout command found. Install coreutils or set TIMEOUT_BIN." >&2
-  exit 2
+  TIMEOUT_BIN="$(timeout_bin || true)"
 fi
 
 mkdir -p "$RUN_DIR" "$(dirname "$OUT")"
@@ -170,8 +217,52 @@ trap cleanup EXIT
 run_timed() {
   local seconds="$1"
   shift
-  "$TIMEOUT_BIN" "$seconds" "$@"
+  local pid start now elapsed status
+  if [[ "$seconds" == "0" ]]; then
+    "$@"
+  elif [[ -n "$TIMEOUT_BIN" ]]; then
+    "$TIMEOUT_BIN" "$seconds" "$@"
+  else
+    "$@" &
+    pid="$!"
+    start="$(date +%s)"
+    while kill -0 "$pid" 2>/dev/null; do
+      sleep 1
+      now="$(date +%s)"
+      elapsed=$((now - start))
+      if (( elapsed >= seconds )); then
+        terminate_timed_child "$pid"
+        wait "$pid" 2>/dev/null || true
+        return 124
+      fi
+    done
+    wait "$pid" || status=$?
+    return "${status:-0}"
+  fi
 }
+
+run_timeout_self_test() {
+  local status
+  TIMEOUT_BIN=""
+  set +e
+  run_timed 1 sh -c 'sleep 30'
+  status="$?"
+  set -e
+  if [[ "$status" -ne 124 ]]; then
+    echo "timeout fallback self-test failed: expected 124 got $status" >&2
+    exit 1
+  fi
+}
+
+if [[ "${INTELLIJ_README_SCREENSHOT_SELF_TEST:-0}" == "1" ]]; then
+  run_readiness_self_test
+  exit 0
+fi
+
+if [[ "${INTELLIJ_README_SCREENSHOT_TIMEOUT_SELF_TEST:-0}" == "1" ]]; then
+  run_timeout_self_test
+  exit 0
+fi
 
 prepare_project_export() {
   PROJECT_EXPORT_DIR="$(guarded_project_export_dir "$PROJECT_EXPORT_DIR")"
@@ -246,6 +337,27 @@ dismiss_intellij_readme_notifications() {
   done
 }
 
+assert_intellij_readme_launcher_state() {
+  local run_log idea_log text svg
+  run_log="$(docker exec "$IDEA_CONTAINER" sh -lc 'cat /tmp/idea-run-readme.log 2>/dev/null || true' 2>/dev/null || true)"
+  idea_log="$(docker exec "$IDEA_CONTAINER" sh -lc 'tail -400 /tmp/idea-log/idea.log 2>/dev/null || true' 2>/dev/null || true)"
+  text="$(curl -fsS "http://127.0.0.1:$PORT/text.txt" 2>/dev/null || true)"
+  svg="$(curl -fsS "http://127.0.0.1:$PORT/screen.svg" 2>/dev/null || true)"
+  if ! printf '%s\n' "$run_log" | grep -qx '\[run-intellij\] launcher=/opt/idea/bin/idea'; then
+    echo "IntelliJ README screenshot must use the native IDEA launcher; rebuild jonnyzzz-x/x11-client:latest if this marker is missing." >&2
+    diagnose_readiness_failure
+    exit 1
+  fi
+  if [[ "$run_log" == *"ide.script.launcher.used"* ||
+        "$idea_log" == *"ide.script.launcher.used"* ||
+        "$text" == *"script launcher"* ||
+        "$svg" == *"script launcher"* ]]; then
+    echo "IntelliJ README screenshot detected the script-launcher warning; refusing to refresh $OUT." >&2
+    diagnose_readiness_failure
+    exit 1
+  fi
+}
+
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   GRADLE_TIMEOUT_SECONDS="$BUILD_TIMEOUT_SECONDS" "$ROOT/scripts/run-supervised.sh" gradle installDist dockerBuildX11Client
 fi
@@ -253,6 +365,7 @@ fi
 docker rm -f "$IDEA_CONTAINER" >/dev/null 2>&1 || true
 prepare_project_export
 
+echo "Starting X server on port $PORT for IntelliJ README screenshot."
 "$ROOT/build/install/x/bin/x" \
   --host 0.0.0.0 \
   --port "$PORT" \
@@ -269,20 +382,28 @@ for _ in $(seq 1 60); do
   sleep 0.5
 done
 
+echo "Launching IntelliJ README screenshot container $IDEA_CONTAINER with native launcher."
 docker run -d --name "$IDEA_CONTAINER" \
   -v "$PROJECT_EXPORT_DIR:$IDEA_PROJECT_CONTAINER" \
   "$IMAGE" \
-  sh -lc "DISPLAY=host.docker.internal:$DISPLAY_NUMBER IDEA_PROJECT=$IDEA_PROJECT_CONTAINER IDEA_TRUST_PROJECT=true run-intellij >/tmp/idea-run-readme.log 2>&1" \
+  sh -lc "DISPLAY=host.docker.internal:$DISPLAY_NUMBER IDEA_PROJECT=$IDEA_PROJECT_CONTAINER IDEA_TRUST_PROJECT=true IDEA_LAUNCHER=native run-intellij >/tmp/idea-run-readme.log 2>&1" \
   >"$RUN_DIR/container.id"
 
 ready=0
 deadline=$((SECONDS + READY_TIMEOUT_SECONDS))
+last_progress=0
 while (( SECONDS < deadline )); do
   text="$(curl -fsS "http://127.0.0.1:$PORT/text.txt" 2>/dev/null || true)"
   svg="$(curl -fsS "http://127.0.0.1:$PORT/screen.svg" 2>/dev/null || true)"
   if intellij_screenshot_ready "$text" "$svg"; then
     ready=1
     break
+  fi
+  if (( SECONDS - last_progress >= 15 )); then
+    mapped="$(printf '%s\n' "$text" | awk -F': ' '/^Mapped windows:/ { print $2; exit }')"
+    run_tail="$(docker exec "$IDEA_CONTAINER" sh -lc 'tr "\r" "\n" < /tmp/idea-run-readme.log 2>/dev/null | sed "/^[[:space:]]*$/d" | tail -1 | cut -c1-160 || true' 2>/dev/null || true)"
+    echo "Waiting for IntelliJ screenshot readiness: elapsed=$((READY_TIMEOUT_SECONDS - (deadline - SECONDS)))s mapped=${mapped:-unknown} lastLog=${run_tail:-none}"
+    last_progress="$SECONDS"
   fi
   sleep 2
 done
@@ -298,6 +419,7 @@ if (( READY_SETTLE_SECONDS > 0 )); then
   sleep "$READY_SETTLE_SECONDS"
 fi
 dismiss_intellij_readme_notifications
+assert_intellij_readme_launcher_state
 
 CAPTURE_JS="$RUN_DIR/capture-page.js"
 cat >"$CAPTURE_JS" <<'NODE'

@@ -49,7 +49,7 @@ The HTML/SVG view is also an input surface: moving or clicking over the window m
 Refresh this screenshot after visible renderer changes so the README tracks the current IntelliJ parity state:
 
 ```bash
-ALLOW_NPX_PLAYWRIGHT=1 scripts/update-intellij-readme-screenshot.sh
+ALLOW_NPX_PLAYWRIGHT=1 scripts/run-supervised.sh experiment -- scripts/update-intellij-readme-screenshot.sh
 ```
 
 Recent `xcalc` SVG-composition parity sample:
