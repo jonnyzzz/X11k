@@ -251,6 +251,42 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `screen framebuffer composites partial copy area from destination window framebuffer`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val window = 0x0020_0001
+                val pixmap = 0x0020_0100
+                val gc = 0x0020_1001
+                out.write(createWindowRequest(window, 10, 20, 160, 120))
+                out.write(changePropertyRequest(window, "partial copy target"))
+                out.write(createPixmapRequest(pixmap, width = 64, height = 64))
+                out.write(createGcRequest(gc, window))
+                out.write(putImageRequest(pixmap, gc))
+                out.write(mapWindowRequest(window))
+                out.write(copyAreaRequest(pixmap, window, gc))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                val screen = screenFramebufferImage(svg)
+                assertEquals(0xffff_0000.toInt(), screen.getRGB(60, 80))
+                assertFalse(
+                    screen.getRGB(50, 50) == 0xffff_0000.toInt(),
+                    "Root framebuffer export must use the copied destination framebuffer, not the source pixmap at its original coordinates",
+                )
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `painted pixmap without window copy is exposed as offscreen surface`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -873,6 +909,60 @@ class HttpRenderingTest {
                 val json = httpGet(server.localPort, "/state.json").body
                 assertContains(json, """"id":"0x200100","width":64,"height":64,"depth":24,"painted":true,"pictures":["0x200200"],"matchingWindows":["0x200001"],"retainedPicture":"0x200200"""")
                 assertFalse(json.contains(""""matchingWindows":["0x200001","0x200002"],"retainedPicture":"0x200200""""))
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `screen svg does not present live render pixmap on unrelated same size window`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val compositedWindow = 0x0020_0001
+                val unrelatedWindow = 0x0020_0002
+                val pixmap = 0x0020_0100
+                val sourcePicture = 0x0020_0200
+                val destinationPicture = 0x0020_0201
+                out.write(createWindowRequest(compositedWindow, 10, 20, 64, 64))
+                out.write(changePropertyRequest(compositedWindow, "live render composited target"))
+                out.write(createWindowRequest(unrelatedWindow, 90, 20, 64, 64))
+                out.write(changePropertyRequest(unrelatedWindow, "unrelated live render target"))
+                out.write(createPixmapRequest(pixmap, width = 64, height = 64))
+                out.write(renderCreatePictureRequest(sourcePicture, pixmap, XRender.Rgb24Format))
+                out.write(renderCreatePictureRequest(destinationPicture, compositedWindow, XRender.Rgb24Format))
+                out.write(renderFillRectanglesRequest(sourcePicture))
+                out.write(mapWindowRequest(compositedWindow))
+                out.write(mapWindowRequest(unrelatedWindow))
+                out.write(renderCompositeRequest(sourcePicture, destinationPicture, width = 64, height = 64))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "live render composited target")
+                assertContains(svg, "unrelated live render target")
+                assertContains(svg, """data-window-id="0x200001"""")
+                assertFalse(
+                    Regex("""<image\b(?=[^>]*\bdata-window-id="0x200002")(?=[^>]*\bdata-pixmap-id="0x200100")""").containsMatchIn(svg),
+                    "A live pixmap source composited into one window must not be reused for an unrelated same-size window",
+                )
+
+                val screen = screenFramebufferImage(svg)
+                assertEquals(0xffff_0000.toInt(), screen.getRGB(20, 30))
+                assertFalse(
+                    screen.getRGB(100, 30) == 0xffff_0000.toInt(),
+                    "Root framebuffer export must not paint the live source pixmap into the unrelated same-size window",
+                )
+
+                val json = httpGet(server.localPort, "/state.json").body
+                assertContains(json, """"id":"0x200100","width":64,"height":64,"depth":24,"painted":true,"pictures":["0x200200"],"matchingWindows":["0x200001"],"retainedPicture":null""")
+                assertFalse(json.contains(""""matchingWindows":["0x200001","0x200002"]"""))
             }
 
             server.close()

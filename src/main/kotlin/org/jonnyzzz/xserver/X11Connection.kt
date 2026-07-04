@@ -3979,7 +3979,7 @@ internal class X11Connection(
                 rectangles = listOf(rectangle),
                 imageDataUri = XFramebuffer.imageDataUri(image),
                 sourceDrawableId = source.drawableId,
-                sourceDrawableGeneration = source.retainedDrawableGeneration,
+                sourceDrawableGeneration = source.retainedOrLiveDrawableGeneration(),
                 framebufferBacked = true,
             ),
         )
@@ -4024,7 +4024,7 @@ internal class X11Connection(
                 rectangles = listOf(rectangle),
                 imageDataUri = XFramebuffer.imageDataUri(image),
                 sourceDrawableId = source.drawableId,
-                sourceDrawableGeneration = source.retainedDrawableGeneration,
+                sourceDrawableGeneration = source.retainedOrLiveDrawableGeneration(),
                 framebufferBacked = true,
             ),
         )
@@ -4331,7 +4331,7 @@ internal class X11Connection(
                 kind = XDrawingKind.CopyArea,
                 foreground = source.solidPixel ?: 0,
                 sourceDrawableId = source.drawableId,
-                sourceDrawableGeneration = source.retainedDrawableGeneration,
+                sourceDrawableGeneration = source.retainedOrLiveDrawableGeneration(),
                 points = destinationQuad.points.map { point ->
                     XPoint(point.x.fixedToInt(), point.y.fixedToInt())
                 },
@@ -7246,6 +7246,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = windowId,
+                drawableGeneration = state.drawableGeneration(windowId),
                 kind = XDrawingKind.Clear,
                 foreground = window.backgroundPixel,
                 rectangles = listOf(rectangle),
@@ -7315,6 +7316,8 @@ internal class X11Connection(
                     ),
                     imageDataUri = XFramebuffer.imageDataUri(copy.image),
                     sourceDrawableId = sourceDrawable,
+                    drawableGeneration = state.drawableGeneration(destinationDrawable),
+                    sourceDrawableGeneration = state.drawableGeneration(sourceDrawable),
                     framebufferBacked = true,
                 ),
             )
@@ -7409,6 +7412,8 @@ internal class X11Connection(
                     ),
                     imageDataUri = XFramebuffer.imageDataUri(copy.image),
                     sourceDrawableId = sourceDrawable,
+                    drawableGeneration = state.drawableGeneration(destinationDrawable),
+                    sourceDrawableGeneration = state.drawableGeneration(sourceDrawable),
                     framebufferBacked = true,
                 ),
             )
@@ -7460,6 +7465,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
+                drawableGeneration = state.drawableGeneration(drawableId),
                 kind = XDrawingKind.FillRectangle,
                 foreground = gc.foreground,
                 rectangles = points.map { XRectangleCommand(it.x, it.y, 1, 1) },
@@ -7500,6 +7506,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
+                drawableGeneration = state.drawableGeneration(drawableId),
                 kind = XDrawingKind.Line,
                 foreground = gc.foreground,
                 background = gc.background,
@@ -7559,6 +7566,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
+                drawableGeneration = state.drawableGeneration(drawableId),
                 kind = XDrawingKind.Segment,
                 foreground = gc.foreground,
                 background = gc.background,
@@ -7631,6 +7639,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
+                drawableGeneration = state.drawableGeneration(drawableId),
                 kind = kind,
                 foreground = gc.foreground,
                 background = gc.background,
@@ -7704,6 +7713,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
+                drawableGeneration = state.drawableGeneration(drawableId),
                 kind = if (filled) XDrawingKind.FillArc else XDrawingKind.Arc,
                 foreground = gc.foreground,
                 background = gc.background,
@@ -7758,6 +7768,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
+                drawableGeneration = state.drawableGeneration(drawableId),
                 kind = XDrawingKind.FillPoly,
                 foreground = gc.foreground,
                 background = gc.background,
@@ -7822,6 +7833,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
+                drawableGeneration = state.drawableGeneration(drawableId),
                 kind = XDrawingKind.PutImage,
                 foreground = gc.foreground,
                 rectangles = listOf(
@@ -7870,6 +7882,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
+                drawableGeneration = state.drawableGeneration(drawableId),
                 kind = XDrawingKind.Text,
                 foreground = gc.foreground,
                 background = gc.background,
@@ -7911,6 +7924,7 @@ internal class X11Connection(
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
+                drawableGeneration = state.drawableGeneration(drawableId),
                 kind = XDrawingKind.Text,
                 foreground = gc.foreground,
                 background = gc.background,
@@ -10878,6 +10892,7 @@ internal class X11Connection(
                 state.draw(
                     XDrawingCommand(
                         drawableId = drawableId,
+                        drawableGeneration = state.drawableGeneration(drawableId),
                         kind = XDrawingKind.Clear,
                         foreground = window.backgroundPixel,
                         rectangles = listOf(rectangle),
