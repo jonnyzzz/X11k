@@ -14,7 +14,8 @@ RUN_AGENT_STALE_SECONDS="${RUN_AGENT_STALE_SECONDS:-900}"
 RUN_AGENT_PREFLIGHT_RECOVER_STALE="${RUN_AGENT_PREFLIGHT_RECOVER_STALE:-1}"
 RUN_AGENT_RECOVER_TIMEOUT_SECONDS="${RUN_AGENT_RECOVER_TIMEOUT_SECONDS:-180}"
 RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS="${RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS:-$RUN_AGENT_RECOVER_TIMEOUT_SECONDS}"
-RUN_AGENT_ABORT_AFTER_RECOVERY="${RUN_AGENT_ABORT_AFTER_RECOVERY:-1}"
+RUN_AGENT_RECOVERY_MAX_PASSES="${RUN_AGENT_RECOVERY_MAX_PASSES:-2}"
+RUN_AGENT_ABORT_AFTER_RECOVERY="${RUN_AGENT_ABORT_AFTER_RECOVERY:-0}"
 
 timeout_bin() {
   if command -v timeout >/dev/null 2>&1; then
@@ -39,7 +40,8 @@ run_bounded() {
   fi
 }
 
-recover_stale_agents() {
+recover_stale_agents_once() {
+  local fail_on_recovery="$1"
   run_bounded "$RUN_AGENT_RECOVER_TIMEOUT_SECONDS" env \
     RUN_AGENT_WATCH_ONCE=1 \
     RUN_AGENT_WATCH_LIMIT="$RUN_AGENT_WATCH_LIMIT" \
@@ -47,8 +49,35 @@ recover_stale_agents() {
     RUN_AGENT_DIAGNOSE_STALE=1 \
     RUN_AGENT_TERMINATE_STALE=1 \
     RUN_AGENT_RESTART_STALE=1 \
-    RUN_AGENT_FAIL_ON_RECOVERY="$RUN_AGENT_ABORT_AFTER_RECOVERY" \
+    RUN_AGENT_FAIL_ON_RECOVERY="$fail_on_recovery" \
     "$BASE_DIR/watch-agents.sh"
+}
+
+recover_stale_agents() {
+  if [ "$RUN_AGENT_ABORT_AFTER_RECOVERY" = "1" ]; then
+    recover_stale_agents_once 1
+    return
+  fi
+
+  local pass status
+  for ((pass = 1; pass <= RUN_AGENT_RECOVERY_MAX_PASSES; pass++)); do
+    set +e
+    recover_stale_agents_once 1
+    status="$?"
+    set -e
+    if [ "$status" -eq 0 ]; then
+      return 0
+    fi
+    if [ "$status" -ne 124 ]; then
+      return "$status"
+    fi
+    if [ "$pass" -ge "$RUN_AGENT_RECOVERY_MAX_PASSES" ]; then
+      echo "ralph-loop.sh: stale-agent recovery did not settle after ${RUN_AGENT_RECOVERY_MAX_PASSES} bounded passes." >&2
+      return "$status"
+    fi
+    echo "ralph-loop.sh: stale-agent recovery ran; verifying clean state before launching the next agent." >&2
+    sleep 2
+  done
 }
 
 run_agent() {
@@ -59,7 +88,7 @@ run_agent() {
     status=0
   else
     status="$?"
-    echo "ralph-loop.sh: stale-agent recovery performed or failed; inspect runs/agent-watch.log and rerun after recovery settles." >&2
+    echo "ralph-loop.sh: stale-agent recovery failed or did not settle; inspect runs/agent-watch.log before retrying." >&2
     return "$status"
   fi
   export RUN_AGENT_TIMEOUT_SECONDS
@@ -91,6 +120,7 @@ Defaults:
   RUN_AGENT_STALE_SECONDS=$RUN_AGENT_STALE_SECONDS
   RUN_AGENT_RECOVER_TIMEOUT_SECONDS=$RUN_AGENT_RECOVER_TIMEOUT_SECONDS
   RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS=$RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS
+  RUN_AGENT_RECOVERY_MAX_PASSES=$RUN_AGENT_RECOVERY_MAX_PASSES
   RUN_AGENT_ABORT_AFTER_RECOVERY=$RUN_AGENT_ABORT_AFTER_RECOVERY
   RUN_AGENT_RESTART_MAX_ATTEMPTS=${RUN_AGENT_RESTART_MAX_ATTEMPTS:-1}
   RUN_AGENT_RESTART_ROTATE_AGENT=${RUN_AGENT_RESTART_ROTATE_AGENT:-1}

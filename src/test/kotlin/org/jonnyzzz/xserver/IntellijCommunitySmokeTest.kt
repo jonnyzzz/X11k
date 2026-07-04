@@ -492,8 +492,8 @@ class IntellijCommunitySmokeTest {
         val referenceImage = System.getProperty("x.intellijReferenceImage")
             ?: System.getenv("X_INTELLIJ_REFERENCE_IMAGE")
             ?: "jonnyzzz-x/x11-reference:latest"
-        assumeTrue(imageExists(clientImage), "Build $clientImage first with scripts/run-gradle-bounded.sh dockerBuildX11Client")
-        assumeTrue(imageExists(referenceImage), "Build $referenceImage first with scripts/run-gradle-bounded.sh dockerBuildX11Images")
+        assumeTrue(imageExists(clientImage), "Build $clientImage first with scripts/run-supervised.sh gradle dockerBuildX11Client")
+        assumeTrue(imageExists(referenceImage), "Build $referenceImage first with scripts/run-supervised.sh gradle dockerBuildX11Images")
 
         val reference = runIntellijAgainstXvfb(referenceImage, url)
         val actual = runIntellijAgainstKotlinServer(port, clientImage, url)

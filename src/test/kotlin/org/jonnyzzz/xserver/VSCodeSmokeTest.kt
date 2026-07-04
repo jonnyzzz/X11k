@@ -223,7 +223,7 @@ class VSCodeSmokeTest {
         val image = System.getProperty("x.vscodeImage")
             ?: System.getenv("X_VSCODE_IMAGE")
             ?: "jonnyzzz-x/x11-client:latest"
-        assumeTrue(imageExists(image), "Build $image first with scripts/run-gradle-bounded.sh dockerBuildX11Client")
+        assumeTrue(imageExists(image), "Build $image first with scripts/run-supervised.sh gradle dockerBuildX11Client")
 
         XServer(ServerOptions(host = "0.0.0.0", port = port, width = 1280, height = 900)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -299,8 +299,8 @@ class VSCodeSmokeTest {
         val referenceImage = System.getProperty("x.vscodeReferenceImage")
             ?: System.getenv("X_VSCODE_REFERENCE_IMAGE")
             ?: "jonnyzzz-x/x11-reference:latest"
-        assumeTrue(imageExists(clientImage), "Build $clientImage first with scripts/run-gradle-bounded.sh dockerBuildX11Client")
-        assumeTrue(imageExists(referenceImage), "Build $referenceImage first with scripts/run-gradle-bounded.sh dockerBuildX11Images")
+        assumeTrue(imageExists(clientImage), "Build $clientImage first with scripts/run-supervised.sh gradle dockerBuildX11Client")
+        assumeTrue(imageExists(referenceImage), "Build $referenceImage first with scripts/run-supervised.sh gradle dockerBuildX11Images")
 
         val reference = runVSCodeAgainstXvfb(referenceImage, url)
         assertTrue(

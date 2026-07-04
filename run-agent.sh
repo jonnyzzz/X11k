@@ -110,10 +110,13 @@ Configuration (env variables):
   RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS
                       Wall-clock timeout for the preflight watch/recovery pulse
                       (default: 180, 0 disables)
+  RUN_AGENT_PREFLIGHT_RECOVERY_MAX_PASSES
+                      Number of bounded preflight passes before giving up
+                      when stale-agent recovery keeps finding work (default: 2)
   RUN_AGENT_PREFLIGHT_ABORT_AFTER_RECOVERY
                       Abort this launch after preflight had to terminate/restart
-                      stale agents (default: 1). This prevents the next prompt
-                      from overlapping a recovery restart; rerun after recovery.
+                      stale agents (default: 0). When 0, run a clean verification
+                      pass before launching the agent.
   RUN_AGENT_RESTART_ROOT / RUN_AGENT_RESTART_OF / RUN_AGENT_RESTART_ATTEMPT
                       Metadata written by watch-agents.sh when a stale run is
                       restarted. These fields make repeated-restart loops
@@ -207,7 +210,8 @@ RUN_AGENT_PREFLIGHT_RECOVER_STALE="${RUN_AGENT_PREFLIGHT_RECOVER_STALE:-1}"
 RUN_AGENT_PREFLIGHT_STALE_SECONDS="${RUN_AGENT_PREFLIGHT_STALE_SECONDS:-${RUN_AGENT_STALE_SECONDS:-900}}"
 RUN_AGENT_PREFLIGHT_WATCH_LIMIT="${RUN_AGENT_PREFLIGHT_WATCH_LIMIT:-40}"
 RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS="${RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS:-180}"
-RUN_AGENT_PREFLIGHT_ABORT_AFTER_RECOVERY="${RUN_AGENT_PREFLIGHT_ABORT_AFTER_RECOVERY:-1}"
+RUN_AGENT_PREFLIGHT_RECOVERY_MAX_PASSES="${RUN_AGENT_PREFLIGHT_RECOVERY_MAX_PASSES:-2}"
+RUN_AGENT_PREFLIGHT_ABORT_AFTER_RECOVERY="${RUN_AGENT_PREFLIGHT_ABORT_AFTER_RECOVERY:-0}"
 
 run_preflight_bounded() {
   local seconds="$1"
@@ -227,23 +231,37 @@ if [ "$RUN_AGENT_PREFLIGHT_WATCH" != "0" ] && \
    [ -x "$BASE_DIR/watch-agents.sh" ] && \
    [ "${RUN_AGENT_IN_PREFLIGHT_WATCH:-0}" != "1" ]; then
   echo "RUN_AGENT_PREFLIGHT_WATCH=1"
-  run_preflight_bounded "$RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS" env \
-    RUN_AGENT_IN_PREFLIGHT_WATCH=1 \
-    RUN_AGENT_WATCH_ONCE=1 \
-    RUN_AGENT_WATCH_LIMIT="$RUN_AGENT_PREFLIGHT_WATCH_LIMIT" \
-    RUN_AGENT_STALE_SECONDS="$RUN_AGENT_PREFLIGHT_STALE_SECONDS" \
-    RUN_AGENT_DIAGNOSE_STALE=1 \
-    RUN_AGENT_TERMINATE_STALE="$RUN_AGENT_PREFLIGHT_RECOVER_STALE" \
-    RUN_AGENT_RESTART_STALE="$RUN_AGENT_PREFLIGHT_RECOVER_STALE" \
-    RUN_AGENT_FAIL_ON_RECOVERY="$RUN_AGENT_PREFLIGHT_ABORT_AFTER_RECOVERY" \
-    "$BASE_DIR/watch-agents.sh" || {
-      _preflight_status=$?
-      echo "RUN_AGENT_PREFLIGHT_WATCH_EXIT=$_preflight_status" >&2
-      if [ "$RUN_AGENT_PREFLIGHT_ABORT_AFTER_RECOVERY" = "1" ]; then
-        echo "RUN_AGENT_PREFLIGHT_ABORTED_AFTER_RECOVERY=1" >&2
-        exit "$_preflight_status"
-      fi
-    }
+  _preflight_pass=1
+  while :; do
+    set +e
+    run_preflight_bounded "$RUN_AGENT_PREFLIGHT_WATCH_TIMEOUT_SECONDS" env \
+      RUN_AGENT_IN_PREFLIGHT_WATCH=1 \
+      RUN_AGENT_WATCH_ONCE=1 \
+      RUN_AGENT_WATCH_LIMIT="$RUN_AGENT_PREFLIGHT_WATCH_LIMIT" \
+      RUN_AGENT_STALE_SECONDS="$RUN_AGENT_PREFLIGHT_STALE_SECONDS" \
+      RUN_AGENT_DIAGNOSE_STALE=1 \
+      RUN_AGENT_TERMINATE_STALE="$RUN_AGENT_PREFLIGHT_RECOVER_STALE" \
+      RUN_AGENT_RESTART_STALE="$RUN_AGENT_PREFLIGHT_RECOVER_STALE" \
+      RUN_AGENT_FAIL_ON_RECOVERY=1 \
+      "$BASE_DIR/watch-agents.sh"
+    _preflight_status=$?
+    set -e
+    if [ "$_preflight_status" -eq 0 ]; then
+      break
+    fi
+    echo "RUN_AGENT_PREFLIGHT_WATCH_EXIT=$_preflight_status" >&2
+    if [ "$RUN_AGENT_PREFLIGHT_ABORT_AFTER_RECOVERY" = "1" ]; then
+      echo "RUN_AGENT_PREFLIGHT_ABORTED_AFTER_RECOVERY=1" >&2
+      exit "$_preflight_status"
+    fi
+    if [ "$_preflight_status" -ne 124 ] || [ "$_preflight_pass" -ge "$RUN_AGENT_PREFLIGHT_RECOVERY_MAX_PASSES" ]; then
+      echo "RUN_AGENT_PREFLIGHT_RECOVERY_UNSETTLED=1" >&2
+      exit "$_preflight_status"
+    fi
+    echo "RUN_AGENT_PREFLIGHT_RECOVERY_RECHECK=1" >&2
+    _preflight_pass=$((_preflight_pass + 1))
+    sleep 2
+  done
 fi
 
 # Build agent command array — properly quoted, no eval needed.

@@ -5,7 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WATCH_TIMEOUT_SECONDS="${SUPERVISED_WATCH_TIMEOUT_SECONDS:-180}"
 WATCH_LIMIT="${SUPERVISED_WATCH_LIMIT:-40}"
 WATCH_STALE_SECONDS="${SUPERVISED_WATCH_STALE_SECONDS:-900}"
-ABORT_AFTER_RECOVERY="${SUPERVISED_ABORT_AFTER_RECOVERY:-1}"
+RECOVERY_MAX_PASSES="${SUPERVISED_RECOVERY_MAX_PASSES:-2}"
+ABORT_AFTER_RECOVERY="${SUPERVISED_ABORT_AFTER_RECOVERY:-0}"
 
 usage() {
   cat <<USAGE
@@ -28,6 +29,7 @@ Environment:
   SUPERVISED_WATCH_TIMEOUT_SECONDS=$WATCH_TIMEOUT_SECONDS
   SUPERVISED_WATCH_LIMIT=$WATCH_LIMIT
   SUPERVISED_WATCH_STALE_SECONDS=$WATCH_STALE_SECONDS
+  SUPERVISED_RECOVERY_MAX_PASSES=$RECOVERY_MAX_PASSES
   SUPERVISED_ABORT_AFTER_RECOVERY=$ABORT_AFTER_RECOVERY
 USAGE
 }
@@ -106,7 +108,8 @@ print_latest_failure_context() {
   fi
 }
 
-recover_stale_agents() {
+recover_stale_agents_once() {
+  local fail_on_recovery="$1"
   run_bounded "$WATCH_TIMEOUT_SECONDS" env \
     RUN_AGENT_WATCH_ONCE=1 \
     RUN_AGENT_WATCH_LIMIT="$WATCH_LIMIT" \
@@ -114,8 +117,35 @@ recover_stale_agents() {
     RUN_AGENT_DIAGNOSE_STALE=1 \
     RUN_AGENT_TERMINATE_STALE=1 \
     RUN_AGENT_RESTART_STALE=1 \
-    RUN_AGENT_FAIL_ON_RECOVERY="$ABORT_AFTER_RECOVERY" \
+    RUN_AGENT_FAIL_ON_RECOVERY="$fail_on_recovery" \
     "$ROOT/watch-agents.sh"
+}
+
+recover_stale_agents() {
+  if [[ "$ABORT_AFTER_RECOVERY" == "1" ]]; then
+    recover_stale_agents_once 1
+    return
+  fi
+
+  local pass status
+  for ((pass = 1; pass <= RECOVERY_MAX_PASSES; pass++)); do
+    set +e
+    recover_stale_agents_once 1
+    status="$?"
+    set -e
+    if [[ "$status" -eq 0 ]]; then
+      return 0
+    fi
+    if [[ "$status" -ne 124 ]]; then
+      return "$status"
+    fi
+    if (( pass >= RECOVERY_MAX_PASSES )); then
+      echo "scripts/run-supervised.sh: stale-agent recovery did not settle after ${RECOVERY_MAX_PASSES} bounded passes." >&2
+      return "$status"
+    fi
+    echo "scripts/run-supervised.sh: stale-agent recovery ran; verifying clean state before starting requested work." >&2
+    sleep 2
+  done
 }
 
 run_with_recovery() {
@@ -127,7 +157,7 @@ run_with_recovery() {
   status="$?"
   set -e
   if [[ "$status" -ne 0 ]]; then
-    echo "scripts/run-supervised.sh: stale-agent recovery ran or failed; retry the requested command after WATCH_SUMMARY is clean." >&2
+    echo "scripts/run-supervised.sh: stale-agent recovery failed or did not settle; inspect runs/agent-watch.log before retrying." >&2
     return "$status"
   fi
   set +e
