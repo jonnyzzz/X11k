@@ -240,6 +240,9 @@ class IntellijCommunitySmokeTest {
             """
             - #8 QueryServerString minor=19 screen=0 name=3 value=GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile
             - #7 SetClientInfo2ARB minor=35 layout=spec client=1.4 versions=1 glBytes=14 glxBytes=67 glExtensions=GL_EXT_texture glxExtensions=GLX_ARB_create_context GLX_EXT_create_context_es_profile
+            - #6 CreatePbuffer minor=27 screen=0 fbconfig=0x28 pbuffer=0x1800001 attribs=2 attrs=[0x8041=1, 0x8040=1]
+            - #5 CreateContextAttribsARB minor=34 context=0x1800002 fbconfig=0x28 screen=0 share=0x0 direct=true attribs=3 attrs=[0x2091=4, 0x2092=5, 0x9126=1]
+            - #4 Error minor=34 request=CreateContextAttribsARB error=167 badValue=0x1800002 sequence=4
             """.trimIndent()
         val logs = listOf(
             IntellijLogArtifact(
@@ -308,6 +311,17 @@ class IntellijCommunitySmokeTest {
         assertTrue(
             summaryFromExplicitText.contains("kotlinServerGlxExtensionsFromTrace=GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es2_profile GLX_EXT_create_context_es_profile"),
             summaryFromExplicitText,
+        )
+        assertTrue(summary.contains("kotlinGlxLifecycleOperations=CreateContextAttribsARB CreatePbuffer"), summary)
+        assertTrue(
+            summary.contains(
+                "kotlinGlxLifecycleTrace=- #6 CreatePbuffer minor=27 screen=0 fbconfig=0x28 pbuffer=0x1800001 attribs=2 attrs=[0x8041=1, 0x8040=1] | - #5 CreateContextAttribsARB minor=34 context=0x1800002 fbconfig=0x28 screen=0 share=0x0 direct=true attribs=3 attrs=[0x2091=4, 0x2092=5, 0x9126=1]",
+            ),
+            summary,
+        )
+        assertTrue(
+            summary.contains("kotlinGlxProtocolErrors=- #4 Error minor=34 request=CreateContextAttribsARB error=167 badValue=0x1800002 sequence=4"),
+            summary,
         )
         assertTrue(summary.contains("kotlinExplicitTextTraceIncluded=false"), summary)
         assertTrue(summaryFromExplicitText.contains("kotlinExplicitTextTraceIncluded=true"), summaryFromExplicitText)
@@ -1203,6 +1217,10 @@ class IntellijCommunitySmokeTest {
             appendLine("kotlinGlxExtensions=${glxExtensionsFromXdpyinfo(kotlinGlx).joinToString(" ")}")
             appendLine("kotlinServerGlxExtensionsFromTrace=${serverGlxExtensionsFromText(kotlinTrace).joinToString(" ")}")
             appendLine("kotlinClientGlxExtensions=${clientGlxExtensionsFromText(kotlinTrace).joinToString(" ")}")
+            val lifecycleLines = glxLifecycleOperationLinesFromText(kotlinTrace)
+            appendLine("kotlinGlxLifecycleOperations=${glxLifecycleOperationNamesFromLines(lifecycleLines).joinToString(" ")}")
+            appendLine("kotlinGlxLifecycleTrace=${lifecycleLines.joinToString(" | ").ifEmpty { "None" }}")
+            appendLine("kotlinGlxProtocolErrors=${glxProtocolErrorLinesFromText(kotlinTrace).joinToString(" | ").ifEmpty { "None" }}")
             appendLine("xvfbAngleInitializationPbufferFailure=${angleInitializationPbufferFailure(xvfbTrace)}")
             appendLine("kotlinAngleInitializationPbufferFailure=${angleInitializationPbufferFailure(kotlinTrace)}")
             appendLine("xvfbAngleMissingEsProfileMessage=${angleMissingEsProfileMessage(xvfbTrace)}")
@@ -1263,6 +1281,40 @@ class IntellijCommunitySmokeTest {
             .filter { it.startsWith("GLX_") }
             .distinct()
             .sorted()
+            .toList()
+
+    private fun glxLifecycleOperationLinesFromText(text: String): List<String> {
+        val lifecycleOperations = setOf(
+            "CreateContext",
+            "CreateNewContext",
+            "CreateContextAttribsARB",
+            "CreatePbuffer",
+            "DestroyContext",
+            "DestroyPbuffer",
+            "GetDrawableAttributes",
+            "MakeCurrent",
+            "MakeContextCurrent",
+            "QueryContext",
+        )
+        return Regex("""-\s+#\d+\s+([A-Za-z0-9]+)\s+minor=\d+[^\n]*""")
+            .findAll(text)
+            .filter { match -> match.groupValues[1] in lifecycleOperations }
+            .map { match -> match.value.trim() }
+            .distinct()
+            .toList()
+    }
+
+    private fun glxLifecycleOperationNamesFromLines(lines: List<String>): List<String> =
+        lines
+            .mapNotNull { line -> Regex("""#\d+\s+([A-Za-z0-9]+)\s+minor=""").find(line)?.groupValues?.get(1) }
+            .distinct()
+            .sorted()
+
+    private fun glxProtocolErrorLinesFromText(text: String): List<String> =
+        Regex("""-\s+#\d+\s+Error\s+minor=\d+[^\n]*""")
+            .findAll(text)
+            .map { match -> match.value.trim() }
+            .distinct()
             .toList()
 
     private fun intellijLogArtifactName(prefix: String, path: String): String {
