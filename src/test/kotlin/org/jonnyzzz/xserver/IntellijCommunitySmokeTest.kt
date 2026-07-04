@@ -86,6 +86,30 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij smoke svg composition parser prefers composited root framebuffer`() {
+        val svg =
+            """
+            <svg>
+              <image class="framebuffer-image screen-framebuffer-image" data-source="composited-root" data-window-id="0x26" x="0" y="0" width="4" height="3" href="data:image/png;base64,cm9vdA=="/>
+              <g class="semantic-window-layers" visibility="hidden">
+                <image class="framebuffer-image" data-source="window-framebuffer" data-window-id="0x20" x="1" y="2" width="3" height="4" href="data:image/png;base64,aGlkZGVu"/>
+              </g>
+            </svg>
+            """.trimIndent()
+
+        val layers = svgCompositionLayers(svg)
+
+        assertEquals(1, layers.size)
+        assertEquals("0x26", layers.single().id)
+        assertEquals("composited-root", layers.single().source)
+        assertEquals("root", layers.single().bytes?.decodeToString())
+        assertEquals(0, layers.single().x)
+        assertEquals(0, layers.single().y)
+        assertEquals(4, layers.single().width)
+        assertEquals(3, layers.single().height)
+    }
+
+    @Test
     fun `intellij html preview parser identifies large retained surfaces`() {
         val html =
             """
@@ -802,7 +826,7 @@ class IntellijCommunitySmokeTest {
 
     private fun svgCompositionLayers(svg: String): List<SvgLayer> {
         val clipRectangles = svgClipRectangles(svg)
-        return Regex("""<(?:image|rect)\b[^>]*>""")
+        val layers = Regex("""<(?:image|rect)\b[^>]*>""")
             .findAll(svg)
             .mapNotNull { match ->
                 if (isInsideHiddenSvgGroup(svg, match.range.first)) return@mapNotNull null
@@ -819,6 +843,7 @@ class IntellijCommunitySmokeTest {
                         ?: return@mapNotNull null
                     return@mapNotNull SvgLayer(
                         id = id,
+                        source = "window-border",
                         bytes = null,
                         fill = 0xff00_0000.toInt() or fill,
                         x = x,
@@ -831,6 +856,7 @@ class IntellijCommunitySmokeTest {
                 val id = Regex("""\bdata-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1) ?: "framebuffer"
                 SvgLayer(
                     id = id,
+                    source = svgStringAttribute(tag, "data-source") ?: "framebuffer",
                     bytes = Base64.getDecoder().decode(encoded),
                     fill = null,
                     x = x,
@@ -843,6 +869,7 @@ class IntellijCommunitySmokeTest {
                 )
             }
             .toList()
+        return layers.filter { it.source == "composited-root" && it.bytes != null }.ifEmpty { layers }
     }
 
     private fun isInsideHiddenSvgGroup(svg: String, offset: Int): Boolean {
@@ -1253,6 +1280,7 @@ class IntellijCommunitySmokeTest {
             layers.forEachIndexed { index, layer ->
                 append(index)
                 append(": id=").append(layer.id)
+                append(" source=").append(layer.source)
                 append(" x=").append(layer.x)
                 append(" y=").append(layer.y)
                 append(" width=").append(layer.width)
@@ -1575,6 +1603,7 @@ class IntellijCommunitySmokeTest {
 
     private data class SvgLayer(
         val id: String,
+        val source: String,
         val bytes: ByteArray?,
         val fill: Int?,
         val x: Int,

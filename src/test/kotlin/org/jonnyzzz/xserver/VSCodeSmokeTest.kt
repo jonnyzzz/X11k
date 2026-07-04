@@ -123,6 +123,28 @@ class VSCodeSmokeTest {
     }
 
     @Test
+    fun `vscode svg composition parser prefers composited root framebuffer`() {
+        val root = onePixelPngBase64(0xff12_3456.toInt())
+        val hidden = onePixelPngBase64(0xffff_0000.toInt())
+        val svg = """
+            <svg width="2" height="1" xmlns="http://www.w3.org/2000/svg">
+              <image class="framebuffer-image screen-framebuffer-image" data-source="composited-root" data-window-id="0x26" x="0" y="0" width="2" height="1" href="data:image/png;base64,$root"/>
+              <g class="semantic-window-layers" visibility="hidden">
+                <image class="framebuffer-image" data-source="window-framebuffer" data-window-id="0xhidden" x="0" y="0" width="1" height="1" href="data:image/png;base64,$hidden"/>
+              </g>
+            </svg>
+        """.trimIndent()
+
+        val layers = svgCompositionLayers(svg)
+        val image = composePngLayers(layers, width = 2, height = 1)
+
+        assertEquals(listOf("0x26"), layers.map { it.id })
+        assertEquals(listOf("composited-root"), layers.map { it.source })
+        assertEquals(0xff12_3456.toInt(), image.getRGB(0, 0))
+        assertEquals(0xff12_3456.toInt(), image.getRGB(1, 0))
+    }
+
+    @Test
     fun `vscode html preview parser identifies large code window surfaces`() {
         val html = """
             <section class="window-contents">
@@ -559,7 +581,7 @@ class VSCodeSmokeTest {
 
     private fun svgCompositionLayers(svg: String): List<SvgLayer> {
         val clipRectangles = svgClipRectangles(svg)
-        return Regex("""<(?:image|rect)\b[^>]*>""")
+        val layers = Regex("""<(?:image|rect)\b[^>]*>""")
             .findAll(svg)
             .mapNotNull { match ->
                 if (isInsideHiddenSvgGroup(svg, match.range.first)) return@mapNotNull null
@@ -576,6 +598,7 @@ class VSCodeSmokeTest {
                         ?: return@mapNotNull null
                     return@mapNotNull SvgLayer(
                         id = id,
+                        source = "window-border",
                         bytes = null,
                         fill = 0xff00_0000.toInt() or fill,
                         x = x,
@@ -588,6 +611,7 @@ class VSCodeSmokeTest {
                 val id = Regex("""\bdata-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1) ?: "framebuffer"
                 SvgLayer(
                     id = id,
+                    source = svgStringAttribute(tag, "data-source") ?: "framebuffer",
                     bytes = Base64.getDecoder().decode(encoded),
                     fill = null,
                     x = x,
@@ -600,6 +624,7 @@ class VSCodeSmokeTest {
                 )
             }
             .toList()
+        return layers.filter { it.source == "composited-root" && it.bytes != null }.ifEmpty { layers }
     }
 
     private fun isInsideHiddenSvgGroup(svg: String, offset: Int): Boolean {
@@ -973,6 +998,7 @@ class VSCodeSmokeTest {
             layers.forEachIndexed { index, layer ->
                 append(index)
                 append(": id=").append(layer.id)
+                append(" source=").append(layer.source)
                 append(" x=").append(layer.x)
                 append(" y=").append(layer.y)
                 append(" width=").append(layer.width)
@@ -1394,6 +1420,7 @@ class VSCodeSmokeTest {
 
     private data class SvgLayer(
         val id: String,
+        val source: String,
         val bytes: ByteArray?,
         val fill: Int?,
         val x: Int,
