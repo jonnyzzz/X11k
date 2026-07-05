@@ -215,13 +215,13 @@ internal object XGlx {
             else -> "Unknown"
         }
 
-    fun glString(name: Int): String =
+    fun glString(name: Int, context: XGlxContext? = null): String =
         when (name) {
             GlVendor -> GlVendorString
             GlRenderer -> GlRendererString
-            GlVersion -> GlVersionString
+            GlVersion -> glVersionString(context)
             GlExtensions -> GlExtensionsString
-            GlShadingLanguageVersion -> GlShadingLanguageVersionString
+            GlShadingLanguageVersion -> glShadingLanguageVersionString(context)
             else -> ""
         }
 
@@ -233,7 +233,7 @@ internal object XGlx {
             else -> ""
         }
 
-    fun glIntegerValues(pname: Int, screenWidth: Int, screenHeight: Int): IntArray =
+    fun glIntegerValues(pname: Int, screenWidth: Int, screenHeight: Int, context: XGlxContext? = null): IntArray =
         when (pname) {
             GlMatrixMode -> intArrayOf(GlModelview)
             GlViewport -> intArrayOf(0, 0, screenWidth, screenHeight)
@@ -254,10 +254,32 @@ internal object XGlx {
             GlMaxVertexTextureImageUnits -> intArrayOf(0)
             GlMaxCombinedTextureImageUnits -> intArrayOf(8)
             GlMaxDrawBuffers -> intArrayOf(1)
-            GlMajorVersion -> intArrayOf(2)
-            GlMinorVersion -> intArrayOf(1)
+            GlMajorVersion -> intArrayOf(glMajorVersion(context))
+            GlMinorVersion -> intArrayOf(glMinorVersion(context))
             else -> intArrayOf(0)
         }
+
+    private fun glVersionString(context: XGlxContext?): String {
+        val prefix = if (context.isEsProfile()) "OpenGL ES " else ""
+        val major = glMajorVersion(context)
+        val minor = glMinorVersion(context)
+        return "$prefix$major.$minor Mesa 26.0.0"
+    }
+
+    private fun glShadingLanguageVersionString(context: XGlxContext?): String =
+        if (context.isEsProfile()) "OpenGL ES GLSL ES 1.00" else GlShadingLanguageVersionString
+
+    private fun glMajorVersion(context: XGlxContext?): Int =
+        context?.contextMajorVersion?.takeIf { it > 0 } ?: 2
+
+    private fun glMinorVersion(context: XGlxContext?): Int =
+        context?.contextMinorVersion?.takeIf { it >= 0 } ?: if (context == null || !context.hasRequestedVersion()) 1 else 0
+
+    private fun XGlxContext?.isEsProfile(): Boolean =
+        this != null && (profileMask and ContextEs2ProfileBitExt) != 0
+
+    private fun XGlxContext.hasRequestedVersion(): Boolean =
+        contextMajorVersion != null || contextMinorVersion != null
 
     fun glFloatValues(pname: Int): FloatArray =
         when (pname) {

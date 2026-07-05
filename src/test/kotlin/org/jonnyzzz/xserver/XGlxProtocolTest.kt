@@ -626,6 +626,54 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX attributed ES profile context drives GL metadata queries`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_0136
+            writeRequest(
+                socket,
+                XGlx.MajorOpcode,
+                XGlx.CreateContextAttribsARB,
+                createContextAttribsBody(
+                    contextId,
+                    direct = false,
+                    attributes = listOf(
+                        XGlx.ContextMajorVersionArb to 2,
+                        XGlx.ContextMinorVersionArb to 0,
+                        XGlx.ContextProfileMaskArb to XGlx.ContextEs2ProfileBitExt,
+                    ),
+                ),
+            )
+            writeRequest(
+                socket,
+                XGlx.MajorOpcode,
+                XGlx.MakeContextCurrent,
+                u32(0) + u32(X11Ids.RootWindow) + u32(X11Ids.RootWindow) + u32(contextId),
+            )
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryContext, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetString, getStringBody(contextId, XGlx.GlVersion))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetString, getStringBody(contextId, XGlx.GlShadingLanguageVersion))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, XGlx.GlMajorVersion))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, XGlx.GlMinorVersion))
+
+            readReply(socket.getInputStream())
+            val query = readReply(socket.getInputStream())
+            val attributes = attributeMap(query, offset = 32, count = u32le(query, 8))
+            assertEquals(XGlx.ContextEs2ProfileBitExt, attributes.getValue(XGlx.ContextProfileMaskArb))
+            assertEquals(2, attributes.getValue(XGlx.ContextMajorVersionArb))
+            assertEquals(0, attributes.getValue(XGlx.ContextMinorVersionArb))
+            assertEquals("OpenGL ES 2.0 Mesa 26.0.0", readGlxStringReply(socket.getInputStream()))
+            assertEquals("OpenGL ES GLSL ES 1.00", readGlxStringReply(socket.getInputStream()))
+            assertEquals(listOf(2), readGlxIntVectorReply(socket.getInputStream()))
+            assertEquals(listOf(0), readGlxIntVectorReply(socket.getInputStream()))
+
+            val text = httpGet(socket, "/text.txt")
+            assertTrue(text.contains("GetString minor=129 contextTag=0x${contextId.toString(16)} name=0x1f02 value=OpenGL ES 2.0 Mesa 26.0.0"), text)
+            assertTrue(text.contains("GetIntegerv minor=117 contextTag=0x${contextId.toString(16)} pname=0x821b values=[2]"), text)
+        }
+    }
+
+    @Test
     fun `GLX GetFloatv and GetIntegerv return stable state metadata for current context`() {
         withServer { socket ->
             val contextId = 0x0020_0138

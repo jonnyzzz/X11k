@@ -5488,35 +5488,39 @@ internal class X11Connection(
     private fun glxGetString(body: ByteArray) {
         if (body.size != 8) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetString, badValue = 0)
         val contextTag = byteOrder.u32(body, 0)
-        if (state.glxContext(contextTag) == null) {
+        val glxContext = state.glxContext(contextTag)
+        if (glxContext == null) {
             return writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetString, badValue = contextTag)
         }
         if (glxRejectPendingLargeRender(contextTag, XGlx.GetString)) return
-        glxStringReply(XGlx.glString(byteOrder.u32(body, 4)))
+        glxStringReply(XGlx.glString(byteOrder.u32(body, 4), glxContext))
     }
 
     private fun glxGetFloatv(body: ByteArray) {
-        val pname = glxStateQueryPname(body, XGlx.GetFloatv) ?: return
-        glxFloatVectorReply(XGlx.glFloatValues(pname))
+        val query = glxStateQuery(body, XGlx.GetFloatv) ?: return
+        glxFloatVectorReply(XGlx.glFloatValues(query.pname))
     }
 
     private fun glxGetIntegerv(body: ByteArray) {
-        val pname = glxStateQueryPname(body, XGlx.GetIntegerv) ?: return
-        glxIntVectorReply(XGlx.glIntegerValues(pname, state.width, state.height))
+        val query = glxStateQuery(body, XGlx.GetIntegerv) ?: return
+        glxIntVectorReply(XGlx.glIntegerValues(query.pname, state.width, state.height, query.context))
     }
 
-    private fun glxStateQueryPname(body: ByteArray, minorOpcode: Int): Int? {
+    private data class GlxStateQuery(val context: XGlxContext, val pname: Int)
+
+    private fun glxStateQuery(body: ByteArray, minorOpcode: Int): GlxStateQuery? {
         if (body.size != 8) {
             writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
             return null
         }
         val contextTag = byteOrder.u32(body, 0)
-        if (state.glxContext(contextTag) == null) {
+        val glxContext = state.glxContext(contextTag)
+        if (glxContext == null) {
             writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = contextTag)
             return null
         }
         if (glxRejectPendingLargeRender(contextTag, minorOpcode)) return null
-        return byteOrder.u32(body, 4)
+        return GlxStateQuery(glxContext, byteOrder.u32(body, 4))
     }
 
     private fun glxIntVectorReply(values: IntArray) {
@@ -5756,6 +5760,7 @@ internal class X11Connection(
     private fun glxDetail(minorOpcode: Int, body: ByteArray): String {
         fun hex(offset: Int): String = if (body.size >= offset + 4) byteOrder.u32(body, offset).toHex() else "n/a"
         fun u32(offset: Int): String = if (body.size >= offset + 4) byteOrder.u32(body, offset).toString() else "n/a"
+        fun context(offset: Int): XGlxContext? = if (body.size >= offset + 4) state.glxContext(byteOrder.u32(body, offset)) else null
         fun stringField(offset: Int, size: Long): String {
             if (size < 0L || size > Int.MAX_VALUE) return "n/a"
             val length = size.toInt()
@@ -5824,8 +5829,8 @@ internal class X11Connection(
             XGlx.SwapBuffers -> "contextTag=${hex(0)} drawable=${hex(4)}"
             XGlx.UseXFont -> "contextTag=${hex(0)} font=${hex(4)} first=${u32(8)} count=${u32(12)} listBase=${u32(16)}"
             XGlx.GetFloatv -> "contextTag=${hex(0)} pname=${hex(4)} values=${if (body.size >= 8) XGlx.glFloatValues(byteOrder.u32(body, 4)).joinToString(",", "[", "]") else "n/a"}"
-            XGlx.GetIntegerv -> "contextTag=${hex(0)} pname=${hex(4)} values=${if (body.size >= 8) XGlx.glIntegerValues(byteOrder.u32(body, 4), state.width, state.height).joinToString(",", "[", "]") else "n/a"}"
-            XGlx.GetString -> "contextTag=${hex(0)} name=${hex(4)} value=${if (body.size >= 8) XGlx.glString(byteOrder.u32(body, 4)) else "n/a"}"
+            XGlx.GetIntegerv -> "contextTag=${hex(0)} pname=${hex(4)} values=${if (body.size >= 8) XGlx.glIntegerValues(byteOrder.u32(body, 4), state.width, state.height, context(0)).joinToString(",", "[", "]") else "n/a"}"
+            XGlx.GetString -> "contextTag=${hex(0)} name=${hex(4)} value=${if (body.size >= 8) XGlx.glString(byteOrder.u32(body, 4), context(0)) else "n/a"}"
             XGlx.VendorPrivate, XGlx.VendorPrivateWithReply -> "vendorCode=${hex(0)} bytes=${(body.size - 4).coerceAtLeast(0)}"
             else -> ""
         }
