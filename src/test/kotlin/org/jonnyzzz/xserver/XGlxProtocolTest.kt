@@ -88,6 +88,23 @@ class XGlxProtocolTest {
             assertEquals(1, u32le(visuals, 8))
             assertEquals(XGlx.VisualConfigValues, u32le(visuals, 12))
             assertEquals(X11Ids.RootVisual, u32le(visuals, 32))
+            val visualConfig = intArrayPayload(visuals, offset = 32, count = XGlx.VisualConfigValues)
+            assertEquals(4, visualConfig[1])
+            assertEquals(1, visualConfig[2])
+            assertEquals(8, visualConfig[3])
+            assertEquals(8, visualConfig[4])
+            assertEquals(8, visualConfig[5])
+            assertEquals(8, visualConfig[6])
+            assertEquals(1, visualConfig[11])
+            assertEquals(32, visualConfig[13])
+            assertEquals(24, visualConfig[14])
+            assertEquals(8, visualConfig[15])
+            assertEquals(XGlx.None, visualConfig[19])
+            assertEquals(XGlx.None, visualConfig[21])
+            assertEquals(XGlx.DontCare, visualConfig[23])
+            assertEquals(XGlx.DontCare, visualConfig[25])
+            assertEquals(XGlx.DontCare, visualConfig[27])
+            assertEquals(XGlx.DontCare, visualConfig[29])
 
             val text = httpGet(socket, "/text.txt")
             assertTrue(text.contains("QueryServerString minor=19 screen=0 name=3 value=${XGlx.Extensions}"), text)
@@ -2216,6 +2233,9 @@ class XGlxProtocolTest {
         (0 until count).associate { index ->
             u32le(reply, offset + index * 8) to u32le(reply, offset + index * 8 + 4)
         }
+
+    private fun intArrayPayload(reply: ByteArray, offset: Int, count: Int): IntArray =
+        IntArray(count) { index -> u32le(reply, offset + index * 4) }
 
     private fun assertGlxError(input: InputStream, error: Int, badValue: Int, minorOpcode: Int, sequence: Int) {
         val reply = input.readExactly(32)
