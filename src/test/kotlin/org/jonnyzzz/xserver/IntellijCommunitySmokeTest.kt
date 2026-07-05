@@ -195,6 +195,12 @@ class IntellijCommunitySmokeTest {
         assertTrue(metrics.contains("robotVsSvgSampledDistance="), metrics)
         assertTrue(metrics.contains("robotVsSvgMismatchBounds=0,0 1280x900"), metrics)
         assertTrue(metrics.contains("robotVsSvgInsideFrameMismatchBounds=5,5 2x3"), metrics)
+        assertTrue(metrics.contains("topFrameBand=10,20 1260x120"), metrics)
+        assertTrue(metrics.contains("robotTopFrameBandMismatchBounds=5,5 2x3"), metrics)
+        assertTrue(metrics.contains("rightFrameBand=1174,20 96x860"), metrics)
+        assertTrue(metrics.contains("robotRightFrameBandMismatchBounds=none"), metrics)
+        assertTrue(metrics.contains("bottomFrameBand=10,784 1260x96"), metrics)
+        assertTrue(metrics.contains("robotBottomFrameBandMismatchBounds=none"), metrics)
     }
 
     @Test
@@ -307,8 +313,11 @@ class IntellijCommunitySmokeTest {
             IntellijLogArtifact(
                 fileName = "intellij-kotlin-run.log",
                 text = """
+                    No matching fbConfigs or visuals found
                     ANGLE Display::initialize error 12289: Could not create the initialization pbuffer.
                     ANGLE Display::initialize error 12289: Cannot create an OpenGL ES platform on GLX without the GLX_EXT_create_context_es_profile extension.
+                    ANGLE Display::initialize error 12289: OpenGL ES 2.0 is not supportable.
+                    ANGLE Display::initialize error 12289: Cannot create an OpenGL ES platform on GLX without the GLX_ARB_create_context extension.
                 """.trimIndent(),
             ),
             IntellijLogArtifact(
@@ -360,8 +369,20 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("xvfbTraceArtifacts=intellij-xvfb-glx-xdpyinfo.log intellij-xvfb-run.log"), summary)
         assertTrue(summary.contains("xvfbAngleInitializationPbufferFailure=false"), summary)
         assertTrue(summary.contains("xvfbAngleMissingEsProfileMessage=false"), summary)
+        assertTrue(summary.contains("xvfbAngleNoMatchingFbConfigsOrVisuals=false"), summary)
+        assertTrue(summary.contains("xvfbAngleEs2NotSupportable=false"), summary)
+        assertTrue(summary.contains("xvfbAngleMissingArbCreateContextMessage=false"), summary)
         assertTrue(summary.contains("kotlinAngleInitializationPbufferFailure=true"), summary)
         assertTrue(summary.contains("kotlinAngleMissingEsProfileMessage=true"), summary)
+        assertTrue(summary.contains("kotlinAngleNoMatchingFbConfigsOrVisuals=true"), summary)
+        assertTrue(summary.contains("kotlinAngleEs2NotSupportable=true"), summary)
+        assertTrue(summary.contains("kotlinAngleMissingArbCreateContextMessage=true"), summary)
+        assertTrue(
+            summary.contains(
+                "kotlinAngleFailureSignatures=initialization-pbuffer missing-es-profile no-matching-fbconfigs-or-visuals es2-not-supportable missing-arb-create-context",
+            ),
+            summary,
+        )
     }
 
     @Test
@@ -1369,6 +1390,14 @@ class IntellijCommunitySmokeTest {
             appendLine("kotlinAngleInitializationPbufferFailure=${angleInitializationPbufferFailure(kotlinTrace)}")
             appendLine("xvfbAngleMissingEsProfileMessage=${angleMissingEsProfileMessage(xvfbTrace)}")
             appendLine("kotlinAngleMissingEsProfileMessage=${angleMissingEsProfileMessage(kotlinTrace)}")
+            appendLine("xvfbAngleNoMatchingFbConfigsOrVisuals=${angleNoMatchingFbConfigsOrVisuals(xvfbTrace)}")
+            appendLine("kotlinAngleNoMatchingFbConfigsOrVisuals=${angleNoMatchingFbConfigsOrVisuals(kotlinTrace)}")
+            appendLine("xvfbAngleEs2NotSupportable=${angleEs2NotSupportable(xvfbTrace)}")
+            appendLine("kotlinAngleEs2NotSupportable=${angleEs2NotSupportable(kotlinTrace)}")
+            appendLine("xvfbAngleMissingArbCreateContextMessage=${angleMissingArbCreateContextMessage(xvfbTrace)}")
+            appendLine("kotlinAngleMissingArbCreateContextMessage=${angleMissingArbCreateContextMessage(kotlinTrace)}")
+            appendLine("xvfbAngleFailureSignatures=${angleFailureSignatures(xvfbTrace).joinToString(" ").ifEmpty { "None" }}")
+            appendLine("kotlinAngleFailureSignatures=${angleFailureSignatures(kotlinTrace).joinToString(" ").ifEmpty { "None" }}")
         }
     }
 
@@ -1377,6 +1406,24 @@ class IntellijCommunitySmokeTest {
 
     private fun angleMissingEsProfileMessage(text: String): Boolean =
         text.contains("Cannot create an OpenGL ES platform on GLX without the GLX_EXT_create_context_es_profile extension")
+
+    private fun angleNoMatchingFbConfigsOrVisuals(text: String): Boolean =
+        text.contains("No matching fbConfigs or visuals found")
+
+    private fun angleEs2NotSupportable(text: String): Boolean =
+        text.contains("OpenGL ES 2.0 is not supportable")
+
+    private fun angleMissingArbCreateContextMessage(text: String): Boolean =
+        text.contains("Cannot create an OpenGL ES platform on GLX without the GLX_ARB_create_context extension")
+
+    private fun angleFailureSignatures(text: String): List<String> =
+        listOfNotNull(
+            "initialization-pbuffer".takeIf { angleInitializationPbufferFailure(text) },
+            "missing-es-profile".takeIf { angleMissingEsProfileMessage(text) },
+            "no-matching-fbconfigs-or-visuals".takeIf { angleNoMatchingFbConfigsOrVisuals(text) },
+            "es2-not-supportable".takeIf { angleEs2NotSupportable(text) },
+            "missing-arb-create-context".takeIf { angleMissingArbCreateContextMessage(text) },
+        )
 
     private fun listedExtensionsFromXdpyinfo(text: String): List<String> {
         val lines = text.lineSequence().toList()
@@ -1579,7 +1626,43 @@ class IntellijCommunitySmokeTest {
             appendLine("robotInsideFrameMismatchBounds=${mismatchBounds(regionImage(expected.image, frame), regionImage(actualRobot.image, frame)).toMetricString()}")
             appendLine("svgInsideFrameMismatchBounds=${mismatchBounds(regionImage(expected.image, frame), regionImage(actualSvg.image, frame)).toMetricString()}")
             appendLine("robotVsSvgInsideFrameMismatchBounds=${mismatchBounds(regionImage(actualRobot.image, frame), regionImage(actualSvg.image, frame)).toMetricString()}")
+            appendIntellijRegionComparison("topFrameBand", frame.topBand(120), expected, actualRobot, actualSvg)
+            appendIntellijRegionComparison("rightFrameBand", frame.rightBand(96), expected, actualRobot, actualSvg)
+            appendIntellijRegionComparison("bottomFrameBand", frame.bottomBand(96), expected, actualRobot, actualSvg)
         }
+    }
+
+    private fun StringBuilder.appendIntellijRegionComparison(
+        name: String,
+        region: Rectangle,
+        expected: VisualCapture,
+        actualRobot: VisualCapture,
+        actualSvg: VisualCapture,
+    ) {
+        val expectedRegion = regionImage(expected.image, region)
+        val robotRegion = regionImage(actualRobot.image, region)
+        val svgRegion = regionImage(actualSvg.image, region)
+        val metricPrefix = name.replaceFirstChar { it.uppercaseChar() }
+        appendLine("$name=${region.x},${region.y} ${region.width}x${region.height}")
+        appendLine("robot${metricPrefix}SampledDistance=${imageDistance(expectedRegion, robotRegion)}")
+        appendLine("svg${metricPrefix}SampledDistance=${imageDistance(expectedRegion, svgRegion)}")
+        appendLine("robotVsSvg${metricPrefix}SampledDistance=${imageDistance(robotRegion, svgRegion)}")
+        appendLine("robot${metricPrefix}MismatchBounds=${mismatchBounds(expectedRegion, robotRegion).toMetricString()}")
+        appendLine("svg${metricPrefix}MismatchBounds=${mismatchBounds(expectedRegion, svgRegion).toMetricString()}")
+        appendLine("robotVsSvg${metricPrefix}MismatchBounds=${mismatchBounds(robotRegion, svgRegion).toMetricString()}")
+    }
+
+    private fun Rectangle.topBand(maxHeight: Int): Rectangle =
+        Rectangle(x, y, width, height.coerceAtMost(maxHeight).coerceAtLeast(1))
+
+    private fun Rectangle.rightBand(maxWidth: Int): Rectangle {
+        val bandWidth = width.coerceAtMost(maxWidth).coerceAtLeast(1)
+        return Rectangle(x + width - bandWidth, y, bandWidth, height)
+    }
+
+    private fun Rectangle.bottomBand(maxHeight: Int): Rectangle {
+        val bandHeight = height.coerceAtMost(maxHeight).coerceAtLeast(1)
+        return Rectangle(x, y + height - bandHeight, width, bandHeight)
     }
 
     private fun largestMappedRootChildWindow(text: String): Rectangle? {
