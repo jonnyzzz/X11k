@@ -126,6 +126,19 @@ internal object XGlx {
     const val GlVersionString = "2.1 Mesa 26.0.0"
     const val GlShadingLanguageVersionString = "1.20"
     const val GlExtensionsString = ""
+    val GlEsExtensions = listOf(
+        "GL_EXT_discard_framebuffer",
+        "GL_EXT_read_format_bgra",
+        "GL_EXT_texture_format_BGRA8888",
+        "GL_OES_depth24",
+        "GL_OES_element_index_uint",
+        "GL_OES_packed_depth_stencil",
+        "GL_OES_rgb8_rgba8",
+        "GL_OES_standard_derivatives",
+        "GL_OES_texture_npot",
+    )
+    val GlEsExtensionsString = GlEsExtensions.joinToString(" ")
+    val GlEsExtensionCount: Int get() = GlEsExtensions.size
     const val GlModelview = 0x1700
     const val GlActiveTexture0 = 0x84C0
     const val GlPointSize = 0x0B11
@@ -220,7 +233,7 @@ internal object XGlx {
             GlVendor -> GlVendorString
             GlRenderer -> GlRendererString
             GlVersion -> glVersionString(context)
-            GlExtensions -> GlExtensionsString
+            GlExtensions -> glExtensionsString(context)
             GlShadingLanguageVersion -> glShadingLanguageVersionString(context)
             else -> ""
         }
@@ -240,7 +253,8 @@ internal object XGlx {
             GlDepthBits -> intArrayOf(24)
             GlRedBits, GlGreenBits, GlBlueBits, GlAlphaBits -> intArrayOf(8)
             GlStencilBits -> intArrayOf(8)
-            GlDoublebuffer, GlStereo, GlSampleBuffers, GlSamples, GlCurrentProgram, GlNumExtensions -> intArrayOf(0)
+            GlDoublebuffer, GlStereo, GlSampleBuffers, GlSamples, GlCurrentProgram -> intArrayOf(0)
+            GlNumExtensions -> intArrayOf(glExtensionCount(context))
             GlPackAlignment, GlUnpackAlignment -> intArrayOf(4)
             GlMaxLights -> intArrayOf(8)
             GlMaxTextureSize, GlMaxRenderbufferSize, GlMaxCubeMapTextureSize -> intArrayOf(4096)
@@ -268,6 +282,12 @@ internal object XGlx {
 
     private fun glShadingLanguageVersionString(context: XGlxContext?): String =
         if (context.isEsProfile()) "OpenGL ES GLSL ES 1.00" else GlShadingLanguageVersionString
+
+    private fun glExtensionsString(context: XGlxContext?): String =
+        if (context.isEsProfile()) GlEsExtensionsString else GlExtensionsString
+
+    private fun glExtensionCount(context: XGlxContext?): Int =
+        if (context.isEsProfile()) GlEsExtensionCount else 0
 
     private fun glMajorVersion(context: XGlxContext?): Int =
         context?.contextMajorVersion?.takeIf { it > 0 } ?: 2

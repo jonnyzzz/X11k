@@ -653,8 +653,10 @@ class XGlxProtocolTest {
             writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryContext, u32(contextId))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetString, getStringBody(contextId, XGlx.GlVersion))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetString, getStringBody(contextId, XGlx.GlShadingLanguageVersion))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetString, getStringBody(contextId, XGlx.GlExtensions))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, XGlx.GlMajorVersion))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, XGlx.GlMinorVersion))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, XGlx.GlNumExtensions))
 
             readReply(socket.getInputStream())
             val query = readReply(socket.getInputStream())
@@ -664,12 +666,16 @@ class XGlxProtocolTest {
             assertEquals(0, attributes.getValue(XGlx.ContextMinorVersionArb))
             assertEquals("OpenGL ES 2.0 Mesa 26.0.0", readGlxStringReply(socket.getInputStream()))
             assertEquals("OpenGL ES GLSL ES 1.00", readGlxStringReply(socket.getInputStream()))
+            assertEquals(XGlx.GlEsExtensionsString, readGlxStringReply(socket.getInputStream()))
             assertEquals(listOf(2), readGlxIntVectorReply(socket.getInputStream()))
             assertEquals(listOf(0), readGlxIntVectorReply(socket.getInputStream()))
+            assertEquals(listOf(XGlx.GlEsExtensionCount), readGlxIntVectorReply(socket.getInputStream()))
 
             val text = httpGet(socket, "/text.txt")
             assertTrue(text.contains("GetString minor=129 contextTag=0x${contextId.toString(16)} name=0x1f02 value=OpenGL ES 2.0 Mesa 26.0.0"), text)
+            assertTrue(text.contains("GetString minor=129 contextTag=0x${contextId.toString(16)} name=0x1f03 value=${XGlx.GlEsExtensionsString}"), text)
             assertTrue(text.contains("GetIntegerv minor=117 contextTag=0x${contextId.toString(16)} pname=0x821b values=[2]"), text)
+            assertTrue(text.contains("GetIntegerv minor=117 contextTag=0x${contextId.toString(16)} pname=0x821d values=[${XGlx.GlEsExtensionCount}]"), text)
         }
     }
 
@@ -691,6 +697,7 @@ class XGlxProtocolTest {
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, XGlx.GlMax3DTextureSize))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, XGlx.GlMaxElementsVertices))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, XGlx.GlMaxCubeMapTextureSize))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, XGlx.GlNumExtensions))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, 0xdead))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFloatv, getStringBody(contextId, XGlx.GlDepthRange))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFloatv, getStringBody(contextId, XGlx.GlLineWidth))
@@ -701,6 +708,7 @@ class XGlxProtocolTest {
             assertEquals(listOf(2048), readGlxIntVectorReply(socket.getInputStream()))
             assertEquals(listOf(1_048_576), readGlxIntVectorReply(socket.getInputStream()))
             assertEquals(listOf(4096), readGlxIntVectorReply(socket.getInputStream()))
+            assertEquals(listOf(0), readGlxIntVectorReply(socket.getInputStream()))
             assertEquals(listOf(0), readGlxIntVectorReply(socket.getInputStream()))
             assertEquals(listOf(0.0f, 1.0f), readGlxFloatVectorReply(socket.getInputStream()))
             assertEquals(listOf(1.0f), readGlxFloatVectorReply(socket.getInputStream()))
