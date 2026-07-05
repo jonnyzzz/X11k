@@ -5252,6 +5252,14 @@ internal class X11State(
         val maskFramebuffer = mask?.drawableFramebuffer()
         val maskPixelAt = mask?.takeIf { it.componentAlpha }?.componentMaskSampler(snapshotDrawableId = destinationDrawableId)
         val maskAlphaAt = if (maskPixelAt == null) mask?.maskAlphaSampler(snapshotDrawableId = destinationDrawableId) else null
+        val premultiplyGradientForArgb32Storage = source.isGradientRenderSource() &&
+            operation == XRender.OpSrc &&
+            destination.format == XRender.Argb32Format &&
+            maskFramebuffer == null &&
+            maskPixelAt == null &&
+            maskAlphaAt == null
+        fun storagePixel(pixel: Int): Int =
+            if (premultiplyGradientForArgb32Storage) premultiplyPixel(pixel) else pixel
         if (maskPixelAt != null) {
             val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0) {
                 source.compositeSourcePixelSamplerOptional(destinationDrawableId)
@@ -5275,7 +5283,7 @@ internal class X11State(
                 maskPixelAt = maskPixelAt,
                 sourcePremultiplied = source.drawableId != null,
             ) { x, y ->
-                sourcePixelAt(x, y)
+                sourcePixelAt(x, y)?.let(::storagePixel)
             }
         }
         if (source.alphaMap != 0) {
@@ -5296,7 +5304,7 @@ internal class X11State(
                 maskAlphaAt = maskAlphaAt,
                 sourcePremultiplied = source.drawableId != null,
             ) { x, y ->
-                sourcePixelAt(x, y)
+                sourcePixelAt(x, y)?.let(::storagePixel)
             }
         }
         if (source.hasPictureClip() || source.hasSourceSubwindowClip()) {
@@ -5317,7 +5325,7 @@ internal class X11State(
                 maskAlphaAt = maskAlphaAt,
                 sourcePremultiplied = source.drawableId != null,
             ) { x, y ->
-                sourcePixelAt(x, y)
+                sourcePixelAt(x, y)?.let(::storagePixel)
             }
         }
         val gradientSampler = source.gradientSampler()
@@ -5337,7 +5345,7 @@ internal class X11State(
                 maskY = maskY,
                 maskAlphaAt = maskAlphaAt,
             ) { x, y ->
-                gradientSampler(x, y)
+                storagePixel(gradientSampler(x, y))
             }
         }
         val solid = source.solidPixel?.let { renderPixelForPictureFormat(it, destination.format) }
@@ -6209,6 +6217,11 @@ internal class X11State(
     private fun XPicture.isGeneratedRenderSource(): Boolean =
         solidPixel != null ||
             linearGradient != null ||
+            radialGradient != null ||
+            conicalGradient != null
+
+    private fun XPicture.isGradientRenderSource(): Boolean =
+        linearGradient != null ||
             radialGradient != null ||
             conicalGradient != null
 
@@ -7089,6 +7102,15 @@ internal class X11State(
             return (a + (b - a) * ratio).roundToInt().coerceIn(0, 255)
         }
         return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
+    private fun premultiplyPixel(pixel: Int): Int {
+        val alpha = (pixel ushr 24) and 0xff
+        if (alpha == 0) return 0
+        if (alpha == 255) return pixel
+        fun channel(shift: Int): Int =
+            (((pixel ushr shift) and 0xff) * alpha / 255.0).roundToInt().coerceIn(0, alpha)
+        return (alpha shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
     }
 
     private fun Int.fixedToDouble(): Double = this / 65_536.0

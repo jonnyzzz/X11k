@@ -10789,6 +10789,168 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER linear gradient OpSrc into ARGB32 stores premultiplied pixels like Xvfb`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 1, height = 34))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = 0 to 300,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0x2626, green = 0x2828, blue = 0x2c2c, alpha = 0x0000),
+                            RenderColor(red = 0x2626, green = 0x2828, blue = 0x2c2c, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
+                out.write(renderComposite(GradientPictureId, PixmapPictureId, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 1, height = 34))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 1, height = 34))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                mapOf(
+                    0 to 0x0000_0000,
+                    1 to 0x0100_0000,
+                    10 to 0x0901_0102,
+                    20 to 0x1103_0303,
+                    30 to 0x1a04_0404,
+                    33 to 0x1c04_0405,
+                ).forEach { (y, expected) ->
+                    assertEquals(expected, pixelAt(image, imageWidth = 1, x = 0, y = y), "pixel at 0,$y")
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER clipped linear gradient OpSrc into ARGB32 stores premultiplied pixels`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 1, height = 34))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 1, height = 34, red = 0xffff, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = 0 to 300,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0x2626, green = 0x2828, blue = 0x2c2c, alpha = 0x0000),
+                            RenderColor(red = 0x2626, green = 0x2828, blue = 0x2c2c, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
+                out.write(renderSetPictureClipRectangles(GradientPictureId, rectangles = listOf(XRectangleCommand(0, 10, 1, 1))))
+                out.write(renderComposite(GradientPictureId, PixmapPictureId, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 1, height = 34))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 1, height = 34))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_00ff.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 9), "pixel at 0,9")
+                assertEquals(0x0901_0102, pixelAt(image, imageWidth = 1, x = 0, y = 10), "pixel at 0,10")
+                assertEquals(0xffff_00ff.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 11), "pixel at 0,11")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER linear gradient with alpha map OpSrc into ARGB32 stores premultiplied pixels`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 1, height = 1))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 1, height = 1))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
+                out.write(putImage8Request(MaskPixmapId, width = 1, height = 1, alphas = byteArrayOf(0x80.toByte())))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = 0 to 300,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0x2626, green = 0x2828, blue = 0x2c2c, alpha = 0x0000),
+                            RenderColor(red = 0x2626, green = 0x2828, blue = 0x2c2c, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
+                out.write(renderChangePictureAttributes(GradientPictureId, XRender.CPAlphaMap to MaskPictureId))
+                out.write(renderComposite(GradientPictureId, PixmapPictureId, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 1, height = 1))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0x8013_1416.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER linear gradient with component alpha mask OpSrc into ARGB32 does not premultiply source twice`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 1, height = 1))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = 1 to 0,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0x2626, green = 0x2828, blue = 0x2c2c, alpha = 0x8080),
+                            RenderColor(red = 0x2626, green = 0x2828, blue = 0x2c2c, alpha = 0x8080),
+                        ),
+                    ),
+                )
+                out.write(renderCreateSolidFill(ComponentMaskPictureId, red = 0x8080, green = 0x8080, blue = 0x8080, alpha = 0xffff))
+                out.write(renderChangePictureComponentAlpha(ComponentMaskPictureId, componentAlpha = true))
+                out.write(renderComposite(GradientPictureId, PixmapPictureId, mask = ComponentMaskPictureId, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 1, height = 1))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0x8013_1416.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER linear gradient repeat modes control spread samples`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
