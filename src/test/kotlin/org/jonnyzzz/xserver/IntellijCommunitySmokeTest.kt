@@ -273,6 +273,14 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij robot capture delay is configurable`() {
+        val source = robotCaptureSource()
+
+        assertTrue(source.contains("""Long.getLong("x.captureDelayMs", 1200L)"""), source)
+        assertTrue(source.contains("Thread.sleep(delayMs)"), source)
+    }
+
+    @Test
     fun `intellij glx jcef diagnostics summary extracts preflight and angle failures`() {
         val kotlinText =
             """
@@ -687,6 +695,40 @@ class IntellijCommunitySmokeTest {
         return lastSnapshot
     }
 
+    private fun waitForStableIntellijSvg(port: Int): String {
+        val visible = waitForVisibleIntellijPixels(port)
+        val deadline = System.currentTimeMillis() + 30_000
+        var previous: VisualCapture? = null
+        var lastSvg = ""
+        var lastDistance = Double.POSITIVE_INFINITY
+        var stablePairs = 0
+        while (System.currentTimeMillis() < deadline) {
+            val svg = httpGet(port, "/screen.svg")
+            val layers = svgCompositionLayers(svg)
+            if (layers.isNotEmpty()) {
+                val capture = visualCapture(composeSvgLayers(layers, IntellijCaptureWidth, IntellijCaptureHeight))
+                val before = previous
+                if (before != null) {
+                    lastDistance = imageDistance(before.image, capture.image)
+                    stablePairs = if (lastDistance <= 1.0) stablePairs + 1 else 0
+                    if (stablePairs >= 2) return svg
+                }
+                previous = capture
+                lastSvg = svg
+            }
+            Thread.sleep(250)
+        }
+        assertTrue(
+            lastSvg.isNotEmpty(),
+            "IntelliJ screen SVG did not expose composable layers while waiting for stability; visible=$visible",
+        )
+        assertTrue(
+            stablePairs >= 2,
+            "IntelliJ screen SVG did not stabilize before capture; lastDistance=$lastDistance visible=$visible",
+        )
+        return lastSvg
+    }
+
     private fun runIntellijAgainstXvfb(image: String, url: String?): IntellijReferenceCapture =
         intellijContainer(image)
             .use { container ->
@@ -866,15 +908,14 @@ class IntellijCommunitySmokeTest {
                             runLogPath = "/tmp/idea-run-parity.log",
                             extraLogs = extraLogs,
                         )
-                        waitForVisibleIntellijPixels(port)
-                        val svg = httpGet(port, "/screen.svg")
+                        val svg = waitForStableIntellijSvg(port)
                         val capture = execIntellijShell(
                             container,
                             """
                             set -eu
                             pid=${'$'}(cat /tmp/idea-parity.pid)
                             kill -0 "${'$'}pid"
-                            DISPLAY=host.docker.internal:$display java -cp /tmp XIntellijRobotCapture
+                            DISPLAY=host.docker.internal:$display java -Dx.captureDelayMs=0 -cp /tmp XIntellijRobotCapture
                             """.trimIndent(),
                         )
                         assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
@@ -1226,7 +1267,8 @@ class IntellijCommunitySmokeTest {
         public class XIntellijRobotCapture {
           public static void main(String[] args) throws Exception {
             Robot robot = new Robot();
-            Thread.sleep(1200);
+            long delayMs = Long.getLong("x.captureDelayMs", 1200L);
+            if (delayMs > 0) Thread.sleep(delayMs);
             BufferedImage image = robot.createScreenCapture(
                 new Rectangle(0, 0, $IntellijCaptureWidth, $IntellijCaptureHeight));
             ByteArrayOutputStream output = new ByteArrayOutputStream();
