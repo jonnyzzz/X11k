@@ -11056,6 +11056,41 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER trapezoids preserve subpixel top edge coverage`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val fixedOne = 1 shl 16
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 8, height = 8, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0x0000, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(
+                    renderTrapezoidsFixed(
+                        SolidPictureId,
+                        PictureId,
+                        left = 2 * fixedOne,
+                        right = 6 * fixedOne,
+                        top = 2 * fixedOne + 9 * fixedOne / 16,
+                        bottom = 5 * fixedOne,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 8))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 1))
+                assertEquals(0xff90_9090.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 2))
+                assertEquals(0xff00_0000.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 3))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER trapezoids honor destination poly edge mode`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

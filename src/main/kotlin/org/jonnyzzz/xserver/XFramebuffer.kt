@@ -2270,14 +2270,9 @@ internal class XFramebuffer(
         val endY = minOf(height, ceil(bottom).toInt())
         var painted = false
         for (y in startY until endY) {
-            val sampleY = y + 0.5
-            if (sampleY < top || sampleY >= bottom) continue
-            val left = trapezoid.left.xAt(sampleY)
-            val right = trapezoid.right.xAt(sampleY)
-            val minX = minOf(left, right)
-            val maxX = maxOf(left, right)
-            val startX = maxOf(0, floor(minX).toInt())
-            val endX = minOf(width, ceil(maxX).toInt())
+            val xBounds = trapezoidRowXBounds(trapezoid, top, bottom, y, smoothEdges) ?: continue
+            val startX = xBounds.first
+            val endX = xBounds.second
             for (x in startX until endX) {
                 if (!insideClip(x, y, clipRectangles, clipMask)) continue
                 val coverage = trapezoidCoverage(x, y, trapezoid, top, bottom, smoothEdges)
@@ -2307,14 +2302,9 @@ internal class XFramebuffer(
         val endY = minOf(height, ceil(bottom).toInt())
         var painted = false
         for (y in startY until endY) {
-            val sampleY = y + 0.5
-            if (sampleY < top || sampleY >= bottom) continue
-            val left = trapezoid.left.xAt(sampleY)
-            val right = trapezoid.right.xAt(sampleY)
-            val minX = minOf(left, right)
-            val maxX = maxOf(left, right)
-            val startX = maxOf(0, floor(minX).toInt())
-            val endX = minOf(width, ceil(maxX).toInt())
+            val xBounds = trapezoidRowXBounds(trapezoid, top, bottom, y, smoothEdges) ?: continue
+            val startX = xBounds.first
+            val endX = xBounds.second
             for (x in startX until endX) {
                 if (!insideClip(x, y, clipRectangles, clipMask)) continue
                 val coverage = trapezoidCoverage(x, y, trapezoid, top, bottom, smoothEdges)
@@ -2363,6 +2353,40 @@ internal class XFramebuffer(
         return covered
     }
 
+    private fun trapezoidRowXBounds(
+        trapezoid: XTrapezoidCommand,
+        top: Double,
+        bottom: Double,
+        y: Int,
+        smoothEdges: Boolean,
+    ): Pair<Int, Int>? {
+        if (!smoothEdges) {
+            val sampleY = y + 0.5
+            if (sampleY < top || sampleY >= bottom) return null
+            val left = trapezoid.left.xAt(sampleY)
+            val right = trapezoid.right.xAt(sampleY)
+            return clippedXBounds(minOf(left, right), maxOf(left, right))
+        }
+
+        val rowTop = maxOf(top, y.toDouble())
+        val rowBottom = minOf(bottom, y + 1.0)
+        if (rowBottom <= rowTop) return null
+        val leftTop = trapezoid.left.xAt(rowTop)
+        val leftBottom = trapezoid.left.xAt(rowBottom)
+        val rightTop = trapezoid.right.xAt(rowTop)
+        val rightBottom = trapezoid.right.xAt(rowBottom)
+        return clippedXBounds(
+            minOf(leftTop, leftBottom, rightTop, rightBottom),
+            maxOf(leftTop, leftBottom, rightTop, rightBottom),
+        )
+    }
+
+    private fun clippedXBounds(minX: Double, maxX: Double): Pair<Int, Int>? {
+        val startX = maxOf(0, floor(minX).toInt())
+        val endX = minOf(width, ceil(maxX).toInt())
+        return if (endX > startX) startX to endX else null
+    }
+
     private fun compositeColoredTrapezoid(
         operation: Int,
         colorTrap: XColorTrapCommand,
@@ -2378,21 +2402,19 @@ internal class XFramebuffer(
         val endY = minOf(height, ceil(bottom).toInt())
         var painted = false
         for (y in startY until endY) {
-            val sampleY = y + 0.5
-            if (sampleY < top || sampleY >= bottom) continue
-            val left = trapezoid.left.xAt(sampleY)
-            val right = trapezoid.right.xAt(sampleY)
-            val minX = minOf(left, right)
-            val maxX = maxOf(left, right)
-            val startX = maxOf(0, floor(minX).toInt())
-            val endX = minOf(width, ceil(maxX).toInt())
+            val xBounds = trapezoidRowXBounds(trapezoid, top, bottom, y, smoothEdges) ?: continue
+            val colorSampleY = (y + 0.5).coerceIn(top, bottom)
+            val left = trapezoid.left.xAt(colorSampleY)
+            val right = trapezoid.right.xAt(colorSampleY)
+            val startX = xBounds.first
+            val endX = xBounds.second
             for (x in startX until endX) {
                 if (!insideClip(x, y, clipRectangles, clipMask)) continue
                 val coverage = trapezoidCoverage(x, y, trapezoid, top, bottom, smoothEdges)
                 if (coverage == 0) continue
                 val maskAlpha = maskAlpha(XRender.A8Format, coverage)
                 if (maskAlpha == 0) continue
-                val source = interpolatedColorTrapPixel(colorTrap, left, right, top, bottom, x + 0.5, sampleY)
+                val source = interpolatedColorTrapPixel(colorTrap, left, right, top, bottom, x + 0.5, colorSampleY)
                 val index = y * width + x
                 pixels[index] = renderPixel(source, pixels[index], operation, maskAlpha)
                 painted = true
@@ -2548,7 +2570,7 @@ internal class XFramebuffer(
                 if (!insideClip(x, y, clipRectangles, clipMask)) continue
                 val coverage = triangleCoverage(x, y, x1, y1, x2, y2, x3, y3, area, smoothEdges)
                 if (coverage == 0) continue
-                val maskAlpha = maskAlpha(maskFormat, coverage)
+                val maskAlpha = maskAlpha(maskFormat, coverage, TriangleSamples)
                 if (maskAlpha == 0) continue
                 val index = y * width + x
                 val pixel = sourcePixelAt(x, y) ?: continue
@@ -2585,7 +2607,7 @@ internal class XFramebuffer(
                 if (!insideClip(x, y, clipRectangles, clipMask)) continue
                 val coverage = triangleCoverage(x, y, x1, y1, x2, y2, x3, y3, area, smoothEdges)
                 if (coverage == 0) continue
-                val maskAlpha = maskAlpha(XRender.A8Format, coverage)
+                val maskAlpha = maskAlpha(XRender.A8Format, coverage, TriangleSamples)
                 if (maskAlpha == 0) continue
                 val sampleX = x + 0.5
                 val source = interpolatedColorTrianglePixel(triangle, x1, y1, x2, y2, x3, y3, area, sampleX, sampleY)
@@ -2641,13 +2663,13 @@ internal class XFramebuffer(
         if (!smoothEdges) {
             val sampleX = x + 0.5
             val sampleY = y + 0.5
-            return if (insideTriangle(sampleX, sampleY, x1, y1, x2, y2, x3, y3, area)) TrapezoidSamples else 0
+            return if (insideTriangle(sampleX, sampleY, x1, y1, x2, y2, x3, y3, area)) TriangleSamples else 0
         }
         var covered = 0
-        for (sampleYIndex in 0 until TrapezoidSampleGrid) {
-            val sampleY = y + (sampleYIndex + 0.5) / TrapezoidSampleGrid
-            for (sampleXIndex in 0 until TrapezoidSampleGrid) {
-                val sampleX = x + (sampleXIndex + 0.5) / TrapezoidSampleGrid
+        for (sampleYIndex in 0 until TriangleSampleGrid) {
+            val sampleY = y + (sampleYIndex + 0.5) / TriangleSampleGrid
+            for (sampleXIndex in 0 until TriangleSampleGrid) {
+                val sampleX = x + (sampleXIndex + 0.5) / TriangleSampleGrid
                 if (insideTriangle(sampleX, sampleY, x1, y1, x2, y2, x3, y3, area)) covered += 1
             }
         }
@@ -2675,10 +2697,10 @@ internal class XFramebuffer(
         }
     }
 
-    private fun maskAlpha(maskFormat: Int, coverage: Int): Int =
+    private fun maskAlpha(maskFormat: Int, coverage: Int, totalSamples: Int = TrapezoidSamples): Int =
         when (maskFormat) {
-            XRender.A1Format -> if (coverage * 2 >= TrapezoidSamples) 255 else 0
-            else -> coverage * 255 / TrapezoidSamples
+            XRender.A1Format -> if (coverage * 2 >= totalSamples) 255 else 0
+            else -> coverage * 255 / totalSamples
         }
 
     private fun renderPixel(
@@ -5317,8 +5339,10 @@ internal class XFramebuffer(
         private const val ArcChord = 0
         private const val CorePixelMask = 0x00ff_ffff
         private const val FixedOne = 65_536.0
-        private const val TrapezoidSampleGrid = 4
+        private const val TrapezoidSampleGrid = 16
         private const val TrapezoidSamples = TrapezoidSampleGrid * TrapezoidSampleGrid
+        private const val TriangleSampleGrid = 4
+        private const val TriangleSamples = TriangleSampleGrid * TriangleSampleGrid
         private const val TransformEpsilon = 1.0e-9
         private const val TransformResidualEpsilon = 1.0e-6
         const val TextCellWidth = 6
