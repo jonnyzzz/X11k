@@ -73,6 +73,46 @@ class XXTestProtocolTest {
     }
 
     @Test
+    fun `XTEST CompareCursor uses inherited effective window cursor`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val cursor = 0x0020_0101
+                val pixmap = 0x0020_0102
+                val child = 0x0020_0103
+                out.write(createPixmapRequest(pixmap, width = 1, height = 1, depth = 1))
+                out.write(createCursorRequest(cursor, source = pixmap, mask = 0))
+                out.write(changeWindowCursorRequest(X11Ids.RootWindow, cursor))
+                out.write(createWindowRequest(child))
+                out.write(xtestCompareCursorRequest(child, cursor))
+                out.write(xtestCompareCursorRequest(child, XXTest.CursorCurrent))
+                out.write(xtestCompareCursorRequest(child, XXTest.CursorNone))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val inherited = readReply(socket.getInputStream())
+                assertEquals(1, inherited[1].toInt() and 0xff)
+                assertEquals(5, u16le(inherited, 2))
+
+                val current = readReply(socket.getInputStream())
+                assertEquals(1, current[1].toInt() and 0xff)
+                assertEquals(6, u16le(current, 2))
+
+                val none = readReply(socket.getInputStream())
+                assertEquals(0, none[1].toInt() and 0xff)
+                assertEquals(7, u16le(none, 2))
+
+                assertEquals(8, u16le(readReply(socket.getInputStream()), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XTEST fake input delivers pointer key and motion events and recovers stream`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -304,6 +344,44 @@ class XXTestProtocolTest {
         val body = ByteArray(4)
         put32le(body, 0, X11Ids.RootWindow)
         return request(38, 0, body)
+    }
+
+    private fun createWindowRequest(id: Int): ByteArray {
+        val body = ByteArray(28)
+        put32le(body, 0, id)
+        put32le(body, 4, X11Ids.RootWindow)
+        put16le(body, 12, 40)
+        put16le(body, 14, 30)
+        put16le(body, 18, XWindowClass.InputOutput)
+        put32le(body, 20, X11Ids.RootVisual)
+        return request(1, 24, body)
+    }
+
+    private fun createPixmapRequest(id: Int, width: Int, height: Int, depth: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, id)
+        put32le(body, 4, X11Ids.RootWindow)
+        put16le(body, 8, width)
+        put16le(body, 10, height)
+        return request(53, depth, body)
+    }
+
+    private fun createCursorRequest(cursor: Int, source: Int, mask: Int): ByteArray {
+        val body = ByteArray(28)
+        put32le(body, 0, cursor)
+        put32le(body, 4, source)
+        put32le(body, 8, mask)
+        put16le(body, 12, 0xffff)
+        put16le(body, 18, 0xffff)
+        return request(93, 0, body)
+    }
+
+    private fun changeWindowCursorRequest(window: Int, cursor: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, window)
+        put32le(body, 4, 1 shl 14)
+        put32le(body, 8, cursor)
+        return request(2, 0, body)
     }
 
     private fun changeWindowEventMaskRequest(window: Int, eventMask: Int): ByteArray {

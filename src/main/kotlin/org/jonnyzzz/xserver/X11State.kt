@@ -948,8 +948,8 @@ internal class X11State(
 
     @Synchronized
     fun windowCursorMatches(windowId: Int, cursor: Int): Boolean? {
-        val window = windows[windowId] ?: return null
-        val windowCursor = window.cursorId
+        windows[windowId] ?: return null
+        val windowCursor = effectiveWindowCursorId(windowId)
         return when (cursor) {
             XXTest.CursorNone -> windowCursor == null
             XXTest.CursorCurrent -> windowCursor == displayedCursorId()
@@ -9854,8 +9854,11 @@ internal class X11State(
     private fun displayedCursorId(): Int? {
         activePointerGrab?.cursor?.let { return it }
         val pointerWindow = windowAt(pointerX, pointerY) ?: windows[X11Ids.RootWindow] ?: return null
-        return windowPathToRoot(pointerWindow.id).firstNotNullOfOrNull { it.cursorId }
+        return effectiveWindowCursorId(pointerWindow.id)
     }
+
+    private fun effectiveWindowCursorId(windowId: Int): Int? =
+        windowPathToRoot(windowId).firstNotNullOfOrNull { it.cursorId }
 
     private fun displayedCursorIdentity(): XCursorIdentity? {
         activePointerGrab?.cursor?.let { id ->
