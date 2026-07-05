@@ -15433,6 +15433,7 @@ class XCoreDrawingProtocolTest {
                 assertContains(text, "Property operations:")
                 assertContains(text, "InternAtom name=\"TRACE_PROPERTY\" onlyIfExists=false")
                 assertContains(text, "ChangeProperty window=0x${WindowId.toUInt().toString(16)} property=0x1(PRIMARY) type=0x1f(STRING) format=8 mode=Replace items=5 bytes=5")
+                assertContains(text, "value=\"trace\"")
                 assertContains(text, "GetProperty window=0x${WindowId.toUInt().toString(16)} property=0x1(PRIMARY) requestedType=AnyPropertyType actualType=0x1f(STRING)")
                 assertContains(text, "ListProperties window=0x${WindowId.toUInt().toString(16)} count=1 properties=0x1(PRIMARY)")
                 assertContains(text, "DeleteProperty window=0x${WindowId.toUInt().toString(16)} property=0x1(PRIMARY) existed=true")

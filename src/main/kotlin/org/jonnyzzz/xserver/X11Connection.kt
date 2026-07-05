@@ -6663,7 +6663,7 @@ internal class X11Connection(
         }
         val operationDetail = "window=${windowId.toHex()} property=${propertyTraceAtom(property)} " +
             "type=${propertyTraceAtom(type)} format=$format mode=${propertyModeName(mode)} " +
-            "items=$unitCount bytes=$byteLength"
+            "items=$unitCount bytes=$byteLength value=${propertyTraceValue(format, data)}"
         if (mode != XPropertyMode.Replace && existing != null && byteLength == 0L) {
             state.recordPropertyOperation("ChangeProperty", "$operationDetail unchanged-empty-append=true")
             sendPropertyNotify(windowId, property, XPropertyState.NewValue)
@@ -6754,10 +6754,11 @@ internal class X11Connection(
         }
         state.recordPropertyOperation(
             "GetProperty",
-            "window=${windowId.toHex()} property=${propertyTraceAtom(propertyId)} " +
+                "window=${windowId.toHex()} property=${propertyTraceAtom(propertyId)} " +
                 "requestedType=${propertyTraceType(requestedType)} actualType=${propertyTraceAtom(property.type)} " +
                 "format=${property.format} offset=$longOffsetUnits length=${byteOrder.u32(body, 16)} " +
-                "items=${value.size / (property.format / 8)} valueBytes=${value.size} bytesAfter=$bytesAfter " +
+                "items=${value.size / (property.format / 8)} valueBytes=${value.size} " +
+                "value=${propertyTraceValue(property.format, value)} bytesAfter=$bytesAfter " +
                 "delete=$delete deleted=$shouldDelete",
         )
         write(reply)
@@ -13015,6 +13016,44 @@ internal class X11Connection(
     private fun propertyTraceAtoms(atoms: List<Int>, limit: Int = 12): String {
         val head = atoms.take(limit).joinToString(",") { propertyTraceAtom(it) }
         return if (atoms.size <= limit) head else "$head,...(+${atoms.size - limit})"
+    }
+
+    private fun propertyTraceValue(format: Int, data: ByteArray, maxItems: Int = 8): String =
+        when {
+            data.isEmpty() -> "[]"
+            format == 8 -> propertyTraceBytes(data)
+            format == 16 -> propertyTraceNumericValues(data, itemSize = 2, maxItems) { offset ->
+                ByteOrder.LsbFirst.u16(data, offset)
+            }
+            format == 32 -> propertyTraceNumericValues(data, itemSize = 4, maxItems) { offset ->
+                ByteOrder.LsbFirst.u32(data, offset)
+            }
+            else -> "bytes=${data.size}"
+        }
+
+    private fun propertyTraceBytes(data: ByteArray, maxBytes: Int = 32): String {
+        val head = data.take(maxBytes)
+        val printable = head.all { byte -> (byte.toInt() and 0xff) in 0x20..0x7e }
+        val suffix = if (data.size > maxBytes) "...(+${data.size - maxBytes} bytes)" else ""
+        return if (printable) {
+            "\"${propertyTraceText(head.toByteArray().decodeToString())}$suffix\""
+        } else {
+            val values = head.joinToString(",") { byte -> "0x${(byte.toInt() and 0xff).toString(16)}" }
+            if (data.size > maxBytes) "[$values,...(+${data.size - maxBytes} bytes)]" else "[$values]"
+        }
+    }
+
+    private fun propertyTraceNumericValues(
+        data: ByteArray,
+        itemSize: Int,
+        maxItems: Int,
+        valueAt: (Int) -> Int,
+    ): String {
+        val count = data.size / itemSize
+        val values = (0 until minOf(count, maxItems)).joinToString(",") { index ->
+            "0x${valueAt(index * itemSize).toUInt().toString(16)}"
+        }
+        return if (count <= maxItems) "[$values]" else "[$values,...(+${count - maxItems})]"
     }
 
     private fun propertyTraceType(type: Int): String =

@@ -344,7 +344,11 @@ class IntellijCommunitySmokeTest {
         val summary = intellijGlxJcefDiagnosticsSummary(
             logs = logs + IntellijLogArtifact(fileName = "intellij-kotlin-text.txt", text = kotlinText),
         )
-        val summaryFromExplicitText = intellijGlxJcefDiagnosticsSummary(logs, kotlinText = kotlinText)
+        val summaryFromExplicitText = intellijGlxJcefDiagnosticsSummary(
+            logs,
+            kotlinText = kotlinText,
+            kotlinStateJson = """{"propertyOperations":[{"operation":"GetProperty"}]}""",
+        )
 
         assertTrue(summary.contains("xvfbGlxExtensions=GLX_ARB_create_context GLX_EXT_create_context_es_profile"), summary)
         assertTrue(
@@ -382,6 +386,8 @@ class IntellijCommunitySmokeTest {
         )
         assertTrue(summary.contains("kotlinExplicitTextTraceIncluded=false"), summary)
         assertTrue(summaryFromExplicitText.contains("kotlinExplicitTextTraceIncluded=true"), summaryFromExplicitText)
+        assertTrue(summary.contains("kotlinExplicitStateJsonIncluded=false"), summary)
+        assertTrue(summaryFromExplicitText.contains("kotlinExplicitStateJsonIncluded=true"), summaryFromExplicitText)
         assertTrue(summary.contains("xvfbTraceArtifacts=intellij-xvfb-glx-xdpyinfo.log intellij-xvfb-run.log"), summary)
         assertTrue(summary.contains("xvfbAngleInitializationPbufferFailure=false"), summary)
         assertTrue(summary.contains("xvfbAngleMissingEsProfileMessage=false"), summary)
@@ -948,6 +954,7 @@ class IntellijCommunitySmokeTest {
                         assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
                         val html = httpGet(port, "/")
                         val text = httpGet(port, "/text.txt")
+                        val stateJson = httpGet(port, "/state.json")
                         val logs = collectIntellijLogs(
                             container = container,
                             prefix = "intellij-kotlin",
@@ -957,6 +964,7 @@ class IntellijCommunitySmokeTest {
                         return IntellijKotlinCapture(
                             robot = visualCapture(capture.stdout),
                             text = text,
+                            stateJson = stateJson,
                             svg = svg,
                             html = html,
                             svgLayers = svgCompositionLayers(svg),
@@ -1360,11 +1368,18 @@ class IntellijCommunitySmokeTest {
         File(directory, "intellij-kotlin-screen.svg").writeText(actual.svg)
         File(directory, "intellij-kotlin.html").writeText(actual.html)
         File(directory, "intellij-kotlin-text.txt").writeText(actual.text)
+        File(directory, "intellij-kotlin-state.json").writeText(actual.stateJson)
         File(directory, "intellij-kotlin-svg-layers.txt").writeText(svgLayerInventory(actual.svgLayers))
         File(directory, "intellij-kotlin-html-previews.txt").writeText(htmlPreviewInventory(htmlWindowPreviewSurfaces(actual.html)))
         val logs = reference.logs + actual.logs
         dumpIntellijLogArtifacts(logs)
-        File(directory, "intellij-glx-jcef-diagnostics.txt").writeText(intellijGlxJcefDiagnosticsSummary(logs, kotlinText = actual.text))
+        File(directory, "intellij-glx-jcef-diagnostics.txt").writeText(
+            intellijGlxJcefDiagnosticsSummary(
+                logs,
+                kotlinText = actual.text,
+                kotlinStateJson = actual.stateJson,
+            ),
+        )
         dumpIntellijVisualDiff(directory, "intellij-kotlin-robot-vs-xvfb", reference.robot, actual.robot)
         dumpIntellijVisualDiff(directory, "intellij-kotlin-svg-vs-xvfb", reference.robot, composedSvgCapture)
         dumpIntellijVisualDiff(directory, "intellij-kotlin-robot-vs-svg", actual.robot, composedSvgCapture)
@@ -1432,7 +1447,11 @@ class IntellijCommunitySmokeTest {
         }
     }
 
-    private fun intellijGlxJcefDiagnosticsSummary(logs: List<IntellijLogArtifact>, kotlinText: String? = null): String {
+    private fun intellijGlxJcefDiagnosticsSummary(
+        logs: List<IntellijLogArtifact>,
+        kotlinText: String? = null,
+        kotlinStateJson: String? = null,
+    ): String {
         val xvfbGlx = logs.firstOrNull { it.fileName == "intellij-xvfb-glx-xdpyinfo.log" }?.text.orEmpty()
         val kotlinGlx = logs.firstOrNull { it.fileName == "intellij-kotlin-glx-xdpyinfo.log" }?.text.orEmpty()
         val xvfbTraceArtifacts = logs.filter { it.fileName.startsWith("intellij-xvfb-") }
@@ -1441,9 +1460,10 @@ class IntellijCommunitySmokeTest {
         val kotlinTrace = (
             kotlinTraceArtifacts.map { it.text } +
                 listOfNotNull(kotlinText)
-            ).joinToString("\n")
+        ).joinToString("\n")
         return buildString {
             appendLine("kotlinExplicitTextTraceIncluded=${!kotlinText.isNullOrBlank()}")
+            appendLine("kotlinExplicitStateJsonIncluded=${!kotlinStateJson.isNullOrBlank()}")
             appendLine("xvfbTraceArtifacts=${xvfbTraceArtifacts.joinToString(" ") { it.fileName }}")
             appendLine("kotlinTraceArtifacts=${kotlinTraceArtifacts.joinToString(" ") { it.fileName }}")
             appendLine("xvfbListsGlxExtension=${listedExtensionsFromXdpyinfo(xvfbGlx).contains("GLX")}")
@@ -1941,6 +1961,7 @@ class IntellijCommunitySmokeTest {
     private data class IntellijKotlinCapture(
         val robot: VisualCapture,
         val text: String,
+        val stateJson: String,
         val svg: String,
         val html: String,
         val svgLayers: List<SvgLayer>,
