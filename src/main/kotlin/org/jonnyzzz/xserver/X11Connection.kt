@@ -5103,7 +5103,7 @@ internal class X11Connection(
     }
 
     private fun glxStringReply(value: String) {
-        val bytes = value.encodeToByteArray()
+        val bytes = value.encodeToByteArray() + 0
         val reply = reply(extra = 0, payloadUnits = paddedLength(bytes.size) / 4)
         byteOrder.put32(reply, 12, bytes.size)
         bytes.copyInto(reply, 32)

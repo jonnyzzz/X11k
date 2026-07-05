@@ -76,13 +76,13 @@ class XGlxProtocolTest {
             assertEquals(1, fbConfigAttributes.getValue(XGlx.BindToTextureRgbaExt))
             assertEquals(0, fbConfigAttributes.getValue(XGlx.BindToMipmapTextureExt))
             assertEquals(
-                XGlx.Texture2DBitExt or XGlx.TextureRectangleBitExt,
+                XGlx.TextureTargetsExt,
                 fbConfigAttributes.getValue(XGlx.BindToTextureTargetsExt),
             )
             assertEquals(XGlx.DontCare, fbConfigAttributes.getValue(XGlx.YInvertedExt))
-            assertEquals(4096, fbConfigAttributes.getValue(XGlx.MaxPbufferWidth))
-            assertEquals(4096, fbConfigAttributes.getValue(XGlx.MaxPbufferHeight))
-            assertEquals(4096 * 4096, fbConfigAttributes.getValue(XGlx.MaxPbufferPixels))
+            assertEquals(0, fbConfigAttributes.getValue(XGlx.MaxPbufferWidth))
+            assertEquals(0, fbConfigAttributes.getValue(XGlx.MaxPbufferHeight))
+            assertEquals(0, fbConfigAttributes.getValue(XGlx.MaxPbufferPixels))
             val pbufferOnlyFbConfigAttributes = attributeMap(
                 fbConfigs,
                 offset = 32 + XGlx.FbConfigAttributePairs * 8,
@@ -228,7 +228,8 @@ class XGlxProtocolTest {
             assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.QueryExtensionsString, sequence = 11)
             val extensions = readReply(socket.getInputStream())
             assertEquals(12, u16le(extensions, 2))
-            assertEquals(XGlx.Extensions.length, u32le(extensions, 12))
+            assertEquals(XGlx.Extensions.length + 1, u32le(extensions, 12))
+            assertEquals(0, extensions[32 + XGlx.Extensions.length].toInt())
         }
     }
 
@@ -538,7 +539,9 @@ class XGlxProtocolTest {
             val vendor = readReply(socket.getInputStream())
             assertEquals(4, u16le(vendor, 2))
             val vendorLength = u32le(vendor, 12)
-            assertEquals("jonnyzzz/x", vendor.copyOfRange(32, 32 + vendorLength).decodeToString())
+            assertEquals("jonnyzzz/x".length + 1, vendorLength)
+            assertEquals(0, vendor[32 + "jonnyzzz/x".length].toInt())
+            assertEquals("jonnyzzz/x", vendor.copyOfRange(32, 32 + vendorLength - 1).decodeToString())
 
             assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.IsDirect, sequence = 5)
             assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.IsDirect, sequence = 7)
@@ -2067,7 +2070,8 @@ class XGlxProtocolTest {
     private fun readGlxStringReply(input: InputStream): String {
         val reply = readReply(input)
         val length = u32le(reply, 12)
-        return reply.copyOfRange(32, 32 + length).decodeToString()
+        val payload = reply.copyOfRange(32, 32 + length)
+        return payload.dropLastWhile { it == 0.toByte() }.toByteArray().decodeToString()
     }
 
     private fun readGlxIntVectorReply(input: InputStream): List<Int> {

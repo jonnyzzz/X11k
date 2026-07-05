@@ -113,6 +113,7 @@ internal object XGlx {
     const val Texture1DBitExt = 0x00000001
     const val Texture2DBitExt = 0x00000002
     const val TextureRectangleBitExt = 0x00000004
+    const val TextureTargetsExt = Texture1DBitExt or Texture2DBitExt or TextureRectangleBitExt
     const val Texture2DExt = 0x20DC
     const val TextureRectangleExt = 0x20DD
     const val OptimalPbufferWidthSgix = 0x8019
@@ -407,11 +408,11 @@ internal object XGlx {
             BindToTextureRgbExt to 1,
             BindToTextureRgbaExt to if (spec.alphaSize > 0) 1 else 0,
             BindToMipmapTextureExt to 0,
-            BindToTextureTargetsExt to (Texture2DBitExt or TextureRectangleBitExt),
+            BindToTextureTargetsExt to TextureTargetsExt,
             YInvertedExt to DontCare,
-            MaxPbufferWidth to 4096,
-            MaxPbufferHeight to 4096,
-            MaxPbufferPixels to 4096 * 4096,
+            MaxPbufferWidth to 0,
+            MaxPbufferHeight to 0,
+            MaxPbufferPixels to 0,
             OptimalPbufferWidthSgix to 0,
             OptimalPbufferHeightSgix to 0,
             0 to 0,
