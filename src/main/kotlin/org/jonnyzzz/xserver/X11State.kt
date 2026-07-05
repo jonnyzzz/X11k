@@ -6203,6 +6203,7 @@ internal class X11State(
                 source = renderPictureSnapshot(source),
                 mask = mask?.let(::renderPictureSnapshot),
                 destination = renderPictureSnapshot(destination),
+                destinationRegion = XRectangleCommand(destinationX, destinationY, width, height),
                 result = renderResultSnapshot(result.image),
             ),
             destinationDrawableId = destinationDrawableId,
@@ -11908,6 +11909,7 @@ internal data class XRenderOperationProvenance(
     val source: XRenderPictureSnapshot? = null,
     val mask: XRenderPictureSnapshot? = null,
     val destination: XRenderPictureSnapshot? = null,
+    val destinationRegion: XRectangleCommand? = null,
     val freed: XRenderPictureSnapshot? = null,
     val result: XRenderOperationResultSnapshot? = null,
 )

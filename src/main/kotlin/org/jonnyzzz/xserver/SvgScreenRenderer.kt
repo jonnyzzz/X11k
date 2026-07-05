@@ -1899,6 +1899,11 @@ internal object SvgScreenRenderer {
         provenance.destination?.let { picture ->
             field("destination") { appendRenderPictureSnapshot(picture) }
         }
+        provenance.destinationRegion?.let { rectangle ->
+            field("destinationRegion") {
+                append("""{"x":${rectangle.x},"y":${rectangle.y},"width":${rectangle.width},"height":${rectangle.height}}""")
+            }
+        }
         provenance.freed?.let { picture ->
             field("freed") { appendRenderPictureSnapshot(picture) }
         }

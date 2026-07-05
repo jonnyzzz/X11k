@@ -2,6 +2,9 @@ package org.jonnyzzz.xserver
 
 internal object TextScreenRenderer {
     private const val MaxGlxOperationsInTextReport = 200
+    private const val MaxRenderOperationsInTextReport = 30
+    private const val MaxRegionalRenderOperationsInTextReport = 200
+    private const val TopMappedRootChildBandHeight = 120
 
     fun html(snapshot: XScreenSnapshot): String =
         XmlDom.html {
@@ -335,23 +338,12 @@ internal object TextScreenRenderer {
             if (snapshot.renderOperations.isEmpty()) {
                 appendLine("- None.")
             } else {
-                for (operation in snapshot.renderOperations.takeLast(30).asReversed()) {
-                    append("- #")
-                    append(operation.id)
-                    append(' ')
-                    append(operation.operation)
-                    append(" minor=")
-                    append(operation.minorOpcode)
-                    if (operation.detail.isNotBlank()) {
-                        append(" ")
-                        append(operation.detail)
-                    }
-                    operation.provenance?.let { provenance ->
-                        appendRenderOperationProvenance(provenance)
-                    }
-                    appendLine()
+                for (operation in snapshot.renderOperations.takeLast(MaxRenderOperationsInTextReport).asReversed()) {
+                    appendRenderOperationLine(operation)
                 }
             }
+            appendLine()
+            appendTopMappedRootChildRenderBand(snapshot)
             appendLine()
             appendLine("Recent PutImage commands:")
             val putImages = snapshot.drawings.filter { it.putImage != null }.takeLast(30).asReversed()
@@ -490,6 +482,107 @@ internal object TextScreenRenderer {
             appendLine()
             appendLine(RenderCredit.Text)
         }
+
+    private fun StringBuilder.appendTopMappedRootChildRenderBand(snapshot: XScreenSnapshot) {
+        appendLine("RENDER operations intersecting top mapped root-child band:")
+        val frame = snapshot.windows
+            .filter { it.id != X11Ids.RootWindow && it.parentId == X11Ids.RootWindow && it.mapped }
+            .maxByOrNull { it.width.toLong() * it.height.toLong() }
+        if (frame == null) {
+            appendLine("- None.")
+            return
+        }
+        val region = XRectangleCommand(
+            x = frame.x,
+            y = frame.y,
+            width = frame.width,
+            height = minOf(TopMappedRootChildBandHeight, frame.height),
+        )
+        append("- region=")
+        appendRegion(region)
+        append(" window=")
+        append(frame.idHex)
+        appendLine()
+
+        val matched = snapshot.renderOperations
+            .mapNotNull { operation ->
+                val rootRegions = renderOperationRootRegions(snapshot, operation)
+                    .filter { it.intersects(region) }
+                if (rootRegions.isEmpty()) null else operation to rootRegions
+            }
+            .takeLast(MaxRegionalRenderOperationsInTextReport)
+            .asReversed()
+        if (matched.isEmpty()) {
+            appendLine("- None.")
+            return
+        }
+        for ((operation, rootRegions) in matched) {
+            appendRenderOperationLine(operation, rootRegions)
+        }
+    }
+
+    private fun StringBuilder.appendRenderOperationLine(
+        operation: XRenderOperation,
+        rootRegions: List<XRectangleCommand> = emptyList(),
+    ) {
+        append("- #")
+        append(operation.id)
+        append(' ')
+        append(operation.operation)
+        append(" minor=")
+        append(operation.minorOpcode)
+        if (rootRegions.isNotEmpty()) {
+            append(" root=")
+            append(rootRegions.joinToString(",") { it.toRegionString() })
+        }
+        operation.provenance?.destinationRegion?.let { region ->
+            append(" local=")
+            appendRegion(region)
+        }
+        if (operation.detail.isNotBlank()) {
+            append(" ")
+            append(operation.detail)
+        }
+        operation.provenance?.let { provenance ->
+            appendRenderOperationProvenance(provenance)
+        }
+        appendLine()
+    }
+
+    private fun renderOperationRootRegions(snapshot: XScreenSnapshot, operation: XRenderOperation): List<XRectangleCommand> {
+        val provenance = operation.provenance ?: return emptyList()
+        val local = provenance.destinationRegion ?: return emptyList()
+        if (local.width <= 0 || local.height <= 0) return emptyList()
+        val drawableId = provenance.destination?.drawableId ?: return emptyList()
+        val window = snapshot.windows.firstOrNull { it.id == drawableId }
+        if (window != null) return listOf(local.translated(window.x, window.y))
+
+        val pixmap = snapshot.pixmaps.firstOrNull { it.id == drawableId } ?: return emptyList()
+        val matchingWindowIds = pixmap.provenanceMatchingWindowIds.ifEmpty { pixmap.matchingWindowIds }
+        return matchingWindowIds.mapNotNull { windowId ->
+            snapshot.windows.firstOrNull { it.id == windowId }?.let { local.translated(it.x, it.y) }
+        }
+    }
+
+    private fun XRectangleCommand.translated(dx: Int, dy: Int): XRectangleCommand =
+        XRectangleCommand(x = x + dx, y = y + dy, width = width, height = height)
+
+    private fun XRectangleCommand.intersects(other: XRectangleCommand): Boolean =
+        width > 0 &&
+            height > 0 &&
+            other.width > 0 &&
+            other.height > 0 &&
+            x < other.x + other.width &&
+            other.x < x + width &&
+            y < other.y + other.height &&
+            other.y < y + height
+
+    private fun StringBuilder.appendRegion(region: XRectangleCommand) {
+        append(region.toRegionString())
+    }
+
+    private fun XRectangleCommand.toRegionString(): String =
+        "$x,$y ${width}x$height"
 
     private fun textCss(): String =
         """
