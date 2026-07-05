@@ -45,7 +45,7 @@ class XGlxProtocolTest {
 
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFBConfigs, u32(0))
             val fbConfigs = readReply(socket.getInputStream())
-            assertEquals(1, u32le(fbConfigs, 8))
+            assertEquals(5, u32le(fbConfigs, 8))
             assertEquals(XGlx.FbConfigAttributePairs, u32le(fbConfigs, 12))
             assertEquals(0x800B, u32le(fbConfigs, 32))
             assertEquals(X11Ids.RootVisual, u32le(fbConfigs, 36))
@@ -83,6 +83,15 @@ class XGlxProtocolTest {
             assertEquals(4096, fbConfigAttributes.getValue(XGlx.MaxPbufferWidth))
             assertEquals(4096, fbConfigAttributes.getValue(XGlx.MaxPbufferHeight))
             assertEquals(4096 * 4096, fbConfigAttributes.getValue(XGlx.MaxPbufferPixels))
+            val pbufferOnlyFbConfigAttributes = attributeMap(
+                fbConfigs,
+                offset = 32 + XGlx.FbConfigAttributePairs * 8,
+                count = XGlx.FbConfigAttributePairs,
+            )
+            assertEquals(0, pbufferOnlyFbConfigAttributes.getValue(XGlx.VisualIdExt))
+            assertEquals(XGlx.RootFbConfigId + 1, pbufferOnlyFbConfigAttributes.getValue(XGlx.FbConfigId))
+            assertEquals(XGlx.PixmapBit or XGlx.PbufferBit, pbufferOnlyFbConfigAttributes.getValue(XGlx.DrawableType))
+            assertEquals(XGlx.None, pbufferOnlyFbConfigAttributes.getValue(XGlx.XVisualType))
 
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetVisualConfigs, u32(0))
             val visuals = readReply(socket.getInputStream())
@@ -211,7 +220,7 @@ class XGlxProtocolTest {
             assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.GetFBConfigs, sequence = 7)
             val fbConfigs = readReply(socket.getInputStream())
             assertEquals(8, u16le(fbConfigs, 2))
-            assertEquals(1, u32le(fbConfigs, 8))
+            assertEquals(5, u32le(fbConfigs, 8))
             assertEquals(XGlx.FbConfigAttributePairs, u32le(fbConfigs, 12))
 
             assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.QueryExtensionsString, sequence = 9)
@@ -439,12 +448,46 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX MakeCurrent release accepts old tag for just destroyed current context`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_010f
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeCurrent, u32(X11Ids.RootWindow) + u32(contextId) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyContext, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeCurrent, u32(0) + u32(0) + u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeCurrent, u32(0) + u32(0) + u32(contextId))
+
+            val current = readReply(socket.getInputStream())
+            assertEquals(2, u16le(current, 2))
+            assertEquals(contextId, u32le(current, 8))
+            val released = readReply(socket.getInputStream())
+            assertEquals(4, u16le(released, 2))
+            assertEquals(0, u32le(released, 8))
+            assertGlxError(socket.getInputStream(), error = XGlx.BadContextTag, badValue = contextId, minorOpcode = XGlx.MakeCurrent, sequence = 5)
+        }
+    }
+
+    @Test
+    fun `GLX MakeCurrent release rejects old tag for destroyed non-current context`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_0110
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyContext, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeCurrent, u32(0) + u32(0) + u32(contextId))
+
+            assertGlxError(socket.getInputStream(), error = XGlx.BadContextTag, badValue = contextId, minorOpcode = XGlx.MakeCurrent, sequence = 3)
+        }
+    }
+
+    @Test
     fun `GLX MakeCurrent requests validate drawables and expose current binding`() {
         withServer { socket ->
             socket.soTimeout = 2_000
-            val contextId = 0x0020_010e
-            val missingDraw = 0x0020_010f
-            val missingRead = 0x0020_0110
+            val contextId = 0x0020_0114
+            val missingDraw = 0x0020_0115
+            val missingRead = 0x0020_0116
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeContextCurrent, u32(0) + u32(missingDraw) + u32(X11Ids.RootWindow) + u32(contextId))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeContextCurrent, u32(0) + u32(X11Ids.RootWindow) + u32(missingRead) + u32(contextId))
@@ -816,6 +859,27 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX GetError returns no error and validates length and context tag`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_0137
+            val badTag = 0x0020_0138
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetError, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetError, ByteArray(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetError, u32(contextId) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetError, u32(badTag))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetError, u32(contextId))
+
+            assertEquals(listOf(0), readGlxIntVectorReply(socket.getInputStream()))
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.GetError, sequence = 3)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.GetError, sequence = 4)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadContextTag, badValue = badTag, minorOpcode = XGlx.GetError, sequence = 5)
+            assertEquals(listOf(0), readGlxIntVectorReply(socket.getInputStream()))
+        }
+    }
+
+    @Test
     fun `GLX GetFloatv and GetIntegerv validate length and context tag and recover stream`() {
         withServer { socket ->
             socket.soTimeout = 2_000
@@ -841,15 +905,17 @@ class XGlxProtocolTest {
             val contextId = 0x0020_013b
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = u32(12) + u32(1), requestNumber = 1, requestTotal = 2))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetError, u32(contextId))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetIntegerv, getStringBody(contextId, XGlx.GlMaxTextureSize))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFloatv, getStringBody(contextId, XGlx.GlLineWidth))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = byteArrayOf(1, 2, 3, 4), requestNumber = 2, requestTotal = 2))
             writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
 
-            assertGlxError(socket.getInputStream(), error = XGlx.BadLargeRequest, badValue = XGlx.GetIntegerv, minorOpcode = XGlx.GetIntegerv, sequence = 3)
-            assertGlxError(socket.getInputStream(), error = XGlx.BadLargeRequest, badValue = XGlx.GetFloatv, minorOpcode = XGlx.GetFloatv, sequence = 4)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadLargeRequest, badValue = XGlx.GetError, minorOpcode = XGlx.GetError, sequence = 3)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadLargeRequest, badValue = XGlx.GetIntegerv, minorOpcode = XGlx.GetIntegerv, sequence = 4)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadLargeRequest, badValue = XGlx.GetFloatv, minorOpcode = XGlx.GetFloatv, sequence = 5)
             val pointer = readReply(socket.getInputStream())
-            assertEquals(6, u16le(pointer, 2))
+            assertEquals(7, u16le(pointer, 2))
         }
     }
 
@@ -1245,7 +1311,7 @@ class XGlxProtocolTest {
             val attribsContext = 0x0020_010a
             val validContext = 0x0020_010b
             val badVisual = X11Ids.RootVisual + 1
-            val badFbConfig = XGlx.RootFbConfigId + 1
+            val badFbConfig = XGlx.RootFbConfigId + 1000
             val badRenderType = XGlx.RgbaType + 1
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContext, createContextBody(legacyContext, direct = false, screen = 1))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContext, createContextBody(legacyContext, direct = false, visual = badVisual))
@@ -1267,6 +1333,39 @@ class XGlxProtocolTest {
             val query = readReply(socket.getInputStream())
             assertEquals(9, u16le(query, 2))
             assertEquals(5, u32le(query, 8))
+        }
+    }
+
+    @Test
+    fun `GLX accepts advertised pbuffer-only fbconfigs for context and pbuffer lifecycle`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val pbufferOnlyFbConfig = XGlx.RootFbConfigId + 4
+            val contextId = 0x0020_010c
+            val pbuffer = 0x0020_010d
+            val window = 0x0020_010e
+            val glxWindow = 0x0020_010f
+            writeRequest(socket, 1, 24, createWindowBody(window, width = 8, height = 8))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(contextId, direct = false, fbConfig = pbufferOnlyFbConfig))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryContext, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePbuffer, createPbufferBody(pbuffer, fbConfig = pbufferOnlyFbConfig, width = 3, height = 5))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetDrawableAttributes, u32(pbuffer))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateWindow, createGlxWindowBody(window, glxWindow, fbConfig = pbufferOnlyFbConfig))
+
+            val query = readReply(socket.getInputStream())
+            assertEquals(3, u16le(query, 2))
+            val contextAttributes = attributeMap(query, offset = 32, count = u32le(query, 8))
+            assertEquals(0, contextAttributes.getValue(XGlx.VisualIdExt))
+            assertEquals(pbufferOnlyFbConfig, contextAttributes.getValue(XGlx.FbConfigId))
+
+            val drawableAttributesReply = readReply(socket.getInputStream())
+            assertEquals(5, u16le(drawableAttributesReply, 2))
+            val drawableAttributes = attributeMap(drawableAttributesReply, offset = 32, count = u32le(drawableAttributesReply, 8))
+            assertEquals(3, drawableAttributes.getValue(XGlx.Width))
+            assertEquals(5, drawableAttributes.getValue(XGlx.Height))
+            assertEquals(pbufferOnlyFbConfig, drawableAttributes.getValue(XGlx.FbConfigId))
+            assertEquals(XGlx.PbufferBit, drawableAttributes.getValue(XGlx.DrawableType))
+            assertGlxError(socket.getInputStream(), error = XGlx.BadFBConfig, badValue = pbufferOnlyFbConfig, minorOpcode = XGlx.CreateWindow, sequence = 6)
         }
     }
 
@@ -1515,7 +1614,7 @@ class XGlxProtocolTest {
         withServer { socket ->
             socket.soTimeout = 2_000
             val pixmap = 0x0020_0600
-            val badFbConfig = XGlx.RootFbConfigId + 1
+            val badFbConfig = XGlx.RootFbConfigId + 1000
             val glxPixmap = 0x0020_0601
             writeRequest(socket, 53, 24, u32(pixmap) + u32(X11Ids.RootWindow) + u16(8) + u16(8))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePixmap, createFbConfigPixmapBody(pixmap, glxPixmap, fbConfig = badFbConfig))

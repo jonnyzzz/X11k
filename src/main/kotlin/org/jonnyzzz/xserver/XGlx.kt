@@ -30,6 +30,7 @@ internal object XGlx {
     const val CopyContext = 10
     const val SwapBuffers = 11
     const val UseXFont = 12
+    const val GetError = 115
     const val GetFloatv = 116
     const val GetIntegerv = 117
     const val GetString = 129
@@ -199,6 +200,7 @@ internal object XGlx {
             CopyContext -> "CopyContext"
             SwapBuffers -> "SwapBuffers"
             UseXFont -> "UseXFont"
+            GetError -> "GetError"
             GetFloatv -> "GetFloatv"
             GetIntegerv -> "GetIntegerv"
             GetString -> "GetString"
@@ -353,29 +355,43 @@ internal object XGlx {
             0,
         )
 
-    fun fbConfig(): IntArray {
+    fun fbConfig(): IntArray = fbConfigs().first()
+
+    fun fbConfigs(): List<IntArray> =
+        FbConfigs.map { spec -> fbConfig(spec) }
+
+    fun isKnownFbConfig(id: Int): Boolean =
+        FbConfigs.any { it.id == id }
+
+    fun fbConfigSupports(id: Int, drawableType: Int): Boolean =
+        FbConfigs.firstOrNull { it.id == id }?.let { spec -> spec.drawableType and drawableType != 0 } == true
+
+    fun visualIdForFbConfig(id: Int): Int =
+        FbConfigs.firstOrNull { it.id == id }?.visualId ?: 0
+
+    private fun fbConfig(spec: FbConfigSpec): IntArray {
         val pairs = listOf(
-            VisualIdExt to X11Ids.RootVisual,
-            FbConfigId to RootFbConfigId,
+            VisualIdExt to spec.visualId,
+            FbConfigId to spec.id,
             0x8012 to 1,
             4 to 1,
             RenderType to RgbaBit,
-            5 to 1,
+            5 to spec.doubleBuffer,
             6 to 0,
-            2 to 32,
+            2 to spec.bufferSize,
             3 to 0,
             7 to 0,
             8 to 8,
             9 to 8,
             10 to 8,
-            11 to 8,
+            11 to spec.alphaSize,
             14 to 0,
             15 to 0,
             16 to 0,
             17 to 0,
-            12 to 24,
-            13 to 8,
-            XVisualType to TrueColor,
+            12 to spec.depthSize,
+            13 to spec.stencilSize,
+            XVisualType to if (spec.visualId == 0) None else TrueColor,
             ConfigCaveat to None,
             TransparentType to None,
             TransparentRedValue to DontCare,
@@ -387,9 +403,9 @@ internal object XGlx {
             100001 to 0,
             100000 to 0,
             VisualSelectGroupSgix to 0,
-            DrawableType to (WindowBit or PixmapBit or PbufferBit),
+            DrawableType to spec.drawableType,
             BindToTextureRgbExt to 1,
-            BindToTextureRgbaExt to 1,
+            BindToTextureRgbaExt to if (spec.alphaSize > 0) 1 else 0,
             BindToMipmapTextureExt to 0,
             BindToTextureTargetsExt to (Texture2DBitExt or TextureRectangleBitExt),
             YInvertedExt to DontCare,
@@ -414,6 +430,59 @@ internal object XGlx {
 
     const val VisualConfigValues = 40
     const val FbConfigAttributePairs = 44
+
+    private val FbConfigs = listOf(
+        FbConfigSpec(
+            id = RootFbConfigId,
+            visualId = X11Ids.RootVisual,
+            doubleBuffer = 1,
+            depthSize = 24,
+            stencilSize = 8,
+        ),
+        FbConfigSpec(
+            id = RootFbConfigId + 1,
+            visualId = 0,
+            doubleBuffer = 0,
+            depthSize = 0,
+            stencilSize = 0,
+            drawableType = PixmapBit or PbufferBit,
+        ),
+        FbConfigSpec(
+            id = RootFbConfigId + 2,
+            visualId = 0,
+            doubleBuffer = 1,
+            depthSize = 0,
+            stencilSize = 0,
+            drawableType = PixmapBit or PbufferBit,
+        ),
+        FbConfigSpec(
+            id = RootFbConfigId + 3,
+            visualId = 0,
+            doubleBuffer = 0,
+            depthSize = 24,
+            stencilSize = 8,
+            drawableType = PixmapBit or PbufferBit,
+        ),
+        FbConfigSpec(
+            id = RootFbConfigId + 4,
+            visualId = 0,
+            doubleBuffer = 1,
+            depthSize = 24,
+            stencilSize = 8,
+            drawableType = PixmapBit or PbufferBit,
+        ),
+    )
+
+    private data class FbConfigSpec(
+        val id: Int,
+        val visualId: Int,
+        val doubleBuffer: Int,
+        val depthSize: Int,
+        val stencilSize: Int,
+        val alphaSize: Int = 8,
+        val bufferSize: Int = 32,
+        val drawableType: Int = WindowBit or PixmapBit or PbufferBit,
+    )
 
     private const val XVisualClassTrueColor = 4
 }

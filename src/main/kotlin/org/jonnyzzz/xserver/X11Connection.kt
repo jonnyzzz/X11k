@@ -23,6 +23,7 @@ internal class X11Connection(
     private val writeLock = Any()
     private val closeDownLock = Any()
     private val ownedResources = linkedSetOf<Int>()
+    private val destroyedGlxContextTags = linkedSetOf<Int>()
     private var closeDownMode = XCloseDownMode.Destroy
     @Volatile
     private var killed = false
@@ -408,6 +409,7 @@ internal class X11Connection(
             XGlx.CopyContext -> glxCopyContext(body)
             XGlx.SwapBuffers -> glxSwapBuffers(body)
             XGlx.UseXFont -> glxUseXFont(body)
+            XGlx.GetError -> glxGetError(body)
             XGlx.GetFloatv -> glxGetFloatv(body)
             XGlx.GetIntegerv -> glxGetIntegerv(body)
             XGlx.GetString -> glxGetString(body)
@@ -5001,11 +5003,12 @@ internal class X11Connection(
     private fun glxGetFbConfigs(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetFBConfigs, badValue = 0)
         if (!glxScreenIsValid(body, offset = 0, minorOpcode = XGlx.GetFBConfigs)) return
-        val config = XGlx.fbConfig()
-        val reply = reply(extra = 0, payloadUnits = config.size)
-        byteOrder.put32(reply, 8, 1)
+        val configs = XGlx.fbConfigs()
+        val payload = configs.flatMap { config -> config.asIterable() }.toIntArray()
+        val reply = reply(extra = 0, payloadUnits = payload.size)
+        byteOrder.put32(reply, 8, configs.size)
         byteOrder.put32(reply, 12, XGlx.FbConfigAttributePairs)
-        putIntArray(reply, 32, config)
+        putIntArray(reply, 32, payload)
         write(reply)
     }
 
@@ -5124,6 +5127,7 @@ internal class X11Connection(
                 direct = body[16].toInt() != 0,
             ),
         )
+        destroyedGlxContextTags.remove(context)
         own(context)
     }
 
@@ -5135,7 +5139,7 @@ internal class X11Connection(
         val renderType = byteOrder.u32(body, 12)
         if (!resourceIdAvailable(context, XGlx.MajorOpcode, XGlx.CreateNewContext, error = 11)) return
         if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateNewContext, badValue = screen)
-        if (fbConfig != XGlx.RootFbConfigId) {
+        if (!XGlx.isKnownFbConfig(fbConfig)) {
             return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateNewContext, badValue = fbConfig)
         }
         if (renderType != XGlx.RgbaType) {
@@ -5150,6 +5154,7 @@ internal class X11Connection(
                 direct = body[20].toInt() != 0,
             ),
         )
+        destroyedGlxContextTags.remove(context)
         own(context)
     }
 
@@ -5167,7 +5172,7 @@ internal class X11Connection(
         }
         if (!resourceIdAvailable(context, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, error = 11)) return
         if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = screen)
-        if (fbConfig != XGlx.RootFbConfigId) {
+        if (!XGlx.isKnownFbConfig(fbConfig)) {
             return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = fbConfig)
         }
         val attributes = glxAttributePairs(body, 24, attribCount.toInt())
@@ -5190,6 +5195,7 @@ internal class X11Connection(
                 direct = body[16].toInt() != 0,
             ),
         )
+        destroyedGlxContextTags.remove(context)
         own(context)
     }
 
@@ -5227,12 +5233,12 @@ internal class X11Connection(
         }
         val attributes = glxAttributePairs(body, 20, attribCount.toInt())
         if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePixmap, badValue = screen)
-        if (fbConfig != XGlx.RootFbConfigId) return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePixmap, badValue = fbConfig)
+        if (!XGlx.fbConfigSupports(fbConfig, XGlx.PixmapBit)) return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePixmap, badValue = fbConfig)
         createGlxPixmapResource(
             minorOpcode = XGlx.CreatePixmap,
             pixmap = pixmap,
             glxPixmap = glxPixmap,
-            visual = X11Ids.RootVisual,
+            visual = XGlx.visualIdForFbConfig(fbConfig).takeIf { it != 0 } ?: X11Ids.RootVisual,
             fbConfig = fbConfig,
             screen = screen,
             attributes = attributes,
@@ -5286,10 +5292,14 @@ internal class X11Connection(
     private fun glxDestroyContext(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyContext, badValue = 0)
         val context = byteOrder.u32(body, 0)
-        if (state.glxContext(context) == null) {
+        val glxContext = state.glxContext(context)
+        if (glxContext == null) {
             return writeError(error = XGlx.BadContext, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyContext, badValue = context)
         }
         state.removeGlxContext(context)
+        if (glxContext.currentDrawDrawableId != 0 || glxContext.currentReadDrawableId != 0) {
+            destroyedGlxContextTags += context
+        }
         ownedResources.remove(context)
     }
 
@@ -5308,7 +5318,7 @@ internal class X11Connection(
             return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = 0)
         }
         if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = screen)
-        if (fbConfig != XGlx.RootFbConfigId) return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = fbConfig)
+        if (!XGlx.fbConfigSupports(fbConfig, XGlx.WindowBit)) return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = fbConfig)
         if (state.window(window) == null) return writeError(error = 3, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = window)
         if (!state.resourceIdAvailableFor(this, glxWindow) || state.hasGlxWindowForWindow(window)) {
             return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = glxWindow)
@@ -5347,7 +5357,7 @@ internal class X11Connection(
         }
         val attributes = glxAttributePairs(body, 16, attribCount.toInt())
         if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePbuffer, badValue = screen)
-        if (fbConfig != XGlx.RootFbConfigId) return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePbuffer, badValue = fbConfig)
+        if (!XGlx.fbConfigSupports(fbConfig, XGlx.PbufferBit)) return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePbuffer, badValue = fbConfig)
         if (!resourceIdAvailable(pbuffer, XGlx.MajorOpcode, XGlx.CreatePbuffer, error = 11)) return
         val width = attributes.lastOrNull { (attribute, _) -> attribute == XGlx.PbufferWidth }?.second ?: 0
         val height = attributes.lastOrNull { (attribute, _) -> attribute == XGlx.PbufferHeight }?.second ?: 0
@@ -5380,7 +5390,7 @@ internal class X11Connection(
             XGlx.ShareContextExt,
             0,
             XGlx.VisualIdExt,
-            glxContext.fbConfigId,
+            XGlx.visualIdForFbConfig(glxContext.fbConfigId),
             XGlx.ScreenExt,
             glxContext.screen,
             XGlx.FbConfigId,
@@ -5413,11 +5423,14 @@ internal class X11Connection(
         val expectedSize = if (isContextCurrent) 16 else 12
         if (body.size != expectedSize) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
         val oldTag = byteOrder.u32(body, oldTagOffset)
-        if (oldTag != 0 && state.glxContext(oldTag) == null) {
-            return writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = oldTag)
-        }
-        if (oldTag != 0 && glxRejectPendingLargeRender(oldTag, minorOpcode)) return
         val context = byteOrder.u32(body, contextOffset)
+        if (oldTag != 0) {
+            val oldContext = state.glxContext(oldTag)
+            if (oldContext == null && (context != 0 || oldTag !in destroyedGlxContextTags)) {
+                return writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = oldTag)
+            }
+            if (oldContext != null && glxRejectPendingLargeRender(oldTag, minorOpcode)) return
+        }
         if (context != 0 && state.glxContext(context) == null) {
             return writeError(error = XGlx.BadContext, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = context)
         }
@@ -5434,6 +5447,8 @@ internal class X11Connection(
         }
         if (context != 0) {
             state.updateGlxContextCurrent(context, drawDrawableId = drawDrawable, readDrawableId = readDrawable)
+        } else if (oldTag != 0) {
+            destroyedGlxContextTags.remove(oldTag)
         }
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put32(reply, 8, context)
@@ -5494,6 +5509,16 @@ internal class X11Connection(
         }
         if (glxRejectPendingLargeRender(contextTag, XGlx.GetString)) return
         glxStringReply(XGlx.glString(byteOrder.u32(body, 4), glxContext))
+    }
+
+    private fun glxGetError(body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetError, badValue = 0)
+        val contextTag = byteOrder.u32(body, 0)
+        if (state.glxContext(contextTag) == null) {
+            return writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetError, badValue = contextTag)
+        }
+        if (glxRejectPendingLargeRender(contextTag, XGlx.GetError)) return
+        glxIntVectorReply(intArrayOf(0))
     }
 
     private fun glxGetFloatv(body: ByteArray) {
@@ -5828,6 +5853,7 @@ internal class X11Connection(
             XGlx.CopyContext -> "source=${hex(0)} destination=${hex(4)} mask=${hex(8)} contextTag=${hex(12)}"
             XGlx.SwapBuffers -> "contextTag=${hex(0)} drawable=${hex(4)}"
             XGlx.UseXFont -> "contextTag=${hex(0)} font=${hex(4)} first=${u32(8)} count=${u32(12)} listBase=${u32(16)}"
+            XGlx.GetError -> "contextTag=${hex(0)} value=0"
             XGlx.GetFloatv -> "contextTag=${hex(0)} pname=${hex(4)} values=${if (body.size >= 8) XGlx.glFloatValues(byteOrder.u32(body, 4)).joinToString(",", "[", "]") else "n/a"}"
             XGlx.GetIntegerv -> "contextTag=${hex(0)} pname=${hex(4)} values=${if (body.size >= 8) XGlx.glIntegerValues(byteOrder.u32(body, 4), state.width, state.height, context(0)).joinToString(",", "[", "]") else "n/a"}"
             XGlx.GetString -> "contextTag=${hex(0)} name=${hex(4)} value=${if (body.size >= 8) XGlx.glString(byteOrder.u32(body, 4), context(0)) else "n/a"}"
