@@ -4205,6 +4205,61 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `PolySegment follows Xvfb zero width line tie breaking for mirrored steep ticks`() {
+        XServer(ServerOptions(port = 0, width = 180, height = 60)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 150, height = 30))
+                out.write(createGcRequest(GcId, foreground = Green))
+                out.write(polySegmentRequest(WindowId, GcId, segments = listOf((89 to 14) to (88 to 12), (131 to 14) to (132 to 12))))
+                out.write(getImageRequest(WindowId, x = 80, y = 10, width = 60, height = 8))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 60, 9, 4))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 60, 8, 3))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 60, 8, 2))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 60, 9, 3))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 60, 51, 4))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 60, 52, 3))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 60, 52, 2))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 60, 51, 3))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CapNotLast PolySegment omits final endpoint only for zero width lines`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 8, height = 6))
+                out.write(createGcRequest(GcId, foreground = Green))
+                out.write(changeGcRawRequest(GcId, mask = 0x0000_0040, values = listOf(0)))
+                out.write(polySegmentRequest(WindowId, GcId, segments = listOf((1 to 1) to (3 to 1))))
+                out.write(changeGcLineWidthRequest(GcId, lineWidth = 3))
+                out.write(polySegmentRequest(WindowId, GcId, segments = listOf((1 to 3) to (3 to 3))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 6))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 5, 1, 1))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 5, 2, 1))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 3, 1))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 5, 3, 3))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `PolyFillRectangle honors GC tiled fill style and tile origin`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -4623,6 +4678,8 @@ class XCoreDrawingProtocolTest {
                 assertEquals(0xff00_ff00.toInt(), pixelAt(image, 14, 3, 2))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, 14, 4, 2))
                 assertEquals(0xff00_ff00.toInt(), pixelAt(image, 14, 5, 2))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 14, 10, 3))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 14, 10, 4))
             }
             server.close()
             serverThread.join(1_000)

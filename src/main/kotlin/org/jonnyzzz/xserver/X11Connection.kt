@@ -7662,6 +7662,7 @@ internal class X11Connection(
             points = points,
             lineWidth = gc.lineWidth,
             lineStyle = gc.lineStyle,
+            capStyle = gc.capStyle,
             dashOffset = gc.dashOffset,
             dashes = gc.dashes,
             fillStyle = gc.fillStyle,
@@ -7723,6 +7724,7 @@ internal class X11Connection(
             points = points,
             lineWidth = gc.lineWidth,
             lineStyle = gc.lineStyle,
+            capStyle = gc.capStyle,
             dashOffset = gc.dashOffset,
             dashes = gc.dashes,
             fillStyle = gc.fillStyle,
@@ -12336,7 +12338,7 @@ internal class X11Connection(
                 1 -> planeMask = value
                 2 -> foreground = value
                 3 -> background = value
-                4 -> lineWidth = value.coerceAtLeast(1)
+                4 -> lineWidth = value
                 5 -> if (value in XGraphicsContext.LineSolid..XGraphicsContext.LineDoubleDash) {
                     lineStyle = value
                 } else {

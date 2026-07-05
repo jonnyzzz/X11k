@@ -274,18 +274,32 @@ internal class XFramebuffer(
     ): Boolean {
         var x = x1
         var y = y1
-        val dx = kotlin.math.abs(x2 - x1)
-        val dy = kotlin.math.abs(y2 - y1)
-        val stepX = if (x1 < x2) 1 else -1
-        val stepY = if (y1 < y2) 1 else -1
-        var error = dx - dy
+        var dx = x2 - x1
+        var dy = y2 - y1
+        var stepX = 1
+        var stepY = 1
+        if (dx < 0) {
+            dx = -dx
+            stepX = -1
+        }
+        if (dy < 0) {
+            dy = -dy
+            stepY = -1
+        }
+        val xMajor = dx > dy
+        val major = if (xMajor) dx else dy
+        val minor = if (xMajor) dy else dx
+        val e1 = minor shl 1
+        val e2 = e1 - (major shl 1)
+        val e3 = e2 - e1
+        var error = e1 - major
+        error -= e1
+        val length = major + if (includeLastPoint) 1 else 0
         var painted = false
 
-        while (true) {
+        for (index in 0 until length) {
             val dashPixel = if (dashPattern == null) pixel else dashPattern.pixel()
-            val isFirstPoint = x == x1 && y == y1
-            val isLastPoint = x == x2 && y == y2
-            if ((includeFirstPoint || !isFirstPoint) && (includeLastPoint || !isLastPoint) && dashPixel != null) {
+            if ((includeFirstPoint || index != 0) && dashPixel != null) {
                 val sourcePixel = if (strokeSource == null) dashPixel else strokeSource(x, y, dashPixel)
                 if (sourcePixel != null) {
                     painted = drawPoint(
@@ -301,17 +315,26 @@ internal class XFramebuffer(
                     ) || painted
                 }
             }
-            if (isLastPoint) break
-            val twiceError = error * 2
-            if (twiceError > -dy) {
-                error -= dy
+            val isFinalIteration = index == length - 1
+            if (!isFinalIteration || !includeLastPoint) {
+                dashPattern?.advance()
+            }
+            if (isFinalIteration) break
+            if (xMajor) {
                 x += stepX
-            }
-            if (twiceError < dx) {
-                error += dx
+                error += e1
+                if (error >= 0) {
+                    error += e3
+                    y += stepY
+                }
+            } else {
                 y += stepY
+                error += e1
+                if (error >= 0) {
+                    error += e3
+                    x += stepX
+                }
             }
-            dashPattern?.advance()
         }
         return painted
     }

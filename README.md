@@ -60,6 +60,14 @@ Recent `xcalc` SVG-composition parity sample:
 
 Current `xcalc` sampled distance is `0.0`; display frame, display text, angle-mode indicators, and keypad regions are pixel-exact against the Xvfb reference in the latest parity run.
 
+Recent `xclock` SVG-composition parity sample:
+
+| Xvfb reference | Kotlin SVG-composed framebuffer |
+| --- | --- |
+| ![xclock Xvfb reference](docs/images/xclock-xvfb-reference.png) | ![xclock Kotlin SVG-composed framebuffer](docs/images/xclock-kotlin-svg.png) |
+
+Current `xclock` sampled distance is `0.0`; analog face, tick marks, and hands are pixel-exact against the Xvfb reference in the latest parity run.
+
 Recent `xterm` SVG-composition parity sample:
 
 | Xvfb reference | Kotlin SVG-composed framebuffer |

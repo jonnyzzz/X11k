@@ -7515,6 +7515,7 @@ internal class X11State(
         points: List<XPoint>,
         lineWidth: Int,
         lineStyle: Int,
+        capStyle: Int,
         dashOffset: Int,
         dashes: List<Int>,
         fillStyle: Int = XGraphicsContext.FillSolid,
@@ -7537,6 +7538,7 @@ internal class X11State(
         return framebuffer.changedBy {
             var painted = false
             val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = sourcePixel, background = sourceBackground)
+            val omitLastForCap = lineWidth == 0 && capStyle == XGraphicsContext.CapNotLast
             for (index in 0 until points.lastIndex) {
                 val start = points[index]
                 val end = points[index + 1]
@@ -7551,7 +7553,7 @@ internal class X11State(
                     function,
                     planeMask,
                     dashPattern,
-                    includeFirstPoint = index == 0,
+                    includeLastPoint = index == points.lastIndex - 1 && !omitLastForCap,
                     strokeSource = strokeSource,
                     preserveAlpha = preserveSourcePixel,
                     wireDepth = drawableDepth.wireDepth(),
@@ -7569,6 +7571,7 @@ internal class X11State(
         points: List<XPoint>,
         lineWidth: Int,
         lineStyle: Int,
+        capStyle: Int,
         dashOffset: Int,
         dashes: List<Int>,
         fillStyle: Int = XGraphicsContext.FillSolid,
@@ -7590,6 +7593,7 @@ internal class X11State(
         val strokeSource = strokeSource(fillStyle, sourcePixel, sourceBackground, tilePixmap, stipplePixmap, tileStippleXOrigin, tileStippleYOrigin, drawableDepth, preserveSourcePixel)
         return framebuffer.changedBy {
             var painted = false
+            val omitLastForCap = lineWidth == 0 && capStyle == XGraphicsContext.CapNotLast
             var index = 0
             while (index + 1 < points.size) {
                 val start = points[index]
@@ -7606,6 +7610,7 @@ internal class X11State(
                     function,
                     planeMask,
                     dashPattern,
+                    includeLastPoint = !omitLastForCap,
                     strokeSource = strokeSource,
                     preserveAlpha = preserveSourcePixel,
                     wireDepth = drawableDepth.wireDepth(),
@@ -10767,7 +10772,7 @@ internal data class XGraphicsContext(
     val drawableDepth: Int = 24,
     var foreground: Int = 0,
     var background: Int = 0x00ff_ffff,
-    var lineWidth: Int = 1,
+    var lineWidth: Int = 0,
     var lineStyle: Int = LineSolid,
     var capStyle: Int = CapButt,
     var joinStyle: Int = JoinMiter,
