@@ -6619,6 +6619,39 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `FillPoly follows Xorg integer edge stepping for sloped spans`() {
+        XServer(ServerOptions(port = 0, width = 240, height = 180)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 220, height = 160))
+                out.write(createGcRequest(GcId, foreground = 0x0000_0000))
+                out.write(
+                    fillPolyRequest(
+                        WindowId,
+                        GcId,
+                        coordMode = 0,
+                        points = listOf(31 to 1, 71 to 1, 190 to 159, 150 to 159),
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 220, height = 160))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_0000.toInt(), pixelAt(image, 220, 31, 1))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 220, 71, 1))
+                assertEquals(0xff00_0000.toInt(), pixelAt(image, 220, 32, 2))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 220, 72, 2))
+                assertEquals(0xff00_0000.toInt(), pixelAt(image, 220, 35, 6))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 220, 75, 6))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `PolyArc paints outlines from 12 byte arc records`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

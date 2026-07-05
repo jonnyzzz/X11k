@@ -22,6 +22,75 @@ internal data class XCopyResult(
     val height: Int get() = image.height
 }
 
+private data class XPolygonEdgeTable(
+    val yMin: Int,
+    val yMax: Int,
+    val byScanline: Map<Int, List<XPolygonEdge>>,
+)
+
+private data class XPolygonEdge(
+    val yMax: Int,
+    val clockwise: Boolean,
+    val bresenham: XPolygonBresenham,
+)
+
+private data class XPolygonBresenham(
+    var minor: Int,
+    var decision: Int,
+    val slope: Int,
+    val slopePlusOne: Int,
+    val incrementOne: Int,
+    val incrementTwo: Int,
+) {
+    fun increment() {
+        if (slopePlusOne > 0) {
+            if (decision > 0) {
+                minor += slopePlusOne
+                decision += incrementOne
+            } else {
+                minor += slope
+                decision += incrementTwo
+            }
+        } else {
+            if (decision >= 0) {
+                minor += slopePlusOne
+                decision += incrementOne
+            } else {
+                minor += slope
+                decision += incrementTwo
+            }
+        }
+    }
+
+    companion object {
+        fun create(dy: Int, x1: Int, x2: Int): XPolygonBresenham {
+            val dx = x2 - x1
+            val slope = dx / dy
+            return if (dx < 0) {
+                val slopePlusOne = slope - 1
+                XPolygonBresenham(
+                    minor = x1,
+                    decision = 2 * slope * dy - 2 * dx - 2 * dy,
+                    slope = slope,
+                    slopePlusOne = slopePlusOne,
+                    incrementOne = -2 * dx + 2 * dy * slopePlusOne,
+                    incrementTwo = -2 * dx + 2 * dy * slope,
+                )
+            } else {
+                val slopePlusOne = slope + 1
+                XPolygonBresenham(
+                    minor = x1,
+                    decision = -2 * slope * dy + 2 * dx,
+                    slope = slope,
+                    slopePlusOne = slopePlusOne,
+                    incrementOne = 2 * dx - 2 * dy * slopePlusOne,
+                    incrementTwo = 2 * dx - 2 * dy * slope,
+                )
+            }
+        }
+    }
+}
+
 internal typealias XClipMask = (x: Int, y: Int) -> Boolean
 internal typealias XStrokeSource = (x: Int, y: Int, dashPixel: Int) -> Int?
 
@@ -426,32 +495,47 @@ internal class XFramebuffer(
         sourceAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         if (points.size < 3) return false
-        val minY = points.minOf { it.y }
-        val maxY = points.maxOf { it.y }
+        val edgeTable = polygonEdgeTable(points) ?: return false
         var painted = false
-        for (y in minY until maxY) {
-            val scanY = y + 0.5
-            val intersections = mutableListOf<Double>()
-            for (index in points.indices) {
-                val start = points[index]
-                val end = points[(index + 1) % points.size]
-                if (start.y == end.y) continue
-                val low = minOf(start.y, end.y)
-                val high = maxOf(start.y, end.y)
-                if (scanY < low || scanY >= high) continue
-                val t = (scanY - start.y) / (end.y - start.y).toDouble()
-                intersections += start.x + t * (end.x - start.x)
-            }
-            intersections.sort()
+        val activeEdges = mutableListOf<XPolygonEdge>()
+        for (y in edgeTable.yMin until edgeTable.yMax) {
+            edgeTable.byScanline[y]?.let { activeEdges += it }
+            activeEdges.sortBy { it.bresenham.minor }
             if (fillRule == XGraphicsContext.WindingRule) {
-                painted = fillWindingScanline(y, points, scanY, clipRectangles, function, planeMask, preserveAlpha, wireDepth, sourceAt) || painted
+                val windingEdges = windingSpanEdges(activeEdges)
+                var index = 0
+                while (index + 1 < windingEdges.size) {
+                    painted = fillScanlineSpan(
+                        y,
+                        windingEdges[index].bresenham.minor,
+                        windingEdges[index + 1].bresenham.minor,
+                        clipRectangles,
+                        function,
+                        planeMask,
+                        preserveAlpha,
+                        wireDepth,
+                        sourceAt,
+                    ) || painted
+                    index += 2
+                }
             } else {
                 var index = 0
-                while (index + 1 < intersections.size) {
-                    painted = fillScanlineSpan(y, intersections[index], intersections[index + 1], clipRectangles, function, planeMask, preserveAlpha, wireDepth, sourceAt) || painted
+                while (index + 1 < activeEdges.size) {
+                    painted = fillScanlineSpan(
+                        y,
+                        activeEdges[index].bresenham.minor,
+                        activeEdges[index + 1].bresenham.minor,
+                        clipRectangles,
+                        function,
+                        planeMask,
+                        preserveAlpha,
+                        wireDepth,
+                        sourceAt,
+                    ) || painted
                     index += 2
                 }
             }
+            advancePolygonEdges(activeEdges, y)
         }
         if (painted) markPainted()
         return painted
@@ -5148,55 +5232,70 @@ internal class XFramebuffer(
         return points
     }
 
-    private fun fillWindingScanline(
-        y: Int,
-        points: List<XPoint>,
-        scanY: Double,
-        clipRectangles: List<XRectangleCommand>?,
-        function: Int,
-        planeMask: Int,
-        preserveAlpha: Boolean,
-        wireDepth: Int?,
-        sourceAt: (x: Int, y: Int) -> Int?,
-    ): Boolean {
-        val events = mutableListOf<Pair<Double, Int>>()
-        for (index in points.indices) {
-            val start = points[index]
-            val end = points[(index + 1) % points.size]
-            if (start.y == end.y) continue
-            val low = minOf(start.y, end.y)
-            val high = maxOf(start.y, end.y)
-            if (scanY < low || scanY >= high) continue
-            val t = (scanY - start.y) / (end.y - start.y).toDouble()
-            val x = start.x + t * (end.x - start.x)
-            val direction = if (end.y > start.y) 1 else -1
-            events += x to direction
-        }
-        events.sortBy { it.first }
-        var painted = false
-        var winding = 0
-        var previousX: Double? = null
-        var index = 0
-        while (index < events.size) {
-            val x = events[index].first
-            previousX?.let { previous ->
-                if (winding != 0) {
-                    painted = fillScanlineSpan(y, previous, x, clipRectangles, function, planeMask, preserveAlpha, wireDepth, sourceAt) || painted
-                }
+    private fun polygonEdgeTable(points: List<XPoint>): XPolygonEdgeTable? {
+        var yMin = Int.MAX_VALUE
+        var yMax = Int.MIN_VALUE
+        val byScanline = mutableMapOf<Int, MutableList<XPolygonEdge>>()
+        var previous = points.last()
+        for (current in points) {
+            val (top, bottom, clockwise) = if (previous.y > current.y) {
+                Triple(current, previous, false)
+            } else {
+                Triple(previous, current, true)
             }
-            while (index < events.size && events[index].first == x) {
-                winding += events[index].second
-                index += 1
+            if (bottom.y != top.y) {
+                byScanline.getOrPut(top.y) { mutableListOf() } += XPolygonEdge(
+                    yMax = bottom.y - 1,
+                    clockwise = clockwise,
+                    bresenham = XPolygonBresenham.create(
+                        dy = bottom.y - top.y,
+                        x1 = top.x,
+                        x2 = bottom.x,
+                    ),
+                )
             }
-            previousX = x
+            yMin = minOf(yMin, previous.y)
+            yMax = maxOf(yMax, previous.y)
+            previous = current
         }
-        return painted
+        if (byScanline.isEmpty() || yMin >= yMax) return null
+        return XPolygonEdgeTable(yMin, yMax, byScanline)
+    }
+
+    private fun windingSpanEdges(activeEdges: List<XPolygonEdge>): List<XPolygonEdge> {
+        val spanEdges = mutableListOf<XPolygonEdge>()
+        var inside = true
+        var isInside = 0
+        for (edge in activeEdges) {
+            if (edge.clockwise) {
+                isInside += 1
+            } else {
+                isInside -= 1
+            }
+            if ((!inside && isInside == 0) || (inside && isInside != 0)) {
+                spanEdges += edge
+                inside = !inside
+            }
+        }
+        return spanEdges
+    }
+
+    private fun advancePolygonEdges(activeEdges: MutableList<XPolygonEdge>, y: Int) {
+        val iterator = activeEdges.listIterator()
+        while (iterator.hasNext()) {
+            val edge = iterator.next()
+            if (edge.yMax == y) {
+                iterator.remove()
+            } else {
+                edge.bresenham.increment()
+            }
+        }
     }
 
     private fun fillScanlineSpan(
         y: Int,
-        leftIntersection: Double,
-        rightIntersection: Double,
+        left: Int,
+        right: Int,
         clipRectangles: List<XRectangleCommand>?,
         function: Int,
         planeMask: Int,
@@ -5204,8 +5303,6 @@ internal class XFramebuffer(
         wireDepth: Int?,
         sourceAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
-        val left = ceil(leftIntersection).toInt()
-        val right = ceil(rightIntersection).toInt()
         var painted = false
         for (x in left until right) {
             if (x !in 0 until width || y !in 0 until height) continue
