@@ -96,6 +96,57 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX text diagnostics retain lifecycle probes after noisy metadata queries`() {
+        withServer { socket ->
+            val contextId = 0x0020_0100
+            val pbuffer = 0x0020_0101
+            assertEquals(XGlx.Extensions, queryServerString(socket, XGlx.ExtensionsName))
+            writeRequest(
+                socket,
+                XGlx.MajorOpcode,
+                XGlx.SetClientInfo2ARB,
+                glxSetClientInfoBody(
+                    wordsPerVersion = 3,
+                    versionWords = listOf(4, 6, 0),
+                    glExtensions = "GL_EXT_texture",
+                    glxExtensions = "GLX_ARB_create_context GLX_EXT_create_context_es_profile",
+                ),
+            )
+            writeRequest(
+                socket,
+                XGlx.MajorOpcode,
+                XGlx.CreateContextAttribsARB,
+                createContextAttribsBody(
+                    contextId,
+                    direct = true,
+                    attributes = listOf(
+                        XGlx.ContextMajorVersionArb to 2,
+                        XGlx.ContextMinorVersionArb to 0,
+                        XGlx.ContextProfileMaskArb to XGlx.ContextEs2ProfileBitExt,
+                    ),
+                ),
+            )
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePbuffer, createPbufferBody(pbuffer, width = 1, height = 1))
+
+            repeat(25) {
+                writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryVersion, u32(1) + u32(4))
+                readReply(socket.getInputStream())
+            }
+
+            val text = httpGet(socket, "/text.txt")
+            assertTrue(text.contains("QueryServerString minor=19 screen=0 name=3 value=${XGlx.Extensions}"), text)
+            assertTrue(
+                text.contains(
+                    "SetClientInfo2ARB minor=35 layout=spec client=1.4 versions=1 glBytes=14 glxBytes=56 glExtensions=GL_EXT_texture glxExtensions=GLX_ARB_create_context GLX_EXT_create_context_es_profile",
+                ),
+                text,
+            )
+            assertTrue(text.contains("CreateContextAttribsARB minor=34 context=0x${contextId.toString(16)}"), text)
+            assertTrue(text.contains("CreatePbuffer minor=27 screen=0 fbconfig=0x${XGlx.RootFbConfigId.toString(16)} pbuffer=0x${pbuffer.toString(16)}"), text)
+        }
+    }
+
+    @Test
     fun `GLX QueryVersion validates fixed request length`() {
         withServer { socket ->
             socket.soTimeout = 2_000

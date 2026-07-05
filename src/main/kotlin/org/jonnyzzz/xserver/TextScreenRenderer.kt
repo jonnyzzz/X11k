@@ -1,6 +1,8 @@
 package org.jonnyzzz.xserver
 
 internal object TextScreenRenderer {
+    private const val MaxGlxOperationsInTextReport = 200
+
     fun html(snapshot: XScreenSnapshot): String =
         XmlDom.html {
             attributes("lang" to "en")
@@ -297,7 +299,7 @@ internal object TextScreenRenderer {
             if (snapshot.glxOperations.isEmpty()) {
                 appendLine("- None.")
             } else {
-                for (operation in snapshot.glxOperations.takeLast(20).asReversed()) {
+                for (operation in snapshot.glxOperations.takeLast(MaxGlxOperationsInTextReport).asReversed()) {
                     append("- #")
                     append(operation.id)
                     append(' ')
