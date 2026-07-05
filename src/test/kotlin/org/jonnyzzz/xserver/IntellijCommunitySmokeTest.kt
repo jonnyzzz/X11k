@@ -281,6 +281,14 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij launcher disables project colored toolbar for deterministic parity`() {
+        val source = runIntellijScriptSource()
+
+        assertTrue(source.contains("options/ui.lnf.xml"), source)
+        assertTrue(source.contains("""<option name="differentiateProjects" value="false" />"""), source)
+    }
+
+    @Test
     fun `intellij glx jcef diagnostics summary extracts preflight and angle failures`() {
         val kotlinText =
             """
@@ -478,6 +486,7 @@ class IntellijCommunitySmokeTest {
                         check grep -q 'name value="jbr-25"' /tmp/idea-config/options/jdk.table.xml
                         check grep -q 'name value="corretto-25"' /tmp/idea-config/options/jdk.table.xml
                         check grep -q 'ide.experimental.ui.onboarding' /tmp/idea-config/options/ide.general.xml
+                        check grep -q 'name="differentiateProjects" value="false"' /tmp/idea-config/options/ui.lnf.xml
                         check grep -q 'experimental.ui.on.first.startup' /tmp/idea-config/options/other.xml
                         check sh -lc 'find /root/.java/.userPrefs/jetbrains -name prefs.xml -exec grep -l "euacommunity_accepted_version" {} + | grep -q .'
                         check grep -q -- "-Didea.trust.all.projects=true" /tmp/idea-extra.vmoptions
@@ -785,12 +794,14 @@ class IntellijCommunitySmokeTest {
                     if grep -q "ide.script.launcher.used" /tmp/idea-log/idea.log /tmp/idea-run-xvfb.log 2>/dev/null; then echo "unexpected script launcher warning"; exit 1; fi
                     grep -qx "\\[run-intellij\\] launcher=/opt/idea/bin/idea" /tmp/idea-run-xvfb.log
                     grep -q -- "-Dremote.x11.workaround=false" /tmp/idea-extra.vmoptions
+                    grep -q 'name="differentiateProjects" value="false"' /tmp/idea-config/options/ui.lnf.xml
                     """.trimIndent(),
                 )
                 assertEquals(0, result.exitCode, result.stderr + result.stdout)
                 val extraLogs = listOf(
                     "/tmp/xdpyinfo-glx-xvfb.log" to "intellij-xvfb-glx-xdpyinfo.log",
                     "/tmp/idea-extra.vmoptions" to "intellij-xvfb-idea-extra.vmoptions",
+                    "/tmp/idea-config/options/ui.lnf.xml" to "intellij-xvfb-ui-lnf.xml",
                     "/tmp/run-intellij-cksum.log" to "intellij-xvfb-run-intellij-cksum.log",
                 )
                 try {
@@ -891,12 +902,14 @@ class IntellijCommunitySmokeTest {
                         if grep -q "ide.script.launcher.used" /tmp/idea-log/idea.log /tmp/idea-run-parity.log 2>/dev/null; then echo "unexpected script launcher warning"; exit 1; fi
                         grep -qx "\\[run-intellij\\] launcher=/opt/idea/bin/idea" /tmp/idea-run-parity.log
                         grep -q -- "-Dremote.x11.workaround=false" /tmp/idea-extra.vmoptions
+                        grep -q 'name="differentiateProjects" value="false"' /tmp/idea-config/options/ui.lnf.xml
                         """.trimIndent(),
                     )
                     assertEquals(0, startResult.exitCode, startResult.stderr + startResult.stdout)
                     val extraLogs = listOf(
                         "/tmp/xdpyinfo-glx-kotlin.log" to "intellij-kotlin-glx-xdpyinfo.log",
                         "/tmp/idea-extra.vmoptions" to "intellij-kotlin-idea-extra.vmoptions",
+                        "/tmp/idea-config/options/ui.lnf.xml" to "intellij-kotlin-ui-lnf.xml",
                         "/tmp/run-intellij-cksum.log" to "intellij-kotlin-run-intellij-cksum.log",
                     )
                     try {
@@ -1277,6 +1290,9 @@ class IntellijCommunitySmokeTest {
           }
         }
         """.trimIndent()
+
+    private fun runIntellijScriptSource(): String =
+        Files.readString(projectRoot().resolve("docker/x11-client/run-intellij.sh"))
 
     private fun composeSvgLayers(layers: List<SvgLayer>, width: Int, height: Int): BufferedImage {
         val image = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)

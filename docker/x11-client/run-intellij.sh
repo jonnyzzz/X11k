@@ -241,6 +241,13 @@ EOF
 </application>
 EOF
   fi
+  cat > "$IDEA_CONFIG/options/ui.lnf.xml" <<'EOF'
+<application>
+  <component name="UISettings">
+    <option name="differentiateProjects" value="false" />
+  </component>
+</application>
+EOF
 fi
 
 export DISPLAY
