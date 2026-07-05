@@ -5,7 +5,7 @@ internal object XShm {
     const val FirstEvent = 65
     const val FirstError = 168
     const val MajorVersion = 1
-    const val MinorVersion = 2
+    const val MinorVersion = 1
     const val ZPixmap = 2
 
     const val QueryVersion = 0

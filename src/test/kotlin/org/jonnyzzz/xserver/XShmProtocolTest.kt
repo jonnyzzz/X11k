@@ -26,6 +26,7 @@ class XShmProtocolTest {
             assertEquals(2, u16le(version, 2))
             assertEquals(0, version[1].toInt() and 0xff, "shared pixmaps must not be advertised before shm pixmap backing exists")
             assertEquals(XShm.MajorVersion, u16le(version, 8))
+            assertEquals(1, u16le(version, 10), "fd-backed MIT-SHM 1.2 must not be advertised without fd transport")
             assertEquals(XShm.MinorVersion, u16le(version, 10))
             assertEquals(0, u16le(version, 12))
             assertEquals(0, u16le(version, 14))
@@ -185,6 +186,7 @@ class XShmProtocolTest {
             val version = readReply(socket.getInputStream())
             assertEquals(6, u16le(version, 2))
             assertEquals(XShm.MajorVersion, u16le(version, 8))
+            assertEquals(1, u16le(version, 10), "CreateSegment remains a fallback-only path until fd transport exists")
             assertContains(httpGet(port, "/text.txt"), "MIT-SHM.CreateSegment:")
         }
     }
