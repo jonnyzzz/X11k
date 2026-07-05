@@ -636,7 +636,61 @@ internal object SvgScreenRenderer {
                 )
             }
             svgElement("g", "class" to "semantic-window-layers", "visibility" to "hidden", "aria-hidden" to "true") {
+                renderWindowSemanticExports(this, snapshot)
+                renderRawWindowFramebufferExports(this, snapshot)
                 renderSvgContent(this, snapshot)
+            }
+        }
+    }
+
+    private fun renderWindowSemanticExports(builder: XmlDom, snapshot: XScreenSnapshot) {
+        val windowsById = snapshot.windows.associateBy { it.id }
+        with(builder) {
+            for (window in snapshot.windows) {
+                if (window.id == X11Ids.RootWindow || window.windowClass != XWindowClass.InputOutput) continue
+                val screenVisible = window.mapped &&
+                    (window.visibleWidth > 0 && window.visibleHeight > 0 || hasVisibleBorderInScreen(window, snapshot, windowsById))
+                if (!screenVisible) continue
+                svgElement(
+                    "g",
+                    "class" to "window-semantic-export",
+                    "data-window-id" to window.idHex,
+                    "data-source" to "window-semantic",
+                    "data-framebuffer-source" to "window-framebuffer".takeIf { window.framebufferPainted },
+                    "data-label" to window.label,
+                    "data-mapped" to window.mapped,
+                    "data-x" to window.x,
+                    "data-y" to window.y,
+                    "data-w" to window.width,
+                    "data-h" to window.height,
+                    "data-visible-x" to window.visibleX,
+                    "data-visible-y" to window.visibleY,
+                    "data-visible-w" to window.visibleWidth,
+                    "data-visible-h" to window.visibleHeight,
+                ) {
+                    text(window.label)
+                }
+            }
+        }
+    }
+
+    private fun renderRawWindowFramebufferExports(builder: XmlDom, snapshot: XScreenSnapshot) {
+        with(builder) {
+            for (window in snapshot.windows) {
+                if (!window.mapped || window.id == X11Ids.RootWindow || window.windowClass != XWindowClass.InputOutput) continue
+                val href = window.framebufferDataUri ?: continue
+                svgElement(
+                    "image",
+                    "class" to "framebuffer-image raw-window-framebuffer-image",
+                    "data-window-id" to window.idHex,
+                    "data-source" to "raw-window-framebuffer",
+                    "x" to window.x,
+                    "y" to window.y,
+                    "width" to window.width,
+                    "height" to window.height,
+                    "href" to href,
+                    "preserveAspectRatio" to "none",
+                )
             }
         }
     }
@@ -729,7 +783,7 @@ internal object SvgScreenRenderer {
         val subtreeIds = subtreeWindows(snapshot, window).map { it.id }.toSet()
         val recentPaintByDrawable = snapshot.drawings
             .mapIndexedNotNull { index, drawing ->
-                if (drawing.framebufferBacked && drawing.drawableGeneration != null) {
+                if (drawing.framebufferPainted && drawing.drawableGeneration != null) {
                     (drawing.drawableId to drawing.drawableGeneration) to index
                 } else {
                     null
@@ -1426,6 +1480,9 @@ internal object SvgScreenRenderer {
     private fun shouldUsePixmapSurface(snapshot: XScreenSnapshot, window: XWindowSnapshot, pixmap: XPixmapSnapshot): Boolean {
         val windowPaintIndex = snapshot.latestFramebufferPaintIndex(window.id, window.generation)
         val pixmapPaintIndex = snapshot.latestFramebufferPaintIndex(pixmap.id, pixmap.generation)
+        if (windowPaintIndex < 0 && window.framebufferPainted && window.id !in pixmap.provenanceMatchingWindowIds) {
+            return false
+        }
         return windowPaintIndex < 0 || pixmapPaintIndex > windowPaintIndex
     }
 
@@ -1435,7 +1492,7 @@ internal object SvgScreenRenderer {
         drawings.indexOfLast {
             it.drawableId == drawableId &&
                 it.drawableGeneration == generation &&
-                it.framebufferBacked
+                it.framebufferPainted
         }
 
     private fun renderFilledRectangles(

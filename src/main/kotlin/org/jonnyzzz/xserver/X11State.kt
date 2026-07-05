@@ -31,6 +31,21 @@ internal data class XResourceRemoval(
     val colormapNotifyDispatches: List<XColormapNotifyDispatch> = emptyList(),
 )
 
+internal data class XRenderImageResult(
+    val image: XImagePixels,
+    val painted: Boolean,
+)
+
+internal data class XCopyPaintResult(
+    val copy: XCopyResult,
+    val painted: Boolean,
+)
+
+internal data class XBackgroundPaintResult(
+    val applied: Boolean,
+    val painted: Boolean,
+)
+
 internal sealed class XSaveSetSideEffect {
     data class ReparentNotify(val dispatches: List<XReparentNotifyDispatch>) : XSaveSetSideEffect()
     data class UnmapNotify(val dispatches: List<XUnmapNotifyDispatch>) : XSaveSetSideEffect()
@@ -3690,33 +3705,43 @@ internal class X11State(
 
     @Synchronized
     fun paintWindowBackground(windowId: Int, rectangle: XRectangleCommand? = null): Boolean {
-        val window = windows[windowId] ?: return false
+        return paintWindowBackgroundWithResult(windowId, rectangle).painted
+    }
+
+    @Synchronized
+    fun paintWindowBackgroundWithResult(windowId: Int, rectangle: XRectangleCommand? = null): XBackgroundPaintResult {
+        val window = windows[windowId] ?: return XBackgroundPaintResult(applied = false, painted = false)
         val target = rectangle ?: XRectangleCommand(0, 0, window.width, window.height)
         val effectiveClip = effectiveDrawableClip(windowId, listOf(target))
-        return when (val background = resolveWindowBackground(window)) {
-            XResolvedWindowBackground.None -> false
+        val background = resolveWindowBackground(window)
+        if (background == XResolvedWindowBackground.None) return XBackgroundPaintResult(applied = false, painted = false)
+        val painted = window.framebuffer.changedBy {
+            when (background) {
+                XResolvedWindowBackground.None -> false
 
-            is XResolvedWindowBackground.Pixmap -> window.framebuffer.fillPattern(
-                x = target.x,
-                y = target.y,
-                width = target.width,
-                height = target.height,
-                patternWidth = background.pixmap.width,
-                patternHeight = background.pixmap.height,
-                patternXOrigin = background.xOrigin,
-                patternYOrigin = background.yOrigin,
-                clipRectangles = effectiveClip,
-            ) { x, y -> background.pixmap.framebuffer.pixelAt(x, y) }
+                is XResolvedWindowBackground.Pixmap -> fillPattern(
+                    x = target.x,
+                    y = target.y,
+                    width = target.width,
+                    height = target.height,
+                    patternWidth = background.pixmap.width,
+                    patternHeight = background.pixmap.height,
+                    patternXOrigin = background.xOrigin,
+                    patternYOrigin = background.yOrigin,
+                    clipRectangles = effectiveClip,
+                ) { x, y -> background.pixmap.framebuffer.pixelAt(x, y) }
 
-            is XResolvedWindowBackground.Pixel -> window.framebuffer.fill(
-                target.x,
-                target.y,
-                target.width,
-                target.height,
-                background.pixel,
-                clipRectangles = effectiveClip,
-            )
+                is XResolvedWindowBackground.Pixel -> fill(
+                    target.x,
+                    target.y,
+                    target.width,
+                    target.height,
+                    background.pixel,
+                    clipRectangles = effectiveClip,
+                )
+            }
         }
+        return XBackgroundPaintResult(applied = true, painted = painted)
     }
 
     private fun resolveWindowBackground(window: XWindow): XResolvedWindowBackground {
@@ -3772,6 +3797,7 @@ internal class X11State(
                 borderPixel = window.borderPixel,
                 borderPixmapId = window.borderPixmapId,
                 framebufferDataUri = window.framebuffer.toDataUri(),
+                framebufferPainted = window.framebufferClientPainted,
                 windowClass = window.windowClass,
                 depth = window.depth,
                 visual = window.visual,
@@ -3799,7 +3825,7 @@ internal class X11State(
             windows[id]?.let { DrawableIdentity(id, it.generation) }
                 ?: pixmaps[id]?.let { DrawableIdentity(id, it.generation) }
         val framebufferWindowConsumerDrawings = drawings.filter { drawing ->
-            drawing.framebufferBacked &&
+            drawing.framebufferPainted &&
                 drawing.sourceDrawableId != null &&
                 drawing.sourceDrawableGeneration != null &&
                 drawing.drawableGeneration != null
@@ -3811,17 +3837,25 @@ internal class X11State(
             .filter { drawing -> windows[drawing.drawableId]?.generation == drawing.drawableGeneration }
             .groupBy { DrawableIdentity(it.sourceDrawableId!!, it.sourceDrawableGeneration!!) }
             .mapValues { (_, drawings) -> drawings.map { it.drawableId }.distinct() }
-        fun matchingWindowIds(drawableId: Int, generation: Long?, width: Int, height: Int): List<Int> {
+        data class MatchingWindowResult(
+            val ids: List<Int>,
+            val provenanceIds: List<Int>,
+        )
+        fun matchingWindowIds(drawableId: Int, generation: Long?, width: Int, height: Int): MatchingWindowResult {
             val sizeMatches = sizeMatchingWindowIds(width, height)
             val sourceIdentity = generation?.let { DrawableIdentity(drawableId, it) } ?: drawableIdentity(drawableId)
-            if (sourceIdentity == null) return sizeMatches
+            if (sourceIdentity == null) return MatchingWindowResult(sizeMatches, emptyList())
             val consumers = framebufferWindowConsumersBySource[sourceIdentity]
-            if (consumers == null && sourceIdentity in framebufferWindowSourcesWithProvenance) return emptyList()
-            if (consumers == null) return sizeMatches
-            return sizeMatches.filter { it in consumers }
+            if (consumers == null && sourceIdentity in framebufferWindowSourcesWithProvenance) {
+                return MatchingWindowResult(emptyList(), emptyList())
+            }
+            if (consumers == null) return MatchingWindowResult(sizeMatches, emptyList())
+            val provenanceMatches = sizeMatches.filter { it in consumers }
+            return MatchingWindowResult(provenanceMatches, provenanceMatches)
         }
 
         val livePixmapSnapshots = pixmaps.values.map { pixmap ->
+            val matchingWindows = matchingWindowIds(pixmap.id, pixmap.generation, pixmap.width, pixmap.height)
             XPixmapSnapshot(
                 id = pixmap.id,
                 generation = pixmap.generation,
@@ -3836,13 +3870,15 @@ internal class X11State(
                             (picture.retainedDrawableFramebuffer == null || picture.retainedDrawableFramebuffer === pixmap.framebuffer)
                     }
                     .map { it.id },
-                matchingWindowIds = matchingWindowIds(pixmap.id, pixmap.generation, pixmap.width, pixmap.height),
+                matchingWindowIds = matchingWindows.ids,
+                provenanceMatchingWindowIds = matchingWindows.provenanceIds,
             )
         }
         val retainedPictureSurfaceSnapshots = pictures.values.mapNotNull { picture ->
             val drawableId = picture.drawableId ?: return@mapNotNull null
             val framebuffer = picture.retainedDrawableFramebuffer ?: return@mapNotNull null
             if (pixmaps[drawableId]?.framebuffer === framebuffer) return@mapNotNull null
+            val matchingWindows = matchingWindowIds(drawableId, picture.retainedDrawableGeneration, framebuffer.width, framebuffer.height)
             XPixmapSnapshot(
                 id = drawableId,
                 generation = picture.retainedDrawableGeneration ?: 0L,
@@ -3852,7 +3888,8 @@ internal class X11State(
                 painted = framebuffer.hasPaintedContent(),
                 framebufferDataUri = framebuffer.toDataUri(),
                 pictureIds = listOf(picture.id),
-                matchingWindowIds = matchingWindowIds(drawableId, picture.retainedDrawableGeneration, framebuffer.width, framebuffer.height),
+                matchingWindowIds = matchingWindows.ids,
+                provenanceMatchingWindowIds = matchingWindows.provenanceIds,
                 retainedPictureId = picture.id,
             )
         }
@@ -4929,7 +4966,9 @@ internal class X11State(
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
-        return framebuffer.putImage(x, y, image, effectiveClip, function, planeMask, wireDepth = drawableDepth(drawableId).wireDepth())
+        return framebuffer.changedBy {
+            putImage(x, y, image, effectiveClip, function, planeMask, wireDepth = drawableDepth(drawableId).wireDepth())
+        }
     }
 
     @Synchronized
@@ -4966,6 +5005,43 @@ internal class X11State(
             planeMask = planeMask,
             wireDepth = destinationDepth.wireDepth(),
         )
+    }
+
+    @Synchronized
+    fun copyAreaWithPaintResult(
+        sourceDrawableId: Int,
+        destinationDrawableId: Int,
+        sourceX: Int,
+        sourceY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
+        sourceClipRectangles: List<XRectangleCommand>? = effectiveDrawableClip(sourceDrawableId, null, subwindowMode),
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
+    ): XCopyPaintResult? {
+        val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
+        val before = destination.snapshotRegion(destinationX, destinationY, width, height)
+        val copy = copyArea(
+            sourceDrawableId = sourceDrawableId,
+            destinationDrawableId = destinationDrawableId,
+            sourceX = sourceX,
+            sourceY = sourceY,
+            destinationX = destinationX,
+            destinationY = destinationY,
+            width = width,
+            height = height,
+            clipRectangles = clipRectangles,
+            subwindowMode = subwindowMode,
+            sourceClipRectangles = sourceClipRectangles,
+            function = function,
+            planeMask = planeMask,
+        ) ?: return null
+        val after = destination.snapshotRegion(destinationX, destinationY, width, height)
+        return XCopyPaintResult(copy, painted = before != after)
     }
 
     @Synchronized
@@ -5014,6 +5090,49 @@ internal class X11State(
             sourceWireDepth = sourceDepth.wireDepth(),
             wireDepth = destinationDepth.wireDepth(),
         )
+    }
+
+    @Synchronized
+    fun copyPlaneWithPaintResult(
+        sourceDrawableId: Int,
+        destinationDrawableId: Int,
+        sourceX: Int,
+        sourceY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        bitPlane: Int,
+        foreground: Int,
+        background: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
+        sourceClipRectangles: List<XRectangleCommand>? = effectiveDrawableClip(sourceDrawableId, null, subwindowMode),
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
+    ): XCopyPaintResult? {
+        val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
+        val before = destination.snapshotRegion(destinationX, destinationY, width, height)
+        val copy = copyPlane(
+            sourceDrawableId = sourceDrawableId,
+            destinationDrawableId = destinationDrawableId,
+            sourceX = sourceX,
+            sourceY = sourceY,
+            destinationX = destinationX,
+            destinationY = destinationY,
+            width = width,
+            height = height,
+            bitPlane = bitPlane,
+            foreground = foreground,
+            background = background,
+            clipRectangles = clipRectangles,
+            subwindowMode = subwindowMode,
+            sourceClipRectangles = sourceClipRectangles,
+            function = function,
+            planeMask = planeMask,
+        ) ?: return null
+        val after = destination.snapshotRegion(destinationX, destinationY, width, height)
+        return XCopyPaintResult(copy, painted = before != after)
     }
 
     @Synchronized
@@ -5938,6 +6057,41 @@ internal class X11State(
     }
 
     @Synchronized
+    fun compositeWithPaintResult(
+        operation: Int,
+        source: XPicture,
+        mask: XPicture?,
+        destination: XPicture,
+        sourceX: Int,
+        sourceY: Int,
+        maskX: Int,
+        maskY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+    ): XRenderImageResult? {
+        val framebuffer = destination.drawableFramebuffer() ?: return null
+        val before = framebuffer.snapshotRegion(destinationX, destinationY, width, height)
+        val image = composite(
+            operation = operation,
+            source = source,
+            mask = mask,
+            destination = destination,
+            sourceX = sourceX,
+            sourceY = sourceY,
+            maskX = maskX,
+            maskY = maskY,
+            destinationX = destinationX,
+            destinationY = destinationY,
+            width = width,
+            height = height,
+        ) ?: return null
+        val after = framebuffer.snapshotRegion(destinationX, destinationY, width, height)
+        return XRenderImageResult(image, painted = before != after)
+    }
+
+    @Synchronized
     fun scale(
         colorScale: Int,
         alphaScale: Int,
@@ -5966,6 +6120,37 @@ internal class X11State(
         ) { x, y ->
             sourcePixelAt(x, y)
         }
+    }
+
+    @Synchronized
+    fun scaleWithPaintResult(
+        colorScale: Int,
+        alphaScale: Int,
+        source: XPicture,
+        destination: XPicture,
+        sourceX: Int,
+        sourceY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+    ): XRenderImageResult? {
+        val framebuffer = destination.drawableFramebuffer() ?: return null
+        val before = framebuffer.snapshotRegion(destinationX, destinationY, width, height)
+        val image = scale(
+            colorScale = colorScale,
+            alphaScale = alphaScale,
+            source = source,
+            destination = destination,
+            sourceX = sourceX,
+            sourceY = sourceY,
+            destinationX = destinationX,
+            destinationY = destinationY,
+            width = width,
+            height = height,
+        ) ?: return null
+        val after = framebuffer.snapshotRegion(destinationX, destinationY, width, height)
+        return XRenderImageResult(image, painted = before != after)
     }
 
     private fun scaledSourcePixelAt(
@@ -6798,7 +6983,7 @@ internal class X11State(
                 ?: pixmaps[id]?.let { DrawableIdentity(id, it.generation) }
 
         val framebufferWindowConsumerDrawings = drawings.filter { drawing ->
-            drawing.framebufferBacked &&
+            drawing.framebufferPainted &&
                 drawing.sourceDrawableId != null &&
                 drawing.sourceDrawableGeneration != null &&
                 drawing.drawableGeneration != null
@@ -6821,17 +7006,25 @@ internal class X11State(
                 }
                 .map { it.id }
                 .toSet()
-        fun matchingWindowIds(drawableId: Int, generation: Long?, width: Int, height: Int): Set<Int> {
+        data class MatchingWindowResult(
+            val ids: Set<Int>,
+            val provenanceIds: Set<Int>,
+        )
+        fun matchingWindowIds(drawableId: Int, generation: Long?, width: Int, height: Int): MatchingWindowResult {
             val sizeMatches = sizeMatchingWindowIds(width, height)
             val sourceIdentity = generation?.let { DrawableIdentity(drawableId, it) } ?: drawableIdentity(drawableId)
-            if (sourceIdentity == null) return sizeMatches
+            if (sourceIdentity == null) return MatchingWindowResult(sizeMatches, emptySet())
             val consumers = framebufferWindowConsumersBySource[sourceIdentity]
-            if (consumers == null && sourceIdentity in framebufferWindowSourcesWithProvenance) return emptySet()
-            if (consumers == null) return sizeMatches
-            return sizeMatches.filter { it in consumers }.toSet()
+            if (consumers == null && sourceIdentity in framebufferWindowSourcesWithProvenance) {
+                return MatchingWindowResult(emptySet(), emptySet())
+            }
+            if (consumers == null) return MatchingWindowResult(sizeMatches, emptySet())
+            val provenanceMatches = sizeMatches.filter { it in consumers }.toSet()
+            return MatchingWindowResult(provenanceMatches, provenanceMatches)
         }
 
         val livePixmapSurfaces = pixmaps.values.map { pixmap ->
+            val matchingWindows = matchingWindowIds(pixmap.id, pixmap.generation, pixmap.width, pixmap.height)
             XRootPixmapSurface(
                 id = pixmap.id,
                 generation = pixmap.generation,
@@ -6839,13 +7032,15 @@ internal class X11State(
                 height = pixmap.height,
                 retained = false,
                 framebuffer = pixmap.framebuffer,
-                matchingWindowIds = matchingWindowIds(pixmap.id, pixmap.generation, pixmap.width, pixmap.height),
+                matchingWindowIds = matchingWindows.ids,
+                provenanceMatchingWindowIds = matchingWindows.provenanceIds,
             )
         }
         val retainedPictureSurfaces = pictures.values.mapNotNull { picture ->
             val drawableId = picture.drawableId ?: return@mapNotNull null
             val framebuffer = picture.retainedDrawableFramebuffer ?: return@mapNotNull null
             if (pixmaps[drawableId]?.framebuffer === framebuffer) return@mapNotNull null
+            val matchingWindows = matchingWindowIds(drawableId, picture.retainedDrawableGeneration, framebuffer.width, framebuffer.height)
             XRootPixmapSurface(
                 id = drawableId,
                 generation = picture.retainedDrawableGeneration ?: 0L,
@@ -6853,12 +7048,13 @@ internal class X11State(
                 height = framebuffer.height,
                 retained = true,
                 framebuffer = framebuffer,
-                matchingWindowIds = matchingWindowIds(drawableId, picture.retainedDrawableGeneration, framebuffer.width, framebuffer.height),
+                matchingWindowIds = matchingWindows.ids,
+                provenanceMatchingWindowIds = matchingWindows.provenanceIds,
             )
         }
         val recentPaintByDrawable = drawings
             .mapIndexedNotNull { index, drawing ->
-                if (drawing.framebufferBacked && drawing.drawableGeneration != null) {
+                if (drawing.framebufferPainted && drawing.drawableGeneration != null) {
                     XRootDrawableIdentity(drawing.drawableId, drawing.drawableGeneration) to index
                 } else {
                     null
@@ -6993,6 +7189,9 @@ internal class X11State(
     private fun shouldUseRootPixmapSurface(context: XRootDisplaySurfaceContext, window: XWindow, surface: XRootPixmapSurface): Boolean {
         val windowPaintIndex = context.recentPaintByDrawable[XRootDrawableIdentity(window.id, window.generation)] ?: -1
         val surfacePaintIndex = context.recentPaintByDrawable[XRootDrawableIdentity(surface.id, surface.generation)] ?: -1
+        if (windowPaintIndex < 0 && window.framebufferClientPainted && window.id !in surface.provenanceMatchingWindowIds) {
+            return false
+        }
         return windowPaintIndex < 0 || surfacePaintIndex > windowPaintIndex
     }
 
@@ -7059,6 +7258,12 @@ internal class X11State(
                 y < rectangle.y + rectangle.height
         }
 
+    private inline fun XFramebuffer.changedBy(operation: XFramebuffer.() -> Boolean): Boolean {
+        val before = snapshot()
+        if (!operation()) return false
+        return before != snapshot()
+    }
+
     @Synchronized
     fun fillRectangles(
         drawableId: Int,
@@ -7083,43 +7288,45 @@ internal class X11State(
         val sourcePixel = if (preserveSourcePixel) corePixelForDepth(pixel, drawableDepth) else pixel
         val sourceBackground = if (preserveSourcePixel) corePixelForDepth(background, drawableDepth) else background
         val pattern = fillPattern(fillStyle, sourcePixel, sourceBackground, tilePixmap, stipplePixmap)
-        var painted = false
-        for (rectangle in rectangles) {
-            painted = if (pattern != null) {
-                framebuffer.fillPattern(
-                    x = rectangle.x,
-                    y = rectangle.y,
-                    width = rectangle.width,
-                    height = rectangle.height,
-                    patternWidth = pattern.width,
-                    patternHeight = pattern.height,
-                    patternXOrigin = tileStippleXOrigin,
-                    patternYOrigin = tileStippleYOrigin,
-                    clipRectangles = effectiveClip,
-                    function = function,
-                    planeMask = planeMask,
-                    preserveAlpha = preserveSourcePixel,
-                    wireDepth = drawableDepth.wireDepth(),
-                ) { sourceX, sourceY ->
-                    pattern.pixelAt(sourceX, sourceY)
-                        ?.let { patternSourcePixelForDepth(it, drawableDepth, preserveSourcePixel) }
-                }
-            } else {
-                framebuffer.fill(
-                    rectangle.x,
-                    rectangle.y,
-                    rectangle.width,
-                    rectangle.height,
-                    sourcePixel,
-                    preserveAlpha || preserveSourcePixel,
-                    effectiveClip,
-                    function,
-                    planeMask,
-                    wireDepth = drawableDepth.wireDepth(),
-                )
-            } || painted
+        return framebuffer.changedBy {
+            var painted = false
+            for (rectangle in rectangles) {
+                painted = if (pattern != null) {
+                    fillPattern(
+                        x = rectangle.x,
+                        y = rectangle.y,
+                        width = rectangle.width,
+                        height = rectangle.height,
+                        patternWidth = pattern.width,
+                        patternHeight = pattern.height,
+                        patternXOrigin = tileStippleXOrigin,
+                        patternYOrigin = tileStippleYOrigin,
+                        clipRectangles = effectiveClip,
+                        function = function,
+                        planeMask = planeMask,
+                        preserveAlpha = preserveSourcePixel,
+                        wireDepth = drawableDepth.wireDepth(),
+                    ) { sourceX, sourceY ->
+                        pattern.pixelAt(sourceX, sourceY)
+                            ?.let { patternSourcePixelForDepth(it, drawableDepth, preserveSourcePixel) }
+                    }
+                } else {
+                    fill(
+                        rectangle.x,
+                        rectangle.y,
+                        rectangle.width,
+                        rectangle.height,
+                        sourcePixel,
+                        preserveAlpha || preserveSourcePixel,
+                        effectiveClip,
+                        function,
+                        planeMask,
+                        wireDepth = drawableDepth.wireDepth(),
+                    )
+                } || painted
+            }
+            painted
         }
-        return painted
     }
 
     private fun drawableDepth(drawableId: Int): Int =
@@ -7281,21 +7488,23 @@ internal class X11State(
         val drawableDepth = drawableDepth(drawableId)
         val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
         val sourcePixel = if (preserveSourcePixel) corePixelForDepth(pixel, drawableDepth) else pixel
-        var painted = false
-        for (point in points) {
-            painted = framebuffer.drawPoint(
-                point.x,
-                point.y,
-                sourcePixel,
-                lineWidth,
-                effectiveClip,
-                function,
-                planeMask,
-                preserveAlpha = preserveSourcePixel,
-                wireDepth = drawableDepth.wireDepth(),
-            ) || painted
+        return framebuffer.changedBy {
+            var painted = false
+            for (point in points) {
+                painted = drawPoint(
+                    point.x,
+                    point.y,
+                    sourcePixel,
+                    lineWidth,
+                    effectiveClip,
+                    function,
+                    planeMask,
+                    preserveAlpha = preserveSourcePixel,
+                    wireDepth = drawableDepth.wireDepth(),
+                ) || painted
+            }
+            painted
         }
-        return painted
     }
 
     @Synchronized
@@ -7325,29 +7534,31 @@ internal class X11State(
         val sourcePixel = if (preserveSourcePixel) corePixelForDepth(pixel, drawableDepth) else pixel
         val sourceBackground = if (preserveSourcePixel) corePixelForDepth(background, drawableDepth) else background
         val strokeSource = strokeSource(fillStyle, sourcePixel, sourceBackground, tilePixmap, stipplePixmap, tileStippleXOrigin, tileStippleYOrigin, drawableDepth, preserveSourcePixel)
-        var painted = false
-        val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = sourcePixel, background = sourceBackground)
-        for (index in 0 until points.lastIndex) {
-            val start = points[index]
-            val end = points[index + 1]
-            painted = framebuffer.drawLine(
-                start.x,
-                start.y,
-                end.x,
-                end.y,
-                sourcePixel,
-                lineWidth,
-                effectiveClip,
-                function,
-                planeMask,
-                dashPattern,
-                includeFirstPoint = index == 0,
-                strokeSource = strokeSource,
-                preserveAlpha = preserveSourcePixel,
-                wireDepth = drawableDepth.wireDepth(),
-            ) || painted
+        return framebuffer.changedBy {
+            var painted = false
+            val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = sourcePixel, background = sourceBackground)
+            for (index in 0 until points.lastIndex) {
+                val start = points[index]
+                val end = points[index + 1]
+                painted = drawLine(
+                    start.x,
+                    start.y,
+                    end.x,
+                    end.y,
+                    sourcePixel,
+                    lineWidth,
+                    effectiveClip,
+                    function,
+                    planeMask,
+                    dashPattern,
+                    includeFirstPoint = index == 0,
+                    strokeSource = strokeSource,
+                    preserveAlpha = preserveSourcePixel,
+                    wireDepth = drawableDepth.wireDepth(),
+                ) || painted
+            }
+            painted
         }
-        return painted
     }
 
     @Synchronized
@@ -7377,30 +7588,32 @@ internal class X11State(
         val sourcePixel = if (preserveSourcePixel) corePixelForDepth(pixel, drawableDepth) else pixel
         val sourceBackground = if (preserveSourcePixel) corePixelForDepth(background, drawableDepth) else background
         val strokeSource = strokeSource(fillStyle, sourcePixel, sourceBackground, tilePixmap, stipplePixmap, tileStippleXOrigin, tileStippleYOrigin, drawableDepth, preserveSourcePixel)
-        var painted = false
-        var index = 0
-        while (index + 1 < points.size) {
-            val start = points[index]
-            val end = points[index + 1]
-            val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = sourcePixel, background = sourceBackground)
-            painted = framebuffer.drawLine(
-                start.x,
-                start.y,
-                end.x,
-                end.y,
-                sourcePixel,
-                lineWidth,
-                effectiveClip,
-                function,
-                planeMask,
-                dashPattern,
-                strokeSource = strokeSource,
-                preserveAlpha = preserveSourcePixel,
-                wireDepth = drawableDepth.wireDepth(),
-            ) || painted
-            index += 2
+        return framebuffer.changedBy {
+            var painted = false
+            var index = 0
+            while (index + 1 < points.size) {
+                val start = points[index]
+                val end = points[index + 1]
+                val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = sourcePixel, background = sourceBackground)
+                painted = drawLine(
+                    start.x,
+                    start.y,
+                    end.x,
+                    end.y,
+                    sourcePixel,
+                    lineWidth,
+                    effectiveClip,
+                    function,
+                    planeMask,
+                    dashPattern,
+                    strokeSource = strokeSource,
+                    preserveAlpha = preserveSourcePixel,
+                    wireDepth = drawableDepth.wireDepth(),
+                ) || painted
+                index += 2
+            }
+            painted
         }
-        return painted
     }
 
     @Synchronized
@@ -7430,28 +7643,30 @@ internal class X11State(
         val sourcePixel = if (preserveSourcePixel) corePixelForDepth(pixel, drawableDepth) else pixel
         val sourceBackground = if (preserveSourcePixel) corePixelForDepth(background, drawableDepth) else background
         val strokeSource = strokeSource(fillStyle, sourcePixel, sourceBackground, tilePixmap, stipplePixmap, tileStippleXOrigin, tileStippleYOrigin, drawableDepth, preserveSourcePixel)
-        var painted = false
-        for (rectangle in rectangles) {
-            painted = framebuffer.drawRectangleOutline(
-                rectangle.x,
-                rectangle.y,
-                rectangle.width,
-                rectangle.height,
-                sourcePixel,
-                sourceBackground,
-                lineWidth,
-                lineStyle,
-                dashOffset,
-                dashes,
-                effectiveClip,
-                function,
-                planeMask,
-                strokeSource,
-                preserveAlpha = preserveSourcePixel,
-                wireDepth = drawableDepth.wireDepth(),
-            ) || painted
+        return framebuffer.changedBy {
+            var painted = false
+            for (rectangle in rectangles) {
+                painted = drawRectangleOutline(
+                    rectangle.x,
+                    rectangle.y,
+                    rectangle.width,
+                    rectangle.height,
+                    sourcePixel,
+                    sourceBackground,
+                    lineWidth,
+                    lineStyle,
+                    dashOffset,
+                    dashes,
+                    effectiveClip,
+                    function,
+                    planeMask,
+                    strokeSource,
+                    preserveAlpha = preserveSourcePixel,
+                    wireDepth = drawableDepth.wireDepth(),
+                ) || painted
+            }
+            painted
         }
-        return painted
     }
 
     private fun strokeSource(
@@ -7505,25 +7720,27 @@ internal class X11State(
         val sourcePixel = if (preserveSourcePixel) corePixelForDepth(pixel, drawableDepth) else pixel
         val sourceBackground = if (preserveSourcePixel) corePixelForDepth(background, drawableDepth) else background
         val strokeSource = strokeSource(fillStyle, sourcePixel, sourceBackground, tilePixmap, stipplePixmap, tileStippleXOrigin, tileStippleYOrigin, drawableDepth, preserveSourcePixel)
-        var painted = false
-        for (arc in arcs) {
-            painted = framebuffer.drawArc(
-                arc,
-                sourcePixel,
-                sourceBackground,
-                lineWidth,
-                lineStyle,
-                dashOffset,
-                dashes,
-                effectiveClip,
-                function,
-                planeMask,
-                strokeSource,
-                preserveAlpha = preserveSourcePixel,
-                wireDepth = drawableDepth.wireDepth(),
-            ) || painted
+        return framebuffer.changedBy {
+            var painted = false
+            for (arc in arcs) {
+                painted = drawArc(
+                    arc,
+                    sourcePixel,
+                    sourceBackground,
+                    lineWidth,
+                    lineStyle,
+                    dashOffset,
+                    dashes,
+                    effectiveClip,
+                    function,
+                    planeMask,
+                    strokeSource,
+                    preserveAlpha = preserveSourcePixel,
+                    wireDepth = drawableDepth.wireDepth(),
+                ) || painted
+            }
+            painted
         }
-        return painted
     }
 
     @Synchronized
@@ -7550,39 +7767,41 @@ internal class X11State(
         val sourcePixel = if (preserveSourcePixel) corePixelForDepth(pixel, drawableDepth) else pixel
         val sourceBackground = if (preserveSourcePixel) corePixelForDepth(background, drawableDepth) else background
         val pattern = fillPattern(fillStyle, sourcePixel, sourceBackground, tilePixmap, stipplePixmap)
-        var painted = false
-        for (arc in arcs) {
-            painted = if (pattern != null) {
-                framebuffer.fillArcPattern(
-                    arc = arc,
-                    arcMode = arcMode,
-                    patternXOrigin = tileStippleXOrigin,
-                    patternYOrigin = tileStippleYOrigin,
-                    patternWidth = pattern.width,
-                    patternHeight = pattern.height,
-                    clipRectangles = effectiveClip,
-                    function = function,
-                    planeMask = planeMask,
-                    preserveAlpha = preserveSourcePixel,
-                    wireDepth = drawableDepth.wireDepth(),
-                ) { sourceX, sourceY ->
-                    pattern.pixelAt(sourceX, sourceY)
-                        ?.let { patternSourcePixelForDepth(it, drawableDepth, preserveSourcePixel) }
-                }
-            } else {
-                framebuffer.fillArc(
-                    arc,
-                    sourcePixel,
-                    arcMode,
-                    effectiveClip,
-                    function,
-                    planeMask,
-                    preserveAlpha = preserveSourcePixel,
-                    wireDepth = drawableDepth.wireDepth(),
-                )
-            } || painted
+        return framebuffer.changedBy {
+            var painted = false
+            for (arc in arcs) {
+                painted = if (pattern != null) {
+                    fillArcPattern(
+                        arc = arc,
+                        arcMode = arcMode,
+                        patternXOrigin = tileStippleXOrigin,
+                        patternYOrigin = tileStippleYOrigin,
+                        patternWidth = pattern.width,
+                        patternHeight = pattern.height,
+                        clipRectangles = effectiveClip,
+                        function = function,
+                        planeMask = planeMask,
+                        preserveAlpha = preserveSourcePixel,
+                        wireDepth = drawableDepth.wireDepth(),
+                    ) { sourceX, sourceY ->
+                        pattern.pixelAt(sourceX, sourceY)
+                            ?.let { patternSourcePixelForDepth(it, drawableDepth, preserveSourcePixel) }
+                    }
+                } else {
+                    fillArc(
+                        arc,
+                        sourcePixel,
+                        arcMode,
+                        effectiveClip,
+                        function,
+                        planeMask,
+                        preserveAlpha = preserveSourcePixel,
+                        wireDepth = drawableDepth.wireDepth(),
+                    )
+                } || painted
+            }
+            painted
         }
-        return painted
     }
 
     @Synchronized
@@ -7609,34 +7828,36 @@ internal class X11State(
         val sourcePixel = if (preserveSourcePixel) corePixelForDepth(pixel, drawableDepth) else pixel
         val sourceBackground = if (preserveSourcePixel) corePixelForDepth(background, drawableDepth) else background
         val pattern = fillPattern(fillStyle, sourcePixel, sourceBackground, tilePixmap, stipplePixmap)
-        return if (pattern != null) {
-            framebuffer.fillPolygonPattern(
-                points = points,
-                fillRule = fillRule,
-                patternXOrigin = tileStippleXOrigin,
-                patternYOrigin = tileStippleYOrigin,
-                patternWidth = pattern.width,
-                patternHeight = pattern.height,
-                clipRectangles = effectiveClip,
-                function = function,
-                planeMask = planeMask,
-                preserveAlpha = preserveSourcePixel,
-                wireDepth = drawableDepth.wireDepth(),
-            ) { sourceX, sourceY ->
-                pattern.pixelAt(sourceX, sourceY)
-                    ?.let { patternSourcePixelForDepth(it, drawableDepth, preserveSourcePixel) }
+        return framebuffer.changedBy {
+            if (pattern != null) {
+                fillPolygonPattern(
+                    points = points,
+                    fillRule = fillRule,
+                    patternXOrigin = tileStippleXOrigin,
+                    patternYOrigin = tileStippleYOrigin,
+                    patternWidth = pattern.width,
+                    patternHeight = pattern.height,
+                    clipRectangles = effectiveClip,
+                    function = function,
+                    planeMask = planeMask,
+                    preserveAlpha = preserveSourcePixel,
+                    wireDepth = drawableDepth.wireDepth(),
+                ) { sourceX, sourceY ->
+                    pattern.pixelAt(sourceX, sourceY)
+                        ?.let { patternSourcePixelForDepth(it, drawableDepth, preserveSourcePixel) }
+                }
+            } else {
+                fillPolygon(
+                    points,
+                    sourcePixel,
+                    fillRule,
+                    effectiveClip,
+                    function,
+                    planeMask,
+                    preserveAlpha = preserveSourcePixel,
+                    wireDepth = drawableDepth.wireDepth(),
+                )
             }
-        } else {
-            framebuffer.fillPolygon(
-                points,
-                sourcePixel,
-                fillRule,
-                effectiveClip,
-                function,
-                planeMask,
-                preserveAlpha = preserveSourcePixel,
-                wireDepth = drawableDepth.wireDepth(),
-            )
         }
     }
 
@@ -7659,18 +7880,20 @@ internal class X11State(
         val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
         val sourceForeground = if (preserveSourcePixel) corePixelForDepth(foreground, drawableDepth) else foreground
         val sourceBackground = background?.let { if (preserveSourcePixel) corePixelForDepth(it, drawableDepth) else it }
-        return framebuffer.drawText(
-            x = x,
-            baselineY = baselineY,
-            text = text,
-            foreground = sourceForeground,
-            background = sourceBackground,
-            clipRectangles = effectiveClip,
-            function = function,
-            planeMask = planeMask,
-            preserveAlpha = preserveSourcePixel,
-            wireDepth = drawableDepth.wireDepth(),
-        )
+        return framebuffer.changedBy {
+            drawText(
+                x = x,
+                baselineY = baselineY,
+                text = text,
+                foreground = sourceForeground,
+                background = sourceBackground,
+                clipRectangles = effectiveClip,
+                function = function,
+                planeMask = planeMask,
+                preserveAlpha = preserveSourcePixel,
+                wireDepth = drawableDepth.wireDepth(),
+            )
+        }
     }
 
     @Synchronized
@@ -7683,11 +7906,12 @@ internal class X11State(
         val framebuffer = destination.drawableFramebuffer() ?: return false
         val destinationClipMask = destination.clipMaskPredicate()
         val destinationPixel = renderPixelForPictureFormat(pixel, destination.format)
-        var painted = false
-        for (rectangle in rectangles) {
-            painted = when (operation) {
-                XRender.OpDst, XRender.OpDisjointDst, XRender.OpConjointDst -> false
-                XRender.OpClear, XRender.OpDisjointClear, XRender.OpConjointClear -> framebuffer.fill(
+        return framebuffer.changedBy {
+            var painted = false
+            for (rectangle in rectangles) {
+                painted = when (operation) {
+                    XRender.OpDst, XRender.OpDisjointDst, XRender.OpConjointDst -> false
+                    XRender.OpClear, XRender.OpDisjointClear, XRender.OpConjointClear -> fill(
                     rectangle.x,
                     rectangle.y,
                     rectangle.width,
@@ -7697,7 +7921,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpSrc, XRender.OpDisjointSrc, XRender.OpConjointSrc -> framebuffer.fill(
+                    XRender.OpSrc, XRender.OpDisjointSrc, XRender.OpConjointSrc -> fill(
                     rectangle.x,
                     rectangle.y,
                     rectangle.width,
@@ -7707,7 +7931,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpOver -> framebuffer.blendSolidOver(
+                    XRender.OpOver -> blendSolidOver(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7716,7 +7940,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpAdd -> framebuffer.blendSolidAdd(
+                    XRender.OpAdd -> blendSolidAdd(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7725,7 +7949,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpBlendMultiply -> framebuffer.blendSolidMultiply(
+                    XRender.OpBlendMultiply -> blendSolidMultiply(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7734,7 +7958,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpBlendScreen -> framebuffer.blendSolidScreen(
+                    XRender.OpBlendScreen -> blendSolidScreen(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7743,7 +7967,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpBlendOverlay -> framebuffer.blendSolidOverlay(
+                    XRender.OpBlendOverlay -> blendSolidOverlay(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7752,7 +7976,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpBlendDarken -> framebuffer.blendSolidDarken(
+                    XRender.OpBlendDarken -> blendSolidDarken(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7761,7 +7985,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpBlendLighten -> framebuffer.blendSolidLighten(
+                    XRender.OpBlendLighten -> blendSolidLighten(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7770,7 +7994,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpBlendColorDodge -> framebuffer.blendSolidColorDodge(
+                    XRender.OpBlendColorDodge -> blendSolidColorDodge(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7779,7 +8003,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpBlendColorBurn -> framebuffer.blendSolidColorBurn(
+                    XRender.OpBlendColorBurn -> blendSolidColorBurn(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7788,7 +8012,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpBlendHardLight -> framebuffer.blendSolidHardLight(
+                    XRender.OpBlendHardLight -> blendSolidHardLight(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7797,7 +8021,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpBlendSoftLight -> framebuffer.blendSolidSoftLight(
+                    XRender.OpBlendSoftLight -> blendSolidSoftLight(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7806,7 +8030,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpBlendDifference -> framebuffer.blendSolidDifference(
+                    XRender.OpBlendDifference -> blendSolidDifference(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7815,7 +8039,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpBlendExclusion -> framebuffer.blendSolidExclusion(
+                    XRender.OpBlendExclusion -> blendSolidExclusion(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7824,7 +8048,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpBlendHSLHue -> framebuffer.blendSolidHslHue(
+                    XRender.OpBlendHSLHue -> blendSolidHslHue(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7833,7 +8057,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpBlendHSLSaturation -> framebuffer.blendSolidHslSaturation(
+                    XRender.OpBlendHSLSaturation -> blendSolidHslSaturation(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7842,7 +8066,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpBlendHSLColor -> framebuffer.blendSolidHslColor(
+                    XRender.OpBlendHSLColor -> blendSolidHslColor(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7851,7 +8075,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpBlendHSLLuminosity -> framebuffer.blendSolidHslLuminosity(
+                    XRender.OpBlendHSLLuminosity -> blendSolidHslLuminosity(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7860,7 +8084,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpSaturate, XRender.OpDisjointOverReverse -> framebuffer.blendSolidSaturate(
+                    XRender.OpSaturate, XRender.OpDisjointOverReverse -> blendSolidSaturate(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7869,7 +8093,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpOverReverse -> framebuffer.blendSolidOverReverse(
+                    XRender.OpOverReverse -> blendSolidOverReverse(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7878,7 +8102,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpDisjointOver -> framebuffer.blendSolidDisjointOver(
+                    XRender.OpDisjointOver -> blendSolidDisjointOver(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7887,7 +8111,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpConjointOver -> framebuffer.blendSolidConjointOver(
+                    XRender.OpConjointOver -> blendSolidConjointOver(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7896,7 +8120,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpConjointOverReverse -> framebuffer.blendSolidConjointOverReverse(
+                    XRender.OpConjointOverReverse -> blendSolidConjointOverReverse(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7905,7 +8129,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpDisjointIn -> framebuffer.blendSolidDisjointIn(
+                    XRender.OpDisjointIn -> blendSolidDisjointIn(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7914,7 +8138,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpConjointIn -> framebuffer.blendSolidConjointIn(
+                    XRender.OpConjointIn -> blendSolidConjointIn(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7923,7 +8147,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpIn -> framebuffer.blendSolidIn(
+                    XRender.OpIn -> blendSolidIn(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7932,7 +8156,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpOut -> framebuffer.blendSolidOut(
+                    XRender.OpOut -> blendSolidOut(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7941,7 +8165,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpDisjointOut -> framebuffer.blendSolidDisjointOut(
+                    XRender.OpDisjointOut -> blendSolidDisjointOut(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7950,7 +8174,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpConjointOut -> framebuffer.blendSolidConjointOut(
+                    XRender.OpConjointOut -> blendSolidConjointOut(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7959,7 +8183,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpInReverse -> framebuffer.blendSolidInReverse(
+                    XRender.OpInReverse -> blendSolidInReverse(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7968,7 +8192,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpDisjointInReverse -> framebuffer.blendSolidDisjointInReverse(
+                    XRender.OpDisjointInReverse -> blendSolidDisjointInReverse(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7977,7 +8201,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpConjointInReverse -> framebuffer.blendSolidConjointInReverse(
+                    XRender.OpConjointInReverse -> blendSolidConjointInReverse(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7986,7 +8210,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpOutReverse -> framebuffer.blendSolidOutReverse(
+                    XRender.OpOutReverse -> blendSolidOutReverse(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -7995,7 +8219,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpDisjointOutReverse -> framebuffer.blendSolidDisjointOutReverse(
+                    XRender.OpDisjointOutReverse -> blendSolidDisjointOutReverse(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -8004,7 +8228,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpConjointOutReverse -> framebuffer.blendSolidConjointOutReverse(
+                    XRender.OpConjointOutReverse -> blendSolidConjointOutReverse(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -8013,7 +8237,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpConjointAtop -> framebuffer.blendSolidConjointAtop(
+                    XRender.OpConjointAtop -> blendSolidConjointAtop(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -8022,7 +8246,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpConjointAtopReverse -> framebuffer.blendSolidConjointAtopReverse(
+                    XRender.OpConjointAtopReverse -> blendSolidConjointAtopReverse(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -8031,7 +8255,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpAtop -> framebuffer.blendSolidAtop(
+                    XRender.OpAtop -> blendSolidAtop(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -8040,7 +8264,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpDisjointAtop -> framebuffer.blendSolidDisjointAtop(
+                    XRender.OpDisjointAtop -> blendSolidDisjointAtop(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -8049,7 +8273,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpAtopReverse -> framebuffer.blendSolidAtopReverse(
+                    XRender.OpAtopReverse -> blendSolidAtopReverse(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -8058,7 +8282,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpDisjointAtopReverse -> framebuffer.blendSolidDisjointAtopReverse(
+                    XRender.OpDisjointAtopReverse -> blendSolidDisjointAtopReverse(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -8067,7 +8291,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpDisjointXor -> framebuffer.blendSolidDisjointXor(
+                    XRender.OpDisjointXor -> blendSolidDisjointXor(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -8076,7 +8300,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpConjointXor -> framebuffer.blendSolidConjointXor(
+                    XRender.OpConjointXor -> blendSolidConjointXor(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -8085,7 +8309,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                XRender.OpXor -> framebuffer.blendSolidXor(
+                    XRender.OpXor -> blendSolidXor(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -8094,7 +8318,7 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-                else -> framebuffer.blendSolidOver(
+                    else -> blendSolidOver(
                     pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
@@ -8103,9 +8327,10 @@ internal class X11State(
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
-            } || painted
+                } || painted
+            }
+            painted
         }
-        return painted
     }
 
     @Synchronized
@@ -8130,15 +8355,17 @@ internal class X11State(
         val first = trapezoids.firstOrNull() ?: return false
         val originY = floor(first.top.fixedToDouble()).toInt()
         val originX = floor(first.left.xAt(first.top.fixedToDouble())).toInt()
-        return framebuffer.compositeTrapezoids(
-            operation = operation,
-            trapezoids = trapezoids,
-            maskFormat = maskFormat,
-            clipRectangles = effectivePictureClip(destination),
-            clipMask = destination.clipMaskPredicate(),
-            smoothEdges = destination.polyEdge == XRender.PolyEdgeSmooth,
-        ) { x, y ->
-            sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
+        return framebuffer.changedBy {
+            compositeTrapezoids(
+                operation = operation,
+                trapezoids = trapezoids,
+                maskFormat = maskFormat,
+                clipRectangles = effectivePictureClip(destination),
+                clipMask = destination.clipMaskPredicate(),
+                smoothEdges = destination.polyEdge == XRender.PolyEdgeSmooth,
+            ) { x, y ->
+                sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
+            }
         }
     }
 
@@ -8146,13 +8373,15 @@ internal class X11State(
     fun addTraps(destination: XPicture, trapezoids: List<XTrapezoidCommand>): Boolean {
         if (!XRender.isAlphaMaskFormat(destination.format)) return false
         val framebuffer = destination.drawableFramebuffer() ?: return false
-        return framebuffer.addTrapezoids(
-            trapezoids = trapezoids,
-            maskFormat = destination.format,
-            clipRectangles = effectivePictureClip(destination),
-            clipMask = destination.clipMaskPredicate(),
-            smoothEdges = destination.polyEdge == XRender.PolyEdgeSmooth,
-        )
+        return framebuffer.changedBy {
+            addTrapezoids(
+                trapezoids = trapezoids,
+                maskFormat = destination.format,
+                clipRectangles = effectivePictureClip(destination),
+                clipMask = destination.clipMaskPredicate(),
+                smoothEdges = destination.polyEdge == XRender.PolyEdgeSmooth,
+            )
+        }
     }
 
     @Synchronized
@@ -8177,15 +8406,17 @@ internal class X11State(
         val first = triangles.firstOrNull() ?: return false
         val originX = floor(first.p1.x.fixedToDouble()).toInt()
         val originY = floor(first.p1.y.fixedToDouble()).toInt()
-        return framebuffer.compositeTriangles(
-            operation = operation,
-            triangles = triangles,
-            maskFormat = maskFormat,
-            clipRectangles = effectivePictureClip(destination),
-            clipMask = destination.clipMaskPredicate(),
-            smoothEdges = destination.polyEdge == XRender.PolyEdgeSmooth,
-        ) { x, y ->
-            sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
+        return framebuffer.changedBy {
+            compositeTriangles(
+                operation = operation,
+                triangles = triangles,
+                maskFormat = maskFormat,
+                clipRectangles = effectivePictureClip(destination),
+                clipMask = destination.clipMaskPredicate(),
+                smoothEdges = destination.polyEdge == XRender.PolyEdgeSmooth,
+            ) { x, y ->
+                sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
+            }
         }
     }
 
@@ -8196,13 +8427,15 @@ internal class X11State(
         triangles: List<XColorTriangleCommand>,
     ): Boolean {
         val framebuffer = destination.drawableFramebuffer() ?: return false
-        return framebuffer.compositeColoredTriangles(
-            operation = operation,
-            triangles = triangles,
-            clipRectangles = effectivePictureClip(destination),
-            clipMask = destination.clipMaskPredicate(),
-            smoothEdges = destination.polyEdge == XRender.PolyEdgeSmooth,
-        )
+        return framebuffer.changedBy {
+            compositeColoredTriangles(
+                operation = operation,
+                triangles = triangles,
+                clipRectangles = effectivePictureClip(destination),
+                clipMask = destination.clipMaskPredicate(),
+                smoothEdges = destination.polyEdge == XRender.PolyEdgeSmooth,
+            )
+        }
     }
 
     @Synchronized
@@ -8212,13 +8445,15 @@ internal class X11State(
         trapezoids: List<XColorTrapCommand>,
     ): Boolean {
         val framebuffer = destination.drawableFramebuffer() ?: return false
-        return framebuffer.compositeColoredTrapezoids(
-            operation = operation,
-            trapezoids = trapezoids,
-            clipRectangles = effectivePictureClip(destination),
-            clipMask = destination.clipMaskPredicate(),
-            smoothEdges = destination.polyEdge == XRender.PolyEdgeSmooth,
-        )
+        return framebuffer.changedBy {
+            compositeColoredTrapezoids(
+                operation = operation,
+                trapezoids = trapezoids,
+                clipRectangles = effectivePictureClip(destination),
+                clipMask = destination.clipMaskPredicate(),
+                smoothEdges = destination.polyEdge == XRender.PolyEdgeSmooth,
+            )
+        }
     }
 
     @Synchronized
@@ -8233,14 +8468,16 @@ internal class X11State(
         val drawableId = destination.drawableId ?: return false
         val framebuffer = destination.drawableFramebuffer() ?: return false
         val sourcePixelAt = source.sourcePixelSamplerAt(snapshotDrawableId = drawableId, filterNameOverride = filterName) ?: return false
-        return framebuffer.compositeTransformedQuad(
-            operation = operation,
-            sourceQuad = sourceQuad,
-            destinationQuad = destinationQuad,
-            clipRectangles = effectivePictureClip(destination),
-            clipMask = destination.clipMaskPredicate(),
-            sourcePixelAt = sourcePixelAt,
-        )
+        return framebuffer.changedBy {
+            compositeTransformedQuad(
+                operation = operation,
+                sourceQuad = sourceQuad,
+                destinationQuad = destinationQuad,
+                clipRectangles = effectivePictureClip(destination),
+                clipMask = destination.clipMaskPredicate(),
+                sourcePixelAt = sourcePixelAt,
+            )
+        }
     }
 
     @Synchronized
@@ -8266,31 +8503,33 @@ internal class X11State(
         } else {
             source.sourcePixelSampler(snapshotDrawableId = destinationDrawableId)?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
         }) ?: return false
-        var painted = false
-        for (placement in placements) {
-            val glyph = glyphSet.glyphs[placement.glyphId] ?: continue
-            val mask = glyph.mask ?: continue
-            val destinationX = placement.x - glyph.x
-            val destinationY = placement.y - glyph.y
-            painted = destinationFramebuffer.compositeSourceOverMask(
-                sourceX = sourceX,
-                sourceY = sourceY,
-                originX = originX,
-                originY = originY,
-                destinationX = destinationX,
-                destinationY = destinationY,
-                width = glyph.width,
-                height = glyph.height,
-                operation = operation,
-                clipRectangles = effectivePictureClip(destination),
-                clipMask = destinationClipMask,
-                mask = mask,
-                componentMask = glyphSet.format == XRender.Argb32Format || glyphSet.format == XRender.Rgb24Format,
-                sourcePremultiplied = source.drawableId != null,
-                sourcePixelAt = sourcePixelAt,
-            ) || painted
+        return destinationFramebuffer.changedBy {
+            var painted = false
+            for (placement in placements) {
+                val glyph = glyphSet.glyphs[placement.glyphId] ?: continue
+                val mask = glyph.mask ?: continue
+                val destinationX = placement.x - glyph.x
+                val destinationY = placement.y - glyph.y
+                painted = compositeSourceOverMask(
+                    sourceX = sourceX,
+                    sourceY = sourceY,
+                    originX = originX,
+                    originY = originY,
+                    destinationX = destinationX,
+                    destinationY = destinationY,
+                    width = glyph.width,
+                    height = glyph.height,
+                    operation = operation,
+                    clipRectangles = effectivePictureClip(destination),
+                    clipMask = destinationClipMask,
+                    mask = mask,
+                    componentMask = glyphSet.format == XRender.Argb32Format || glyphSet.format == XRender.Rgb24Format,
+                    sourcePremultiplied = source.drawableId != null,
+                    sourcePixelAt = sourcePixelAt,
+                ) || painted
+            }
+            painted
         }
-        return painted
     }
 
     @Synchronized
@@ -8364,23 +8603,25 @@ internal class X11State(
         } else {
             source.sourcePixelSampler(snapshotDrawableId = destinationDrawableId)?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
         }) ?: return false
-        return destinationFramebuffer.compositeSourceOverMask(
-            sourceX = sourceX,
-            sourceY = sourceY,
-            originX = originX,
-            originY = originY,
-            destinationX = minX,
-            destinationY = minY,
-            width = maskWidth,
-            height = maskHeight,
-            operation = operation,
-            clipRectangles = effectivePictureClip(destination),
-            clipMask = destination.clipMaskPredicate(),
-            mask = temporaryMask,
-            componentMask = maskFormat == XRender.Argb32Format || maskFormat == XRender.Rgb24Format,
-            sourcePremultiplied = source.drawableId != null,
-            sourcePixelAt = sourcePixelAt,
-        )
+        return destinationFramebuffer.changedBy {
+            compositeSourceOverMask(
+                sourceX = sourceX,
+                sourceY = sourceY,
+                originX = originX,
+                originY = originY,
+                destinationX = minX,
+                destinationY = minY,
+                width = maskWidth,
+                height = maskHeight,
+                operation = operation,
+                clipRectangles = effectivePictureClip(destination),
+                clipMask = destination.clipMaskPredicate(),
+                mask = temporaryMask,
+                componentMask = maskFormat == XRender.Argb32Format || maskFormat == XRender.Rgb24Format,
+                sourcePremultiplied = source.drawableId != null,
+                sourcePixelAt = sourcePixelAt,
+            )
+        }
     }
 
     @Synchronized
@@ -8607,9 +8848,14 @@ internal class X11State(
 
     @Synchronized
     fun draw(command: XDrawingCommand) {
+        val resolvedDrawableGeneration = command.drawableGeneration ?: drawableGeneration(command.drawableId)
+        val resolvedSourceDrawableGeneration = command.sourceDrawableId?.let { command.sourceDrawableGeneration ?: drawableGeneration(it) }
+        if (command.framebufferPainted && windows[command.drawableId]?.generation == resolvedDrawableGeneration) {
+            windows[command.drawableId]?.framebufferClientPainted = true
+        }
         drawings += command.copy(
-            drawableGeneration = command.drawableGeneration ?: drawableGeneration(command.drawableId),
-            sourceDrawableGeneration = command.sourceDrawableId?.let { command.sourceDrawableGeneration ?: drawableGeneration(it) },
+            drawableGeneration = resolvedDrawableGeneration,
+            sourceDrawableGeneration = resolvedSourceDrawableGeneration,
         )
         if (drawings.size > MaxDrawingCommands) {
             drawings.removeAt(0)
@@ -10448,6 +10694,7 @@ internal data class XWindow(
     var boundingShape: List<XRectangleCommand>? = null,
     var clipShape: List<XRectangleCommand>? = null,
     var inputShape: List<XRectangleCommand>? = null,
+    var framebufferClientPainted: Boolean = false,
     val properties: MutableMap<Int, XProperty> = linkedMapOf(),
     val framebuffer: XFramebuffer = XFramebuffer(width, height, backgroundPixel),
 )
@@ -10784,6 +11031,7 @@ internal data class XDrawingCommand(
     val drawableGeneration: Long? = null,
     val sourceDrawableGeneration: Long? = null,
     val framebufferBacked: Boolean = false,
+    val framebufferPainted: Boolean = framebufferBacked,
 )
 
 internal data class XRectangleCommand(
@@ -11510,6 +11758,7 @@ internal data class XPixmapSnapshot(
     val framebufferDataUri: String?,
     val pictureIds: List<Int>,
     val matchingWindowIds: List<Int>,
+    val provenanceMatchingWindowIds: List<Int> = emptyList(),
     val retainedPictureId: Int? = null,
 ) {
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
@@ -11532,6 +11781,7 @@ private data class XRootPixmapSurface(
     val retained: Boolean,
     val framebuffer: XFramebuffer,
     val matchingWindowIds: Set<Int>,
+    val provenanceMatchingWindowIds: Set<Int>,
 )
 
 private data class XRootDisplaySurfaceContext(
@@ -11785,6 +12035,7 @@ internal data class XWindowSnapshot(
     val borderPixel: Int,
     val borderPixmapId: Int?,
     val framebufferDataUri: String?,
+    val framebufferPainted: Boolean,
     val windowClass: Int,
     val depth: Int,
     val visual: Int,

@@ -3959,7 +3959,7 @@ internal class X11Connection(
         val width = byteOrder.u16(body, 28)
         val height = byteOrder.u16(body, 30)
         val rectangle = XRectangleCommand(destinationX, destinationY, width, height)
-        val image = state.composite(
+        val result = state.compositeWithPaintResult(
             operation = operation,
             source = source,
             mask = mask,
@@ -3980,10 +3980,11 @@ internal class X11Connection(
                 kind = if (source.isGeneratedSource()) XDrawingKind.FillRectangle else XDrawingKind.CopyArea,
                 foreground = source.solidPixel ?: 0,
                 rectangles = listOf(rectangle),
-                imageDataUri = XFramebuffer.imageDataUri(image),
+                imageDataUri = XFramebuffer.imageDataUri(result.image),
                 sourceDrawableId = source.drawableId,
                 sourceDrawableGeneration = source.retainedOrLiveDrawableGeneration(),
                 framebufferBacked = true,
+                framebufferPainted = result.painted,
             ),
         )
     }
@@ -4006,7 +4007,7 @@ internal class X11Connection(
         val width = byteOrder.u16(body, 24)
         val height = byteOrder.u16(body, 26)
         val rectangle = XRectangleCommand(destinationX, destinationY, width, height)
-        val image = state.scale(
+        val result = state.scaleWithPaintResult(
             colorScale = colorScale,
             alphaScale = alphaScale,
             source = source,
@@ -4025,10 +4026,11 @@ internal class X11Connection(
                 kind = if (source.isGeneratedSource()) XDrawingKind.FillRectangle else XDrawingKind.CopyArea,
                 foreground = source.solidPixel ?: 0,
                 rectangles = listOf(rectangle),
-                imageDataUri = XFramebuffer.imageDataUri(image),
+                imageDataUri = XFramebuffer.imageDataUri(result.image),
                 sourceDrawableId = source.drawableId,
                 sourceDrawableGeneration = source.retainedOrLiveDrawableGeneration(),
                 framebufferBacked = true,
+                framebufferPainted = result.painted,
             ),
         )
     }
@@ -7331,7 +7333,7 @@ internal class X11Connection(
             width = byteOrder.u16(body, 8).takeIf { it > 0 } ?: (window.width - x),
             height = byteOrder.u16(body, 10).takeIf { it > 0 } ?: (window.height - y),
         )
-        state.paintWindowBackground(windowId, rectangle)
+        val painted = state.paintWindowBackground(windowId, rectangle)
         state.draw(
             XDrawingCommand(
                 drawableId = windowId,
@@ -7340,6 +7342,7 @@ internal class X11Connection(
                 foreground = window.backgroundPixel,
                 rectangles = listOf(rectangle),
                 framebufferBacked = true,
+                framebufferPainted = painted,
             ),
         )
         if (exposures != 0 && state.windowIsViewable(windowId)) {
@@ -7373,7 +7376,7 @@ internal class X11Connection(
             return writeError(error = 8, opcode = 62, badValue = gcId)
         }
         val sourceClipRectangles = state.effectiveDrawableClip(sourceDrawable, null, gc.subwindowMode)
-        val copy = state.copyArea(
+        val result = state.copyAreaWithPaintResult(
             sourceDrawableId = sourceDrawable,
             destinationDrawableId = destinationDrawable,
             sourceX = sourceX,
@@ -7388,7 +7391,8 @@ internal class X11Connection(
             function = gc.function,
             planeMask = gc.planeMask,
         )
-        if (copy != null) {
+        if (result != null) {
+            val copy = result.copy
             state.draw(
                 XDrawingCommand(
                     drawableId = destinationDrawable,
@@ -7408,6 +7412,7 @@ internal class X11Connection(
                     drawableGeneration = state.drawableGeneration(destinationDrawable),
                     sourceDrawableGeneration = state.drawableGeneration(sourceDrawable),
                     framebufferBacked = true,
+                    framebufferPainted = result.painted,
                 ),
             )
         }
@@ -7466,7 +7471,7 @@ internal class X11Connection(
             return writeError(error = 2, opcode = 63, badValue = bitPlane)
         }
         val sourceClipRectangles = state.effectiveDrawableClip(sourceDrawable, null, gc.subwindowMode)
-        val copy = state.copyPlane(
+        val result = state.copyPlaneWithPaintResult(
             sourceDrawableId = sourceDrawable,
             destinationDrawableId = destinationDrawable,
             sourceX = sourceX,
@@ -7484,7 +7489,8 @@ internal class X11Connection(
             function = gc.function,
             planeMask = gc.planeMask,
         )
-        if (copy != null) {
+        if (result != null) {
+            val copy = result.copy
             state.draw(
                 XDrawingCommand(
                     drawableId = destinationDrawable,
@@ -7504,6 +7510,7 @@ internal class X11Connection(
                     drawableGeneration = state.drawableGeneration(destinationDrawable),
                     sourceDrawableGeneration = state.drawableGeneration(sourceDrawable),
                     framebufferBacked = true,
+                    framebufferPainted = result.painted,
                 ),
             )
         }
@@ -7541,7 +7548,7 @@ internal class X11Connection(
         val drawable = coreDrawable(opcode = 64, drawableId = drawableId) ?: return
         if (!validateDrawableGc(opcode = 64, drawableId = drawableId, drawable = drawable, gc = gc)) return
         val points = points(body, 8, coordMode)
-        state.drawPoints(
+        val painted = state.drawPoints(
             drawableId = drawableId,
             pixel = gc.foreground,
             points = points,
@@ -7559,6 +7566,7 @@ internal class X11Connection(
                 foreground = gc.foreground,
                 rectangles = points.map { XRectangleCommand(it.x, it.y, 1, 1) },
                 framebufferBacked = true,
+                framebufferPainted = painted,
             ),
         )
     }
@@ -7573,7 +7581,7 @@ internal class X11Connection(
         val drawable = coreDrawable(opcode = 65, drawableId = drawableId) ?: return
         if (!validateDrawableGc(opcode = 65, drawableId = drawableId, drawable = drawable, gc = gc)) return
         val points = points(body, 8, coordMode)
-        state.drawPolyline(
+        val painted = state.drawPolyline(
             drawableId = drawableId,
             pixel = gc.foreground,
             background = gc.background,
@@ -7614,6 +7622,7 @@ internal class X11Connection(
                 arcMode = gc.arcMode,
                 points = points,
                 framebufferBacked = true,
+                framebufferPainted = painted,
             ),
         )
     }
@@ -7633,7 +7642,7 @@ internal class X11Connection(
             points += XPoint(byteOrder.i16(body, offset + 4), byteOrder.i16(body, offset + 6))
             offset += 8
         }
-        state.drawSegments(
+        val painted = state.drawSegments(
             drawableId = drawableId,
             pixel = gc.foreground,
             background = gc.background,
@@ -7674,6 +7683,7 @@ internal class X11Connection(
                 arcMode = gc.arcMode,
                 points = points,
                 framebufferBacked = true,
+                framebufferPainted = painted,
             ),
         )
     }
@@ -7688,7 +7698,7 @@ internal class X11Connection(
         val drawable = coreDrawable(opcode = opcode, drawableId = drawableId) ?: return
         if (!validateDrawableGc(opcode = opcode, drawableId = drawableId, drawable = drawable, gc = gc)) return
         val rectangles = rectangles(body, 8)
-        when (kind) {
+        val painted = when (kind) {
             XDrawingKind.FillRectangle -> state.fillRectangles(
                 drawableId = drawableId,
                 pixel = gc.foreground,
@@ -7723,7 +7733,7 @@ internal class X11Connection(
                 function = gc.function,
                 planeMask = gc.planeMask,
             )
-            else -> Unit
+            else -> false
         }
         state.draw(
             XDrawingCommand(
@@ -7747,6 +7757,7 @@ internal class X11Connection(
                 arcMode = gc.arcMode,
                 rectangles = rectangles,
                 framebufferBacked = kind == XDrawingKind.FillRectangle || kind == XDrawingKind.Rectangle,
+                framebufferPainted = painted,
             ),
         )
     }
@@ -7761,7 +7772,7 @@ internal class X11Connection(
         val drawable = coreDrawable(opcode = opcode, drawableId = drawableId) ?: return
         if (!validateDrawableGc(opcode = opcode, drawableId = drawableId, drawable = drawable, gc = gc)) return
         val arcs = arcs(body, 8)
-        if (filled) {
+        val painted = if (filled) {
             state.fillArcs(
                 drawableId = drawableId,
                 pixel = gc.foreground,
@@ -7821,6 +7832,7 @@ internal class X11Connection(
                 arcMode = gc.arcMode,
                 arcs = arcs,
                 framebufferBacked = true,
+                framebufferPainted = painted,
             ),
         )
     }
@@ -7838,7 +7850,7 @@ internal class X11Connection(
         val drawable = coreDrawable(opcode = 69, drawableId = drawableId) ?: return
         if (!validateDrawableGc(opcode = 69, drawableId = drawableId, drawable = drawable, gc = gc)) return
         val points = points(body, 12, coordMode)
-        state.fillPolygon(
+        val painted = state.fillPolygon(
             drawableId = drawableId,
             pixel = gc.foreground,
             points = points,
@@ -7871,6 +7883,7 @@ internal class X11Connection(
                 arcMode = gc.arcMode,
                 points = points,
                 framebufferBacked = true,
+                framebufferPainted = painted,
             ),
         )
     }
@@ -7907,7 +7920,7 @@ internal class X11Connection(
             background = gc.background,
         )
         val imageDataUri = image?.let { XFramebuffer.imageDataUri(it) }
-        if (image != null) {
+        val painted = if (image != null) {
             state.putImage(
                 drawableId = drawableId,
                 x = x,
@@ -7918,6 +7931,8 @@ internal class X11Connection(
                 function = gc.function,
                 planeMask = gc.planeMask,
             )
+        } else {
+            false
         }
         state.draw(
             XDrawingCommand(
@@ -7935,6 +7950,7 @@ internal class X11Connection(
                 ),
                 imageDataUri = imageDataUri,
                 framebufferBacked = image != null,
+                framebufferPainted = painted,
             ),
         )
     }
@@ -7955,9 +7971,10 @@ internal class X11Connection(
         decoded.fontIds.lastOrNull()?.let { state.updateGc(id = gcId, fontId = it) }
         val runs = decoded.runs
         if (runs.isEmpty()) return
+        var painted = false
         for (run in runs) {
             val text = state.textForFont(run.fontId, run.text)
-            state.drawText(
+            painted = state.drawText(
                 drawableId = drawableId,
                 x = run.x,
                 baselineY = run.y,
@@ -7967,7 +7984,7 @@ internal class X11Connection(
                 subwindowMode = gc.subwindowMode,
                 function = gc.function,
                 planeMask = gc.planeMask,
-            )
+            ) || painted
         }
         state.draw(
             XDrawingCommand(
@@ -7979,6 +7996,7 @@ internal class X11Connection(
                 points = runs.map { XPoint(it.x, it.y) },
                 text = runs.joinToString("") { state.textForFont(it.fontId, it.text) },
                 framebufferBacked = true,
+                framebufferPainted = painted,
             ),
         )
     }
@@ -7999,7 +8017,7 @@ internal class X11Connection(
         val y = byteOrder.i16(body, 10)
         val textBytes = body.copyOfRange(12, 12 + byteLength)
         val text = state.textForFont(gc.fontId, if (is16Bit) decodeText16(textBytes) else decodeText8(textBytes))
-        state.drawText(
+        val painted = state.drawText(
             drawableId = drawableId,
             x = x,
             baselineY = y,
@@ -8021,6 +8039,7 @@ internal class X11Connection(
                 points = listOf(XPoint(x, y)),
                 text = text,
                 framebufferBacked = true,
+                framebufferPainted = painted,
             ),
         )
     }
@@ -10978,7 +10997,8 @@ internal class X11Connection(
     private fun paintCopyExposureBackground(drawableId: Int, exposureRectangles: List<XRectangleCommand>) {
         val window = state.window(drawableId)
         for (rectangle in exposureRectangles) {
-            if (state.paintWindowBackground(drawableId, rectangle) && window != null) {
+            val result = state.paintWindowBackgroundWithResult(drawableId, rectangle)
+            if (result.applied && window != null) {
                 state.draw(
                     XDrawingCommand(
                         drawableId = drawableId,
@@ -10987,6 +11007,7 @@ internal class X11Connection(
                         foreground = window.backgroundPixel,
                         rectangles = listOf(rectangle),
                         framebufferBacked = true,
+                        framebufferPainted = result.painted,
                     ),
                 )
             }

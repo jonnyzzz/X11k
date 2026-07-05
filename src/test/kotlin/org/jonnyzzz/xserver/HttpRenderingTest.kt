@@ -719,6 +719,567 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `screen svg keeps painted window framebuffer when direct paint history rolls over`() {
+        val window = 0x0020_0001
+        val pixmap = 0x0020_0100
+        val state = X11State(width = 640, height = 480)
+        state.putWindow(
+            XWindow(
+                id = window,
+                parentId = X11Ids.RootWindow,
+                x = 10,
+                y = 20,
+                width = 64,
+                height = 64,
+                borderWidth = 0,
+                mapped = true,
+                properties = linkedMapOf(
+                    39 to XProperty(
+                        type = 31,
+                        format = 8,
+                        data = "rolled direct window target".encodeToByteArray(),
+                    ),
+                ),
+            ),
+        )
+        state.putPixmap(XPixmap(id = pixmap, width = 64, height = 64, depth = X11Ids.RootDepth))
+        val image = XImagePixels(
+            width = 2,
+            height = 2,
+            pixels = intArrayOf(0x00ff_0000, 0x0000_ff00, 0x0000_00ff, 0x00ff_ff00),
+        )
+        state.putImage(window, x = 40, y = 30, image = image)
+        state.draw(
+            XDrawingCommand(
+                drawableId = window,
+                kind = XDrawingKind.PutImage,
+                foreground = 0,
+                imageDataUri = XFramebuffer.imageDataUri(image),
+                framebufferBacked = true,
+            ),
+        )
+        state.putImage(pixmap, x = 40, y = 30, image = image)
+        state.draw(
+            XDrawingCommand(
+                drawableId = pixmap,
+                kind = XDrawingKind.PutImage,
+                foreground = 0,
+                imageDataUri = XFramebuffer.imageDataUri(image),
+                framebufferBacked = true,
+            ),
+        )
+        repeat(10_001) { index ->
+            state.draw(
+                XDrawingCommand(
+                    drawableId = X11Ids.RootWindow,
+                    kind = XDrawingKind.Rectangle,
+                    foreground = index,
+                    rectangles = listOf(XRectangleCommand(0, 0, 1, 1)),
+                ),
+            )
+        }
+
+        val svg = SvgScreenRenderer.svg(state.snapshot())
+        assertContains(svg, "rolled direct window target")
+        assertContains(svg, """data-window-id="0x200001"""")
+        assertContains(svg, """data-source="window-framebuffer"""")
+        assertFalse(
+            Regex("""<image\b(?=[^>]*\bdata-window-id="0x200001")(?=[^>]*\bdata-source="matching-pixmap")""").containsMatchIn(svg),
+            "Size-only backing pixmap matching must not override an already-painted window framebuffer after recency history rolls over",
+        )
+    }
+
+    @Test
+    fun `screen svg ignores stale generation draw when deciding if reused window framebuffer was painted`() {
+        val window = 0x0020_0001
+        val pixmap = 0x0020_0100
+        val state = X11State(width = 640, height = 480)
+        state.putWindow(
+            XWindow(
+                id = window,
+                parentId = X11Ids.RootWindow,
+                x = 10,
+                y = 20,
+                width = 64,
+                height = 64,
+                borderWidth = 0,
+                mapped = true,
+                properties = linkedMapOf(
+                    39 to XProperty(
+                        type = 31,
+                        format = 8,
+                        data = "stale generation reuse target".encodeToByteArray(),
+                    ),
+                ),
+            ),
+        )
+        state.putPixmap(XPixmap(id = pixmap, width = 64, height = 64, depth = X11Ids.RootDepth))
+        val image = XImagePixels(
+            width = 2,
+            height = 2,
+            pixels = intArrayOf(0x00ff_0000, 0x0000_ff00, 0x0000_00ff, 0x00ff_ff00),
+        )
+        state.putImage(pixmap, x = 40, y = 30, image = image)
+        state.draw(
+            XDrawingCommand(
+                drawableId = pixmap,
+                kind = XDrawingKind.PutImage,
+                foreground = 0,
+                imageDataUri = XFramebuffer.imageDataUri(image),
+                framebufferBacked = true,
+            ),
+        )
+        state.draw(
+            XDrawingCommand(
+                drawableId = window,
+                drawableGeneration = 1,
+                kind = XDrawingKind.FillRectangle,
+                foreground = 0x00ff_0000,
+                rectangles = listOf(XRectangleCommand(0, 0, 64, 64)),
+                framebufferBacked = true,
+            ),
+        )
+        repeat(10_001) { index ->
+            state.draw(
+                XDrawingCommand(
+                    drawableId = X11Ids.RootWindow,
+                    kind = XDrawingKind.Rectangle,
+                    foreground = index,
+                    rectangles = listOf(XRectangleCommand(0, 0, 1, 1)),
+                ),
+            )
+        }
+
+        val svg = SvgScreenRenderer.svg(state.snapshot())
+        assertContains(svg, "stale generation reuse target")
+        assertContains(svg, """data-window-id="0x200001"""")
+        assertContains(svg, """data-source="matching-pixmap"""")
+        assertContains(svg, """data-pixmap-id="0x200100"""")
+        assertFalse(
+            Regex("""<image\b(?=[^>]*\bdata-window-id="0x200001")(?=[^>]*\bdata-source="window-framebuffer")""").containsMatchIn(svg),
+            "A stale framebuffer-backed retained draw must not mark the current reused window framebuffer as directly painted",
+        )
+    }
+
+    @Test
+    fun `screen svg ignores current generation no-op draw when deciding if window framebuffer was painted`() {
+        val window = 0x0020_0001
+        val pixmap = 0x0020_0100
+        val state = X11State(width = 640, height = 480)
+        state.putWindow(
+            XWindow(
+                id = window,
+                parentId = X11Ids.RootWindow,
+                x = 10,
+                y = 20,
+                width = 64,
+                height = 64,
+                borderWidth = 0,
+                mapped = true,
+                properties = linkedMapOf(
+                    39 to XProperty(
+                        type = 31,
+                        format = 8,
+                        data = "no-op direct draw target".encodeToByteArray(),
+                    ),
+                ),
+            ),
+        )
+        state.putPixmap(XPixmap(id = pixmap, width = 64, height = 64, depth = X11Ids.RootDepth))
+        val image = XImagePixels(
+            width = 2,
+            height = 2,
+            pixels = intArrayOf(0x00ff_0000, 0x0000_ff00, 0x0000_00ff, 0x00ff_ff00),
+        )
+        state.putImage(pixmap, x = 40, y = 30, image = image)
+        state.draw(
+            XDrawingCommand(
+                drawableId = pixmap,
+                kind = XDrawingKind.PutImage,
+                foreground = 0,
+                imageDataUri = XFramebuffer.imageDataUri(image),
+                framebufferBacked = true,
+            ),
+        )
+        val painted = state.fillRectangles(
+            drawableId = window,
+            pixel = 0x00ff_0000,
+            rectangles = listOf(XRectangleCommand(400, 400, 10, 10)),
+        )
+        state.draw(
+            XDrawingCommand(
+                drawableId = window,
+                kind = XDrawingKind.FillRectangle,
+                foreground = 0x00ff_0000,
+                rectangles = listOf(XRectangleCommand(400, 400, 10, 10)),
+                framebufferBacked = true,
+                framebufferPainted = painted,
+            ),
+        )
+        repeat(10_001) { index ->
+            state.draw(
+                XDrawingCommand(
+                    drawableId = X11Ids.RootWindow,
+                    kind = XDrawingKind.Rectangle,
+                    foreground = index,
+                    rectangles = listOf(XRectangleCommand(0, 0, 1, 1)),
+                ),
+            )
+        }
+
+        val svg = SvgScreenRenderer.svg(state.snapshot())
+        assertContains(svg, "no-op direct draw target")
+        assertContains(svg, """data-window-id="0x200001"""")
+        assertContains(svg, """data-source="matching-pixmap"""")
+        assertContains(svg, """data-pixmap-id="0x200100"""")
+        assertFalse(
+            Regex("""<image\b(?=[^>]*\bdata-window-id="0x200001")(?=[^>]*\bdata-source="window-framebuffer")""").containsMatchIn(svg),
+            "A current-generation draw that did not mutate framebuffer pixels must not mark the window framebuffer as directly painted",
+        )
+    }
+
+    @Test
+    fun `screen svg ignores clear and render no-op draws when deciding if window framebuffer was painted`() {
+        val window = 0x0020_0001
+        val pixmap = 0x0020_0100
+        val state = X11State(width = 640, height = 480)
+        state.putWindow(
+            XWindow(
+                id = window,
+                parentId = X11Ids.RootWindow,
+                x = 10,
+                y = 20,
+                width = 64,
+                height = 64,
+                borderWidth = 0,
+                mapped = true,
+                backgroundPixmapId = XWindowBackground.None,
+                properties = linkedMapOf(
+                    39 to XProperty(
+                        type = 31,
+                        format = 8,
+                        data = "clear and render no-op target".encodeToByteArray(),
+                    ),
+                ),
+            ),
+        )
+        state.putPixmap(XPixmap(id = pixmap, width = 64, height = 64, depth = X11Ids.RootDepth))
+        val image = XImagePixels(
+            width = 2,
+            height = 2,
+            pixels = intArrayOf(0x00ff_0000, 0x0000_ff00, 0x0000_00ff, 0x00ff_ff00),
+        )
+        state.putImage(pixmap, x = 40, y = 30, image = image)
+        state.draw(
+            XDrawingCommand(
+                drawableId = pixmap,
+                kind = XDrawingKind.PutImage,
+                foreground = 0,
+                imageDataUri = XFramebuffer.imageDataUri(image),
+                framebufferBacked = true,
+            ),
+        )
+        val clearRectangle = XRectangleCommand(0, 0, 64, 64)
+        val clearPainted = state.paintWindowBackground(window, clearRectangle)
+        state.draw(
+            XDrawingCommand(
+                drawableId = window,
+                kind = XDrawingKind.Clear,
+                foreground = 0,
+                rectangles = listOf(clearRectangle),
+                framebufferBacked = true,
+                framebufferPainted = clearPainted,
+            ),
+        )
+        state.draw(
+            XDrawingCommand(
+                drawableId = window,
+                kind = XDrawingKind.CopyArea,
+                foreground = 0,
+                rectangles = listOf(XRectangleCommand(0, 0, 64, 64)),
+                imageDataUri = XFramebuffer.imageDataUri(XImagePixels(64, 64, IntArray(64 * 64))),
+                sourceDrawableId = pixmap,
+                sourceDrawableGeneration = state.drawableGeneration(pixmap),
+                framebufferBacked = true,
+                framebufferPainted = false,
+            ),
+        )
+        repeat(10_001) { index ->
+            state.draw(
+                XDrawingCommand(
+                    drawableId = X11Ids.RootWindow,
+                    kind = XDrawingKind.Rectangle,
+                    foreground = index,
+                    rectangles = listOf(XRectangleCommand(0, 0, 1, 1)),
+                ),
+            )
+        }
+
+        val svg = SvgScreenRenderer.svg(state.snapshot())
+        assertContains(svg, "clear and render no-op target")
+        assertContains(svg, """data-window-id="0x200001"""")
+        assertContains(svg, """data-source="matching-pixmap"""")
+        assertContains(svg, """data-pixmap-id="0x200100"""")
+        assertFalse(
+            Regex("""<image\b(?=[^>]*\bdata-window-id="0x200001")(?=[^>]*\bdata-source="window-framebuffer")""").containsMatchIn(svg),
+            "ClearArea and XRender OpDst-style no-op records must not mark the window framebuffer as directly painted",
+        )
+    }
+
+    @Test
+    fun `screen svg ignores same pixel clear when deciding if window framebuffer was painted`() {
+        val window = 0x0020_0001
+        val pixmap = 0x0020_0100
+        val state = X11State(width = 640, height = 480)
+        state.putWindow(
+            XWindow(
+                id = window,
+                parentId = X11Ids.RootWindow,
+                x = 10,
+                y = 20,
+                width = 64,
+                height = 64,
+                borderWidth = 0,
+                mapped = true,
+                backgroundPixel = 0x00ff_ffff,
+                properties = linkedMapOf(
+                    39 to XProperty(
+                        type = 31,
+                        format = 8,
+                        data = "same pixel clear no-op target".encodeToByteArray(),
+                    ),
+                ),
+            ),
+        )
+        state.putPixmap(XPixmap(id = pixmap, width = 64, height = 64, depth = X11Ids.RootDepth))
+        val image = XImagePixels(
+            width = 2,
+            height = 2,
+            pixels = intArrayOf(0x00ff_0000, 0x0000_ff00, 0x0000_00ff, 0x00ff_ff00),
+        )
+        state.putImage(pixmap, x = 40, y = 30, image = image)
+        state.draw(
+            XDrawingCommand(
+                drawableId = pixmap,
+                kind = XDrawingKind.PutImage,
+                foreground = 0,
+                imageDataUri = XFramebuffer.imageDataUri(image),
+                framebufferBacked = true,
+            ),
+        )
+        val clearRectangle = XRectangleCommand(0, 0, 64, 64)
+        val clearPainted = state.paintWindowBackground(window, clearRectangle)
+        assertFalse(clearPainted, "Clearing a fresh window to its existing background pixel must be a no-op")
+        state.draw(
+            XDrawingCommand(
+                drawableId = window,
+                kind = XDrawingKind.Clear,
+                foreground = 0,
+                rectangles = listOf(clearRectangle),
+                framebufferBacked = true,
+                framebufferPainted = clearPainted,
+            ),
+        )
+        repeat(10_001) { index ->
+            state.draw(
+                XDrawingCommand(
+                    drawableId = X11Ids.RootWindow,
+                    kind = XDrawingKind.Rectangle,
+                    foreground = index,
+                    rectangles = listOf(XRectangleCommand(0, 0, 1, 1)),
+                ),
+            )
+        }
+
+        val svg = SvgScreenRenderer.svg(state.snapshot())
+        assertContains(svg, "same pixel clear no-op target")
+        assertContains(svg, """data-window-id="0x200001"""")
+        assertContains(svg, """data-source="matching-pixmap"""")
+        assertContains(svg, """data-pixmap-id="0x200100"""")
+        assertFalse(
+            Regex("""<image\b(?=[^>]*\bdata-window-id="0x200001")(?=[^>]*\bdata-source="window-framebuffer")""").containsMatchIn(svg),
+            "ClearArea to the existing background pixel must not mark the window framebuffer as directly painted",
+        )
+    }
+
+    @Test
+    fun `render transform OpDst reports no framebuffer paint`() {
+        val window = 0x0020_0001
+        val destinationPicture = 0x0020_1000
+        val sourcePicture = 0x0020_1001
+        val state = X11State(width = 640, height = 480)
+        state.putWindow(
+            XWindow(
+                id = window,
+                parentId = X11Ids.RootWindow,
+                x = 0,
+                y = 0,
+                width = 4,
+                height = 4,
+                borderWidth = 0,
+                mapped = true,
+            ),
+        )
+        state.putPicture(XPicture(destinationPicture, drawableId = window, format = XRender.Rgb24Format))
+        state.putPicture(XPicture(sourcePicture, drawableId = null, format = XRender.Argb32Format, solidPixel = 0xffff_0000.toInt()))
+        val quad = XFixedQuad(
+            XFixedPoint(0, 0),
+            XFixedPoint(4 shl 16, 0),
+            XFixedPoint(4 shl 16, 4 shl 16),
+            XFixedPoint(0, 4 shl 16),
+        )
+
+        val painted = state.renderTransform(
+            operation = XRender.OpDst,
+            source = state.picture(sourcePicture)!!,
+            destination = state.picture(destinationPicture)!!,
+            sourceQuad = quad,
+            destinationQuad = quad,
+            filterName = XRender.FilterNearest,
+        )
+
+        assertFalse(painted, "XRender Transform OpDst must not report a direct framebuffer paint")
+    }
+
+    @Test
+    fun `render composite glyphs OpDst reports no framebuffer paint`() {
+        val window = 0x0020_0001
+        val destinationPicture = 0x0020_1000
+        val sourcePicture = 0x0020_1001
+        val glyphSet = 0x0020_2000
+        val glyph = 7
+        val state = X11State(width = 640, height = 480)
+        state.putWindow(
+            XWindow(
+                id = window,
+                parentId = X11Ids.RootWindow,
+                x = 0,
+                y = 0,
+                width = 4,
+                height = 4,
+                borderWidth = 0,
+                mapped = true,
+            ),
+        )
+        state.putPicture(XPicture(destinationPicture, drawableId = window, format = XRender.Rgb24Format))
+        state.putPicture(XPicture(sourcePicture, drawableId = null, format = XRender.Argb32Format, solidPixel = 0xffff_0000.toInt()))
+        state.putGlyphSet(XGlyphSet(glyphSet, format = XRender.A8Format))
+        state.addGlyphs(
+            glyphSet,
+            listOf(
+                XGlyph(
+                    id = glyph,
+                    width = 1,
+                    height = 1,
+                    x = 0,
+                    y = 0,
+                    xOff = 1,
+                    yOff = 0,
+                    mask = XFramebuffer(1, 1, painted = true).also { framebuffer ->
+                        framebuffer.putImage(0, 0, XImagePixels(1, 1, intArrayOf(0xffff_ffff.toInt())))
+                    },
+                ),
+            ),
+        )
+
+        val painted = state.compositeGlyphs(
+            operation = XRender.OpDst,
+            source = state.picture(sourcePicture)!!,
+            destination = state.picture(destinationPicture)!!,
+            glyphSetId = glyphSet,
+            sourceX = 0,
+            sourceY = 0,
+            originX = 0,
+            originY = 0,
+            placements = listOf(XGlyphPlacement(glyph, x = 0, y = 0)),
+        )
+
+        assertFalse(painted, "XRender CompositeGlyphs OpDst must not report a direct framebuffer paint")
+    }
+
+    @Test
+    fun `screen svg ignores protocol fill rectangle no-op when deciding if window framebuffer was painted`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val window = 0x0020_0001
+                val pixmap = 0x0020_0100
+                val windowGc = 0x0020_1001
+                val pixmapGc = 0x0020_1002
+                out.write(createWindowRequest(window, 10, 20, 64, 64))
+                out.write(changePropertyRequest(window, "fill rectangle no-op target"))
+                out.write(createPixmapRequest(pixmap, width = 64, height = 64))
+                out.write(createGcRequest(pixmapGc, pixmap))
+                out.write(putImageRequest(pixmap, pixmapGc))
+                out.write(createGcRequest(windowGc, window))
+                out.write(changeGcRasterRequest(windowGc, function = XGraphicsContext.GXnoop))
+                out.write(polyFillRectangleRequest(window, windowGc, XRectangleCommand(40, 30, 2, 2)))
+                out.write(mapWindowRequest(window))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "fill rectangle no-op target")
+                assertContains(svg, """data-window-id="0x200001"""")
+                assertContains(svg, """data-source="matching-pixmap"""")
+                assertContains(svg, """data-pixmap-id="0x200100"""")
+                assertFalse(
+                    svg.contains("""data-framebuffer-source="window-framebuffer""""),
+                    "GXnoop PolyFillRectangle must not mark the destination window framebuffer as directly painted",
+                )
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `screen svg ignores protocol copy area no-op when deciding if window framebuffer was painted`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val window = 0x0020_0001
+                val pixmap = 0x0020_0100
+                val windowGc = 0x0020_1001
+                val pixmapGc = 0x0020_1002
+                out.write(createWindowRequest(window, 10, 20, 64, 64))
+                out.write(changePropertyRequest(window, "copy area no-op target"))
+                out.write(createPixmapRequest(pixmap, width = 64, height = 64))
+                out.write(createGcRequest(pixmapGc, pixmap))
+                out.write(putImageRequest(pixmap, pixmapGc))
+                out.write(createGcRequest(windowGc, window))
+                out.write(changeGcRasterRequest(windowGc, function = XGraphicsContext.GXnoop))
+                out.write(copyAreaRequest(pixmap, window, windowGc))
+                out.write(mapWindowRequest(window))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "copy area no-op target")
+                assertContains(svg, """data-window-id="0x200001"""")
+                assertContains(svg, """data-source="matching-pixmap"""")
+                assertContains(svg, """data-pixmap-id="0x200100"""")
+                assertFalse(
+                    svg.contains("""data-framebuffer-source="window-framebuffer""""),
+                    "GXnoop CopyArea must not mark the destination window framebuffer as directly painted",
+                )
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `screen svg presents matching backing pixmap painted after direct window framebuffer`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -820,7 +1381,8 @@ class HttpRenderingTest {
                 assertContains(svg, """class="framebuffer-image"""")
                 assertContains(svg, """data-window-id="0x200001"""")
                 assertContains(svg, """data-window-id="0x200002"""")
-                assertContains(svg, """data-source="window-framebuffer"""")
+                assertContains(svg, """class="window-semantic-export"""")
+                assertContains(svg, """data-framebuffer-source="window-framebuffer"""")
                 assertContains(svg, """href="data:image/png;base64,""")
                 assertContains(svg, """class="render-radial-gradient"""")
                 assertContains(svg, """data-render-kind="radial-gradient"""")
@@ -1780,6 +2342,28 @@ class HttpRenderingTest {
         return bytes
     }
 
+    private fun changeGcRasterRequest(gc: Int, function: Int? = null, planeMask: Int? = null): ByteArray {
+        val values = mutableListOf<Int>()
+        var mask = 0
+        if (function != null) {
+            mask = mask or 0x0000_0001
+            values += function
+        }
+        if (planeMask != null) {
+            mask = mask or 0x0000_0002
+            values += planeMask
+        }
+        val bytes = ByteArray(12 + values.size * 4)
+        bytes[0] = 56
+        put16le(bytes, 2, bytes.size / 4)
+        put32le(bytes, 4, gc)
+        put32le(bytes, 8, mask)
+        values.forEachIndexed { index, value ->
+            put32le(bytes, 12 + index * 4, value)
+        }
+        return bytes
+    }
+
     private fun setup(out: java.io.OutputStream, input: java.io.InputStream) {
         out.write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
         out.flush()
@@ -1942,6 +2526,19 @@ class HttpRenderingTest {
         put16le(bytes, 22, 60)
         put16le(bytes, 24, 2)
         put16le(bytes, 26, 2)
+        return bytes
+    }
+
+    private fun polyFillRectangleRequest(drawable: Int, gc: Int, rectangle: XRectangleCommand): ByteArray {
+        val bytes = ByteArray(20)
+        bytes[0] = 70
+        put16le(bytes, 2, bytes.size / 4)
+        put32le(bytes, 4, drawable)
+        put32le(bytes, 8, gc)
+        put16le(bytes, 12, rectangle.x)
+        put16le(bytes, 14, rectangle.y)
+        put16le(bytes, 16, rectangle.width)
+        put16le(bytes, 18, rectangle.height)
         return bytes
     }
 

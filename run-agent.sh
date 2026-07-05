@@ -87,6 +87,9 @@ Configuration (env variables):
                       run-agent jobs (default: 1, set 0 to disable)
   RUN_AGENT_HEARTBEAT_SECONDS
                       Update heartbeat.txt while the agent is running (default: 30, 0 disables)
+  RUN_AGENT_HEARTBEAT_STATUS_SECONDS
+                      Print a compact live status line while the agent is running
+                      (default: 60, 0 disables)
   RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS
                       Timeout for individual diagnostics commands (default: 20)
   RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS
@@ -470,6 +473,7 @@ RUN_AGENT_TIMEOUT_SECONDS="${RUN_AGENT_TIMEOUT_SECONDS:-900}"
 RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS="${RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS:-180}"
 RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS="${RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS:-300}"
 RUN_AGENT_HEARTBEAT_SECONDS="${RUN_AGENT_HEARTBEAT_SECONDS:-30}"
+RUN_AGENT_HEARTBEAT_STATUS_SECONDS="${RUN_AGENT_HEARTBEAT_STATUS_SECONDS:-60}"
 RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS="${RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS:-20}"
 RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS="${RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS:-5}"
 RUN_AGENT_THREAD_DUMP_MAX_JVMS="${RUN_AGENT_THREAD_DUMP_MAX_JVMS:-5}"
@@ -531,6 +535,17 @@ descendant_pids() {
   done
 }
 
+descendant_process_table() {
+  local pid
+  for pid in $(descendant_pids "$AGENT_PID"); do
+    ps -p "$pid" -o pid=,ppid=,stat=,etime=,command= 2>/dev/null || true
+  done
+}
+
+active_child_summary() {
+  descendant_process_table | tail -1 | awk '{$1=$1; print substr($0, 1, 220)}'
+}
+
 docker_relevant_container_ids() {
   command -v docker >/dev/null 2>&1 || return 0
   {
@@ -584,9 +599,12 @@ dump_diagnostics() {
     ps -p "$AGENT_PID" -o pid=,ppid=,stat=,etime=,command= 2>/dev/null || true
     if command -v pgrep >/dev/null 2>&1; then
       echo
-      echo "== child processes =="
+      echo "== immediate child processes =="
       pgrep -P "$AGENT_PID" -a 2>/dev/null || true
     fi
+    echo
+    echo "== descendant processes =="
+    descendant_process_table || true
     if command -v sample >/dev/null 2>&1; then
       local sample_file="$RUN_DIR/sample-${safe_reason}-${AGENT_PID}.txt"
       echo
@@ -734,6 +752,7 @@ echo "$AGENT_PID" > "$PID_FILE"
 EXIT_CODE=0
 START_SECONDS="$(now_seconds)"
 LAST_HEARTBEAT_SECONDS=0
+LAST_HEARTBEAT_STATUS_SECONDS=0
 LAST_OUTPUT_SIZE=0
 LAST_OUTPUT_SECONDS="$START_SECONDS"
 NO_OUTPUT_DIAGNOSTICS_FIRED=false
@@ -759,8 +778,24 @@ while kill -0 "$AGENT_PID" 2>/dev/null; do
       echo "OUTPUT_BYTES=$OUTPUT_SIZE"
       echo "OUTPUT_IDLE_SECONDS=$OUTPUT_IDLE_SECONDS"
       ps -p "$AGENT_PID" -o pid=,ppid=,stat=,etime=,command= 2>/dev/null || true
+      echo
+      echo "== descendant processes =="
+      descendant_process_table || true
+      echo
+      echo "== stdout tail =="
+      tail -20 "$STDOUT_FILE" 2>/dev/null || true
+      echo
+      echo "== stderr tail =="
+      tail -20 "$STDERR_FILE" 2>/dev/null || true
     } > "$RUN_DIR/heartbeat.txt" 2>/dev/null || true
     LAST_HEARTBEAT_SECONDS="$NOW_SECONDS"
+  fi
+  if [ "$RUN_AGENT_HEARTBEAT_STATUS_SECONDS" -gt 0 ] && \
+     [ $((NOW_SECONDS - LAST_HEARTBEAT_STATUS_SECONDS)) -ge "$RUN_AGENT_HEARTBEAT_STATUS_SECONDS" ]; then
+    DESCENDANT_COUNT="$(descendant_pids "$AGENT_PID" | wc -l | tr -d '[:space:]')"
+    ACTIVE_CHILD="$(active_child_summary)"
+    echo "RUN_AGENT_HEARTBEAT run=$RUN_ID pid=$AGENT_PID elapsed=${ELAPSED_SECONDS}s output_idle=${OUTPUT_IDLE_SECONDS}s output_bytes=$OUTPUT_SIZE descendants=${DESCENDANT_COUNT:-0} active=${ACTIVE_CHILD:-none}" >&2
+    LAST_HEARTBEAT_STATUS_SECONDS="$NOW_SECONDS"
   fi
   if [ "$NO_OUTPUT_DIAGNOSTICS_FIRED" = false ] && \
      [ "$RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS" -gt 0 ] && \
