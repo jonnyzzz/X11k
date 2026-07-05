@@ -386,14 +386,26 @@ internal class X11State(
             atomIds[name] = id
             atomNames[id] = name
         }
-        window(X11Ids.RootWindow)?.properties?.put(
-            atomIds.getValue("RESOURCE_MANAGER"),
-            XProperty(
-                type = atomIds.getValue("STRING"),
-                format = 8,
-                data = ByteArray(0),
-            ),
-        )
+        nextAtomId = PredefinedAtoms.size + 1
+        val stringAtom = atomIds.getValue("STRING")
+        window(X11Ids.RootWindow)?.properties?.apply {
+            put(
+                atomIds.getValue("RESOURCE_MANAGER"),
+                XProperty(
+                    type = stringAtom,
+                    format = 8,
+                    data = ByteArray(0),
+                ),
+            )
+            put(
+                atomIds.getValue("_XKB_RULES_NAMES"),
+                XProperty(
+                    type = stringAtom,
+                    format = 8,
+                    data = XkbRulesNamesPropertyData,
+                ),
+            )
+        }
     }
 
     @Synchronized
@@ -9499,6 +9511,27 @@ internal class X11State(
             "CAP_HEIGHT",
             "WM_CLASS",
             "WM_TRANSIENT_FOR",
+            "_XKB_RULES_NAMES",
+        )
+
+        private val XkbRulesNamesPropertyData = byteArrayOf(
+            'e'.code.toByte(),
+            'v'.code.toByte(),
+            'd'.code.toByte(),
+            'e'.code.toByte(),
+            'v'.code.toByte(),
+            0,
+            'p'.code.toByte(),
+            'c'.code.toByte(),
+            '1'.code.toByte(),
+            '0'.code.toByte(),
+            '5'.code.toByte(),
+            0,
+            'u'.code.toByte(),
+            's'.code.toByte(),
+            0,
+            0,
+            0,
         )
     }
 

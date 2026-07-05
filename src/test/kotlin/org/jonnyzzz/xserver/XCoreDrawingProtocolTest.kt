@@ -15356,6 +15356,56 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `root XKB rules names property matches Xvfb compatible string list`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(internAtomRequest("_XKB_RULES_NAMES", onlyIfExists = true))
+                out.flush()
+
+                val atomReply = readReply(socket.getInputStream())
+                assertEquals(1, u16le(atomReply, 2))
+                val xkbRulesNames = u32le(atomReply, 8)
+                assertTrue(xkbRulesNames > 0)
+
+                out.write(getPropertyRequest(X11Ids.RootWindow, xkbRulesNames, StringAtom))
+                out.flush()
+
+                assertPropertyReplyBytes(
+                    readReply(socket.getInputStream()),
+                    sequence = 2,
+                    type = StringAtom,
+                    format = 8,
+                    data = byteArrayOf(
+                        'e'.code.toByte(),
+                        'v'.code.toByte(),
+                        'd'.code.toByte(),
+                        'e'.code.toByte(),
+                        'v'.code.toByte(),
+                        0,
+                        'p'.code.toByte(),
+                        'c'.code.toByte(),
+                        '1'.code.toByte(),
+                        '0'.code.toByte(),
+                        '5'.code.toByte(),
+                        0,
+                        'u'.code.toByte(),
+                        's'.code.toByte(),
+                        0,
+                        0,
+                        0,
+                    ),
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `GetAtomName validates request length and atom id without closing caller`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
