@@ -230,7 +230,12 @@ internal object SvgScreenRenderer {
                     if (arcIndex > 0) append(',')
                     append("""{"x":${arc.x},"y":${arc.y},"width":${arc.width},"height":${arc.height},"angle1":${arc.angle1},"angle2":${arc.angle2}}""")
                 }
-                append("""]}""")
+                append("""]""")
+                drawing.putImage?.let { metadata ->
+                    append(""","putImage":""")
+                    appendPutImageMetadata(metadata)
+                }
+                append('}')
             }
             append("""],"renderOperations":${snapshot.renderOperations.size},"renderOperationDetails":[""")
             snapshot.renderOperations.forEachIndexed { index, operation ->
@@ -1869,6 +1874,23 @@ internal object SvgScreenRenderer {
             append("""{"x":${rectangle.x},"y":${rectangle.y},"width":${rectangle.width},"height":${rectangle.height}}""")
         }
         append(']')
+    }
+
+    private fun StringBuilder.appendPutImageMetadata(metadata: XPutImageMetadata) {
+        append('{')
+        append(""""format":${metadata.format},"depth":${metadata.depth},"leftPad":${metadata.leftPad},"width":${metadata.width},"height":${metadata.height},"dataBytes":${metadata.dataBytes},"rowStrideBytes":${metadata.rowStrideBytes},"planeBytes":""")
+        metadata.planeBytes?.let { append(it) } ?: append("null")
+        append(""","crc32":"${metadata.crc32Hex}","rawSample":[""")
+        metadata.rawSampleHex.forEachIndexed { index, value ->
+            if (index > 0) append(',')
+            append('"').append(value).append('"')
+        }
+        append("""],"decodedPixels":[""")
+        metadata.decodedPixelSampleHex.forEachIndexed { index, value ->
+            if (index > 0) append(',')
+            append('"').append(value).append('"')
+        }
+        append("""]}""")
     }
 
     private fun escapeJson(value: String): String =

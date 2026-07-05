@@ -11099,6 +11099,21 @@ internal data class XDrawingCommand(
     val sourceDrawableGeneration: Long? = null,
     val framebufferBacked: Boolean = false,
     val framebufferPainted: Boolean = framebufferBacked,
+    val putImage: XPutImageMetadata? = null,
+)
+
+internal data class XPutImageMetadata(
+    val format: Int,
+    val depth: Int,
+    val leftPad: Int,
+    val width: Int,
+    val height: Int,
+    val dataBytes: Int,
+    val rowStrideBytes: Int,
+    val planeBytes: Int?,
+    val crc32Hex: String,
+    val rawSampleHex: List<String>,
+    val decodedPixelSampleHex: List<String>,
 )
 
 internal data class XRectangleCommand(

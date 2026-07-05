@@ -350,6 +350,47 @@ internal object TextScreenRenderer {
                 }
             }
             appendLine()
+            appendLine("Recent PutImage commands:")
+            val putImages = snapshot.drawings.filter { it.putImage != null }.takeLast(30).asReversed()
+            if (putImages.isEmpty()) {
+                appendLine("- None.")
+            } else {
+                for (drawing in putImages) {
+                    val metadata = drawing.putImage ?: continue
+                    val rectangle = drawing.rectangles.firstOrNull()
+                    append("- drawable=0x")
+                    append(drawing.drawableId.toUInt().toString(16))
+                    if (rectangle != null) {
+                        append(" at=")
+                        append(rectangle.x)
+                        append(',')
+                        append(rectangle.y)
+                    }
+                    append(" size=")
+                    append(metadata.width)
+                    append('x')
+                    append(metadata.height)
+                    append(" format=")
+                    append(metadata.format)
+                    append(" depth=")
+                    append(metadata.depth)
+                    append(" leftPad=")
+                    append(metadata.leftPad)
+                    append(" dataBytes=")
+                    append(metadata.dataBytes)
+                    append(" rowStride=")
+                    append(metadata.rowStrideBytes)
+                    metadata.planeBytes?.let { append(" planeBytes=").append(it) }
+                    append(" crc32=")
+                    append(metadata.crc32Hex)
+                    append(" raw=")
+                    append(metadata.rawSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+                    append(" decoded=")
+                    append(metadata.decodedPixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+                    appendLine()
+                }
+            }
+            appendLine()
             appendLine("RENDER pictures:")
             if (snapshot.renderPictures.isEmpty()) {
                 appendLine("- None.")

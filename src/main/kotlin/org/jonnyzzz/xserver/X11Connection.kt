@@ -5,6 +5,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.math.BigInteger
 import java.nio.charset.StandardCharsets
+import java.util.zip.CRC32
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.pow
@@ -8070,6 +8071,7 @@ internal class X11Connection(
         val dataByteLength = putImageDataByteLength(format, width, height, depth, leftPad, drawable.depth)
             ?: return writeError(error = 8, opcode = 72, badValue = drawableId)
         if (body.size - 20 != dataByteLength) return writeError(error = 16, opcode = 72, badValue = 0)
+        val data = body.copyOfRange(20, body.size)
         val image = decodePutImage(
             format = format,
             width = width,
@@ -8077,9 +8079,19 @@ internal class X11Connection(
             depth = depth,
             leftPad = leftPad,
             drawableDepth = drawable.depth,
-            data = body.copyOfRange(20, body.size),
+            data = data,
             foreground = gc.foreground,
             background = gc.background,
+        )
+        val putImage = putImageMetadata(
+            format = format,
+            width = width,
+            height = height,
+            depth = depth,
+            leftPad = leftPad,
+            drawableDepth = drawable.depth,
+            data = data,
+            image = image,
         )
         val imageDataUri = image?.let { XFramebuffer.imageDataUri(it) }
         val painted = if (image != null) {
@@ -8113,6 +8125,7 @@ internal class X11Connection(
                 imageDataUri = imageDataUri,
                 framebufferBacked = image != null,
                 framebufferPainted = painted,
+                putImage = putImage,
             ),
         )
     }
@@ -12901,6 +12914,45 @@ internal class X11Connection(
         }
         return bytes.takeIf { it <= Int.MAX_VALUE }?.toInt()
     }
+
+    private fun putImageMetadata(
+        format: Int,
+        width: Int,
+        height: Int,
+        depth: Int,
+        leftPad: Int,
+        drawableDepth: Int,
+        data: ByteArray,
+        image: XImagePixels?,
+    ): XPutImageMetadata {
+        val rowStrideBytes = putImageRowStrideBytes(format, width, depth, leftPad) ?: 0
+        val planeBytes = if (format == 0 || format == 1) rowStrideBytes * height else null
+        val crc32 = CRC32()
+        crc32.update(data)
+        return XPutImageMetadata(
+            format = format,
+            depth = depth,
+            leftPad = leftPad,
+            width = width,
+            height = height,
+            dataBytes = data.size,
+            rowStrideBytes = rowStrideBytes,
+            planeBytes = planeBytes,
+            crc32Hex = "0x${crc32.value.toString(16).padStart(8, '0')}",
+            rawSampleHex = data.take(16).map { "0x${(it.toInt() and 0xff).toString(16).padStart(2, '0')}" },
+            decodedPixelSampleHex = image?.pixels?.take(8)?.map { "0x${it.toUInt().toString(16).padStart(8, '0')}" } ?: emptyList(),
+        )
+    }
+
+    private fun putImageRowStrideBytes(format: Int, width: Int, depth: Int, leftPad: Int): Int? =
+        when (format) {
+            0, 1 -> xyPlaneStrideBytes(width, leftPad)
+            2 -> {
+                val bitsPerPixel = XPixmapFormats.bitsPerPixel(depth) ?: return null
+                zPixmapStrideBytes(width, bitsPerPixel)
+            }
+            else -> null
+        }
 
     private fun zPixmapStrideBytes(width: Int, bitsPerPixel: Int): Int? {
         val bits = width.toLong() * bitsPerPixel

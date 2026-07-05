@@ -5364,6 +5364,97 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `PutImage metadata reports raw upload and decoded pixel samples`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red, background = Blue))
+                out.write(
+                    putImageBitmapRequest(
+                        WindowId,
+                        GcId,
+                        width = 4,
+                        height = 1,
+                        x = 0,
+                        y = 0,
+                        leftPad = 1,
+                        bits = listOf(true, false, true, false),
+                    ),
+                )
+                out.write(
+                    putImageXyPixmapRequest(
+                        WindowId,
+                        GcId,
+                        width = 2,
+                        height = 1,
+                        x = 0,
+                        y = 1,
+                        leftPad = 1,
+                        depth = 24,
+                        pixels = listOf(Red, Green),
+                    ),
+                )
+                out.write(
+                    putImageRawRequest(
+                        WindowId,
+                        GcId,
+                        format = 2,
+                        width = 2,
+                        height = 1,
+                        x = 3,
+                        y = 4,
+                        depth = 24,
+                        data = byteArrayOf(
+                            0x56,
+                            0x34,
+                            0x12,
+                            0x00,
+                            0xef.toByte(),
+                            0xcd.toByte(),
+                            0xab.toByte(),
+                            0x00,
+                        ),
+                    ),
+                )
+                out.write(queryPointerRequest())
+                out.flush()
+                readReply(socket.getInputStream())
+
+                val stateJson = httpGet(server.localPort, "/state.json")
+                assertJsonDocumentWellFormed(stateJson)
+                assertContains(stateJson, """"putImage":{"format":0,"depth":1,"leftPad":1,"width":4,"height":1,"dataBytes":4,"rowStrideBytes":4,"planeBytes":4""")
+                assertContains(stateJson, """"crc32":"0x4ef93f78"""")
+                assertContains(stateJson, """"rawSample":["0x0a","0x00","0x00","0x00"]""")
+                assertContains(stateJson, """"decodedPixels":["0xffff0000","0xff0000ff","0xffff0000","0xff0000ff"]""")
+                assertContains(stateJson, """"putImage":{"format":1,"depth":24,"leftPad":1,"width":2,"height":1,"dataBytes":96,"rowStrideBytes":4,"planeBytes":4""")
+                assertContains(stateJson, """"crc32":"0x26dd502f"""")
+                assertContains(stateJson, """"rawSample":["0x02","0x00","0x00","0x00","0x02","0x00","0x00","0x00","0x02","0x00","0x00","0x00","0x02","0x00","0x00","0x00"]""")
+                assertContains(stateJson, """"decodedPixels":["0xffff0000","0xff00ff00"]""")
+                assertContains(stateJson, """"putImage":{"format":2,"depth":24,"leftPad":0,"width":2,"height":1,"dataBytes":8,"rowStrideBytes":8,"planeBytes":null""")
+                assertContains(stateJson, """"crc32":"0xbec136a6"""")
+                assertContains(stateJson, """"rawSample":["0x56","0x34","0x12","0x00","0xef","0xcd","0xab","0x00"]""")
+                assertContains(stateJson, """"decodedPixels":["0xff123456","0xffabcdef"]""")
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "Recent PutImage commands:")
+                assertContains(text, "drawable=0x${WindowId.toString(16)} at=0,0 size=4x1 format=0 depth=1 leftPad=1 dataBytes=4 rowStride=4 planeBytes=4")
+                assertContains(text, "crc32=0x4ef93f78")
+                assertContains(text, "drawable=0x${WindowId.toString(16)} at=0,1 size=2x1 format=1 depth=24 leftPad=1 dataBytes=96 rowStride=4 planeBytes=4")
+                assertContains(text, "crc32=0x26dd502f")
+                assertContains(text, "drawable=0x${WindowId.toString(16)} at=3,4 size=2x1 format=2 depth=24 leftPad=0 dataBytes=8 rowStride=8")
+                assertContains(text, "crc32=0xbec136a6")
+                assertContains(text, "raw=[0x56,0x34,0x12,0x00,0xef,0xcd,0xab,0x00]")
+                assertContains(text, "decoded=[0xff123456,0xffabcdef]")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `PutImage bitmap maps GC pixels through drawable depth`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -23180,6 +23271,35 @@ class XCoreDrawingProtocolTest {
             Thread.sleep(50)
         }
         assertContains(httpGet(port, "/state.json"), expected)
+    }
+
+    private fun assertJsonDocumentWellFormed(json: String) {
+        val stack = ArrayDeque<Char>()
+        var inString = false
+        var escaped = false
+        for (char in json) {
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    char == '\\' -> escaped = true
+                    char == '"' -> inString = false
+                    char < ' ' -> error("JSON string contains unescaped control character")
+                }
+                continue
+            }
+            when (char) {
+                '"' -> inString = true
+                '{' -> stack.addLast('}')
+                '[' -> stack.addLast(']')
+                '}', ']' -> {
+                    assertTrue(stack.isNotEmpty(), "JSON closed $char without an opener")
+                    assertEquals(stack.removeLast(), char, "JSON closed the wrong container")
+                }
+            }
+        }
+        assertFalse(inString, "JSON document ended inside a string")
+        assertFalse(escaped, "JSON document ended inside an escape sequence")
+        assertTrue(stack.isEmpty(), "JSON document has unclosed containers: $stack")
     }
 
     private fun windowJsonId(id: Int): String =
