@@ -1961,9 +1961,23 @@ internal class XFramebuffer(
         smoothEdges: Boolean = false,
         sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
-        var painted = false
+        val coverageMask = IntArray(width * height)
+        val touched = IntArray(width * height)
+        var touchedCount = 0
         for (trapezoid in trapezoids) {
-            painted = compositeTrapezoid(operation, trapezoid, maskFormat, clipRectangles, clipMask, smoothEdges, sourcePixelAt) || painted
+            touchedCount = accumulateTrapezoidCoverage(trapezoid, clipRectangles, clipMask, smoothEdges, coverageMask, touched, touchedCount)
+        }
+
+        var painted = false
+        for (touchedIndex in 0 until touchedCount) {
+            val index = touched[touchedIndex]
+            val maskAlpha = maskAlpha(maskFormat, coverageMask[index])
+            if (maskAlpha == 0) continue
+            val x = index % width
+            val y = index / width
+            val pixel = sourcePixelAt(x, y) ?: continue
+            pixels[index] = renderPixel(pixel, pixels[index], operation, maskAlpha)
+            painted = true
         }
         if (painted) markPainted()
         return painted
@@ -2254,21 +2268,21 @@ internal class XFramebuffer(
         return painted
     }
 
-    private fun compositeTrapezoid(
-        operation: Int,
+    private fun accumulateTrapezoidCoverage(
         trapezoid: XTrapezoidCommand,
-        maskFormat: Int,
         clipRectangles: List<XRectangleCommand>?,
         clipMask: XClipMask?,
         smoothEdges: Boolean,
-        sourcePixelAt: (x: Int, y: Int) -> Int?,
-    ): Boolean {
+        coverageMask: IntArray,
+        touched: IntArray,
+        initialTouchedCount: Int,
+    ): Int {
         val top = trapezoid.top.fixedToDouble()
         val bottom = trapezoid.bottom.fixedToDouble()
-        if (bottom <= top) return false
+        if (bottom <= top) return initialTouchedCount
         val startY = maxOf(0, floor(top).toInt())
         val endY = minOf(height, ceil(bottom).toInt())
-        var painted = false
+        var touchedCount = initialTouchedCount
         for (y in startY until endY) {
             val xBounds = trapezoidRowXBounds(trapezoid, top, bottom, y, smoothEdges) ?: continue
             val startX = xBounds.first
@@ -2277,15 +2291,15 @@ internal class XFramebuffer(
                 if (!insideClip(x, y, clipRectangles, clipMask)) continue
                 val coverage = trapezoidCoverage(x, y, trapezoid, top, bottom, smoothEdges)
                 if (coverage == 0) continue
-                val maskAlpha = maskAlpha(maskFormat, coverage)
-                if (maskAlpha == 0) continue
                 val index = y * width + x
-                val pixel = sourcePixelAt(x, y) ?: continue
-                pixels[index] = renderPixel(pixel, pixels[index], operation, maskAlpha)
-                painted = true
+                if (coverageMask[index] == 0) {
+                    touched[touchedCount] = index
+                    touchedCount += 1
+                }
+                coverageMask[index] = (coverageMask[index] + coverage).coerceAtMost(TrapezoidSamples)
             }
         }
-        return painted
+        return touchedCount
     }
 
     private fun addTrapezoidAlpha(

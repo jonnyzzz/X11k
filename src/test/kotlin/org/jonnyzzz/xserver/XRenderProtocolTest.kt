@@ -11100,6 +11100,52 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER trapezoids accumulate request mask across shared smooth edges`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val fixedOne = 1 shl 16
+                val halfPixel = 1 shl 15
+                val sharedY = 3 * fixedOne + halfPixel
+                val body = trapezoidsHeader(SolidPictureId, PictureId, operation = XRender.OpOver).copyOf(100)
+                put32le(body, 20, fixedOne)
+                put32le(body, 24, sharedY)
+                putFixedPointRaw(body, 28, 2 * fixedOne, fixedOne)
+                putFixedPointRaw(body, 36, 2 * fixedOne, sharedY)
+                putFixedPointRaw(body, 44, 6 * fixedOne, fixedOne)
+                putFixedPointRaw(body, 52, 6 * fixedOne, sharedY)
+                put32le(body, 60, sharedY)
+                put32le(body, 64, 6 * fixedOne)
+                putFixedPointRaw(body, 68, 2 * fixedOne, sharedY)
+                putFixedPointRaw(body, 76, 2 * fixedOne, 6 * fixedOne)
+                putFixedPointRaw(body, 84, 6 * fixedOne, sharedY)
+                putFixedPointRaw(body, 92, 6 * fixedOne, 6 * fixedOne)
+
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 8, height = 8, red = 0x0000, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(renderTrapezoidsRaw(body))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 8))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_0000.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 2))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 3))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 5))
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "traps=2")
+                assertContains(text, "trapPreview=2/2")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER trapezoids preserve subpixel top edge coverage`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
