@@ -85,6 +85,26 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER operation diagnostics retain enough history for IntelliJ captures`() {
+        val state = X11State(width = 16, height = 16)
+
+        repeat(450) { index ->
+            state.recordRenderOperation(
+                minorOpcode = 8,
+                operation = "Composite",
+                detail = "src=0x${(0x400000 + index).toUInt().toString(16)} dst=0x${(0x500000 + index).toUInt().toString(16)}",
+            )
+        }
+
+        val operations = state.snapshot().renderOperations
+        assertEquals(450, operations.size)
+        assertEquals(1, operations.first().id)
+        assertContains(operations.first().detail, "src=0x400000")
+        assertEquals(450, operations.last().id)
+        assertContains(operations.last().detail, "dst=0x5001c1")
+    }
+
+    @Test
     fun `root GetImage composes child subtrees below higher siblings`() {
         XServer(ServerOptions(port = 0, width = 16, height = 16)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

@@ -9452,7 +9452,7 @@ internal class X11State(
         private const val MaxMotionHistory = 256
         private const val MaxInputOperations = 200
         private const val MaxGlxOperations = 200
-        private const val MaxRenderOperations = 400
+        private const val MaxRenderOperations = 10_000
         private const val MaxGetImagePixels = 16_777_216
         private const val MaxGlyphMaskPixels = 16_777_216
         private const val MaxCursorImagePixels = 16_777_216
