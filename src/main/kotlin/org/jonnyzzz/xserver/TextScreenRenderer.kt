@@ -37,6 +37,7 @@ internal object TextScreenRenderer {
             appendLine("Painted pixmaps: ${snapshot.pixmaps.count { it.painted }}")
             appendLine("Cursors: ${snapshot.cursors.size}")
             appendLine("Focus: ${snapshot.windows.firstOrNull { it.focused }?.idHex ?: "none"}")
+            appendLine("Pointer: ${snapshot.pointer.x},${snapshot.pointer.y} mask=${snapshot.pointer.mask} window=${snapshot.pointer.windowIdHex}")
             appendLine()
             appendLine("Window hierarchy and geometry:")
             for (window in snapshot.windows) {

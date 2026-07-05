@@ -232,7 +232,12 @@ internal object SvgScreenRenderer {
                 }
                 append("""]}""")
             }
-            append("""],"renderOperations":${snapshot.renderOperations.size},"renderPictures":[""")
+            append("""],"renderOperations":${snapshot.renderOperations.size},"renderOperationDetails":[""")
+            snapshot.renderOperations.forEachIndexed { index, operation ->
+                if (index > 0) append(',')
+                append("""{"id":${operation.id},"minorOpcode":${operation.minorOpcode},"operation":"${escapeJson(operation.operation)}","detail":"${escapeJson(operation.detail)}"}""")
+            }
+            append("""],"renderPictures":[""")
             snapshot.renderPictures.forEachIndexed { index, picture ->
                 if (index > 0) append(',')
                 append('{')

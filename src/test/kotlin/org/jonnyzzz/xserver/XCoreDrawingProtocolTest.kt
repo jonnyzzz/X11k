@@ -7983,6 +7983,7 @@ class XCoreDrawingProtocolTest {
                 assertEquals(24, u16le(pointer, 22))
                 assertEquals(0, u16le(pointer, 24))
                 assertContains(httpGet(server.localPort, "/state.json"), """"pointer":{"x":27,"y":24""")
+                assertContains(httpGet(server.localPort, "/text.txt"), "Pointer: 27,24 mask=0 window=0x${WindowId.toUInt().toString(16)}")
             }
             server.close()
             serverThread.join(1_000)

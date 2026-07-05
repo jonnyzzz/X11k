@@ -11010,7 +11010,51 @@ class XRenderProtocolTest {
                 assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 32, x = 21, y = 16))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 32, x = 9, y = 8))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 32, x = 22, y = 16))
-                assertContains(httpGet(server.localPort, "/text.txt"), "Trapezoids")
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "Trapezoids")
+                assertContains(text, "trapBounds=0xa0000,0x80000..0x160000,0x110000")
+                assertContains(text, "trapPreview=1/1[top=0x80000 bottom=0x110000 left=0xa0000,0x80000->0xa0000,0x110000 right=0x160000,0x80000->0x160000,0x110000]")
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"renderOperationDetails":[{""")
+                assertContains(json, """"operation":"Trapezoids"""")
+                assertContains(json, """"detail":"op=1 src=0x${SolidPictureId.toUInt().toString(16)} dst=0x${PictureId.toUInt().toString(16)} maskFormat=0x2b srcOrigin=0,0 traps=1 trapBounds=0xa0000,0x80000..0x160000,0x110000""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER trapezoids retained bounds use clipped line intersections`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val fixedOne = 1 shl 16
+                val body = trapezoidsHeader(SolidPictureId, PictureId, operation = XRender.OpSrc).copyOf(60)
+                put32le(body, 20, 8 * fixedOne)
+                put32le(body, 24, 18 * fixedOne)
+                putFixedPointRaw(body, 28, 0, 0)
+                putFixedPointRaw(body, 36, 20 * fixedOne, 20 * fixedOne)
+                putFixedPointRaw(body, 44, 20 * fixedOne, 0)
+                putFixedPointRaw(body, 52, 40 * fixedOne, 20 * fixedOne)
+
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderTrapezoidsRaw(body))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 48, height = 24))
+                out.flush()
+                readReply(socket.getInputStream())
+
+                val expectedBounds = "trapBounds=0x80000,0x80000..0x260000,0x120000"
+                val expectedPreview = "trapPreview=1/1[top=0x80000 bottom=0x120000 left=0x0,0x0->0x140000,0x140000 right=0x140000,0x0->0x280000,0x140000]"
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, expectedBounds)
+                assertContains(text, expectedPreview)
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, expectedBounds)
             }
             server.close()
             serverThread.join(1_000)

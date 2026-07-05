@@ -5851,7 +5851,7 @@ internal class X11Connection(
             7 -> "picture=${hex(0)}"
             8 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} mask=${hex(8)} dst=${hex(12)} dst=${i16(24)},${i16(26)} ${u16(28)}x${u16(30)}"
             9 -> "src=${hex(0)} dst=${hex(4)} colorScale=${u32(8)} alphaScale=${u32(12)} src=${i16(16)},${i16(18)} dst=${i16(20)},${i16(22)} ${u16(24)}x${u16(26)}"
-            10 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} traps=${(body.size - 20).coerceAtLeast(0) / 40}"
+            10 -> renderTrapezoidsDetail(body, { hex(it) }, { i16(it) })
             11 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} triangles=${(body.size - 20).coerceAtLeast(0) / 24}"
             12, 13 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} points=${(body.size - 20).coerceAtLeast(0) / 8}"
             14 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} dst=${hex(4)} traps=${(body.size - 8).coerceAtLeast(0) / 56}"
@@ -5877,6 +5877,75 @@ internal class X11Connection(
             else -> ""
         }
     }
+
+    private fun renderTrapezoidsDetail(
+        body: ByteArray,
+        hex: (Int) -> String,
+        i16: (Int) -> String,
+    ): String {
+        val trapCount = (body.size - 20).coerceAtLeast(0) / 40
+        val base = "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} traps=$trapCount"
+        if (trapCount == 0) return base
+
+        val bounds = renderTrapezoidBounds(body, trapCount)
+        val previewCount = minOf(trapCount, 20)
+        val trapPreview = (0 until previewCount).joinToString(separator = ";", prefix = "[", postfix = "]") { index ->
+            val offset = 20 + index * 40
+            "top=${fixedHex(body, offset)} bottom=${fixedHex(body, offset + 4)} " +
+                "left=${fixedPointHex(body, offset + 8)}->${fixedPointHex(body, offset + 16)} " +
+                "right=${fixedPointHex(body, offset + 24)}->${fixedPointHex(body, offset + 32)}"
+        }
+        return "$base trapBounds=$bounds trapPreview=$previewCount/$trapCount$trapPreview"
+    }
+
+    private fun renderTrapezoidBounds(body: ByteArray, trapCount: Int): String {
+        var minX = Int.MAX_VALUE
+        var minY = Int.MAX_VALUE
+        var maxX = Int.MIN_VALUE
+        var maxY = Int.MIN_VALUE
+        for (index in 0 until trapCount) {
+            val offset = 20 + index * 40
+            val top = byteOrder.u32(body, offset)
+            val bottom = byteOrder.u32(body, offset + 4)
+            val trapTop = minOf(top, bottom)
+            val trapBottom = maxOf(top, bottom)
+            minY = minOf(minY, trapTop)
+            maxY = maxOf(maxY, trapBottom)
+            for (y in listOf(trapTop, trapBottom)) {
+                val leftX = fixedLineXAtY(body, offset + 8, y)
+                val rightX = fixedLineXAtY(body, offset + 24, y)
+                for (x in listOf(leftX, rightX)) {
+                    minX = minOf(minX, x)
+                    maxX = maxOf(maxX, x)
+                }
+            }
+        }
+        return "${fixedHex(minX)},${fixedHex(minY)}..${fixedHex(maxX)},${fixedHex(maxY)}"
+    }
+
+    private fun fixedLineXAtY(body: ByteArray, offset: Int, y: Int): Int {
+        val x1 = byteOrder.u32(body, offset)
+        val y1 = byteOrder.u32(body, offset + 4)
+        val x2 = byteOrder.u32(body, offset + 8)
+        val y2 = byteOrder.u32(body, offset + 12)
+        if (y1 == y2) return x1
+
+        val x = x1.toLong() + (x2.toLong() - x1.toLong()) * (y.toLong() - y1.toLong()) / (y2.toLong() - y1.toLong())
+        return when {
+            x < Int.MIN_VALUE -> Int.MIN_VALUE
+            x > Int.MAX_VALUE -> Int.MAX_VALUE
+            else -> x.toInt()
+        }
+    }
+
+    private fun fixedPointHex(body: ByteArray, offset: Int): String =
+        "${fixedHex(body, offset)},${fixedHex(body, offset + 4)}"
+
+    private fun fixedHex(body: ByteArray, offset: Int): String =
+        if (body.size >= offset + 4) fixedHex(byteOrder.u32(body, offset)) else "n/a"
+
+    private fun fixedHex(value: Int): String =
+        "0x${value.toUInt().toString(16)}"
 
     private fun createWindow(requestedDepth: Int, body: ByteArray) {
         if (body.size < 28) return writeError(16, 1, badValue = 0)
