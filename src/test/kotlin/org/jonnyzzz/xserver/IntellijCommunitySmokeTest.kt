@@ -800,6 +800,8 @@ class IntellijCommunitySmokeTest {
                 assertEquals(0, result.exitCode, result.stderr + result.stdout)
                 val extraLogs = listOf(
                     "/tmp/xdpyinfo-glx-xvfb.log" to "intellij-xvfb-glx-xdpyinfo.log",
+                    "/tmp/xwininfo-xvfb-root-tree.log" to "intellij-xvfb-xwininfo-root-tree.log",
+                    "/tmp/xprop-xvfb-root.log" to "intellij-xvfb-xprop-root.log",
                     "/tmp/idea-extra.vmoptions" to "intellij-xvfb-idea-extra.vmoptions",
                     "/tmp/idea-config/options/ui.lnf.xml" to "intellij-xvfb-ui-lnf.xml",
                     "/tmp/run-intellij-cksum.log" to "intellij-xvfb-run-intellij-cksum.log",
@@ -821,6 +823,8 @@ class IntellijCommunitySmokeTest {
                         xvfb=${'$'}(cat /tmp/xvfb.pid)
                         kill -0 "${'$'}idea"
                         kill -0 "${'$'}xvfb"
+                        DISPLAY=:99 xwininfo -root -tree >/tmp/xwininfo-xvfb-root-tree.log 2>&1 || true
+                        DISPLAY=:99 xprop -root >/tmp/xprop-xvfb-root.log 2>&1 || true
                         DISPLAY=:99 java -cp /tmp XIntellijRobotCapture
                         """.trimIndent(),
                     )
@@ -908,6 +912,8 @@ class IntellijCommunitySmokeTest {
                     assertEquals(0, startResult.exitCode, startResult.stderr + startResult.stdout)
                     val extraLogs = listOf(
                         "/tmp/xdpyinfo-glx-kotlin.log" to "intellij-kotlin-glx-xdpyinfo.log",
+                        "/tmp/xwininfo-kotlin-root-tree.log" to "intellij-kotlin-xwininfo-root-tree.log",
+                        "/tmp/xprop-kotlin-root.log" to "intellij-kotlin-xprop-root.log",
                         "/tmp/idea-extra.vmoptions" to "intellij-kotlin-idea-extra.vmoptions",
                         "/tmp/idea-config/options/ui.lnf.xml" to "intellij-kotlin-ui-lnf.xml",
                         "/tmp/run-intellij-cksum.log" to "intellij-kotlin-run-intellij-cksum.log",
@@ -920,6 +926,14 @@ class IntellijCommunitySmokeTest {
                             artifactPrefix = "intellij-kotlin",
                             runLogPath = "/tmp/idea-run-parity.log",
                             extraLogs = extraLogs,
+                        )
+                        execIntellijShell(
+                            container,
+                            """
+                            set -eu
+                            DISPLAY=host.docker.internal:$display xwininfo -root -tree >/tmp/xwininfo-kotlin-root-tree.log 2>&1 || true
+                            DISPLAY=host.docker.internal:$display xprop -root >/tmp/xprop-kotlin-root.log 2>&1 || true
+                            """.trimIndent(),
                         )
                         val svg = waitForStableIntellijSvg(port)
                         val capture = execIntellijShell(
