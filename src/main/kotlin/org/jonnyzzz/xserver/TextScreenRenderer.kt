@@ -346,6 +346,9 @@ internal object TextScreenRenderer {
                         append(" ")
                         append(operation.detail)
                     }
+                    operation.provenance?.let { provenance ->
+                        appendRenderOperationProvenance(provenance)
+                    }
                     appendLine()
                 }
             }
@@ -496,6 +499,72 @@ internal object TextScreenRenderer {
         pre { white-space: pre-wrap; background: #1b1f29; border: 1px solid #303642; padding: 16px; overflow: auto; }
         footer { color: #aab2c0; font-size: 12px; margin-top: 18px; }
         """.trimIndent()
+
+    private fun StringBuilder.appendRenderOperationProvenance(provenance: XRenderOperationProvenance) {
+        fun appendPicture(label: String, picture: XRenderPictureSnapshot) {
+            append(" ")
+            append(label)
+            append("=")
+            append(picture.idHex)
+            append("/")
+            append(picture.drawableKind)
+            append(" repeat=")
+            append(picture.repeatName)
+            if (picture.filterName != null) {
+                append(" filter=")
+                append(picture.filterName)
+            }
+            if (picture.transform != IdentityTransform) {
+                append(" transform=")
+                append(picture.transformHex.joinToString(",", prefix = "[", postfix = "]"))
+            }
+            picture.solidPixel?.let { append(" solid=").append(pixelHex(it)) }
+            picture.linearGradient?.let { gradient ->
+                append(" linear=")
+                append(gradient.p1Hex)
+                append("->")
+                append(gradient.p2Hex)
+                append(" stops=")
+                append(gradient.stopHex.joinToString(",", prefix = "[", postfix = "]"))
+                append(" colors=")
+                append(gradient.colorHex.joinToString(",", prefix = "[", postfix = "]"))
+            }
+            picture.radialGradient?.let { gradient ->
+                append(" radial=")
+                append(gradient.innerHex)
+                append("->")
+                append(gradient.outerHex)
+                append(" stops=")
+                append(gradient.stopHex.joinToString(",", prefix = "[", postfix = "]"))
+                append(" colors=")
+                append(gradient.colorHex.joinToString(",", prefix = "[", postfix = "]"))
+            }
+            picture.conicalGradient?.let { gradient ->
+                append(" conical=")
+                append(gradient.centerHex)
+                append(" angle=")
+                append(gradient.angleHex)
+                append(" stops=")
+                append(gradient.stopHex.joinToString(",", prefix = "[", postfix = "]"))
+                append(" colors=")
+                append(gradient.colorHex.joinToString(",", prefix = "[", postfix = "]"))
+            }
+        }
+        provenance.source?.let { appendPicture("source", it) }
+        provenance.mask?.let { appendPicture("mask", it) }
+        provenance.destination?.let { appendPicture("destination", it) }
+        provenance.freed?.let { appendPicture("freed", it) }
+        provenance.result?.let { result ->
+            append(" result=")
+            append(result.width)
+            append('x')
+            append(result.height)
+            append(" crc32=")
+            append(result.crc32Hex)
+            append(" pixels=")
+            append(result.pixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+        }
+    }
 
     private fun pixelHex(pixel: Int): String = "0x${pixel.toUInt().toString(16).padStart(8, '0')}"
 }

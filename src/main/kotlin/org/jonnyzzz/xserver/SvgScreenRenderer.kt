@@ -240,7 +240,12 @@ internal object SvgScreenRenderer {
             append("""],"renderOperations":${snapshot.renderOperations.size},"renderOperationDetails":[""")
             snapshot.renderOperations.forEachIndexed { index, operation ->
                 if (index > 0) append(',')
-                append("""{"id":${operation.id},"minorOpcode":${operation.minorOpcode},"operation":"${escapeJson(operation.operation)}","detail":"${escapeJson(operation.detail)}"}""")
+                append("""{"id":${operation.id},"minorOpcode":${operation.minorOpcode},"operation":"${escapeJson(operation.operation)}","detail":"${escapeJson(operation.detail)}"""")
+                operation.provenance?.let { provenance ->
+                    append(""","provenance":""")
+                    appendRenderOperationProvenance(provenance)
+                }
+                append('}')
             }
             append("""],"propertyOperations":[""")
             snapshot.propertyOperations.forEachIndexed { index, operation ->
@@ -1874,6 +1879,103 @@ internal object SvgScreenRenderer {
             append("""{"x":${rectangle.x},"y":${rectangle.y},"width":${rectangle.width},"height":${rectangle.height}}""")
         }
         append(']')
+    }
+
+    private fun StringBuilder.appendRenderOperationProvenance(provenance: XRenderOperationProvenance) {
+        append('{')
+        var needsComma = false
+        fun field(name: String, writeValue: () -> Unit) {
+            if (needsComma) append(',')
+            append('"').append(name).append("\":")
+            writeValue()
+            needsComma = true
+        }
+        provenance.source?.let { picture ->
+            field("source") { appendRenderPictureSnapshot(picture) }
+        }
+        provenance.mask?.let { picture ->
+            field("mask") { appendRenderPictureSnapshot(picture) }
+        }
+        provenance.destination?.let { picture ->
+            field("destination") { appendRenderPictureSnapshot(picture) }
+        }
+        provenance.freed?.let { picture ->
+            field("freed") { appendRenderPictureSnapshot(picture) }
+        }
+        provenance.result?.let { result ->
+            field("result") { appendRenderOperationResult(result) }
+        }
+        append('}')
+    }
+
+    private fun StringBuilder.appendRenderOperationResult(result: XRenderOperationResultSnapshot) {
+        append("""{"width":${result.width},"height":${result.height},"crc32":"${result.crc32Hex}","pixels":[""")
+        result.pixelSampleHex.forEachIndexed { index, value ->
+            if (index > 0) append(',')
+            append('"').append(value).append('"')
+        }
+        append("""]}""")
+    }
+
+    private fun StringBuilder.appendRenderPictureSnapshot(picture: XRenderPictureSnapshot) {
+        append('{')
+        append(""""id":"${picture.idHex}","drawable":"${picture.drawableIdHex}","kind":"${escapeJson(picture.drawableKind)}","format":${picture.format},"repeat":"${picture.repeatName}","alphaMap":"${picture.alphaMapHex}","alphaOrigin":[${picture.alphaXOrigin},${picture.alphaYOrigin}],"clipOrigin":[${picture.clipXOrigin},${picture.clipYOrigin}],"clipMask":"${picture.clipMaskHex}","clipRectangles":${picture.clipRectangles},"graphicsExposure":${picture.graphicsExposure},"subwindowMode":${picture.subwindowMode},"polyEdge":${picture.polyEdge},"polyMode":${picture.polyMode},"dither":"${picture.ditherHex}","componentAlpha":${picture.componentAlpha},"transform":[""")
+        picture.transformHex.forEachIndexed { index, value ->
+            if (index > 0) append(',')
+            append('"').append(value).append('"')
+        }
+        append("""]""")
+        picture.solidPixel?.let { solid ->
+            append(""","solid":"0x${solid.toUInt().toString(16).padStart(8, '0')}"""")
+        }
+        if (picture.filterName != null) {
+            append(""","filter":"${escapeJson(picture.filterName)}","filterValues":[""")
+            picture.filterValueHex.forEachIndexed { index, value ->
+                if (index > 0) append(',')
+                append('"').append(value).append('"')
+            }
+            append(']')
+        }
+        picture.linearGradient?.let { gradient ->
+            append(""","linearGradient":{"p1":"${gradient.p1Hex}","p2":"${gradient.p2Hex}","stops":[""")
+            gradient.stopHex.forEachIndexed { index, value ->
+                if (index > 0) append(',')
+                append('"').append(value).append('"')
+            }
+            append("""],"colors":[""")
+            gradient.colorHex.forEachIndexed { index, value ->
+                if (index > 0) append(',')
+                append('"').append(value).append('"')
+            }
+            append("""]}""")
+        }
+        picture.radialGradient?.let { gradient ->
+            append(""","radialGradient":{"inner":"${gradient.innerHex}","outer":"${gradient.outerHex}","stops":[""")
+            gradient.stopHex.forEachIndexed { index, value ->
+                if (index > 0) append(',')
+                append('"').append(value).append('"')
+            }
+            append("""],"colors":[""")
+            gradient.colorHex.forEachIndexed { index, value ->
+                if (index > 0) append(',')
+                append('"').append(value).append('"')
+            }
+            append("""]}""")
+        }
+        picture.conicalGradient?.let { gradient ->
+            append(""","conicalGradient":{"center":"${gradient.centerHex}","angle":"${gradient.angleHex}","stops":[""")
+            gradient.stopHex.forEachIndexed { index, value ->
+                if (index > 0) append(',')
+                append('"').append(value).append('"')
+            }
+            append("""],"colors":[""")
+            gradient.colorHex.forEachIndexed { index, value ->
+                if (index > 0) append(',')
+                append('"').append(value).append('"')
+            }
+            append("""]}""")
+        }
+        append('}')
     }
 
     private fun StringBuilder.appendPutImageMetadata(metadata: XPutImageMetadata) {

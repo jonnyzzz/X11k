@@ -1,6 +1,7 @@
 package org.jonnyzzz.xserver
 
 import java.util.concurrent.locks.ReentrantLock
+import java.util.zip.CRC32
 import kotlin.concurrent.withLock
 import kotlin.math.floor
 import kotlin.math.PI
@@ -34,6 +35,23 @@ internal data class XResourceRemoval(
 internal data class XRenderImageResult(
     val image: XImagePixels,
     val painted: Boolean,
+)
+
+internal data class XRenderCompositeExecution(
+    val result: XRenderImageResult? = null,
+    val provenance: XRenderOperationProvenance? = null,
+    val destinationDrawableId: Int? = null,
+    val destinationDrawableGeneration: Long? = null,
+    val sourceDrawableId: Int? = null,
+    val sourceDrawableGeneration: Long? = null,
+    val sourceGenerated: Boolean = false,
+    val sourceSolidPixel: Int? = null,
+    val error: XRenderExecutionError? = null,
+)
+
+internal data class XRenderExecutionError(
+    val error: Int,
+    val badValue: Int,
 )
 
 internal data class XCopyPaintResult(
@@ -4004,67 +4022,7 @@ internal class X11State(
             serverGrabbed = serverGrabbed(),
             glxOperations = glxOperations.toList(),
             renderOperations = renderOperations.toList(),
-            renderPictures = pictures.values.map { picture ->
-                XRenderPictureSnapshot(
-                    id = picture.id,
-                    drawableId = picture.drawableId,
-                    drawableKind = picture.drawableId?.let { drawableId ->
-                        when {
-                            windows.containsKey(drawableId) -> "window"
-                            pixmaps.containsKey(drawableId) -> "pixmap"
-                            else -> "missing"
-                        }
-                    } ?: when {
-                        picture.linearGradient != null -> "linear-gradient"
-                        picture.radialGradient != null -> "radial-gradient"
-                        picture.conicalGradient != null -> "conical-gradient"
-                        else -> "solid"
-                    },
-                    format = picture.format,
-                    solidPixel = picture.solidPixel,
-                    linearGradient = picture.linearGradient?.let { gradient ->
-                        XLinearGradientSnapshot(
-                            p1 = gradient.p1,
-                            p2 = gradient.p2,
-                            stops = gradient.stops,
-                            colors = gradient.colors,
-                        )
-                    },
-                    radialGradient = picture.radialGradient?.let { gradient ->
-                        XRadialGradientSnapshot(
-                            inner = gradient.inner,
-                            outer = gradient.outer,
-                            stops = gradient.stops,
-                            colors = gradient.colors,
-                        )
-                    },
-                    conicalGradient = picture.conicalGradient?.let { gradient ->
-                        XConicalGradientSnapshot(
-                            center = gradient.center,
-                            angle = gradient.angle,
-                            stops = gradient.stops,
-                            colors = gradient.colors,
-                        )
-                    },
-                    repeat = picture.repeat,
-                    alphaMap = picture.alphaMap,
-                    alphaXOrigin = picture.alphaXOrigin,
-                    alphaYOrigin = picture.alphaYOrigin,
-                    clipXOrigin = picture.clipXOrigin,
-                    clipYOrigin = picture.clipYOrigin,
-                    clipMask = picture.clipMask,
-                    clipRectangles = picture.clipRectangles?.size ?: 0,
-                    graphicsExposure = picture.graphicsExposure,
-                    subwindowMode = picture.subwindowMode,
-                    polyEdge = picture.polyEdge,
-                    polyMode = picture.polyMode,
-                    dither = picture.dither,
-                    componentAlpha = picture.componentAlpha,
-                    transform = picture.transform,
-                    filterName = picture.filterName,
-                    filterValues = picture.filterValues,
-                )
-            },
+            renderPictures = pictures.values.map(::renderPictureSnapshot),
             accessControl = XAccessControlSnapshot(
                 enabled = accessControlEnabled,
                 hosts = accessHosts.toList(),
@@ -4075,6 +4033,67 @@ internal class X11State(
             unsupportedRequests = unsupportedRequests.toList(),
         )
     }
+
+    private fun renderPictureSnapshot(picture: XPicture): XRenderPictureSnapshot =
+        XRenderPictureSnapshot(
+            id = picture.id,
+            drawableId = picture.drawableId,
+            drawableKind = picture.drawableId?.let { drawableId ->
+                when {
+                    windows.containsKey(drawableId) -> "window"
+                    pixmaps.containsKey(drawableId) -> "pixmap"
+                    else -> "missing"
+                }
+            } ?: when {
+                picture.linearGradient != null -> "linear-gradient"
+                picture.radialGradient != null -> "radial-gradient"
+                picture.conicalGradient != null -> "conical-gradient"
+                else -> "solid"
+            },
+            format = picture.format,
+            solidPixel = picture.solidPixel,
+            linearGradient = picture.linearGradient?.let { gradient ->
+                XLinearGradientSnapshot(
+                    p1 = gradient.p1,
+                    p2 = gradient.p2,
+                    stops = gradient.stops,
+                    colors = gradient.colors,
+                )
+            },
+            radialGradient = picture.radialGradient?.let { gradient ->
+                XRadialGradientSnapshot(
+                    inner = gradient.inner,
+                    outer = gradient.outer,
+                    stops = gradient.stops,
+                    colors = gradient.colors,
+                )
+            },
+            conicalGradient = picture.conicalGradient?.let { gradient ->
+                XConicalGradientSnapshot(
+                    center = gradient.center,
+                    angle = gradient.angle,
+                    stops = gradient.stops,
+                    colors = gradient.colors,
+                )
+            },
+            repeat = picture.repeat,
+            alphaMap = picture.alphaMap,
+            alphaXOrigin = picture.alphaXOrigin,
+            alphaYOrigin = picture.alphaYOrigin,
+            clipXOrigin = picture.clipXOrigin,
+            clipYOrigin = picture.clipYOrigin,
+            clipMask = picture.clipMask,
+            clipRectangles = picture.clipRectangles?.size ?: 0,
+            graphicsExposure = picture.graphicsExposure,
+            subwindowMode = picture.subwindowMode,
+            polyEdge = picture.polyEdge,
+            polyMode = picture.polyMode,
+            dither = picture.dither,
+            componentAlpha = picture.componentAlpha,
+            transform = picture.transform,
+            filterName = picture.filterName,
+            filterValues = picture.filterValues,
+        )
 
     @Synchronized
     fun recordRequest(name: String) {
@@ -4319,6 +4338,15 @@ internal class X11State(
     fun removePicture(id: Int) {
         pictures.remove(id)
         discardRetainedResourceIds(setOf(id))
+    }
+
+    @Synchronized
+    fun removePictureWithSnapshot(id: Int): XRenderPictureSnapshot? {
+        val picture = pictures[id] ?: return null
+        val snapshot = renderPictureSnapshot(picture)
+        pictures.remove(id)
+        discardRetainedResourceIds(setOf(id))
+        return snapshot
     }
 
     @Synchronized
@@ -4949,9 +4977,10 @@ internal class X11State(
         minorOpcode: Int,
         operation: String,
         detail: String = "",
-    ) {
+    ): Int {
+        val id = nextRenderOperationId++
         renderOperations += XRenderOperation(
-            id = nextRenderOperationId++,
+            id = id,
             minorOpcode = minorOpcode,
             operation = operation,
             detail = detail,
@@ -4959,6 +4988,35 @@ internal class X11State(
         if (renderOperations.size > MaxRenderOperations) {
             renderOperations.removeAt(0)
         }
+        return id
+    }
+
+    @Synchronized
+    fun annotateRenderOperation(id: Int, provenance: XRenderOperationProvenance) {
+        val index = renderOperations.indexOfFirst { it.id == id }
+        if (index >= 0) {
+            renderOperations[index] = renderOperations[index].copy(provenance = provenance)
+        }
+    }
+
+    @Synchronized
+    fun pictureSnapshot(picture: XPicture): XRenderPictureSnapshot =
+        renderPictureSnapshot(picture)
+
+    fun renderResultSnapshot(image: XImagePixels): XRenderOperationResultSnapshot {
+        val crc32 = CRC32()
+        for (pixel in image.pixels) {
+            crc32.update(pixel)
+            crc32.update(pixel ushr 8)
+            crc32.update(pixel ushr 16)
+            crc32.update(pixel ushr 24)
+        }
+        return XRenderOperationResultSnapshot(
+            width = image.width,
+            height = image.height,
+            crc32Hex = "0x${crc32.value.toString(16).padStart(8, '0')}",
+            pixelSampleHex = image.pixels.take(16).map { "0x${it.toUInt().toString(16).padStart(8, '0')}" },
+        )
     }
 
     @Synchronized
@@ -6090,6 +6148,72 @@ internal class X11State(
             }
         }
     }
+
+    @Synchronized
+    fun compositeWithPaintResultAndProvenance(
+        operation: Int,
+        sourceId: Int,
+        maskId: Int,
+        destinationId: Int,
+        sourceX: Int,
+        sourceY: Int,
+        maskX: Int,
+        maskY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+    ): XRenderCompositeExecution {
+        val source = pictures[sourceId]
+            ?: return XRenderCompositeExecution(error = XRenderExecutionError(XRender.PictureError, sourceId))
+        val mask = if (maskId == 0) {
+            null
+        } else {
+            pictures[maskId]
+                ?: return XRenderCompositeExecution(error = XRenderExecutionError(XRender.PictureError, maskId))
+        }
+        val destination = pictures[destinationId]
+            ?: return XRenderCompositeExecution(error = XRenderExecutionError(XRender.PictureError, destinationId))
+        val destinationDrawableId = destination.drawableId ?: return XRenderCompositeExecution()
+        val result = compositeWithPaintResult(
+            operation = operation,
+            source = source,
+            mask = mask,
+            destination = destination,
+            sourceX = sourceX,
+            sourceY = sourceY,
+            maskX = maskX,
+            maskY = maskY,
+            destinationX = destinationX,
+            destinationY = destinationY,
+            width = width,
+            height = height,
+        ) ?: return XRenderCompositeExecution()
+        return XRenderCompositeExecution(
+            result = result,
+            provenance = XRenderOperationProvenance(
+                source = renderPictureSnapshot(source),
+                mask = mask?.let(::renderPictureSnapshot),
+                destination = renderPictureSnapshot(destination),
+                result = renderResultSnapshot(result.image),
+            ),
+            destinationDrawableId = destinationDrawableId,
+            destinationDrawableGeneration = destination.retainedOrLiveDrawableGeneration(),
+            sourceDrawableId = source.drawableId,
+            sourceDrawableGeneration = source.retainedOrLiveDrawableGeneration(),
+            sourceGenerated = source.isGeneratedRenderSource(),
+            sourceSolidPixel = source.solidPixel,
+        )
+    }
+
+    private fun XPicture.isGeneratedRenderSource(): Boolean =
+        solidPixel != null ||
+            linearGradient != null ||
+            radialGradient != null ||
+            conicalGradient != null
+
+    private fun XPicture.retainedOrLiveDrawableGeneration(): Long? =
+        retainedDrawableGeneration ?: drawableId?.let(::drawableGeneration)
 
     @Synchronized
     fun compositeWithPaintResult(
@@ -11755,6 +11879,22 @@ internal data class XRenderOperation(
     val minorOpcode: Int,
     val operation: String,
     val detail: String,
+    val provenance: XRenderOperationProvenance? = null,
+)
+
+internal data class XRenderOperationProvenance(
+    val source: XRenderPictureSnapshot? = null,
+    val mask: XRenderPictureSnapshot? = null,
+    val destination: XRenderPictureSnapshot? = null,
+    val freed: XRenderPictureSnapshot? = null,
+    val result: XRenderOperationResultSnapshot? = null,
+)
+
+internal data class XRenderOperationResultSnapshot(
+    val width: Int,
+    val height: Int,
+    val crc32Hex: String,
+    val pixelSampleHex: List<String>,
 )
 
 internal data class XRenderPictureSnapshot(

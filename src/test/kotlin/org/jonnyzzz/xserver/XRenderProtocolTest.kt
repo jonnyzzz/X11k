@@ -2130,6 +2130,72 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER Composite provenance retains generated source after FreePicture`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0x0000_0000 to 0x0000_0000,
+                        p2 = 2 to 0,
+                        stops = listOf(0x0000_0000, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
+                out.write(renderSetPictureFilter(GradientPictureId, "bilinear", values = emptyList()))
+                out.write(
+                    renderSetPictureTransform(
+                        GradientPictureId,
+                        listOf(
+                            0x0001_0000,
+                            0,
+                            0x0001_0000,
+                            0,
+                            0x0001_0000,
+                            0x0002_0000,
+                            0,
+                            0,
+                            0x0001_0000,
+                        ),
+                    ),
+                )
+                out.write(renderComposite(GradientPictureId, PictureId, width = 2, height = 1, operation = XRender.OpSrc, destinationX = 0, destinationY = 0))
+                out.write(renderFreePictureRequest(GradientPictureId))
+                out.flush()
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""operation":"FreePicture"""")
+                }
+                val gradientId = "0x${GradientPictureId.toUInt().toString(16)}"
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"operation":"Composite"""")
+                assertContains(json, """"provenance":{"source":{"id":"$gradientId","drawable":"none","kind":"linear-gradient"""")
+                assertContains(json, """"repeat":"pad"""")
+                assertContains(json, """"filter":"bilinear"""")
+                assertContains(json, """"transform":["0x10000","0x0","0x10000","0x0","0x10000","0x20000","0x0","0x0","0x10000"]""")
+                assertContains(json, """"linearGradient":{"p1":"0x0,0x0","p2":"0x20000,0x0","stops":["0x0","0x10000"],"colors":["0xffff0000","0xff0000ff"]}""")
+                assertContains(json, """"result":{"width":2,"height":1,"crc32":""")
+                assertContains(json, """"operation":"FreePicture","detail":"picture=$gradientId","provenance":{"freed":{"id":"$gradientId","drawable":"none","kind":"linear-gradient"""")
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "source=$gradientId/linear-gradient repeat=pad filter=bilinear")
+                assertContains(text, "freed=$gradientId/linear-gradient repeat=pad filter=bilinear")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER picture attributes are retained in semantic snapshot`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

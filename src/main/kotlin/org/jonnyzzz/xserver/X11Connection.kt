@@ -464,7 +464,7 @@ internal class X11Connection(
     private fun render(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
         val operation = XRender.operationName(minorOpcode)
         val detail = renderDetail(minorOpcode, body)
-        state.recordRenderOperation(minorOpcode, operation, detail)
+        val operationId = state.recordRenderOperation(minorOpcode, operation, detail)
 
         when (minorOpcode) {
             0 -> renderQueryVersion(body)
@@ -474,8 +474,8 @@ internal class X11Connection(
             4 -> renderCreatePicture(body)
             5 -> renderChangePicture(body)
             6 -> renderSetPictureClipRectangles(body)
-            7 -> renderFreePicture(body)
-            8 -> renderComposite(body)
+            7 -> renderFreePicture(body, operationId)
+            8 -> renderComposite(body, operationId)
             9 -> renderScale(body)
             10 -> renderTrapezoids(body)
             11 -> renderTriangles(body)
@@ -3923,36 +3923,29 @@ internal class X11Connection(
         )
     }
 
-    private fun renderFreePicture(body: ByteArray) {
+    private fun renderFreePicture(body: ByteArray, operationId: Int) {
         if (body.size != 4) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 7, badValue = 0)
         val id = byteOrder.u32(body, 0)
-        if (state.picture(id) == null) {
+        val picture = state.removePictureWithSnapshot(id)
+        if (picture == null) {
             return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 7, badValue = id)
         }
-        state.removePicture(id)
+        state.annotateRenderOperation(
+            operationId,
+            XRenderOperationProvenance(freed = picture),
+        )
         ownedResources.remove(id)
     }
 
-    private fun renderComposite(body: ByteArray) {
+    private fun renderComposite(body: ByteArray, operationId: Int) {
         if (body.size != 32) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = 0)
         val operation = body[0].toInt() and 0xff
         if (!XRender.isValidOperator(operation)) {
             return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = operation)
         }
         val sourceId = byteOrder.u32(body, 4)
-        val source = state.picture(sourceId)
-            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = sourceId)
         val maskId = byteOrder.u32(body, 8)
-        val mask = if (maskId == 0) {
-            null
-        } else {
-            state.picture(maskId)
-                ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = maskId)
-        }
         val destinationId = byteOrder.u32(body, 12)
-        val destination = state.picture(destinationId)
-            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = destinationId)
-        val destinationDrawableId = destination.drawableId ?: return
         val sourceX = byteOrder.i16(body, 16)
         val sourceY = byteOrder.i16(body, 18)
         val maskX = byteOrder.i16(body, 20)
@@ -3962,11 +3955,11 @@ internal class X11Connection(
         val width = byteOrder.u16(body, 28)
         val height = byteOrder.u16(body, 30)
         val rectangle = XRectangleCommand(destinationX, destinationY, width, height)
-        val result = state.compositeWithPaintResult(
+        val execution = state.compositeWithPaintResultAndProvenance(
             operation = operation,
-            source = source,
-            mask = mask,
-            destination = destination,
+            sourceId = sourceId,
+            maskId = maskId,
+            destinationId = destinationId,
             sourceX = sourceX,
             sourceY = sourceY,
             maskX = maskX,
@@ -3975,17 +3968,26 @@ internal class X11Connection(
             destinationY = destinationY,
             width = width,
             height = height,
-        ) ?: return
+        )
+        execution.error?.let { error ->
+            return writeError(error = error.error, opcode = XRender.MajorOpcode, minorOpcode = 8, badValue = error.badValue)
+        }
+        val result = execution.result ?: return
+        val destinationDrawableId = execution.destinationDrawableId ?: return
+        state.annotateRenderOperation(
+            operationId,
+            execution.provenance ?: return,
+        )
         state.draw(
             XDrawingCommand(
                 drawableId = destinationDrawableId,
-                drawableGeneration = destination.retainedOrLiveDrawableGeneration(),
-                kind = if (source.isGeneratedSource()) XDrawingKind.FillRectangle else XDrawingKind.CopyArea,
-                foreground = source.solidPixel ?: 0,
+                drawableGeneration = execution.destinationDrawableGeneration,
+                kind = if (execution.sourceGenerated) XDrawingKind.FillRectangle else XDrawingKind.CopyArea,
+                foreground = execution.sourceSolidPixel ?: 0,
                 rectangles = listOf(rectangle),
                 imageDataUri = XFramebuffer.imageDataUri(result.image),
-                sourceDrawableId = source.drawableId,
-                sourceDrawableGeneration = source.retainedOrLiveDrawableGeneration(),
+                sourceDrawableId = execution.sourceDrawableId,
+                sourceDrawableGeneration = execution.sourceDrawableGeneration,
                 framebufferBacked = true,
                 framebufferPainted = result.painted,
             ),
