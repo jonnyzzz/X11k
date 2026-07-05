@@ -5885,7 +5885,7 @@ internal class X11Connection(
             5 -> "picture=${hex(0)} mask=${hex(4)}"
             6 -> "picture=${hex(0)} origin=${i16(4)},${i16(6)} rects=${(body.size - 8).coerceAtLeast(0) / 8}"
             7 -> "picture=${hex(0)}"
-            8 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} mask=${hex(8)} dst=${hex(12)} dst=${i16(24)},${i16(26)} ${u16(28)}x${u16(30)}"
+            8 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} mask=${hex(8)} dst=${hex(12)} srcOrigin=${i16(16)},${i16(18)} maskOrigin=${i16(20)},${i16(22)} dst=${i16(24)},${i16(26)} ${u16(28)}x${u16(30)}"
             9 -> "src=${hex(0)} dst=${hex(4)} colorScale=${u32(8)} alphaScale=${u32(12)} src=${i16(16)},${i16(18)} dst=${i16(20)},${i16(22)} ${u16(24)}x${u16(26)}"
             10 -> renderTrapezoidsDetail(body, { hex(it) }, { i16(it) })
             11 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} triangles=${(body.size - 20).coerceAtLeast(0) / 24}"

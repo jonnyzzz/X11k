@@ -2091,6 +2091,45 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER Composite details retain source and mask origins`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(
+                    renderComposite(
+                        SolidPictureId,
+                        PictureId,
+                        sourceX = -3,
+                        sourceY = 4,
+                        maskX = 5,
+                        maskY = -6,
+                        destinationX = 7,
+                        destinationY = 8,
+                        width = 9,
+                        height = 10,
+                    ),
+                )
+                out.flush()
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""operation":"Composite"""")
+                }
+                val expected = "op=3 src=0x${SolidPictureId.toString(16)} mask=0x0 dst=0x${PictureId.toString(16)} srcOrigin=-3,4 maskOrigin=5,-6 dst=7,8 9x10"
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, expected)
+                assertContains(httpGet(server.localPort, "/text.txt"), expected)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER picture attributes are retained in semantic snapshot`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
