@@ -198,6 +198,38 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij parity readiness waits for post markdown indexing completion`() {
+        val baseLog =
+            """
+            2026-07-04 19:56:49,053 [   1721]   INFO - #c.i.i.p.i.ProjectViewInitNotifier - Project View initialization completed
+            2026-07-04 19:56:50,042 [   2710]   INFO - #c.j.p.c.BeforeFileOpenLoggerListener - fileOpened README.md
+            """.trimIndent()
+        val indexedBeforeMarkdown =
+            """
+            $baseLog
+            2026-07-04 19:56:50,100 [   2768]   INFO - #c.i.u.i.UnindexedFilesIndexer - Finished for jonnyzzz-x. Unindexed files update took 100ms; general responsiveness: ok; EDT responsiveness: ok
+            2026-07-04 19:56:50,190 [   2858]   INFO - #org.intellij.plugins.markdown.ui.preview.MarkdownPreviewFileEditor${'$'}Companion - MarkdownPreviewFileEditor: setHtml finished
+            """.trimIndent()
+        val readyLog =
+            """
+            $indexedBeforeMarkdown
+            2026-07-04 19:56:51,744 [   4412]   INFO - #c.i.u.i.UnindexedFilesIndexer - Finished for jonnyzzz-x. Unindexed files update took 1535ms; general responsiveness: ok; EDT responsiveness: ok
+            """.trimIndent()
+
+        val missingMarkdown = intellijParityReadiness(baseLog)
+        assertFalse(missingMarkdown.ready)
+        assertEquals(listOf("markdown-preview"), missingMarkdown.missing)
+
+        val missingPostMarkdownIndexing = intellijParityReadiness(indexedBeforeMarkdown)
+        assertFalse(missingPostMarkdownIndexing.ready)
+        assertEquals(listOf("post-markdown-indexing"), missingPostMarkdownIndexing.missing)
+
+        val ready = intellijParityReadiness(readyLog)
+        assertTrue(ready.ready)
+        assertEquals(emptyList(), ready.missing)
+    }
+
+    @Test
     fun `intellij clean project export contains tracked files only`() {
         val root = projectRoot()
         val untracked = root.resolve("build/tmp/intellij-community-smoke/untracked-sentinel.txt")
@@ -875,20 +907,16 @@ class IntellijCommunitySmokeTest {
                   echo "idea process ${'$'}pid is not running"
                   exit 3
                 fi
-                missing=""
-                grep -q "Project View initialization completed" /tmp/idea-log/idea.log 2>/dev/null || missing="${'$'}missing project-view"
-                grep -q "fileOpened README.md" /tmp/idea-log/idea.log 2>/dev/null || missing="${'$'}missing readme-opened"
-                grep -q "MarkdownPreviewFileEditor: setHtml finished" /tmp/idea-log/idea.log 2>/dev/null || missing="${'$'}missing markdown-preview"
-                if [ -z "${'$'}missing" ]; then
-                  exit 0
-                fi
-                echo "missing=${'$'}missing"
-                tail -80 /tmp/idea-log/idea.log 2>/dev/null || true
-                exit 1
+                cat /tmp/idea-log/idea.log 2>/dev/null || true
                 """.trimIndent(),
             )
-            if (result.exitCode == 0) return
-            lastOutput = result.stdout + result.stderr
+            val readiness = intellijParityReadiness(result.stdout)
+            if (result.exitCode == 0 && readiness.ready) return
+            lastOutput = if (result.exitCode == 0) {
+                "missing=${readiness.missing.joinToString(" ")}\n${result.stdout.lines().takeLast(80).joinToString("\n")}"
+            } else {
+                result.stdout + result.stderr
+            }
             Thread.sleep(1_000)
         }
         dumpIntellijLogArtifacts(
@@ -900,6 +928,32 @@ class IntellijCommunitySmokeTest {
             ),
         )
         error("$label did not reach comparable parity capture readiness in ${IntellijParityReadyWaitSeconds}s\n$lastOutput")
+    }
+
+    private fun intellijParityReadiness(log: String): IntellijParityReadiness {
+        val lines = log.lines()
+        val projectViewIndex = lines.indexOfFirst { it.contains("Project View initialization completed") }
+        val readmeOpenedIndex = lines.indexOfFirst { it.contains("fileOpened README.md") }
+        val markdownPreviewIndex = lines.indexOfFirst { it.contains("MarkdownPreviewFileEditor: setHtml finished") }
+        val postMarkdownIndexingIndex = if (markdownPreviewIndex >= 0) {
+            lines.indexOfFirstIndexed(markdownPreviewIndex + 1) { it.contains("UnindexedFilesIndexer - Finished") }
+        } else {
+            -1
+        }
+        val missing = buildList {
+            if (projectViewIndex < 0) add("project-view")
+            if (readmeOpenedIndex < 0) add("readme-opened")
+            if (markdownPreviewIndex < 0) add("markdown-preview")
+            if (markdownPreviewIndex >= 0 && postMarkdownIndexingIndex < 0) add("post-markdown-indexing")
+        }
+        return IntellijParityReadiness(missing.isEmpty(), missing)
+    }
+
+    private inline fun List<String>.indexOfFirstIndexed(startIndex: Int, predicate: (String) -> Boolean): Int {
+        for (index in startIndex until size) {
+            if (predicate(this[index])) return index
+        }
+        return -1
     }
 
     private fun pngDataUris(svg: String): List<EmbeddedPng> =
@@ -1741,6 +1795,11 @@ class IntellijCommunitySmokeTest {
     private data class IntellijLogArtifact(
         val fileName: String,
         val text: String,
+    )
+
+    private data class IntellijParityReadiness(
+        val ready: Boolean,
+        val missing: List<String>,
     )
 
     private data class SvgLayer(
