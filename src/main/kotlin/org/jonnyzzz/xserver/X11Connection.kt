@@ -6613,6 +6613,10 @@ internal class X11Connection(
         if (body.size != expectedSize) return writeError(error = 16, opcode = 16, badValue = 0)
         val name = body.copyOfRange(4, 4 + nameLength).decodeToString()
         val atom = state.internAtom(name, onlyIfExists)
+        state.recordPropertyOperation(
+            "InternAtom",
+            "name=\"${propertyTraceText(name)}\" onlyIfExists=$onlyIfExists atom=${atom.toHex()}",
+        )
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put32(reply, 8, atom)
         write(reply)
@@ -6622,6 +6626,10 @@ internal class X11Connection(
         if (body.size != 4) return writeError(error = 16, opcode = 17, badValue = 0)
         val atom = byteOrder.u32(body, 0)
         val name = state.atomName(atom) ?: return writeError(error = 5, opcode = 17, badValue = atom)
+        state.recordPropertyOperation(
+            "GetAtomName",
+            "atom=${atom.toHex()} name=\"${propertyTraceText(name)}\"",
+        )
         val bytes = name.encodeToByteArray()
         val reply = reply(extra = 0, payloadUnits = paddedLength(bytes.size) / 4)
         byteOrder.put16(reply, 8, bytes.size)
@@ -6653,7 +6661,11 @@ internal class X11Connection(
         if (mode != XPropertyMode.Replace && existing != null && (existing.type != type || existing.format != format)) {
             return writeError(error = 8, opcode = 18, badValue = 0)
         }
+        val operationDetail = "window=${windowId.toHex()} property=${propertyTraceAtom(property)} " +
+            "type=${propertyTraceAtom(type)} format=$format mode=${propertyModeName(mode)} " +
+            "items=$unitCount bytes=$byteLength"
         if (mode != XPropertyMode.Replace && existing != null && byteLength == 0L) {
+            state.recordPropertyOperation("ChangeProperty", "$operationDetail unchanged-empty-append=true")
             sendPropertyNotify(windowId, property, XPropertyState.NewValue)
             return
         }
@@ -6662,6 +6674,7 @@ internal class X11Connection(
             mode == XPropertyMode.Prepend -> existing.copy(data = data + existing.data)
             else -> existing.copy(data = existing.data + data)
         }
+        state.recordPropertyOperation("ChangeProperty", operationDetail)
         sendPropertyNotify(windowId, property, XPropertyState.NewValue)
     }
 
@@ -6671,7 +6684,12 @@ internal class X11Connection(
         val window = state.window(windowId) ?: return writeError(error = 3, opcode = 19, badValue = windowId)
         val property = byteOrder.u32(body, 4)
         if (state.atomName(property) == null) return writeError(error = 5, opcode = 19, badValue = property)
-        if (window.properties.remove(property) != null) {
+        val existed = window.properties.remove(property) != null
+        state.recordPropertyOperation(
+            "DeleteProperty",
+            "window=${windowId.toHex()} property=${propertyTraceAtom(property)} existed=$existed",
+        )
+        if (existed) {
             sendPropertyNotify(windowId, property, XPropertyState.Deleted)
         }
     }
@@ -6695,6 +6713,11 @@ internal class X11Connection(
         val longLength = Integer.toUnsignedLong(byteOrder.u32(body, 16)).saturatingTimes4()
         val property = window.properties[propertyId]
         if (property == null) {
+            state.recordPropertyOperation(
+                "GetProperty",
+                "window=${windowId.toHex()} property=${propertyTraceAtom(propertyId)} " +
+                    "requestedType=${propertyTraceType(requestedType)} delete=$delete missing=true",
+            )
             val reply = reply(extra = 0, payloadUnits = 0)
             byteOrder.put32(reply, 8, 0)
             byteOrder.put32(reply, 12, 0)
@@ -6702,6 +6725,12 @@ internal class X11Connection(
             return write(reply)
         }
         if (requestedType != XPropertyType.Any && requestedType != property.type) {
+            state.recordPropertyOperation(
+                "GetProperty",
+                "window=${windowId.toHex()} property=${propertyTraceAtom(propertyId)} " +
+                    "requestedType=${propertyTraceType(requestedType)} actualType=${propertyTraceAtom(property.type)} " +
+                    "format=${property.format} delete=$delete mismatch=true bytesAfter=${property.data.size}",
+            )
             val reply = reply(extra = property.format, payloadUnits = 0)
             byteOrder.put32(reply, 8, property.type)
             byteOrder.put32(reply, 12, property.data.size)
@@ -6723,6 +6752,14 @@ internal class X11Connection(
         if (shouldDelete) {
             window.properties.remove(propertyId)
         }
+        state.recordPropertyOperation(
+            "GetProperty",
+            "window=${windowId.toHex()} property=${propertyTraceAtom(propertyId)} " +
+                "requestedType=${propertyTraceType(requestedType)} actualType=${propertyTraceAtom(property.type)} " +
+                "format=${property.format} offset=$longOffsetUnits length=${byteOrder.u32(body, 16)} " +
+                "items=${value.size / (property.format / 8)} valueBytes=${value.size} bytesAfter=$bytesAfter " +
+                "delete=$delete deleted=$shouldDelete",
+        )
         write(reply)
         if (shouldDelete) {
             sendPropertyNotify(windowId, propertyId, XPropertyState.Deleted)
@@ -6734,6 +6771,10 @@ internal class X11Connection(
         val windowId = byteOrder.u32(body, 0)
         val window = state.window(windowId) ?: return writeError(3, 21, badValue = windowId)
         val keys = window.properties.keys.sorted()
+        state.recordPropertyOperation(
+            "ListProperties",
+            "window=${windowId.toHex()} count=${keys.size} properties=${propertyTraceAtoms(keys)}",
+        )
         val reply = reply(extra = 0, payloadUnits = keys.size)
         byteOrder.put16(reply, 8, keys.size)
         var offset = 32
@@ -6758,13 +6799,21 @@ internal class X11Connection(
         if (duplicate != null) return writeError(error = 8, opcode = 114, badValue = duplicate)
         val missing = atoms.firstOrNull { it !in window.properties }
         if (missing != null) return writeError(error = 8, opcode = 114, badValue = missing)
-        if (count == 0) return
+        val operationDetail = "window=${windowId.toHex()} delta=$delta count=$count properties=${propertyTraceAtoms(atoms)}"
+        if (count == 0) {
+            state.recordPropertyOperation("RotateProperties", "$operationDetail no-op=true")
+            return
+        }
         val shift = ((delta % count) + count) % count
-        if (shift == 0) return
+        if (shift == 0) {
+            state.recordPropertyOperation("RotateProperties", "$operationDetail no-op=true")
+            return
+        }
         val values = atoms.map { window.properties.getValue(it) }
         atoms.forEachIndexed { index, atom ->
             window.properties[atom] = values[(index + shift) % count]
         }
+        state.recordPropertyOperation("RotateProperties", operationDetail)
         for (sink in state.propertyNotifySinks(windowId)) {
             for (atom in atoms) {
                 runCatching { sink.sendPropertyNotifyEvent(XPropertyNotifyEvent(windowId = windowId, atom = atom, state = 0)) }
@@ -12959,6 +13008,31 @@ internal class X11Connection(
 
     private fun propertyDataForClientOrder(format: Int, data: ByteArray): ByteArray =
         if (format == 8 || byteOrder == ByteOrder.LsbFirst) data else data.withSwappedPropertyElements(format)
+
+    private fun propertyTraceAtom(atom: Int): String =
+        "${atom.toHex()}(${state.atomName(atom)?.let(::propertyTraceText) ?: "?"})"
+
+    private fun propertyTraceAtoms(atoms: List<Int>, limit: Int = 12): String {
+        val head = atoms.take(limit).joinToString(",") { propertyTraceAtom(it) }
+        return if (atoms.size <= limit) head else "$head,...(+${atoms.size - limit})"
+    }
+
+    private fun propertyTraceType(type: Int): String =
+        if (type == XPropertyType.Any) "AnyPropertyType" else propertyTraceAtom(type)
+
+    private fun propertyTraceText(value: String): String =
+        value
+            .asSequence()
+            .map { char -> if (char.isISOControl()) '?' else char }
+            .joinToString("")
+            .take(120)
+
+    private fun propertyModeName(mode: Int): String = when (mode) {
+        XPropertyMode.Replace -> "Replace"
+        XPropertyMode.Prepend -> "Prepend"
+        XPropertyMode.Append -> "Append"
+        else -> "Unknown"
+    }
 
     private fun randrOutputPropertyInvalidValue(property: XProperty, config: XRandrOutputPropertyConfig): Int? {
         if (config.validValues.isEmpty()) return null

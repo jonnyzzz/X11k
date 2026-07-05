@@ -157,6 +157,23 @@ internal object TextScreenRenderer {
                 }
             }
             appendLine()
+            appendLine("Property operations:")
+            if (snapshot.propertyOperations.isEmpty()) {
+                appendLine("- None.")
+            } else {
+                for (operation in snapshot.propertyOperations.takeLast(160).asReversed()) {
+                    append("- #")
+                    append(operation.id)
+                    append(' ')
+                    append(operation.operation)
+                    if (operation.detail.isNotBlank()) {
+                        append(' ')
+                        append(operation.detail)
+                    }
+                    appendLine()
+                }
+            }
+            appendLine()
             appendLine("Extension queries:")
             if (snapshot.extensionQueries.isEmpty()) {
                 appendLine("- None.")

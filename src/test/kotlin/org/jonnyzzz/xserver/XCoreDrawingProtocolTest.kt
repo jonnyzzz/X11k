@@ -15406,6 +15406,49 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `core atom and property requests are retained in semantic diagnostics`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(internAtomRequest("TRACE_PROPERTY"))
+                out.write(createWindowRequest(WindowId))
+                out.write(changePropertyRequest(WindowId, PrimaryAtom, StringAtom, "trace"))
+                out.write(getPropertyRawRequest(WindowId, PrimaryAtom, 0))
+                out.write(listPropertiesRequest(WindowId))
+                out.write(deletePropertyRequest(WindowId, PrimaryAtom))
+                out.write(getPropertyRequest(WindowId, PrimaryAtom, StringAtom))
+                out.flush()
+
+                val atomReply = readReply(socket.getInputStream())
+                assertEquals(1, u16le(atomReply, 2))
+                assertTrue(u32le(atomReply, 8) > 0)
+                assertPropertyReply(readReply(socket.getInputStream()), sequence = 4, type = StringAtom, value = "trace")
+                assertListPropertiesReply(readReply(socket.getInputStream()), sequence = 5, PrimaryAtom)
+                assertNoPropertyReply(readReply(socket.getInputStream()), sequence = 7)
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "Property operations:")
+                assertContains(text, "InternAtom name=\"TRACE_PROPERTY\" onlyIfExists=false")
+                assertContains(text, "ChangeProperty window=0x${WindowId.toUInt().toString(16)} property=0x1(PRIMARY) type=0x1f(STRING) format=8 mode=Replace items=5 bytes=5")
+                assertContains(text, "GetProperty window=0x${WindowId.toUInt().toString(16)} property=0x1(PRIMARY) requestedType=AnyPropertyType actualType=0x1f(STRING)")
+                assertContains(text, "ListProperties window=0x${WindowId.toUInt().toString(16)} count=1 properties=0x1(PRIMARY)")
+                assertContains(text, "DeleteProperty window=0x${WindowId.toUInt().toString(16)} property=0x1(PRIMARY) existed=true")
+                assertContains(text, "GetProperty window=0x${WindowId.toUInt().toString(16)} property=0x1(PRIMARY) requestedType=0x1f(STRING) delete=false missing=true")
+
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"propertyOperations"""")
+                assertContains(json, """"operation":"ChangeProperty"""")
+                assertContains(json, """"operation":"GetProperty"""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `GetAtomName validates request length and atom id without closing caller`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -19506,6 +19549,11 @@ class XCoreDrawingProtocolTest {
                 assertPropertyReply(readReply(socket.getInputStream()), sequence = 10, type = StringAtom, value = "one")
                 assertPropertyReply(readReply(socket.getInputStream()), sequence = 11, type = StringAtom, value = "two")
                 assertPropertyReply(readReply(socket.getInputStream()), sequence = 12, type = StringAtom, value = "three")
+
+                val text = httpGet(server.localPort, "/text.txt")
+                val tracedProperties = "properties=0x1(PRIMARY),0x4(ATOM),0x1f(STRING)"
+                assertContains(text, "RotateProperties window=0x${WindowId.toUInt().toString(16)} delta=1 count=3 $tracedProperties")
+                assertContains(text, "RotateProperties window=0x${WindowId.toUInt().toString(16)} delta=-1 count=3 $tracedProperties")
             }
             server.close()
             serverThread.join(1_000)
@@ -19549,6 +19597,9 @@ class XCoreDrawingProtocolTest {
                 assertPropertyReply(readReply(socket.getInputStream()), sequence = 13, type = StringAtom, value = "one")
                 assertPropertyReply(readReply(socket.getInputStream()), sequence = 14, type = StringAtom, value = "two")
                 assertPropertyReply(readReply(socket.getInputStream()), sequence = 15, type = StringAtom, value = "three")
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "RotateProperties window=0x${WindowId.toUInt().toString(16)} delta=0 count=1 properties=0x1(PRIMARY) no-op=true")
             }
             server.close()
             serverThread.join(1_000)

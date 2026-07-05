@@ -222,6 +222,8 @@ internal class X11State(
     private var nextExtensionQueryId: Int = 1
     private val unsupportedRequests = mutableListOf<XUnsupportedRequest>()
     private var nextUnsupportedRequestId: Int = 1
+    private val propertyOperations = mutableListOf<XPropertyOperation>()
+    private var nextPropertyOperationId: Int = 1
     private var screenSaver = XScreenSaverSettings()
     private var screenSaverAttributes: XScreenSaverAttributes? = null
     private val screenSaverSuspensions = linkedMapOf<XEventSink, Int>()
@@ -4068,6 +4070,7 @@ internal class X11State(
                 hosts = accessHosts.toList(),
             ),
             requestCounts = requestCounts.toList().map { XRequestCount(it.first, it.second) },
+            propertyOperations = propertyOperations.toList(),
             extensionQueries = extensionQueries.toList(),
             unsupportedRequests = unsupportedRequests.toList(),
         )
@@ -4106,6 +4109,25 @@ internal class X11State(
             unsupportedRequests.removeAt(0)
         }
     }
+
+    @Synchronized
+    fun recordPropertyOperation(operation: String, detail: String = "") {
+        propertyOperations += XPropertyOperation(
+            id = nextPropertyOperationId++,
+            operation = operation,
+            detail = boundedPropertyOperationDetail(detail),
+        )
+        if (propertyOperations.size > MaxPropertyOperations) {
+            propertyOperations.removeAt(0)
+        }
+    }
+
+    private fun boundedPropertyOperationDetail(detail: String): String =
+        if (detail.length <= MaxPropertyOperationDetailChars) {
+            detail
+        } else {
+            detail.take(MaxPropertyOperationDetailChars - 3) + "..."
+        }
 
     @Synchronized
     fun putGlxContext(context: XGlxContext) {
@@ -9438,6 +9460,8 @@ internal class X11State(
         private const val MaxExtensionQueries = 200
         private const val SetupResourceBlockCount = 1023
         private const val MaxUnsupportedRequests = 200
+        private const val MaxPropertyOperations = 2_000
+        private const val MaxPropertyOperationDetailChars = 2_000
 
         private fun pixelsToMillimeters(pixels: Int, dpi: Int): Int =
             ((pixels * 25.4) / dpi).roundToInt().coerceAtLeast(1)
@@ -11262,6 +11286,7 @@ internal data class XScreenSnapshot(
     val renderPictures: List<XRenderPictureSnapshot>,
     val accessControl: XAccessControlSnapshot,
     val requestCounts: List<XRequestCount>,
+    val propertyOperations: List<XPropertyOperation>,
     val extensionQueries: List<XExtensionQuery>,
     val unsupportedRequests: List<XUnsupportedRequest>,
 )
@@ -11363,6 +11388,12 @@ internal data class XUnsupportedRequest(
     val opcode: Int,
     val minorOpcode: Int,
     val name: String,
+)
+
+internal data class XPropertyOperation(
+    val id: Int,
+    val operation: String,
+    val detail: String,
 )
 
 internal data class XInputOperation(

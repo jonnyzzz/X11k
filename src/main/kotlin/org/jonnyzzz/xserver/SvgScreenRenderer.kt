@@ -237,6 +237,11 @@ internal object SvgScreenRenderer {
                 if (index > 0) append(',')
                 append("""{"id":${operation.id},"minorOpcode":${operation.minorOpcode},"operation":"${escapeJson(operation.operation)}","detail":"${escapeJson(operation.detail)}"}""")
             }
+            append("""],"propertyOperations":[""")
+            snapshot.propertyOperations.forEachIndexed { index, operation ->
+                if (index > 0) append(',')
+                append("""{"id":${operation.id},"operation":"${escapeJson(operation.operation)}","detail":"${escapeJson(operation.detail)}"}""")
+            }
             append("""],"renderPictures":[""")
             snapshot.renderPictures.forEachIndexed { index, picture ->
                 if (index > 0) append(',')

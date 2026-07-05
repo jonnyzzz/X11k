@@ -2208,12 +2208,13 @@ class HttpRenderingTest {
             out.flush()
             Thread.sleep(100)
 
-            assertContains(httpGet(server.localPort, "/state.json").body, "0x200001")
+            assertContains(liveWindowsJson(httpGet(server.localPort, "/state.json").body), "0x200001")
             socket.close()
 
             waitUntil {
                 val body = httpGet(server.localPort, "/state.json").body
-                !body.contains("0x200001") && !body.contains("0x200002")
+                val windowsJson = liveWindowsJson(body)
+                !windowsJson.contains("0x200001") && !windowsJson.contains("0x200002")
             }
             assertFalse(httpGet(server.localPort, "/").body.contains("disconnect target"))
 
@@ -2720,6 +2721,9 @@ class HttpRenderingTest {
         }
         assertEquals(true, condition(), "Condition did not become true before timeout")
     }
+
+    private fun liveWindowsJson(stateJson: String): String =
+        stateJson.substringAfter(""""windows":[""").substringBefore("""],"pixmaps"""")
 
     private fun java.io.InputStream.readExactly(size: Int): ByteArray {
         val bytes = ByteArray(size)
