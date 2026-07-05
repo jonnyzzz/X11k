@@ -5361,6 +5361,16 @@ internal class X11Connection(
         if (!resourceIdAvailable(pbuffer, XGlx.MajorOpcode, XGlx.CreatePbuffer, error = 11)) return
         val width = attributes.lastOrNull { (attribute, _) -> attribute == XGlx.PbufferWidth }?.second ?: 0
         val height = attributes.lastOrNull { (attribute, _) -> attribute == XGlx.PbufferHeight }?.second ?: 0
+        // Mesa's drisw GLX path asks core X for geometry of the pbuffer XID.
+        // Xorg backs pbuffers with a pixmap resource using that same id.
+        state.putPixmap(
+            XPixmap(
+                id = pbuffer,
+                width = width,
+                height = height,
+                depth = X11Ids.RootDepth,
+            ),
+        )
         state.putGlxPbuffer(
             XGlxPbuffer(
                 id = pbuffer,

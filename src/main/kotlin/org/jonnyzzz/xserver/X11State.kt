@@ -4177,6 +4177,7 @@ internal class X11State(
     @Synchronized
     fun removeGlxPbuffer(id: Int) {
         glxPbuffers.remove(id)
+        pixmaps.remove(id)
         discardRetainedResourceIds(setOf(id))
     }
 
@@ -9057,6 +9058,7 @@ internal class X11State(
         }
         glxContexts.remove(id)
         glxPixmaps.remove(id)
+        glxPbuffers.remove(id)
         pictures.remove(id)
         glyphSets.remove(id)
         xfixesRegions.remove(id)

@@ -441,6 +441,13 @@ internal object XGlx {
             stencilSize = 8,
         ),
         FbConfigSpec(
+            id = RootFbConfigId + 5,
+            visualId = X11Ids.RootVisual,
+            doubleBuffer = 0,
+            depthSize = 0,
+            stencilSize = 0,
+        ),
+        FbConfigSpec(
             id = RootFbConfigId + 1,
             visualId = 0,
             doubleBuffer = 0,

@@ -45,7 +45,7 @@ class XGlxProtocolTest {
 
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFBConfigs, u32(0))
             val fbConfigs = readReply(socket.getInputStream())
-            assertEquals(5, u32le(fbConfigs, 8))
+            assertEquals(6, u32le(fbConfigs, 8))
             assertEquals(XGlx.FbConfigAttributePairs, u32le(fbConfigs, 12))
             assertEquals(0x800B, u32le(fbConfigs, 32))
             assertEquals(X11Ids.RootVisual, u32le(fbConfigs, 36))
@@ -83,9 +83,20 @@ class XGlxProtocolTest {
             assertEquals(0, fbConfigAttributes.getValue(XGlx.MaxPbufferWidth))
             assertEquals(0, fbConfigAttributes.getValue(XGlx.MaxPbufferHeight))
             assertEquals(0, fbConfigAttributes.getValue(XGlx.MaxPbufferPixels))
-            val pbufferOnlyFbConfigAttributes = attributeMap(
+            val lightweightVisualFbConfigAttributes = attributeMap(
                 fbConfigs,
                 offset = 32 + XGlx.FbConfigAttributePairs * 8,
+                count = XGlx.FbConfigAttributePairs,
+            )
+            assertEquals(X11Ids.RootVisual, lightweightVisualFbConfigAttributes.getValue(XGlx.VisualIdExt))
+            assertEquals(XGlx.RootFbConfigId + 5, lightweightVisualFbConfigAttributes.getValue(XGlx.FbConfigId))
+            assertEquals(0, lightweightVisualFbConfigAttributes.getValue(5))
+            assertEquals(0, lightweightVisualFbConfigAttributes.getValue(12))
+            assertEquals(0, lightweightVisualFbConfigAttributes.getValue(13))
+            assertEquals(XGlx.WindowBit or XGlx.PixmapBit or XGlx.PbufferBit, lightweightVisualFbConfigAttributes.getValue(XGlx.DrawableType))
+            val pbufferOnlyFbConfigAttributes = attributeMap(
+                fbConfigs,
+                offset = 32 + XGlx.FbConfigAttributePairs * 8 * 2,
                 count = XGlx.FbConfigAttributePairs,
             )
             assertEquals(0, pbufferOnlyFbConfigAttributes.getValue(XGlx.VisualIdExt))
@@ -220,7 +231,7 @@ class XGlxProtocolTest {
             assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.GetFBConfigs, sequence = 7)
             val fbConfigs = readReply(socket.getInputStream())
             assertEquals(8, u16le(fbConfigs, 2))
-            assertEquals(5, u32le(fbConfigs, 8))
+            assertEquals(6, u32le(fbConfigs, 8))
             assertEquals(XGlx.FbConfigAttributePairs, u32le(fbConfigs, 12))
 
             assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.QueryExtensionsString, sequence = 9)
@@ -1911,14 +1922,25 @@ class XGlxProtocolTest {
             val powerOfTwoPbuffer = 0x0020_0e01
             val eventMask = 0x3456
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePbuffer, createPbufferBody(pbuffer, width = 13, height = 11))
+            writeRequest(socket, 14, 0, u32(pbuffer))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.ChangeDrawableAttributes, changeDrawableAttributesBody(pbuffer, XGlx.EventMask to eventMask))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetDrawableAttributes, u32(pbuffer))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePbuffer, createPbufferBody(powerOfTwoPbuffer, width = 1, height = 1))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetDrawableAttributes, u32(powerOfTwoPbuffer))
             writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
 
+            val geometry = readReply(socket.getInputStream())
+            assertEquals(X11Ids.RootDepth, geometry[1].toInt() and 0xff)
+            assertEquals(2, u16le(geometry, 2))
+            assertEquals(X11Ids.RootWindow, u32le(geometry, 8))
+            assertEquals(0, u16le(geometry, 12))
+            assertEquals(0, u16le(geometry, 14))
+            assertEquals(13, u16le(geometry, 16))
+            assertEquals(11, u16le(geometry, 18))
+            assertEquals(0, u16le(geometry, 20))
+
             val attributesReply = readReply(socket.getInputStream())
-            assertEquals(3, u16le(attributesReply, 2))
+            assertEquals(4, u16le(attributesReply, 2))
             assertEquals(18, u32le(attributesReply, 4))
             assertEquals(9, u32le(attributesReply, 8))
             val attributes = attributeMap(attributesReply, offset = 32, count = u32le(attributesReply, 8))
@@ -1933,14 +1955,14 @@ class XGlxProtocolTest {
             assertEquals(XGlx.PbufferBit, attributes.getValue(XGlx.DrawableType))
 
             val powerOfTwoAttributesReply = readReply(socket.getInputStream())
-            assertEquals(5, u16le(powerOfTwoAttributesReply, 2))
+            assertEquals(6, u16le(powerOfTwoAttributesReply, 2))
             val powerOfTwoAttributes = attributeMap(powerOfTwoAttributesReply, offset = 32, count = u32le(powerOfTwoAttributesReply, 8))
             assertEquals(1, powerOfTwoAttributes.getValue(XGlx.Width))
             assertEquals(1, powerOfTwoAttributes.getValue(XGlx.Height))
             assertEquals(XGlx.TextureRectangleExt, powerOfTwoAttributes.getValue(XGlx.TextureTargetExt))
 
             val pointer = readReply(socket.getInputStream())
-            assertEquals(6, u16le(pointer, 2))
+            assertEquals(7, u16le(pointer, 2))
             val json = httpGet(socket, "/state.json")
             assertTrue(
                 json.contains(
@@ -1968,6 +1990,7 @@ class XGlxProtocolTest {
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePbuffer, createPbufferBody(pbuffer, width = 4, height = 4))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyPbuffer, u32(pbuffer) + u32(0))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyPbuffer, u32(pbuffer))
+            writeRequest(socket, 14, 0, u32(pbuffer))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyPbuffer, u32(missingPbuffer))
             writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
 
@@ -1985,15 +2008,18 @@ class XGlxProtocolTest {
             assertEquals(XGlx.DestroyPbuffer, u16le(lengthError, 8))
             assertEquals(XGlx.MajorOpcode, lengthError[10].toInt() and 0xff)
 
+            assertCoreError(socket.getInputStream(), error = 9, badValue = pbuffer, opcode = 14, sequence = 5)
+
             val missingError = socket.getInputStream().readExactly(32)
             assertEquals(0, missingError[0].toInt())
             assertEquals(XGlx.BadPbuffer, missingError[1].toInt() and 0xff)
+            assertEquals(6, u16le(missingError, 2))
             assertEquals(missingPbuffer, u32le(missingError, 4))
             assertEquals(XGlx.DestroyPbuffer, u16le(missingError, 8))
             assertEquals(XGlx.MajorOpcode, missingError[10].toInt() and 0xff)
 
             val pointer = readReply(socket.getInputStream())
-            assertEquals(6, u16le(pointer, 2))
+            assertEquals(7, u16le(pointer, 2))
             val json = httpGet(socket, "/state.json")
             assertTrue(json.contains(""""glxPbuffers":[]"""), json)
         }
@@ -2349,6 +2375,15 @@ class XGlxProtocolTest {
         assertEquals(badValue, u32le(reply, 4))
         assertEquals(minorOpcode, u16le(reply, 8))
         assertEquals(XGlx.MajorOpcode, reply[10].toInt() and 0xff)
+    }
+
+    private fun assertCoreError(input: InputStream, error: Int, badValue: Int, opcode: Int, sequence: Int) {
+        val reply = input.readExactly(32)
+        assertEquals(0, reply[0].toInt())
+        assertEquals(error, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(badValue, u32le(reply, 4))
+        assertEquals(opcode, reply[10].toInt() and 0xff)
     }
 
     private fun padded(bytes: ByteArray): ByteArray =
