@@ -21,6 +21,7 @@ import javax.imageio.ImageIO
 import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -371,6 +372,32 @@ class IntellijCommunitySmokeTest {
                     2026-07-06 INFO - #com.intellij.ide.ui.MainMenuDisplayMode - mainMenuDisplayMode=SEPARATE_TOOLBAR
                     """.trimIndent(),
             ),
+            IntellijLogArtifact(
+                fileName = "intellij-xvfb-ui-runtime-diagnostics.log",
+                text =
+                    """
+                    agentLoaded=true
+                    runtimeMainMenuDisplayMode=Merge with Main Toolbar
+                    runtimeShowMainMenu=true
+                    runtimeMenuButtonInToolbar=true
+                    runtimeHideNativeLinuxTitleNotSupportedReason=INCOMPATIBLE_JBR
+                    runtimeJbrWindowMoveSupported=false
+                    runtimeStartupIsXToolkit=true
+                    """.trimIndent(),
+            ),
+            IntellijLogArtifact(
+                fileName = "intellij-kotlin-ui-runtime-diagnostics.log",
+                text =
+                    """
+                    agentLoaded=true
+                    runtimeMainMenuDisplayMode=Hide under Hamburger Button
+                    runtimeShowMainMenu=true
+                    runtimeMenuButtonInToolbar=true
+                    runtimeHideNativeLinuxTitleNotSupportedReason=INCOMPATIBLE_JBR
+                    runtimeJbrWindowMoveSupported=false
+                    runtimeStartupIsXToolkit=true
+                    """.trimIndent(),
+            ),
         )
 
         val summary = intellijUiDiagnosticsSummary(logs)
@@ -385,8 +412,46 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("kotlinListsXInputExtension=false"), summary)
         assertTrue(summary.contains("xvfbXInputWarning=false"), summary)
         assertTrue(summary.contains("kotlinXInputWarning=true"), summary)
+        assertTrue(summary.contains("xvfbRuntimeAgentLoaded=true"), summary)
+        assertTrue(summary.contains("kotlinRuntimeAgentLoaded=true"), summary)
+        assertTrue(summary.contains("xvfbRuntimeMainMenuDisplayMode=Merge with Main Toolbar"), summary)
+        assertTrue(summary.contains("kotlinRuntimeMainMenuDisplayMode=Hide under Hamburger Button"), summary)
+        assertTrue(summary.contains("xvfbRuntimeMenuButtonInToolbar=true"), summary)
+        assertTrue(summary.contains("kotlinRuntimeMenuButtonInToolbar=true"), summary)
         assertTrue(summary.contains("CustomWindowHeaderUtil"), summary)
         assertTrue(summary.contains("mainMenuDisplayMode=SEPARATE_TOOLBAR"), summary)
+    }
+
+    @Test
+    fun `intellij runtime ui diagnostics require successful attach agent output`() {
+        val logs = listOf(
+            IntellijLogArtifact(
+                fileName = "intellij-xvfb-ui-runtime-diagnostics.log",
+                text =
+                    """
+                    agentLoaded=false
+                    attachExit=1
+                    attachOutput=com.sun.tools.attach.AttachNotSupportedException
+                    """.trimIndent(),
+            ),
+            IntellijLogArtifact(
+                fileName = "intellij-kotlin-ui-runtime-diagnostics.log",
+                text =
+                    """
+                    agentLoaded=true
+                    runtimeMainMenuDisplayMode=Hide under Hamburger Button
+                    runtimeShowMainMenu=true
+                    runtimeMenuButtonInToolbar=true
+                    runtimeHideNativeLinuxTitleNotSupportedReason=INCOMPATIBLE_JBR
+                    runtimeJbrWindowMoveSupported=false
+                    runtimeStartupIsXToolkit=true
+                    """.trimIndent(),
+            ),
+        )
+
+        assertFailsWith<AssertionError> {
+            assertIntellijRuntimeUiDiagnosticsPresent(logs)
+        }
     }
 
     @Test
@@ -400,6 +465,7 @@ class IntellijCommunitySmokeTest {
     @Test
     fun `intellij launcher disables project colored toolbar for deterministic parity`() {
         val source = runIntellijScriptSource()
+        val harness = Files.readString(projectRoot().resolve("src/test/kotlin/org/jonnyzzz/xserver/IntellijCommunitySmokeTest.kt"))
 
         assertTrue(source.contains("options/ui.lnf.xml"), source)
         assertTrue(source.contains("run-intellij-env.log"), source)
@@ -411,6 +477,9 @@ class IntellijCommunitySmokeTest {
         assertTrue(source.contains("""<option name="showMainMenu" value="true" />"""), source)
         assertTrue(source.contains("""<option name="useProjectColorsInMainToolbar" value="false" />"""), source)
         assertTrue(source.contains("""<option name="useSolutionColorsInMainToolbar" value="false" />"""), source)
+        assertTrue(harness.contains("XIntellijUiDiagnosticsAgent"), harness)
+        assertTrue(harness.contains("runtimeMenuButtonInToolbar"), harness)
+        assertTrue(harness.contains("javac --add-modules jdk.attach -d /tmp"), harness)
     }
 
     @Test
@@ -725,6 +794,7 @@ class IntellijCommunitySmokeTest {
         assertIntellijHtmlPreviewHasLargeSurface(actual.html, actual.text)
         assertTrue(actual.text.contains("Unsupported requests:\n- None."), actual.text)
         assertFalse(actual.text.contains("Download SDK") || actual.text.contains("Download JDK"), actual.text)
+        assertIntellijRuntimeUiDiagnosticsPresent(reference.logs + actual.logs)
 
         assertIntellijVisualClose(reference.robot, actual.robot, "Kotlin Robot IntelliJ capture")
         assertIntellijVisualClose(reference.robot, composedSvgCapture, "Kotlin SVG-composed IntelliJ framebuffer")
@@ -900,6 +970,7 @@ class IntellijCommunitySmokeTest {
             .use { container ->
                 container.start()
                 compileRobotCapture(container)
+                compileIntellijUiDiagnosticsAgent(container)
                 val result = execIntellijShell(
                     container,
                     """
@@ -964,6 +1035,7 @@ class IntellijCommunitySmokeTest {
                     "/tmp/idea-extra.vmoptions" to "intellij-xvfb-idea-extra.vmoptions",
                     "/tmp/idea-config/options/ui.lnf.xml" to "intellij-xvfb-ui-lnf.xml",
                     "/tmp/run-intellij-env.log" to "intellij-xvfb-run-intellij-env.log",
+                    "/tmp/idea-ui-runtime-diagnostics.log" to "intellij-xvfb-ui-runtime-diagnostics.log",
                     "/tmp/run-intellij-cksum.log" to "intellij-xvfb-run-intellij-cksum.log",
                 )
                 try {
@@ -975,6 +1047,7 @@ class IntellijCommunitySmokeTest {
                         runLogPath = "/tmp/idea-run-xvfb.log",
                         extraLogs = extraLogs,
                     )
+                    captureIntellijRuntimeUiDiagnostics(container, "/tmp/idea-xvfb.pid")
                     val capture = execIntellijShell(
                         container,
                         """
@@ -1023,6 +1096,7 @@ class IntellijCommunitySmokeTest {
                 .use { container ->
                     container.start()
                     compileRobotCapture(container)
+                    compileIntellijUiDiagnosticsAgent(container)
                     val display = port - 6000
                     val startResult = execIntellijShell(
                         container,
@@ -1079,6 +1153,7 @@ class IntellijCommunitySmokeTest {
                         "/tmp/idea-extra.vmoptions" to "intellij-kotlin-idea-extra.vmoptions",
                         "/tmp/idea-config/options/ui.lnf.xml" to "intellij-kotlin-ui-lnf.xml",
                         "/tmp/run-intellij-env.log" to "intellij-kotlin-run-intellij-env.log",
+                        "/tmp/idea-ui-runtime-diagnostics.log" to "intellij-kotlin-ui-runtime-diagnostics.log",
                         "/tmp/run-intellij-cksum.log" to "intellij-kotlin-run-intellij-cksum.log",
                     )
                     try {
@@ -1090,6 +1165,7 @@ class IntellijCommunitySmokeTest {
                             runLogPath = "/tmp/idea-run-parity.log",
                             extraLogs = extraLogs,
                         )
+                        captureIntellijRuntimeUiDiagnostics(container, "/tmp/idea-parity.pid")
                         execIntellijShell(
                             container,
                             """
@@ -1447,6 +1523,63 @@ class IntellijCommunitySmokeTest {
         assertEquals(0, result.exitCode, result.stderr + result.stdout)
     }
 
+    private fun compileIntellijUiDiagnosticsAgent(container: GenericContainer<*>) {
+        val script =
+            "cat > /tmp/XIntellijUiDiagnosticsAgent.java <<'JAVA'\n" +
+                intellijUiDiagnosticsAgentSource() +
+                "\nJAVA\n" +
+                "cat > /tmp/XIntellijUiDiagnosticsAttacher.java <<'JAVA'\n" +
+                intellijUiDiagnosticsAttacherSource() +
+                "\nJAVA\n" +
+                """
+                javac --add-modules jdk.attach -d /tmp /tmp/XIntellijUiDiagnosticsAgent.java /tmp/XIntellijUiDiagnosticsAttacher.java
+                cat > /tmp/XIntellijUiDiagnosticsAgent.mf <<'EOF'
+                Manifest-Version: 1.0
+                Agent-Class: XIntellijUiDiagnosticsAgent
+                Can-Redefine-Classes: false
+                Can-Retransform-Classes: false
+
+                EOF
+                jar cfm /tmp/XIntellijUiDiagnosticsAgent.jar /tmp/XIntellijUiDiagnosticsAgent.mf -C /tmp XIntellijUiDiagnosticsAgent.class
+                """.trimIndent()
+        val result = execContainerShell(
+            container,
+            120,
+            script,
+        )
+        assertEquals(0, result.exitCode, result.stderr + result.stdout)
+    }
+
+    private fun captureIntellijRuntimeUiDiagnostics(container: GenericContainer<*>, pidPath: String) {
+        val result = execContainerShell(
+            container,
+            60,
+            """
+            set +e
+            pid=${'$'}(cat '$pidPath' 2>/dev/null)
+            rm -f /tmp/idea-ui-runtime-diagnostics.log /tmp/idea-ui-runtime-diagnostics-run.log
+            ls -l /tmp/XIntellijUiDiagnostics* >/tmp/idea-ui-runtime-diagnostics-files.log 2>&1
+            java --add-modules jdk.attach -cp /tmp XIntellijUiDiagnosticsAttacher "${'$'}pid" /tmp/XIntellijUiDiagnosticsAgent.jar \
+              >/tmp/idea-ui-runtime-diagnostics-run.log 2>&1
+            status=${'$'}?
+            if [ "${'$'}status" -ne 0 ]; then
+              {
+                echo "agentLoaded=false"
+                echo "attachExit=${'$'}status"
+                sed 's/^/diagnosticFile=/' /tmp/idea-ui-runtime-diagnostics-files.log 2>/dev/null
+                sed 's/^/attachOutput=/' /tmp/idea-ui-runtime-diagnostics-run.log 2>/dev/null
+              } > /tmp/idea-ui-runtime-diagnostics.log
+            else
+              echo "attachExit=0" >> /tmp/idea-ui-runtime-diagnostics.log
+              sed 's/^/diagnosticFile=/' /tmp/idea-ui-runtime-diagnostics-files.log >> /tmp/idea-ui-runtime-diagnostics.log 2>/dev/null
+              sed 's/^/attachOutput=/' /tmp/idea-ui-runtime-diagnostics-run.log >> /tmp/idea-ui-runtime-diagnostics.log 2>/dev/null
+            fi
+            exit 0
+            """.trimIndent(),
+        )
+        assertEquals(0, result.exitCode, result.stderr + result.stdout)
+    }
+
     private fun robotCaptureSource(): String =
         """
         import java.awt.Rectangle;
@@ -1466,6 +1599,106 @@ class IntellijCommunitySmokeTest {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             ImageIO.write(image, "png", output);
             System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
+          }
+        }
+        """.trimIndent()
+
+    private fun intellijUiDiagnosticsAgentSource(): String =
+        """
+        import java.io.File;
+        import java.io.PrintWriter;
+        import java.lang.instrument.Instrumentation;
+        import java.lang.reflect.Field;
+        import java.lang.reflect.Method;
+
+        public class XIntellijUiDiagnosticsAgent {
+          public static void premain(String args, Instrumentation inst) {
+            writeDiagnostics(args);
+          }
+
+          public static void agentmain(String args, Instrumentation inst) {
+            writeDiagnostics(args);
+          }
+
+          private static void writeDiagnostics(String args) {
+            File file = new File(args == null || args.isBlank() ? "/tmp/idea-ui-runtime-diagnostics.log" : args);
+            try (PrintWriter out = new PrintWriter(file)) {
+              out.println("agentLoaded=true");
+              Object uiSettings = callStatic("com.intellij.ide.ui.UISettings", "getInstance");
+              Object uiShadow = callStatic("com.intellij.ide.ui.UISettings", "getShadowInstance");
+              out.println("runtimeMainMenuDisplayMode=" + call(uiSettings, "getMainMenuDisplayMode"));
+              out.println("runtimeShowMainMenu=" + call(uiSettings, "getShowMainMenu"));
+              out.println("runtimeShowNewMainToolbar=" + call(uiSettings, "getShowNewMainToolbar"));
+              out.println("runtimeMergeMainMenuWithWindowTitle=" + call(uiSettings, "getMergeMainMenuWithWindowTitle"));
+              out.println("runtimeShadowMainMenuDisplayMode=" + call(uiShadow, "getMainMenuDisplayMode"));
+              out.println("runtimeShadowShowMainMenu=" + call(uiShadow, "getShowMainMenu"));
+              out.println("runtimeShadowShowNewMainToolbar=" + call(uiShadow, "getShowNewMainToolbar"));
+              out.println("runtimeShadowMergeMainMenuWithWindowTitle=" + call(uiShadow, "getMergeMainMenuWithWindowTitle"));
+
+              Class<?> headerClass = Class.forName("com.intellij.openapi.wm.impl.customFrameDecorations.header.CustomWindowHeaderUtil");
+              Object header = singleton(headerClass);
+              Class<?> uiClass = Class.forName("com.intellij.ide.ui.UISettings");
+              out.println("runtimeHideNativeLinuxTitleAvailable=" + call(header, "getHideNativeLinuxTitleAvailable${'$'}intellij_platform_ide_impl"));
+              out.println("runtimeHideNativeLinuxTitleSupported=" + call(header, "getHideNativeLinuxTitleSupported${'$'}intellij_platform_ide_impl"));
+              out.println("runtimeHideNativeLinuxTitleNotSupportedReason=" + call(header, "getHideNativeLinuxTitleNotSupportedReason${'$'}intellij_platform_ide_impl"));
+              out.println("runtimeHideNativeLinuxTitle=" + call(header, "hideNativeLinuxTitle${'$'}intellij_platform_ide_impl", new Class<?>[] { uiClass }, uiSettings));
+              out.println("runtimeMenuButtonInToolbar=" + call(header, "isMenuButtonInToolbar${'$'}intellij_platform_ide_impl", new Class<?>[] { uiClass }, uiSettings));
+              out.println("runtimeDecoratedMenu=" + call(header, "isDecoratedMenu${'$'}intellij_platform_ide_impl", new Class<?>[] { uiClass }, uiSettings));
+              out.println("runtimeToolbarInHeader=" + call(header, "isToolbarInHeader${'$'}intellij_platform_ide_impl", new Class<?>[] { uiClass, boolean.class }, uiSettings, false));
+              out.println("runtimeCompactHeader=" + call(header, "isCompactHeader${'$'}intellij_platform_ide_impl"));
+
+              out.println("runtimeJbrWindowMoveSupported=" + callStatic("com.jetbrains.JBR", "isWindowMoveSupported"));
+              out.println("runtimeStartupIsXToolkit=" + callStatic("com.intellij.util.ui.StartupUiUtil", "isXToolkit"));
+              out.println("runtimeStartupIsWaylandToolkit=" + callStatic("com.intellij.util.ui.StartupUiUtil", "isWaylandToolkit"));
+              out.println("runtimeX11IsUndefinedDesktop=" + callStatic("com.intellij.openapi.wm.impl.X11UiUtil", "isUndefinedDesktop"));
+              out.println("runtimeX11IsTileWM=" + callStatic("com.intellij.openapi.wm.impl.X11UiUtil", "isTileWM"));
+              out.println("runtimeX11IsWSL=" + callStatic("com.intellij.openapi.wm.impl.X11UiUtil", "isWSL"));
+            } catch (Throwable t) {
+              try (PrintWriter out = new PrintWriter(file)) {
+                out.println("agentLoaded=false");
+                out.println("agentError=" + t.getClass().getName() + ": " + t.getMessage());
+                t.printStackTrace(out);
+              } catch (Throwable ignored) {
+              }
+            }
+          }
+
+          private static Object singleton(Class<?> type) throws Exception {
+            Field field = type.getField("INSTANCE");
+            return field.get(null);
+          }
+
+          private static Object callStatic(String className, String method) throws Exception {
+            Class<?> type = Class.forName(className);
+            Method m = type.getMethod(method);
+            return m.invoke(null);
+          }
+
+          private static Object call(Object target, String method) throws Exception {
+            Method m = target.getClass().getMethod(method);
+            return m.invoke(target);
+          }
+
+          private static Object call(Object target, String method, Class<?>[] parameterTypes, Object... args) throws Exception {
+            Method m = target.getClass().getMethod(method, parameterTypes);
+            return m.invoke(target, args);
+          }
+        }
+        """.trimIndent()
+
+    private fun intellijUiDiagnosticsAttacherSource(): String =
+        """
+        import com.sun.tools.attach.VirtualMachine;
+
+        public class XIntellijUiDiagnosticsAttacher {
+          public static void main(String[] args) throws Exception {
+            if (args.length != 2) throw new IllegalArgumentException("usage: <pid> <agent-jar>");
+            VirtualMachine vm = VirtualMachine.attach(args[0]);
+            try {
+              vm.loadAgent(args[1], "/tmp/idea-ui-runtime-diagnostics.log");
+            } finally {
+              vm.detach();
+            }
           }
         }
         """.trimIndent()
@@ -1557,6 +1790,37 @@ class IntellijCommunitySmokeTest {
         logs.forEach { artifact ->
             File(directory, artifact.fileName).writeText(artifact.text)
         }
+    }
+
+    private fun assertIntellijRuntimeUiDiagnosticsPresent(logs: List<IntellijLogArtifact>) {
+        val summary = intellijUiDiagnosticsSummary(logs)
+        val requiredLines = listOf(
+            "xvfbRuntimeAgentLoaded=true",
+            "kotlinRuntimeAgentLoaded=true",
+        )
+        requiredLines.forEach { line ->
+            assertTrue(summary.contains(line), "Missing required IntelliJ runtime UI diagnostic: $line\n$summary")
+        }
+
+        val requiredFields = listOf(
+            "RuntimeMainMenuDisplayMode",
+            "RuntimeShowMainMenu",
+            "RuntimeMenuButtonInToolbar",
+            "RuntimeHideNativeLinuxTitleNotSupportedReason",
+            "RuntimeJbrWindowMoveSupported",
+            "RuntimeStartupIsXToolkit",
+        )
+        val missingFields = listOf("xvfb", "kotlin").flatMap { prefix ->
+            requiredFields.mapNotNull { field ->
+                val linePrefix = "$prefix$field="
+                val line = summary.lineSequence().firstOrNull { it.startsWith(linePrefix) }
+                if (line == null || line == "$linePrefix<missing>") "$prefix$field" else null
+            }
+        }
+        assertTrue(
+            missingFields.isEmpty(),
+            "Incomplete IntelliJ runtime UI diagnostics: ${missingFields.joinToString(" ")}\n$summary",
+        )
     }
 
     private fun dumpIntellijRenderBandArtifacts(directory: File, text: String) {
@@ -1673,6 +1937,8 @@ class IntellijCommunitySmokeTest {
         val kotlinUi = logs.firstOrNull { it.fileName == "intellij-kotlin-ui-lnf.xml" }?.text.orEmpty()
         val xvfbExtensions = logs.firstOrNull { it.fileName == "intellij-xvfb-extensions-xdpyinfo.log" }?.text.orEmpty()
         val kotlinExtensions = logs.firstOrNull { it.fileName == "intellij-kotlin-extensions-xdpyinfo.log" }?.text.orEmpty()
+        val xvfbRuntime = logs.firstOrNull { it.fileName == "intellij-xvfb-ui-runtime-diagnostics.log" }?.text.orEmpty()
+        val kotlinRuntime = logs.firstOrNull { it.fileName == "intellij-kotlin-ui-runtime-diagnostics.log" }?.text.orEmpty()
         val xvfbTrace = logs.filter { it.fileName.startsWith("intellij-xvfb-") }.joinToString("\n") { it.text }
         val kotlinTrace = logs.filter { it.fileName.startsWith("intellij-kotlin-") }.joinToString("\n") { it.text }
         return buildString {
@@ -1700,12 +1966,33 @@ class IntellijCommunitySmokeTest {
             appendLine("kotlinListsXInputExtension=${listedExtensionsFromXdpyinfo(kotlinExtensions).contains("XInputExtension")}")
             appendLine("xvfbXInputWarning=${xInputWarning(xvfbTrace)}")
             appendLine("kotlinXInputWarning=${xInputWarning(kotlinTrace)}")
+            appendLine("xvfbRuntimeAgentLoaded=${propertyValue(xvfbRuntime, "agentLoaded")}")
+            appendLine("kotlinRuntimeAgentLoaded=${propertyValue(kotlinRuntime, "agentLoaded")}")
+            appendLine("xvfbRuntimeMainMenuDisplayMode=${propertyValue(xvfbRuntime, "runtimeMainMenuDisplayMode")}")
+            appendLine("kotlinRuntimeMainMenuDisplayMode=${propertyValue(kotlinRuntime, "runtimeMainMenuDisplayMode")}")
+            appendLine("xvfbRuntimeShowMainMenu=${propertyValue(xvfbRuntime, "runtimeShowMainMenu")}")
+            appendLine("kotlinRuntimeShowMainMenu=${propertyValue(kotlinRuntime, "runtimeShowMainMenu")}")
+            appendLine("xvfbRuntimeMenuButtonInToolbar=${propertyValue(xvfbRuntime, "runtimeMenuButtonInToolbar")}")
+            appendLine("kotlinRuntimeMenuButtonInToolbar=${propertyValue(kotlinRuntime, "runtimeMenuButtonInToolbar")}")
+            appendLine("xvfbRuntimeHideNativeLinuxTitleNotSupportedReason=${propertyValue(xvfbRuntime, "runtimeHideNativeLinuxTitleNotSupportedReason")}")
+            appendLine("kotlinRuntimeHideNativeLinuxTitleNotSupportedReason=${propertyValue(kotlinRuntime, "runtimeHideNativeLinuxTitleNotSupportedReason")}")
+            appendLine("xvfbRuntimeJbrWindowMoveSupported=${propertyValue(xvfbRuntime, "runtimeJbrWindowMoveSupported")}")
+            appendLine("kotlinRuntimeJbrWindowMoveSupported=${propertyValue(kotlinRuntime, "runtimeJbrWindowMoveSupported")}")
+            appendLine("xvfbRuntimeStartupIsXToolkit=${propertyValue(xvfbRuntime, "runtimeStartupIsXToolkit")}")
+            appendLine("kotlinRuntimeStartupIsXToolkit=${propertyValue(kotlinRuntime, "runtimeStartupIsXToolkit")}")
             appendLine("xvfbUiDecisionLines=${intellijUiDecisionLines(xvfbTrace).joinToString(" | ").ifEmpty { "None" }}")
             appendLine("kotlinUiDecisionLines=${intellijUiDecisionLines(kotlinTrace).joinToString(" | ").ifEmpty { "None" }}")
         }
     }
 
     private fun envValue(text: String, name: String): String =
+        Regex("""(?m)^${Regex.escape(name)}=(.*)$""")
+            .find(text)
+            ?.groupValues
+            ?.get(1)
+            ?: "<missing>"
+
+    private fun propertyValue(text: String, name: String): String =
         Regex("""(?m)^${Regex.escape(name)}=(.*)$""")
             .find(text)
             ?.groupValues
