@@ -307,6 +307,89 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij ui diagnostics summarize environment and header decisions`() {
+        val logs = listOf(
+            IntellijLogArtifact(
+                fileName = "intellij-xvfb-run-intellij-env.log",
+                text =
+                    """
+                    DISPLAY=:99
+                    XDG_CURRENT_DESKTOP=<unset>
+                    XDG_SESSION_TYPE=<unset>
+                    DESKTOP_SESSION=<unset>
+                    AWT_TOOLKIT=<unset>
+                    _JAVA_AWT_WM_NONREPARENTING=1
+                    IDEA_REMOTE_X11_WORKAROUND=false
+                    IDEA_X11_DEBUG=true
+                    """.trimIndent(),
+            ),
+            IntellijLogArtifact(
+                fileName = "intellij-kotlin-run-intellij-env.log",
+                text =
+                    """
+                    DISPLAY=host.docker.internal:231
+                    XDG_CURRENT_DESKTOP=GNOME
+                    XDG_SESSION_TYPE=x11
+                    DESKTOP_SESSION=gnome
+                    AWT_TOOLKIT=XToolkit
+                    _JAVA_AWT_WM_NONREPARENTING=1
+                    IDEA_REMOTE_X11_WORKAROUND=false
+                    IDEA_X11_DEBUG=true
+                    """.trimIndent(),
+            ),
+            IntellijLogArtifact(
+                fileName = "intellij-xvfb-ui-lnf.xml",
+                text = """<application><component name="UISettings"><option name="mainMenuDisplayMode" value="SEPARATE_TOOLBAR" /><option name="showMainMenu" value="true" /></component></application>""",
+            ),
+            IntellijLogArtifact(
+                fileName = "intellij-kotlin-ui-lnf.xml",
+                text = """<application><component name="UISettings"><option value="SEPARATE_TOOLBAR" name="mainMenuDisplayMode" /><option value="true" name="showMainMenu" /></component></application>""",
+            ),
+            IntellijLogArtifact(
+                fileName = "intellij-xvfb-extensions-xdpyinfo.log",
+                text =
+                    """
+                    number of extensions:    2
+                        GLX  (opcode: 150, base event: 95, base error: 158)
+                        XInputExtension  (opcode: 131, base event: 66, base error: 129)
+                    """.trimIndent(),
+            ),
+            IntellijLogArtifact(
+                fileName = "intellij-kotlin-extensions-xdpyinfo.log",
+                text =
+                    """
+                    number of extensions:    1
+                        GLX
+                    """.trimIndent(),
+            ),
+            IntellijLogArtifact(
+                fileName = "intellij-kotlin-run.log",
+                text =
+                    """
+                    sun.awt.X11.XToolkit checkXInput WARNING: X Input extension isnt available
+                    2026-07-06 INFO - #com.intellij.openapi.wm.impl.customFrameDecorations.header.CustomWindowHeaderUtil - native Linux title is not supported because _NET protocol is not supported
+                    2026-07-06 INFO - #com.intellij.ide.ui.MainMenuDisplayMode - mainMenuDisplayMode=SEPARATE_TOOLBAR
+                    """.trimIndent(),
+            ),
+        )
+
+        val summary = intellijUiDiagnosticsSummary(logs)
+
+        assertTrue(summary.contains("xvfbDisplay=:99"), summary)
+        assertTrue(summary.contains("kotlinDisplay=host.docker.internal:231"), summary)
+        assertTrue(summary.contains("xvfbXdgCurrentDesktop=<unset>"), summary)
+        assertTrue(summary.contains("kotlinXdgCurrentDesktop=GNOME"), summary)
+        assertTrue(summary.contains("xvfbMainMenuDisplayMode=SEPARATE_TOOLBAR"), summary)
+        assertTrue(summary.contains("kotlinMainMenuDisplayMode=SEPARATE_TOOLBAR"), summary)
+        assertTrue(summary.contains("xvfbListsXInputExtension=true"), summary)
+        assertTrue(summary.contains("kotlinListsXInputExtension=false"), summary)
+        assertTrue(summary.contains("xvfbXInputWarning=false"), summary)
+        assertTrue(summary.contains("kotlinXInputWarning=true"), summary)
+        assertTrue(summary.contains("CustomWindowHeaderUtil"), summary)
+        assertTrue(summary.contains("mainMenuDisplayMode=SEPARATE_TOOLBAR"), summary)
+    }
+
+    @Test
     fun `intellij robot capture delay is configurable`() {
         val source = robotCaptureSource()
 
@@ -319,6 +402,10 @@ class IntellijCommunitySmokeTest {
         val source = runIntellijScriptSource()
 
         assertTrue(source.contains("options/ui.lnf.xml"), source)
+        assertTrue(source.contains("run-intellij-env.log"), source)
+        assertTrue(source.contains("XDG_CURRENT_DESKTOP"), source)
+        assertTrue(source.contains("XDG_SESSION_TYPE"), source)
+        assertTrue(source.contains("AWT_TOOLKIT"), source)
         assertTrue(source.contains("""<option name="differentiateProjects" value="false" />"""), source)
         assertTrue(source.contains("""<option name="mainMenuDisplayMode" value="SEPARATE_TOOLBAR" />"""), source)
         assertTrue(source.contains("""<option name="showMainMenu" value="true" />"""), source)
@@ -833,6 +920,7 @@ class IntellijCommunitySmokeTest {
                       DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && break
                       sleep 0.25
                     done
+                    DISPLAY=:99 xdpyinfo -queryExtensions >/tmp/xdpyinfo-extensions-xvfb.log 2>&1 || true
                     DISPLAY=:99 xdpyinfo -ext GLX >/tmp/xdpyinfo-glx-xvfb.log 2>&1 || true
                     DISPLAY=:99 xsetroot -solid white >/tmp/xsetroot.log 2>&1 || true
                     DISPLAY=:99 \
@@ -869,11 +957,13 @@ class IntellijCommunitySmokeTest {
                 )
                 assertEquals(0, result.exitCode, result.stderr + result.stdout)
                 val extraLogs = listOf(
+                    "/tmp/xdpyinfo-extensions-xvfb.log" to "intellij-xvfb-extensions-xdpyinfo.log",
                     "/tmp/xdpyinfo-glx-xvfb.log" to "intellij-xvfb-glx-xdpyinfo.log",
                     "/tmp/xwininfo-xvfb-root-tree.log" to "intellij-xvfb-xwininfo-root-tree.log",
                     "/tmp/xprop-xvfb-root.log" to "intellij-xvfb-xprop-root.log",
                     "/tmp/idea-extra.vmoptions" to "intellij-xvfb-idea-extra.vmoptions",
                     "/tmp/idea-config/options/ui.lnf.xml" to "intellij-xvfb-ui-lnf.xml",
+                    "/tmp/run-intellij-env.log" to "intellij-xvfb-run-intellij-env.log",
                     "/tmp/run-intellij-cksum.log" to "intellij-xvfb-run-intellij-cksum.log",
                 )
                 try {
@@ -946,6 +1036,7 @@ class IntellijCommunitySmokeTest {
                         if [ -n "${url.orEmpty()}" ]; then
                           export IDEA_URL="${url.orEmpty()}"
                         fi
+                        DISPLAY=host.docker.internal:$display xdpyinfo -queryExtensions >/tmp/xdpyinfo-extensions-kotlin.log 2>&1 || true
                         DISPLAY=host.docker.internal:$display xdpyinfo -ext GLX >/tmp/xdpyinfo-glx-kotlin.log 2>&1 || true
                         DISPLAY=host.docker.internal:$display \
                         IDEA_X11_DEBUG=${intellijDebugValue()} \
@@ -981,11 +1072,13 @@ class IntellijCommunitySmokeTest {
                     )
                     assertEquals(0, startResult.exitCode, startResult.stderr + startResult.stdout)
                     val extraLogs = listOf(
+                        "/tmp/xdpyinfo-extensions-kotlin.log" to "intellij-kotlin-extensions-xdpyinfo.log",
                         "/tmp/xdpyinfo-glx-kotlin.log" to "intellij-kotlin-glx-xdpyinfo.log",
                         "/tmp/xwininfo-kotlin-root-tree.log" to "intellij-kotlin-xwininfo-root-tree.log",
                         "/tmp/xprop-kotlin-root.log" to "intellij-kotlin-xprop-root.log",
                         "/tmp/idea-extra.vmoptions" to "intellij-kotlin-idea-extra.vmoptions",
                         "/tmp/idea-config/options/ui.lnf.xml" to "intellij-kotlin-ui-lnf.xml",
+                        "/tmp/run-intellij-env.log" to "intellij-kotlin-run-intellij-env.log",
                         "/tmp/run-intellij-cksum.log" to "intellij-kotlin-run-intellij-cksum.log",
                     )
                     try {
@@ -1445,6 +1538,7 @@ class IntellijCommunitySmokeTest {
                 kotlinStateJson = actual.stateJson,
             ),
         )
+        File(directory, "intellij-ui-diagnostics.txt").writeText(intellijUiDiagnosticsSummary(logs))
         dumpIntellijVisualDiff(directory, "intellij-kotlin-robot-vs-xvfb", reference.robot, actual.robot)
         dumpIntellijVisualDiff(directory, "intellij-kotlin-svg-vs-xvfb", reference.robot, composedSvgCapture)
         dumpIntellijVisualDiff(directory, "intellij-kotlin-robot-vs-svg", actual.robot, composedSvgCapture)
@@ -1572,6 +1666,91 @@ class IntellijCommunitySmokeTest {
         }
     }
 
+    private fun intellijUiDiagnosticsSummary(logs: List<IntellijLogArtifact>): String {
+        val xvfbEnv = logs.firstOrNull { it.fileName == "intellij-xvfb-run-intellij-env.log" }?.text.orEmpty()
+        val kotlinEnv = logs.firstOrNull { it.fileName == "intellij-kotlin-run-intellij-env.log" }?.text.orEmpty()
+        val xvfbUi = logs.firstOrNull { it.fileName == "intellij-xvfb-ui-lnf.xml" }?.text.orEmpty()
+        val kotlinUi = logs.firstOrNull { it.fileName == "intellij-kotlin-ui-lnf.xml" }?.text.orEmpty()
+        val xvfbExtensions = logs.firstOrNull { it.fileName == "intellij-xvfb-extensions-xdpyinfo.log" }?.text.orEmpty()
+        val kotlinExtensions = logs.firstOrNull { it.fileName == "intellij-kotlin-extensions-xdpyinfo.log" }?.text.orEmpty()
+        val xvfbTrace = logs.filter { it.fileName.startsWith("intellij-xvfb-") }.joinToString("\n") { it.text }
+        val kotlinTrace = logs.filter { it.fileName.startsWith("intellij-kotlin-") }.joinToString("\n") { it.text }
+        return buildString {
+            appendLine("xvfbDisplay=${envValue(xvfbEnv, "DISPLAY")}")
+            appendLine("kotlinDisplay=${envValue(kotlinEnv, "DISPLAY")}")
+            appendLine("xvfbXdgCurrentDesktop=${envValue(xvfbEnv, "XDG_CURRENT_DESKTOP")}")
+            appendLine("kotlinXdgCurrentDesktop=${envValue(kotlinEnv, "XDG_CURRENT_DESKTOP")}")
+            appendLine("xvfbXdgSessionType=${envValue(xvfbEnv, "XDG_SESSION_TYPE")}")
+            appendLine("kotlinXdgSessionType=${envValue(kotlinEnv, "XDG_SESSION_TYPE")}")
+            appendLine("xvfbDesktopSession=${envValue(xvfbEnv, "DESKTOP_SESSION")}")
+            appendLine("kotlinDesktopSession=${envValue(kotlinEnv, "DESKTOP_SESSION")}")
+            appendLine("xvfbAwtToolkit=${envValue(xvfbEnv, "AWT_TOOLKIT")}")
+            appendLine("kotlinAwtToolkit=${envValue(kotlinEnv, "AWT_TOOLKIT")}")
+            appendLine("xvfbNonReparenting=${envValue(xvfbEnv, "_JAVA_AWT_WM_NONREPARENTING")}")
+            appendLine("kotlinNonReparenting=${envValue(kotlinEnv, "_JAVA_AWT_WM_NONREPARENTING")}")
+            appendLine("xvfbRemoteX11Workaround=${envValue(xvfbEnv, "IDEA_REMOTE_X11_WORKAROUND")}")
+            appendLine("kotlinRemoteX11Workaround=${envValue(kotlinEnv, "IDEA_REMOTE_X11_WORKAROUND")}")
+            appendLine("xvfbIdeaX11Debug=${envValue(xvfbEnv, "IDEA_X11_DEBUG")}")
+            appendLine("kotlinIdeaX11Debug=${envValue(kotlinEnv, "IDEA_X11_DEBUG")}")
+            appendLine("xvfbMainMenuDisplayMode=${xmlOptionValue(xvfbUi, "mainMenuDisplayMode")}")
+            appendLine("kotlinMainMenuDisplayMode=${xmlOptionValue(kotlinUi, "mainMenuDisplayMode")}")
+            appendLine("xvfbShowMainMenu=${xmlOptionValue(xvfbUi, "showMainMenu")}")
+            appendLine("kotlinShowMainMenu=${xmlOptionValue(kotlinUi, "showMainMenu")}")
+            appendLine("xvfbListsXInputExtension=${listedExtensionsFromXdpyinfo(xvfbExtensions).contains("XInputExtension")}")
+            appendLine("kotlinListsXInputExtension=${listedExtensionsFromXdpyinfo(kotlinExtensions).contains("XInputExtension")}")
+            appendLine("xvfbXInputWarning=${xInputWarning(xvfbTrace)}")
+            appendLine("kotlinXInputWarning=${xInputWarning(kotlinTrace)}")
+            appendLine("xvfbUiDecisionLines=${intellijUiDecisionLines(xvfbTrace).joinToString(" | ").ifEmpty { "None" }}")
+            appendLine("kotlinUiDecisionLines=${intellijUiDecisionLines(kotlinTrace).joinToString(" | ").ifEmpty { "None" }}")
+        }
+    }
+
+    private fun envValue(text: String, name: String): String =
+        Regex("""(?m)^${Regex.escape(name)}=(.*)$""")
+            .find(text)
+            ?.groupValues
+            ?.get(1)
+            ?: "<missing>"
+
+    private fun xmlOptionValue(xml: String, name: String): String =
+        Regex("""<option\b[^>]*\bname="${Regex.escape(name)}"[^>]*\bvalue="([^"]+)"""")
+            .find(xml)
+            ?.groupValues
+            ?.get(1)
+            ?: Regex("""<option\b[^>]*\bvalue="([^"]+)"[^>]*\bname="${Regex.escape(name)}"""")
+                .find(xml)
+                ?.groupValues
+                ?.get(1)
+            ?: "<missing>"
+
+    private fun xInputWarning(text: String): Boolean =
+        Regex("""X Input extension.*(?:isnt|isn't|not).*available""", RegexOption.IGNORE_CASE).containsMatchIn(text)
+
+    private fun intellijUiDecisionLines(text: String): List<String> {
+        val needles = listOf(
+            "mainmenudisplaymode",
+            "main menu",
+            "customwindowheader",
+            "native linux title",
+            "hide native",
+            "x11uiutil",
+            "tilewm",
+            "undefineddesktop",
+            "_net protocol",
+            "window move",
+        )
+        return text
+            .lineSequence()
+            .map { it.trim() }
+            .filter { line ->
+                val lower = line.lowercase()
+                needles.any { lower.contains(it) }
+            }
+            .distinct()
+            .take(40)
+            .toList()
+    }
+
     private fun angleInitializationPbufferFailure(text: String): Boolean =
         text.contains("Could not create the initialization pbuffer")
 
@@ -1605,6 +1784,7 @@ class IntellijCommunitySmokeTest {
             .drop(start + 1)
             .takeWhile { line -> line.isBlank() || line.firstOrNull()?.isWhitespace() == true }
             .map { it.trim() }
+            .map { line -> Regex("""\s+\(opcode:.*$""").replace(line, "") }
             .filter { it.isNotEmpty() }
             .toList()
     }

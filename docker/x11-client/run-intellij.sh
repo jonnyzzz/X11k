@@ -309,6 +309,45 @@ if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
 fi
 export _JAVA_AWT_WM_NONREPARENTING=1
 
+run_intellij_env_log=/tmp/run-intellij-env.log
+{
+  echo "[run-intellij] environment snapshot"
+  for name in \
+    DISPLAY \
+    XDG_CURRENT_DESKTOP \
+    XDG_SESSION_TYPE \
+    XDG_RUNTIME_DIR \
+    DESKTOP_SESSION \
+    GDMSESSION \
+    WAYLAND_DISPLAY \
+    AWT_TOOLKIT \
+    _JAVA_AWT_WM_NONREPARENTING \
+    JAVA_HOME \
+    JDK_HOME \
+    IDEA_HOME \
+    IDEA_CONFIG \
+    IDEA_SYSTEM \
+    IDEA_LOG \
+    IDEA_LAUNCHER \
+    IDEA_REMOTE_X11_WORKAROUND \
+    IDEA_X11_DEBUG \
+    LIBGL_ALWAYS_SOFTWARE \
+    LIBGL_DEBUG \
+    MESA_DEBUG \
+    EGL_LOG_LEVEL; do
+    eval "value=\${$name-}"
+    if [ -n "$value" ]; then
+      printf '%s=%s\n' "$name" "$value"
+    else
+      printf '%s=<unset>\n' "$name"
+    fi
+  done
+  if [ -f "$idea_extra_vmoptions" ]; then
+    echo "[run-intellij] IDEA_VM_OPTIONS=$idea_extra_vmoptions"
+    sed 's/^/VM_OPTION=/' "$idea_extra_vmoptions"
+  fi
+} > "$run_intellij_env_log" 2>&1 || true
+
 case "$IDEA_LAUNCHER" in
   native)
     if [ -x "$IDEA_HOME/bin/idea" ]; then
