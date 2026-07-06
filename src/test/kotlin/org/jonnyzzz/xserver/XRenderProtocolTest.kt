@@ -10911,6 +10911,96 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER good and best filters repeat thin pixmap strips into tall destinations`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 6, height = 2))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                listOf(
+                    RenderColor(red = 0x2600, green = 0x2800, blue = 0x2c00, alpha = 0xffff),
+                    RenderColor(red = 0x2700, green = 0x2800, blue = 0x2c00, alpha = 0xffff),
+                    RenderColor(red = 0x2700, green = 0x2900, blue = 0x2c00, alpha = 0xffff),
+                    RenderColor(red = 0x3b00, green = 0x3300, blue = 0x2900, alpha = 0xffff),
+                    RenderColor(red = 0x3c00, green = 0x3400, blue = 0x2900, alpha = 0xffff),
+                    RenderColor(red = 0x4f00, green = 0x3e00, blue = 0x2600, alpha = 0xffff),
+                    RenderColor(red = 0x3300, green = 0x3500, blue = 0x3b00, alpha = 0xffff),
+                    RenderColor(red = 0x4200, green = 0x3700, blue = 0x2800, alpha = 0xffff),
+                    RenderColor(red = 0x4300, green = 0x3800, blue = 0x2800, alpha = 0xffff),
+                    RenderColor(red = 0x5700, green = 0x4200, blue = 0x2500, alpha = 0xffff),
+                    RenderColor(red = 0x5800, green = 0x4300, blue = 0x2500, alpha = 0xffff),
+                    RenderColor(red = 0x2d00, green = 0x2c00, blue = 0x2b00, alpha = 0xffff),
+                ).forEachIndexed { index, color ->
+                    out.write(
+                        renderFillRectangles(
+                            PixmapPictureId,
+                            x = index % 6,
+                            y = index / 6,
+                            width = 1,
+                            height = 1,
+                            red = color.red,
+                            green = color.green,
+                            blue = color.blue,
+                            alpha = color.alpha,
+                        ),
+                    )
+                }
+                out.write(renderChangePicture(PixmapPictureId, repeat = XRender.RepeatNormal))
+                listOf("good", "best").forEachIndexed { index, filter ->
+                    out.write(renderSetPictureFilter(PixmapPictureId, filter, values = emptyList()))
+                    out.write(
+                        renderComposite(
+                            PixmapPictureId,
+                            PictureId,
+                            operation = XRender.OpSrc,
+                            destinationX = 0,
+                            destinationY = index * 4,
+                            width = 8,
+                            height = 4,
+                        ),
+                    )
+                }
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 8))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                val topRow = listOf(
+                    0xff26_282c.toInt(),
+                    0xff27_282c.toInt(),
+                    0xff27_292c.toInt(),
+                    0xff3b_3329.toInt(),
+                    0xff3c_3429.toInt(),
+                    0xff4f_3e26.toInt(),
+                    0xff26_282c.toInt(),
+                    0xff27_282c.toInt(),
+                )
+                val bottomRow = listOf(
+                    0xff33_353b.toInt(),
+                    0xff42_3728.toInt(),
+                    0xff43_3828.toInt(),
+                    0xff57_4225.toInt(),
+                    0xff58_4325.toInt(),
+                    0xff2d_2c2b.toInt(),
+                    0xff33_353b.toInt(),
+                    0xff42_3728.toInt(),
+                )
+                listOf(0, 4).forEach { baseY ->
+                    assertPixelRow(image, imageWidth = 8, y = baseY, expected = topRow)
+                    assertPixelRow(image, imageWidth = 8, y = baseY + 1, expected = bottomRow)
+                    assertPixelRow(image, imageWidth = 8, y = baseY + 2, expected = topRow)
+                    assertPixelRow(image, imageWidth = 8, y = baseY + 3, expected = bottomRow)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER OpOver good filter matches Xvfb transformed repeated ARGB32 pixmap strip`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

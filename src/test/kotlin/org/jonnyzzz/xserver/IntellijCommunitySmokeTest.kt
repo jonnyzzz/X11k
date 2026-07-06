@@ -338,6 +338,29 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij render band diagnostics summarize operation families`() {
+        val section =
+            """
+            RENDER operations intersecting top mapped root-child band:
+            - region=10,20 1260x120 window=0x200003
+            - #41 Composite minor=8 root=10,20 256x256 local=0,0 256x256 op=3 src=0x600280 mask=0x0 dst=0x60004a srcOrigin=0,0 maskOrigin=0,0 dst=0,0 256x256 source=0x600280/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60027f#131 paints=1 first=#40/Composite last=#40/Composite drawings=1 firstDrawing=CopyArea@[0,0 624x2] lastDrawing=CopyArea lastResult=624x2 crc32=0x3eb827c6 framebuffer=624x2 crc32=0x3eb827c6 result=256x256 crc32=0x812ddd86 pixels=[0xff26282c]
+            - #42 Composite minor=8 root=266,20 256x256 local=256,0 256x256 op=3 src=0x600280 mask=0x0 dst=0x60004a srcOrigin=256,0 maskOrigin=0,0 dst=256,0 256x256 source=0x600280/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60027f#131 paints=1 first=#40/Composite last=#40/Composite drawings=1 firstDrawing=CopyArea@[0,0 624x2] lastDrawing=CopyArea lastResult=624x2 crc32=0x3eb827c6 framebuffer=624x2 crc32=0x3eb827c6 result=256x256 crc32=0x70487e06 pixels=[0xff3b3329]
+            - #43 FillRectangles minor=26 root=10,54 1260x803 local=0,34 1260x803 op=1 dst=0x60004a color=6655,6911,7423,65535 rects=1 destination=0x60004a/pixmap repeat=none result=1260x803 crc32=0x2428c97c pixels=[0xff191a1c]
+            """.trimIndent()
+
+        val summary = intellijRenderBandOperationFamilies(section)
+
+        assertTrue(summary.startsWith("RENDER operation families:"), summary)
+        assertTrue(summary.contains("count=2 first=#41 last=#42 operation=Composite minor=8"), summary)
+        assertTrue(summary.contains("src=0x600280 mask=0x0 dst=0x60004a renderOp=3"), summary)
+        assertTrue(summary.contains("source=0x600280/pixmap repeat=normal filter=good"), summary)
+        assertTrue(summary.contains("sourcePopulation=0x60027f#131"), summary)
+        assertTrue(summary.contains("sourceFramebuffer=624x2/0x3eb827c6"), summary)
+        assertTrue(summary.contains("results=256x256/0x812ddd86,256x256/0x70487e06"), summary)
+        assertTrue(summary.contains("count=1 first=#43 last=#43 operation=FillRectangles minor=26"), summary)
+    }
+
+    @Test
     fun `intellij parity readiness waits for post markdown indexing completion`() {
         val baseLog =
             """
@@ -2306,13 +2329,121 @@ class IntellijCommunitySmokeTest {
             "right-frame" to "right",
             "bottom-frame" to "bottom",
         ).forEach { (fileBand, reportBand) ->
-            File(directory, "intellij-kotlin-$fileBand-render-operations.txt").writeText(
-                intellijRenderBandSection(text, reportBand).ifBlank {
-                    "RENDER operations intersecting $reportBand mapped root-child band:\n- None.\n"
-                },
+            val section = intellijRenderBandSection(text, reportBand).ifBlank {
+                "RENDER operations intersecting $reportBand mapped root-child band:\n- None.\n"
+            }
+            File(directory, "intellij-kotlin-$fileBand-render-operations.txt").writeText(section)
+            File(directory, "intellij-kotlin-$fileBand-render-families.txt").writeText(
+                intellijRenderBandOperationFamilies(section),
             )
         }
     }
+
+    private fun intellijRenderBandOperationFamilies(section: String): String {
+        val operations = section.lineSequence()
+            .mapNotNull(::parseIntellijRenderBandOperation)
+            .toList()
+        if (operations.isEmpty()) return "RENDER operation families:\n- None.\n"
+
+        return buildString {
+            appendLine("RENDER operation families:")
+            operations
+                .groupBy { it.key }
+                .entries
+                .sortedWith(
+                    compareByDescending<Map.Entry<IntellijRenderOperationFamilyKey, List<IntellijRenderBandOperation>>> { it.value.size }
+                        .thenBy { it.value.minOf { operation -> operation.id } },
+                )
+                .forEach { (key, group) ->
+                    val ids = group.map { it.id }
+                    val results = group
+                        .mapNotNull { operation -> operation.resultSize?.let { size -> size to operation.resultCrc32 } }
+                        .distinct()
+                        .joinToString(",") { (size, crc32) -> "$size/${crc32 ?: "none"}" }
+                        .ifBlank { "none" }
+                    append("- count=")
+                    append(group.size)
+                    append(" first=#")
+                    append(ids.min())
+                    append(" last=#")
+                    append(ids.max())
+                    append(" operation=")
+                    append(key.operation)
+                    append(" minor=")
+                    append(key.minorOpcode)
+                    key.sourceId?.let { append(" src=").append(it) }
+                    key.maskId?.let { append(" mask=").append(it) }
+                    key.destinationId?.let { append(" dst=").append(it) }
+                    key.renderOperation?.let { append(" renderOp=").append(it) }
+                    key.sourceDescription?.let { append(" source=").append(it) }
+                    key.sourceRepeat?.let { append(" repeat=").append(it) }
+                    key.sourceFilter?.let { append(" filter=").append(it) }
+                    key.sourceTransform?.let { append(" transform=").append(it) }
+                    key.sourcePopulation?.let { append(" sourcePopulation=").append(it) }
+                    key.sourceFramebufferSize?.let { size ->
+                        append(" sourceFramebuffer=")
+                        append(size)
+                        append('/')
+                        append(key.sourceFramebufferCrc32 ?: "none")
+                    }
+                    append(" results=")
+                    append(results)
+                    appendLine()
+                }
+        }
+    }
+
+    private fun parseIntellijRenderBandOperation(line: String): IntellijRenderBandOperation? {
+        val header = Regex("""^-\s+#(\d+)\s+(\S+)\s+minor=(\d+)""").find(line) ?: return null
+        val sourceFragment = line.substringAfter(" source=", "").substringBefore(" destination=", "")
+        val sourcePopulation = Regex("""\bsourcePopulation=(0x[0-9a-f]+#\d+)""").find(line)?.groupValues?.get(1)
+        val framebuffer = Regex("""\bframebuffer=(\d+x\d+)\s+crc32=(0x[0-9a-f]+)""").find(line)
+        val result = Regex("""\sresult=(\d+x\d+)\s+crc32=(0x[0-9a-f]+)""").find(line)
+        val key = IntellijRenderOperationFamilyKey(
+            operation = header.groupValues[2],
+            minorOpcode = header.groupValues[3].toInt(),
+            renderOperation = Regex("""\bop=(\d+)""").find(line)?.groupValues?.get(1),
+            sourceId = Regex("""\bsrc=(0x[0-9a-f]+)""").find(line)?.groupValues?.get(1),
+            maskId = Regex("""\bmask=(0x[0-9a-f]+)""").find(line)?.groupValues?.get(1),
+            destinationId = Regex("""\bdst=(0x[0-9a-f]+)""").find(line)?.groupValues?.get(1),
+            sourceDescription = sourceFragment.substringBefore(' ').takeIf { it.isNotBlank() },
+            sourceRepeat = Regex("""\brepeat=([^ ]+)""").find(sourceFragment)?.groupValues?.get(1),
+            sourceFilter = Regex("""\bfilter=([^ ]+)""").find(sourceFragment)?.groupValues?.get(1),
+            sourceTransform = Regex("""\btransform=(\[[^]]+])""").find(sourceFragment)?.groupValues?.get(1),
+            sourcePopulation = sourcePopulation,
+            sourceFramebufferSize = framebuffer?.groupValues?.get(1),
+            sourceFramebufferCrc32 = framebuffer?.groupValues?.get(2),
+        )
+        return IntellijRenderBandOperation(
+            id = header.groupValues[1].toInt(),
+            key = key,
+            resultSize = result?.groupValues?.get(1),
+            resultCrc32 = result?.groupValues?.get(2),
+        )
+    }
+
+    private data class IntellijRenderBandOperation(
+        val id: Int,
+        val key: IntellijRenderOperationFamilyKey,
+        val resultSize: String?,
+        val resultCrc32: String?,
+    )
+
+    private data class IntellijRenderOperationFamilyKey(
+        val operation: String,
+        val minorOpcode: Int,
+        val renderOperation: String?,
+        val sourceId: String?,
+        val maskId: String?,
+        val destinationId: String?,
+        val sourceDescription: String?,
+        val sourceRepeat: String?,
+        val sourceFilter: String?,
+        val sourceTransform: String?,
+        val sourcePopulation: String?,
+        val sourceFramebufferSize: String?,
+        val sourceFramebufferCrc32: String?,
+    )
 
     private fun intellijSmokeArtifactsDirectory(): File =
         projectRoot().resolve("build/tmp/intellij-community-smoke").toFile().also { it.mkdirs() }
