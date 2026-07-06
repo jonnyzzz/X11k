@@ -255,6 +255,52 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij visual region artifacts dump frame band crops diffs and metrics`() {
+        val text =
+            """
+            Screen:
+            - size=1280x900
+
+            Window hierarchy and geometry:
+            - 0x26 parent=0x0 label="root" geometry=0,0 1280x900 class=InputOutput depth=24 visual=0x28 backgroundPixel=16777215 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=0
+            - 0x200003 parent=0x26 label="Idea frame" geometry=10,20 1260x860 class=InputOutput depth=24 visual=0x28 backgroundPixel=0 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=1
+            """.trimIndent()
+        val expected = solidImage(1280, 900, 0xff10_1010.toInt())
+        val robot = solidImage(1280, 900, 0xff10_1010.toInt()).also { image ->
+            image.setRGB(20, 30, 0xff40_2020.toInt())
+        }
+        val svg = solidImage(1280, 900, 0xff10_1010.toInt()).also { image ->
+            image.setRGB(1180, 40, 0xff20_4020.toInt())
+        }
+        val directory = Files.createTempDirectory("intellij-frame-band-artifacts").toFile()
+        try {
+            dumpIntellijVisualRegionArtifacts(
+                directory = directory,
+                text = text,
+                expected = visualCapture(expected),
+                actualRobot = visualCapture(robot),
+                actualSvg = visualCapture(svg),
+            )
+
+            assertTrue(File(directory, "intellij-top-frame-band-xvfb.png").isFile)
+            assertTrue(File(directory, "intellij-top-frame-band-kotlin-robot.png").isFile)
+            assertTrue(File(directory, "intellij-top-frame-band-kotlin-svg.png").isFile)
+            assertTrue(File(directory, "intellij-top-frame-band-robot-vs-xvfb-diff.png").isFile)
+            assertTrue(File(directory, "intellij-top-frame-band-svg-vs-xvfb-diff.png").isFile)
+            assertTrue(File(directory, "intellij-top-frame-band-robot-vs-svg-diff.png").isFile)
+            assertTrue(File(directory, "intellij-right-frame-band-metrics.txt").isFile)
+
+            val metrics = File(directory, "intellij-top-frame-band-metrics.txt").readText()
+            assertTrue(metrics.contains("region=10,20 1260x120"), metrics)
+            assertTrue(metrics.contains("robotVsXvfbSampledDistance="), metrics)
+            assertTrue(metrics.contains("svgVsXvfbMismatchBounds="), metrics)
+            assertTrue(metrics.contains("robotVsSvgMismatchBounds="), metrics)
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `intellij render band diagnostics split top frame section from text report`() {
         val text =
             """
@@ -2079,6 +2125,13 @@ class IntellijCommunitySmokeTest {
         dumpIntellijVisualDiff(directory, "intellij-kotlin-robot-vs-xvfb", reference.robot, actual.robot)
         dumpIntellijVisualDiff(directory, "intellij-kotlin-svg-vs-xvfb", reference.robot, composedSvgCapture)
         dumpIntellijVisualDiff(directory, "intellij-kotlin-robot-vs-svg", actual.robot, composedSvgCapture)
+        dumpIntellijVisualRegionArtifacts(
+            directory = directory,
+            text = actual.text,
+            expected = reference.robot,
+            actualRobot = actual.robot,
+            actualSvg = composedSvgCapture,
+        )
         File(directory, "intellij-visual-region-metrics.txt").writeText(
             intellijVisualRegionMetrics(
                 text = actual.text,
@@ -2088,6 +2141,64 @@ class IntellijCommunitySmokeTest {
             ),
         )
     }
+
+    private fun dumpIntellijVisualRegionArtifacts(
+        directory: File,
+        text: String,
+        expected: VisualCapture,
+        actualRobot: VisualCapture,
+        actualSvg: VisualCapture,
+    ) {
+        val frame = largestMappedRootChildWindow(text) ?: run {
+            File(directory, "intellij-frame-band-artifacts.txt").writeText("ideaFrame=none\n")
+            return
+        }
+        for ((fileLabel, metricLabel, region) in intellijFrameBands(frame)) {
+            val expectedRegion = visualCapture(regionImage(expected.image, region))
+            val robotRegion = visualCapture(regionImage(actualRobot.image, region))
+            val svgRegion = visualCapture(regionImage(actualSvg.image, region))
+            ImageIO.write(expectedRegion.image, "png", File(directory, "intellij-$fileLabel-xvfb.png"))
+            ImageIO.write(robotRegion.image, "png", File(directory, "intellij-$fileLabel-kotlin-robot.png"))
+            ImageIO.write(svgRegion.image, "png", File(directory, "intellij-$fileLabel-kotlin-svg.png"))
+            ImageIO.write(visualDiffImage(expectedRegion.image, robotRegion.image), "png", File(directory, "intellij-$fileLabel-robot-vs-xvfb-diff.png"))
+            ImageIO.write(visualDiffImage(expectedRegion.image, svgRegion.image), "png", File(directory, "intellij-$fileLabel-svg-vs-xvfb-diff.png"))
+            ImageIO.write(visualDiffImage(robotRegion.image, svgRegion.image), "png", File(directory, "intellij-$fileLabel-robot-vs-svg-diff.png"))
+            File(directory, "intellij-$fileLabel-metrics.txt").writeText(
+                intellijVisualBandMetrics(
+                    metricLabel = metricLabel,
+                    region = region,
+                    expected = expectedRegion,
+                    actualRobot = robotRegion,
+                    actualSvg = svgRegion,
+                ),
+            )
+        }
+    }
+
+    private fun intellijVisualBandMetrics(
+        metricLabel: String,
+        region: Rectangle,
+        expected: VisualCapture,
+        actualRobot: VisualCapture,
+        actualSvg: VisualCapture,
+    ): String =
+        buildString {
+            appendLine("band=$metricLabel")
+            appendLine("region=${region.x},${region.y} ${region.width}x${region.height}")
+            appendLine("xvfb=$expected")
+            appendLine("kotlinRobot=$actualRobot")
+            appendLine("kotlinSvg=$actualSvg")
+            appendLine("robotVsXvfbCoverageRatio=${ratio(actualRobot.nonWhitePixels, expected.nonWhitePixels)}")
+            appendLine("svgVsXvfbCoverageRatio=${ratio(actualSvg.nonWhitePixels, expected.nonWhitePixels)}")
+            appendLine("robotVsXvfbAverageRgbDelta=${abs(actualRobot.averageRgb - expected.averageRgb)}")
+            appendLine("svgVsXvfbAverageRgbDelta=${abs(actualSvg.averageRgb - expected.averageRgb)}")
+            appendLine("robotVsXvfbSampledDistance=${imageDistance(expected.image, actualRobot.image)}")
+            appendLine("svgVsXvfbSampledDistance=${imageDistance(expected.image, actualSvg.image)}")
+            appendLine("robotVsSvgSampledDistance=${imageDistance(actualRobot.image, actualSvg.image)}")
+            appendLine("robotVsXvfbMismatchBounds=${mismatchBounds(expected.image, actualRobot.image).toMetricString()}")
+            appendLine("svgVsXvfbMismatchBounds=${mismatchBounds(expected.image, actualSvg.image).toMetricString()}")
+            appendLine("robotVsSvgMismatchBounds=${mismatchBounds(actualRobot.image, actualSvg.image).toMetricString()}")
+        }
 
     private fun dumpIntellijLogArtifacts(logs: List<IntellijLogArtifact>) {
         val directory = intellijSmokeArtifactsDirectory()
@@ -2626,11 +2737,18 @@ class IntellijCommunitySmokeTest {
             appendLine("robotInsideFrameMismatchBounds=${mismatchBounds(regionImage(expected.image, frame), regionImage(actualRobot.image, frame)).toMetricString()}")
             appendLine("svgInsideFrameMismatchBounds=${mismatchBounds(regionImage(expected.image, frame), regionImage(actualSvg.image, frame)).toMetricString()}")
             appendLine("robotVsSvgInsideFrameMismatchBounds=${mismatchBounds(regionImage(actualRobot.image, frame), regionImage(actualSvg.image, frame)).toMetricString()}")
-            appendIntellijRegionComparison("topFrameBand", frame.topBand(120), expected, actualRobot, actualSvg)
-            appendIntellijRegionComparison("rightFrameBand", frame.rightBand(96), expected, actualRobot, actualSvg)
-            appendIntellijRegionComparison("bottomFrameBand", frame.bottomBand(96), expected, actualRobot, actualSvg)
+            intellijFrameBands(frame).forEach { (_, metricLabel, region) ->
+                appendIntellijRegionComparison(metricLabel, region, expected, actualRobot, actualSvg)
+            }
         }
     }
+
+    private fun intellijFrameBands(frame: Rectangle): List<IntellijFrameBand> =
+        listOf(
+            IntellijFrameBand(fileLabel = "top-frame-band", metricLabel = "topFrameBand", region = frame.topBand(120)),
+            IntellijFrameBand(fileLabel = "right-frame-band", metricLabel = "rightFrameBand", region = frame.rightBand(96)),
+            IntellijFrameBand(fileLabel = "bottom-frame-band", metricLabel = "bottomFrameBand", region = frame.bottomBand(96)),
+        )
 
     private fun StringBuilder.appendIntellijRegionComparison(
         name: String,
@@ -2941,6 +3059,12 @@ class IntellijCommunitySmokeTest {
     private data class IntellijLogArtifact(
         val fileName: String,
         val text: String,
+    )
+
+    private data class IntellijFrameBand(
+        val fileLabel: String,
+        val metricLabel: String,
+        val region: Rectangle,
     )
 
     private data class IntellijParityReadiness(
