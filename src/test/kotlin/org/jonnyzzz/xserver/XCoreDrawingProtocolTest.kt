@@ -17,6 +17,28 @@ import kotlin.test.assertTrue
 
 class XCoreDrawingProtocolTest {
     @Test
+    fun `setup reply advertises root and rgba truecolor visuals`() {
+        XServer(ServerOptions(port = 0, width = 1280, height = 900)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                val setupReply = setupReply(socket)
+                val visuals = setupVisualIdsByDepth(setupReply)
+                val screenOffset = setupScreenOffset(setupReply)
+
+                assertEquals(1280, u16le(setupReply, screenOffset + 20))
+                assertEquals(900, u16le(setupReply, screenOffset + 22))
+                assertEquals(325, u16le(setupReply, screenOffset + 24))
+                assertEquals(229, u16le(setupReply, screenOffset + 26))
+                assertEquals(listOf(X11Ids.RootVisual), visuals.getValue(X11Ids.RootDepth))
+                assertEquals(listOf(X11Ids.RgbaVisual), visuals.getValue(X11Ids.RgbaDepth))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `protocol diagnostics stay in state without writing stderr by default`() {
         val originalErr = System.err
         val capturedErr = ByteArrayOutputStream()
@@ -1078,6 +1100,8 @@ class XCoreDrawingProtocolTest {
                 out.write(queryBestSizeRequest(sizeClass = 3, drawable = X11Ids.RootWindow, width = 4, height = 5))
                 out.write(queryBestSizeRequest(sizeClass = 0, drawable = missingDrawable, width = 4, height = 5))
                 out.write(queryBestSizeRequest(sizeClass = 0, drawable = X11Ids.RootWindow, width = 0, height = 7))
+                out.write(queryBestSizeRequest(sizeClass = 0, drawable = X11Ids.RootWindow, width = 65_535, height = 65_535))
+                out.write(queryBestSizeRequest(sizeClass = 1, drawable = X11Ids.RootWindow, width = 65_535, height = 65_535))
                 out.flush()
 
                 assertError(socket.getInputStream(), error = 16, opcode = 97, badValue = 0, sequence = 1)
@@ -1089,6 +1113,16 @@ class XCoreDrawingProtocolTest {
                 assertEquals(5, u16le(reply, 2))
                 assertEquals(1, u16le(reply, 8))
                 assertEquals(7, u16le(reply, 10))
+
+                val cursorMaximum = readReply(socket.getInputStream())
+                assertEquals(6, u16le(cursorMaximum, 2))
+                assertEquals(120, u16le(cursorMaximum, 8))
+                assertEquals(90, u16le(cursorMaximum, 10))
+
+                val tileMaximum = readReply(socket.getInputStream())
+                assertEquals(7, u16le(tileMaximum, 2))
+                assertEquals(65_535, u16le(tileMaximum, 8))
+                assertEquals(65_535, u16le(tileMaximum, 10))
             }
             server.close()
             serverThread.join(1_000)
@@ -1110,6 +1144,8 @@ class XCoreDrawingProtocolTest {
                 out.write(request(98, 0, truncatedName))
                 out.write(request(98, 0, overlongEmptyName))
                 out.write(queryExtensionRequest("NOT-PRESENT"))
+                out.write(queryExtensionRequest("Generic Event Extension"))
+                out.write(queryExtensionRequest("XInputExtension"))
                 out.write(queryExtensionRequest("GLX"))
                 out.write(queryExtensionRequest("XFIXES"))
                 out.write(queryExtensionRequest("SHAPE"))
@@ -1123,22 +1159,30 @@ class XCoreDrawingProtocolTest {
                 assertEquals(4, u16le(missing, 2))
                 assertEquals(0, missing[8].toInt())
 
+                val genericEvent = readReply(socket.getInputStream())
+                assertEquals(5, u16le(genericEvent, 2))
+                assertEquals(0, genericEvent[8].toInt())
+
+                val xinput = readReply(socket.getInputStream())
+                assertEquals(6, u16le(xinput, 2))
+                assertEquals(0, xinput[8].toInt())
+
                 val glx = readReply(socket.getInputStream())
-                assertEquals(5, u16le(glx, 2))
+                assertEquals(7, u16le(glx, 2))
                 assertEquals(1, glx[8].toInt())
                 assertEquals(128, glx[9].toInt() and 0xff)
                 assertEquals(0, glx[10].toInt() and 0xff)
                 assertEquals(128, glx[11].toInt() and 0xff)
 
                 val xfixes = readReply(socket.getInputStream())
-                assertEquals(6, u16le(xfixes, 2))
+                assertEquals(8, u16le(xfixes, 2))
                 assertEquals(1, xfixes[8].toInt())
                 assertEquals(XFixes.MajorOpcode, xfixes[9].toInt() and 0xff)
                 assertEquals(XFixes.FirstEvent, xfixes[10].toInt() and 0xff)
                 assertEquals(XFixes.FirstError, xfixes[11].toInt() and 0xff)
 
                 val shape = readReply(socket.getInputStream())
-                assertEquals(7, u16le(shape, 2))
+                assertEquals(9, u16le(shape, 2))
                 assertEquals(1, shape[8].toInt())
                 assertEquals(XShape.MajorOpcode, shape[9].toInt() and 0xff)
                 assertEquals(XShape.FirstEvent, shape[10].toInt() and 0xff)
@@ -3037,7 +3081,7 @@ class XCoreDrawingProtocolTest {
                 socket.soTimeout = 2_000
                 setup(socket)
                 val missingWindow = WindowId + 100
-                val unsupportedVisual = X11Ids.RootVisual + 1
+                val unsupportedVisual = X11Ids.RgbaVisual + 1
                 val validColormap = ColormapId + 40
                 val out = socket.getOutputStream()
                 out.write(request(78, 0, ByteArray(8)))
@@ -3061,6 +3105,38 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 8, opcode = 78, badValue = 1, sequence = 7)
 
                 assertEquals(listOf(validColormap), installedColormaps(readReply(socket.getInputStream())))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CreateColormap and CreateWindow accept advertised rgba visual`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createColormapRequest(ColormapId, window = X11Ids.RootWindow, visual = X11Ids.RgbaVisual))
+                out.write(
+                    createWindowRequest(
+                        WindowId,
+                        depth = X11Ids.RgbaDepth,
+                        visual = X11Ids.RgbaVisual,
+                        colormap = ColormapId,
+                        backgroundPixel = 0x1122_3344,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(1, image[0].toInt())
+                assertEquals(X11Ids.RgbaDepth, image[1].toInt() and 0xff)
+                assertEquals(X11Ids.RgbaVisual, u32le(image, 8))
+                assertEquals(0xff22_3344.toInt(), pixelAt(image, 1, 0, 0))
             }
             server.close()
             serverThread.join(1_000)
@@ -12633,7 +12709,7 @@ class XCoreDrawingProtocolTest {
             Socket("127.0.0.1", server.localPort).use { socket ->
                 socket.soTimeout = 2_000
                 setup(socket)
-                val badVisual = X11Ids.RootVisual + 1
+                val badVisual = X11Ids.RgbaVisual + 1
                 val out = socket.getOutputStream()
                 out.write(createWindowRawRequest(WindowId, windowClass = 3))
                 out.write(createWindowRawRequest(WindowId, depth = 32))
@@ -15490,6 +15566,32 @@ class XCoreDrawingProtocolTest {
                         0,
                     ),
                 )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `root resource manager atom is predefined but property is absent by default`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(internAtomRequest("RESOURCE_MANAGER", onlyIfExists = true))
+                out.flush()
+
+                val atomReply = readReply(socket.getInputStream())
+                assertEquals(1, u16le(atomReply, 2))
+                val resourceManager = u32le(atomReply, 8)
+                assertTrue(resourceManager > 0)
+
+                out.write(getPropertyRequest(X11Ids.RootWindow, resourceManager, StringAtom))
+                out.flush()
+
+                assertNoPropertyReply(readReply(socket.getInputStream()), sequence = 2)
             }
             server.close()
             serverThread.join(1_000)
@@ -20765,6 +20867,29 @@ class XCoreDrawingProtocolTest {
             assertEquals("Access denied", reason.copyOfRange(0, reasonLength).decodeToString())
             assertZeroBytes(reason, reasonLength, reason.size)
         }
+    }
+
+    private fun setupVisualIdsByDepth(reply: ByteArray): Map<Int, List<Int>> {
+        var offset = setupScreenOffset(reply)
+        val depthCount = reply[offset + 39].toInt() and 0xff
+        offset += 40
+        val result = linkedMapOf<Int, List<Int>>()
+        repeat(depthCount) {
+            val depth = reply[offset].toInt() and 0xff
+            val visualCount = u16le(reply, offset + 2)
+            offset += 8
+            result[depth] = (0 until visualCount).map { index ->
+                u32le(reply, offset + index * 24)
+            }
+            offset += visualCount * 24
+        }
+        return result
+    }
+
+    private fun setupScreenOffset(reply: ByteArray): Int {
+        val vendorLength = u16le(reply, 24)
+        val pixmapFormats = reply[29].toInt() and 0xff
+        return 40 + paddedLength(vendorLength) + pixmapFormats * 8
     }
 
     private fun createWindowRequest(

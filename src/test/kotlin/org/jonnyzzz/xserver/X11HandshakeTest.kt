@@ -106,7 +106,7 @@ class X11HandshakeTest {
                         SetupDepth(depth = 4, visualCount = 0),
                         SetupDepth(depth = 8, visualCount = 0),
                         SetupDepth(depth = 24, visualCount = 1),
-                        SetupDepth(depth = 32, visualCount = 0),
+                        SetupDepth(depth = 32, visualCount = 1),
                     ),
                     rest.screenDepths(),
                 )

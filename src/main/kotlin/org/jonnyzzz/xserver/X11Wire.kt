@@ -101,8 +101,23 @@ internal object SetupReply {
         val pixmapFormatsLength = XPixmapFormats.All.size
         val screensLength = 1
         val depthsLength = XPixmapFormats.All.size
-        val visualsLength = 1
-        val depthBytes = XPixmapFormats.All.sumOf { 8 + if (it.depth == RootDepth) 24 else 0 }
+        val visuals = listOf(
+            XVisualDescription(
+                id = X11Ids.RootVisual,
+                depth = RootDepth,
+                redMask = 0x00ff_0000,
+                greenMask = 0x0000_ff00,
+                blueMask = 0x0000_00ff,
+            ),
+            XVisualDescription(
+                id = X11Ids.RgbaVisual,
+                depth = X11Ids.RgbaDepth,
+                redMask = 0x00ff_0000,
+                greenMask = 0x0000_ff00,
+                blueMask = 0x0000_00ff,
+            ),
+        )
+        val depthBytes = XPixmapFormats.All.sumOf { format -> 8 + visuals.count { it.depth == format.depth } * 24 }
         val screenBytes = 40 + depthBytes
         val additionalLength = 32 + vendorPaddedLength + pixmapFormatsLength * 8 + screenBytes
         val reply = ByteArray(8 + additionalLength)
@@ -155,17 +170,18 @@ internal object SetupReply {
 
         for (format in XPixmapFormats.All) {
             reply[offset] = format.depth.toByte()
-            val formatVisualsLength = if (format.depth == RootDepth) visualsLength else 0
+            val formatVisuals = visuals.filter { it.depth == format.depth }
+            val formatVisualsLength = formatVisuals.size
             byteOrder.put16(reply, offset + 2, formatVisualsLength)
             offset += 8
-            if (format.depth == RootDepth) {
-                byteOrder.put32(reply, offset, RootVisualId)
+            for (visual in formatVisuals) {
+                byteOrder.put32(reply, offset, visual.id)
                 reply[offset + 4] = 4
                 reply[offset + 5] = 8
                 byteOrder.put16(reply, offset + 6, 256)
-                byteOrder.put32(reply, offset + 8, 0x00ff_0000)
-                byteOrder.put32(reply, offset + 12, 0x0000_ff00)
-                byteOrder.put32(reply, offset + 16, 0x0000_00ff)
+                byteOrder.put32(reply, offset + 8, visual.redMask)
+                byteOrder.put32(reply, offset + 12, visual.greenMask)
+                byteOrder.put32(reply, offset + 16, visual.blueMask)
                 offset += 24
             }
         }
@@ -196,6 +212,14 @@ internal object SetupReply {
     private fun paddedLength(length: Int): Int = (length + 3) and -4
 }
 
+internal data class XVisualDescription(
+    val id: Int,
+    val depth: Int,
+    val redMask: Int,
+    val greenMask: Int,
+    val blueMask: Int,
+)
+
 internal data class XPixmapFormatEntry(
     val depth: Int,
     val bitsPerPixel: Int,
@@ -223,7 +247,19 @@ internal object X11Ids {
     const val RootWindow = 0x0000_0026
     const val DefaultColormap = 0x0000_0027
     const val RootVisual = 0x0000_0028
+    const val RgbaVisual = 0x0000_0029
     const val RootDepth = 24
+    const val RgbaDepth = 32
+
+    fun visualDepth(visual: Int): Int? =
+        when (visual) {
+            RootVisual -> RootDepth
+            RgbaVisual -> RgbaDepth
+            else -> null
+        }
+
+    fun isSupportedVisual(visual: Int): Boolean =
+        visualDepth(visual) != null
 }
 
 internal object XWindowClass {

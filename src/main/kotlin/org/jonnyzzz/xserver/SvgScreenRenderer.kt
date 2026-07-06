@@ -1936,6 +1936,14 @@ internal object SvgScreenRenderer {
 
     private fun StringBuilder.appendRenderDrawablePaint(paint: XRenderDrawablePaintSnapshot) {
         append("""{"id":${paint.id},"minorOpcode":${paint.minorOpcode},"operation":"${escapeJson(paint.operation)}","detail":"${escapeJson(paint.detail)}"""")
+        paint.source?.let { picture ->
+            append(""","source":""")
+            appendRenderPictureSnapshot(picture)
+        }
+        paint.mask?.let { picture ->
+            append(""","mask":""")
+            appendRenderPictureSnapshot(picture)
+        }
         paint.destinationRegion?.let { rectangle ->
             append(""","destinationRegion":{"x":${rectangle.x},"y":${rectangle.y},"width":${rectangle.width},"height":${rectangle.height}}""")
         }

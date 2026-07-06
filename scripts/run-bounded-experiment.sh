@@ -286,6 +286,37 @@ dump_diagnostics() {
   { echo "DIAGNOSTICS=$diag_file" >> "$RUN_INFO_FILE"; } || true
 }
 
+dump_failure_artifacts() {
+  local reason="$1"
+  local safe_reason diag_file
+  safe_reason="$(printf '%s' "$reason" | tr -cd '[:alnum:]_-')"
+  diag_file="$THIS_RUN_DIR/diagnostics-${safe_reason}-$(date -u +%Y%m%d-%H%M%S).txt"
+  {
+    echo "REASON=$reason"
+    echo "RUN_ID=$RUN_ID"
+    echo "ROOT=$ROOT"
+    echo "UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "CMD=$CMDLINE"
+    echo
+    echo "== run info =="
+    cat "$RUN_INFO_FILE" 2>/dev/null || true
+    echo
+    echo "== crash anchors =="
+    {
+      grep -R -n -E 'SIG[A-Z]+|Problematic frame|java_error|hs_err|XextFindDisplay|fatal error has been detected|AssertionFailedError' \
+        "$ROOT/build/test-results/test" "$ROOT/build/tmp" "$STDOUT_FILE" "$STDERR_FILE" 2>/dev/null || true
+    } | head -240
+    echo
+    echo "== stdout tail =="
+    tail -160 "$STDOUT_FILE" 2>/dev/null || true
+    echo
+    echo "== stderr tail =="
+    tail -160 "$STDERR_FILE" 2>/dev/null || true
+  } >"$diag_file" 2>&1 || true
+  echo "DIAGNOSTICS=$diag_file"
+  { echo "DIAGNOSTICS=$diag_file" >> "$RUN_INFO_FILE"; } || true
+}
+
 RUN_ID="run_$(date -u +%Y%m%d-%H%M%S)-$$"
 THIS_RUN_DIR="$RUN_DIR/$RUN_ID"
 mkdir -p "$THIS_RUN_DIR"
@@ -414,5 +445,8 @@ if [[ "$TIMEOUT_FIRED" == true ]]; then
   } >> "$RUN_INFO_FILE"
 fi
 echo "EXIT_CODE=$EXIT_CODE" >> "$RUN_INFO_FILE"
+if [[ "$EXIT_CODE" -ne 0 ]]; then
+  dump_failure_artifacts "experiment-exit-${EXIT_CODE}"
+fi
 echo "EXIT_CODE=$EXIT_CODE"
 exit "$EXIT_CODE"

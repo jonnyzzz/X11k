@@ -34,11 +34,22 @@ class XRenderProtocolTest {
                 val formats = readReply(socket.getInputStream())
                 assertEquals(4, u32le(formats, 8))
                 assertEquals(1, u32le(formats, 12))
-                assertEquals(1, u32le(formats, 16))
-                assertEquals(1, u32le(formats, 20))
+                assertEquals(2, u32le(formats, 16))
+                assertEquals(2, u32le(formats, 20))
                 assertEquals(1, u32le(formats, 24))
                 assertEquals(XRender.Argb32Format, u32le(formats, 32))
                 assertEquals(32, formats[37].toInt() and 0xff)
+                val screenOffset = 32 + 28 * 4
+                assertEquals(2, u32le(formats, screenOffset))
+                assertEquals(XRender.Rgb24Format, u32le(formats, screenOffset + 4))
+                assertEquals(24, formats[screenOffset + 8].toInt() and 0xff)
+                assertEquals(1, u16le(formats, screenOffset + 10))
+                assertEquals(X11Ids.RootVisual, u32le(formats, screenOffset + 16))
+                assertEquals(XRender.Rgb24Format, u32le(formats, screenOffset + 20))
+                assertEquals(32, formats[screenOffset + 24].toInt() and 0xff)
+                assertEquals(1, u16le(formats, screenOffset + 26))
+                assertEquals(X11Ids.RgbaVisual, u32le(formats, screenOffset + 32))
+                assertEquals(XRender.Argb32Format, u32le(formats, screenOffset + 36))
 
                 assertContains(httpGet(server.localPort, "/text.txt"), "RENDER supported=true")
             }
@@ -11407,7 +11418,20 @@ class XRenderProtocolTest {
                 out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
                 out.write(createPixmapRequest(PixmapId, depth = 32, width = 4, height = 2))
                 out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
-                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 4, height = 2, red = 0x1234, green = 0x5678, blue = 0x9abc, alpha = 0xffff))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = 4 to 0,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0x1234, green = 0x5678, blue = 0x9abc, alpha = 0xffff),
+                            RenderColor(red = 0xabcd, green = 0x7654, blue = 0x3210, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
+                out.write(renderComposite(GradientPictureId, PixmapPictureId, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 4, height = 2))
                 repeat(10_005) {
                     out.write(renderSetPictureClipRectangles(PictureId, rectangles = emptyList()))
                 }
@@ -11418,10 +11442,11 @@ class XRenderProtocolTest {
                 }
                 val json = httpGet(server.localPort, "/state.json")
                 val renderOperationDetails = json.substringAfter(""""renderOperationDetails":[""").substringBefore(""""propertyOperations":[""")
-                assertFalse(renderOperationDetails.contains(""""operation":"FillRectangles""""), renderOperationDetails)
+                assertFalse(renderOperationDetails.contains(""""operation":"Composite""""), renderOperationDetails)
                 val pixmapJson = json.substringAfter(""""id":"0x${PixmapId.toUInt().toString(16)}"""").substringBefore(""""cursors":[""")
                 assertContains(pixmapJson, """"renderOperations":[{""")
-                assertContains(pixmapJson, """"operation":"FillRectangles"""")
+                assertContains(pixmapJson, """"operation":"Composite"""")
+                assertContains(pixmapJson, """"source":{"id":"0x${GradientPictureId.toUInt().toString(16)}","drawable":"none","kind":"linear-gradient"""")
                 assertContains(pixmapJson, """"destinationRegion":{"x":0,"y":0,"width":4,"height":2}""")
                 assertContains(pixmapJson, """"result":{"width":4,"height":2,"crc32":""")
 
@@ -11434,7 +11459,8 @@ class XRenderProtocolTest {
                 assertContains(compositeJson, """"sourcePopulation":{"drawable":"0x${PixmapId.toUInt().toString(16)}","generation":""")
                 assertContains(compositeJson, """"paintCount":1""")
                 assertContains(compositeJson, """"firstPaint":{"id":""")
-                assertContains(compositeJson, """"operation":"FillRectangles"""")
+                assertContains(compositeJson, """"operation":"Composite"""")
+                assertContains(compositeJson, """"source":{"id":"0x${GradientPictureId.toUInt().toString(16)}","drawable":"none","kind":"linear-gradient"""")
 
                 val text = httpGet(server.localPort, "/text.txt")
                 assertContains(text, "0x${PixmapId.toUInt().toString(16)} geometry=4x2 depth=32 painted=true")

@@ -343,6 +343,58 @@ diagnose_gradle() {
   { echo "DIAGNOSTICS=$diag_file" >> "$RUN_INFO_FILE"; } || true
 }
 
+dump_failure_artifacts() {
+  local reason="$1"
+  local safe_reason diag_file
+  safe_reason="$(printf '%s' "$reason" | tr -cd '[:alnum:]_-')"
+  diag_file="$THIS_RUN_DIR/diagnostics-${safe_reason}-$(date -u +%Y%m%d-%H%M%S).txt"
+  {
+    echo "REASON=$reason"
+    echo "RUN_ID=$RUN_ID"
+    echo "ROOT=$ROOT"
+    echo "UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "CMD=$ROOT/gradlew ${GRADLE_ARGS[*]}"
+    echo
+    echo "== run info =="
+    cat "$RUN_INFO_FILE" 2>/dev/null || true
+    echo
+    echo "== failed test result anchors =="
+    find "$ROOT/build/test-results/test" -maxdepth 1 -type f -name 'TEST-*.xml' -print 2>/dev/null | sort | while read -r file; do
+      if grep -q '<failure\|<error' "$file" 2>/dev/null; then
+        echo "-- $file --"
+        grep -n -E '<testcase name=|<failure|<error|SIG[A-Z]+|Problematic frame|java_error|XextFindDisplay|AssertionFailedError' "$file" 2>/dev/null | head -160 || true
+      fi
+    done
+    echo
+    echo "== native crash anchors =="
+    {
+      grep -R -n -E 'SIG[A-Z]+|Problematic frame|java_error|hs_err|XextFindDisplay|fatal error has been detected' \
+        "$ROOT/build/test-results/test" "$ROOT/build/tmp" "$STDOUT_FILE" "$STDERR_FILE" 2>/dev/null || true
+    } | head -240
+    echo
+    echo "== intellij smoke artifacts =="
+    if [[ -d "$ROOT/build/tmp/intellij-community-smoke" ]]; then
+      find "$ROOT/build/tmp/intellij-community-smoke" -maxdepth 1 -type f \
+        \( -name '*.log' -o -name '*.txt' \) -print 2>/dev/null | sort | while read -r file; do
+        case "$(basename "$file")" in
+          *idea.log|*run.log|*xawt-trace.log|*glx-xdpyinfo.log|*xprop-root.log|*visual-region-metrics.txt)
+            echo "-- $file --"
+            tail -80 "$file" 2>/dev/null || true
+            ;;
+        esac
+      done
+    fi
+    echo
+    echo "== stdout tail =="
+    tail -160 "$STDOUT_FILE" 2>/dev/null || true
+    echo
+    echo "== stderr tail =="
+    tail -160 "$STDERR_FILE" 2>/dev/null || true
+  } >"$diag_file" 2>&1 || true
+  echo "GRADLE_DIAGNOSTICS=$diag_file" >&2
+  { echo "DIAGNOSTICS=$diag_file" >> "$RUN_INFO_FILE"; } || true
+}
+
 acquire_lock() {
   local start now waited owner
   start="$(date +%s)"
@@ -493,4 +545,7 @@ done
 
 wait "$GRADLE_PID" || exit_code=$?
 echo "EXIT_CODE=$exit_code" >> "$RUN_INFO_FILE"
+if [[ "$exit_code" -ne 0 ]]; then
+  dump_failure_artifacts "gradle-exit-${exit_code}"
+fi
 exit "$exit_code"

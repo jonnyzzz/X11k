@@ -245,6 +245,10 @@ EOF
 <application>
   <component name="UISettings">
     <option name="differentiateProjects" value="false" />
+    <option name="mainMenuDisplayMode" value="SEPARATE_TOOLBAR" />
+    <option name="showMainMenu" value="true" />
+    <option name="useProjectColorsInMainToolbar" value="false" />
+    <option name="useSolutionColorsInMainToolbar" value="false" />
   </component>
 </application>
 EOF

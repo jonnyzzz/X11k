@@ -13,7 +13,7 @@ data class ServerOptions(
     val port: Int = 6000,
     val width: Int = 1024,
     val height: Int = 768,
-    val dpi: Int = 96,
+    val dpi: Int = 100,
     val rootBackgroundPixel: Int = 0x00ff_ffff,
 ) {
     companion object {
@@ -22,7 +22,7 @@ data class ServerOptions(
             var port = 6000
             var width = 1024
             var height = 768
-            var dpi = 96
+            var dpi = 100
             var rootBackgroundPixel = 0x00ff_ffff
 
             var index = 0

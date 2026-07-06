@@ -88,8 +88,8 @@ class XRandrProtocolTest {
                 assertEquals(2, u16le(screenInfo, 28))
                 assertEquals(120, u16le(screenInfo, 32))
                 assertEquals(90, u16le(screenInfo, 34))
-                assertEquals(32, u16le(screenInfo, 36))
-                assertEquals(24, u16le(screenInfo, 38))
+                assertEquals(30, u16le(screenInfo, 36))
+                assertEquals(23, u16le(screenInfo, 38))
                 assertEquals(1, u16le(screenInfo, 40))
                 assertEquals(XRandr.RefreshRate, u16le(screenInfo, 42))
 
@@ -112,8 +112,8 @@ class XRandrProtocolTest {
                 assertEquals(5, u32le(outputInfo, 4))
                 assertEquals(XRandr.Success, outputInfo[1].toInt() and 0xff)
                 assertEquals(XRandr.CrtcId, u32le(outputInfo, 12))
-                assertEquals(32, u32le(outputInfo, 16))
-                assertEquals(24, u32le(outputInfo, 20))
+                assertEquals(30, u32le(outputInfo, 16))
+                assertEquals(23, u32le(outputInfo, 20))
                 assertEquals(XRandr.Connected, outputInfo[24].toInt() and 0xff)
                 assertEquals(XRandr.SubPixelUnknown, outputInfo[25].toInt() and 0xff)
                 assertEquals(1, u16le(outputInfo, 26))
@@ -183,8 +183,8 @@ class XRandrProtocolTest {
                 assertEquals(0, u16le(monitors, 42))
                 assertEquals(120, u16le(monitors, 44))
                 assertEquals(90, u16le(monitors, 46))
-                assertEquals(32, u32le(monitors, 48))
-                assertEquals(24, u32le(monitors, 52))
+                assertEquals(30, u32le(monitors, 48))
+                assertEquals(23, u32le(monitors, 52))
                 assertEquals(XRandr.OutputId, u32le(monitors, 56))
 
                 val pointer = readReply(socket.getInputStream())
@@ -397,8 +397,8 @@ class XRandrProtocolTest {
                     y = 0,
                     width = 120,
                     height = 90,
-                    widthMm = 32,
-                    heightMm = 24,
+                    widthMm = 30,
+                    heightMm = 23,
                 )
                 assertEquals(XRandr.OutputId, u32le(dynamic, 56))
                 assertEquals(XRandr.OutputId, u32le(dynamic, 84))
@@ -1062,8 +1062,8 @@ class XRandrProtocolTest {
                 val output = readReplyBe(socket.getInputStream())
                 assertEquals(3, u16be(output, 2))
                 assertEquals(XRandr.CrtcId, u32be(output, 12))
-                assertEquals(32, u32be(output, 16))
-                assertEquals(24, u32be(output, 20))
+                assertEquals(30, u32be(output, 16))
+                assertEquals(23, u32be(output, 20))
                 assertEquals(XRandr.CrtcId, u32be(output, 36))
                 assertEquals(XRandr.ModeId, u32be(output, 40))
 
@@ -1081,8 +1081,8 @@ class XRandrProtocolTest {
                 assertEquals(1, u32be(monitors, 16))
                 assertEquals(120, u16be(monitors, 44))
                 assertEquals(90, u16be(monitors, 46))
-                assertEquals(32, u32be(monitors, 48))
-                assertEquals(24, u32be(monitors, 52))
+                assertEquals(30, u32be(monitors, 48))
+                assertEquals(23, u32be(monitors, 52))
                 assertEquals(XRandr.OutputId, u32be(monitors, 56))
 
                 val query = readReplyBe(socket.getInputStream())
@@ -1769,7 +1769,7 @@ class XRandrProtocolTest {
         assertEquals(XRandr.SubPixelUnknown, bytes[31].toInt() and 0xff)
     }
 
-    private fun assertScreenChangeNotify(bytes: ByteArray, sequence: Int, widthMm: Int = 32, heightMm: Int = 24) {
+    private fun assertScreenChangeNotify(bytes: ByteArray, sequence: Int, widthMm: Int = 30, heightMm: Int = 23) {
         assertEquals(XRandr.FirstEvent + XRandr.ScreenChangeNotify, bytes[0].toInt() and 0xff)
         assertEquals(XRandr.Rotate0, bytes[1].toInt() and 0xff)
         assertEquals(sequence, u16le(bytes, 2))
@@ -1906,8 +1906,8 @@ class XRandrProtocolTest {
         assertEquals(0, u16le(reply, 42))
         assertEquals(120, u16le(reply, 44))
         assertEquals(90, u16le(reply, 46))
-        assertEquals(32, u32le(reply, 48))
-        assertEquals(24, u32le(reply, 52))
+        assertEquals(30, u32le(reply, 48))
+        assertEquals(23, u32le(reply, 52))
         assertEquals(XRandr.OutputId, u32le(reply, 56))
     }
 

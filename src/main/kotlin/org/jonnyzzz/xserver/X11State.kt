@@ -166,7 +166,7 @@ internal data class XkbNamedIndicatorUpdate(
 internal class X11State(
     val width: Int,
     val height: Int,
-    val dpi: Int = 96,
+    val dpi: Int = 100,
     val rootBackgroundPixel: Int = 0x00ff_ffff,
 ) {
     var widthMillimeters: Int = pixelsToMillimeters(width, dpi)
@@ -416,14 +416,6 @@ internal class X11State(
         nextAtomId = PredefinedAtoms.size + 1
         val stringAtom = atomIds.getValue("STRING")
         window(X11Ids.RootWindow)?.properties?.apply {
-            put(
-                atomIds.getValue("RESOURCE_MANAGER"),
-                XProperty(
-                    type = stringAtom,
-                    format = 8,
-                    data = ByteArray(0),
-                ),
-            )
             put(
                 atomIds.getValue("_XKB_RULES_NAMES"),
                 XProperty(
@@ -5085,6 +5077,8 @@ internal class X11State(
             minorOpcode = operation.minorOpcode,
             operation = operation.operation,
             detail = operation.detail,
+            source = operation.provenance?.source,
+            mask = operation.provenance?.mask,
             destinationRegion = operation.provenance?.destinationRegion,
             result = operation.provenance?.result,
         )
@@ -12048,6 +12042,8 @@ internal data class XRenderDrawablePaintSnapshot(
     val minorOpcode: Int,
     val operation: String,
     val detail: String,
+    val source: XRenderPictureSnapshot?,
+    val mask: XRenderPictureSnapshot?,
     val destinationRegion: XRectangleCommand?,
     val result: XRenderOperationResultSnapshot?,
 )

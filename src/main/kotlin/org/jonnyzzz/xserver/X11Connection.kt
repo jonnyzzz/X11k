@@ -3647,13 +3647,17 @@ internal class X11Connection(
         putPictFormat(formats, 56, XRender.A8Format, depth = 8, redShift = 0, redMask = 0, greenShift = 0, greenMask = 0, blueShift = 0, blueMask = 0, alphaShift = 0, alphaMask = 0xff)
         putPictFormat(formats, 84, XRender.A1Format, depth = 1, redShift = 0, redMask = 0, greenShift = 0, greenMask = 0, blueShift = 0, blueMask = 0, alphaShift = 0, alphaMask = 0x1)
 
-        val screen = ByteArray(24)
-        byteOrder.put32(screen, 0, 1)
+        val screen = ByteArray(40)
+        byteOrder.put32(screen, 0, 2)
         byteOrder.put32(screen, 4, XRender.Rgb24Format)
         screen[8] = 24
         byteOrder.put16(screen, 10, 1)
         byteOrder.put32(screen, 16, X11Ids.RootVisual)
         byteOrder.put32(screen, 20, XRender.Rgb24Format)
+        screen[24] = 32
+        byteOrder.put16(screen, 26, 1)
+        byteOrder.put32(screen, 32, X11Ids.RgbaVisual)
+        byteOrder.put32(screen, 36, XRender.Argb32Format)
 
         val subpixels = ByteArray(4)
         byteOrder.put32(subpixels, 0, 5)
@@ -3661,8 +3665,8 @@ internal class X11Connection(
         val reply = reply(extra = 0, payloadUnits = payload.size / 4)
         byteOrder.put32(reply, 8, 4)
         byteOrder.put32(reply, 12, 1)
-        byteOrder.put32(reply, 16, 1)
-        byteOrder.put32(reply, 20, 1)
+        byteOrder.put32(reply, 16, 2)
+        byteOrder.put32(reply, 20, 2)
         byteOrder.put32(reply, 24, 1)
         payload.copyInto(reply, 32)
         write(reply)
@@ -6017,12 +6021,13 @@ internal class X11Connection(
         when (windowClass) {
             XWindowClass.InputOutput -> {
                 if (parentWindow.windowClass == XWindowClass.InputOnly) return writeError(error = 8, opcode = 1, badValue = parent)
-                if (depth != X11Ids.RootDepth) return writeError(error = 8, opcode = 1, badValue = requestedDepth)
-                if (visual != X11Ids.RootVisual) return writeError(error = 8, opcode = 1, badValue = requestedVisual)
+                val visualDepth = X11Ids.visualDepth(visual)
+                    ?: return writeError(error = 8, opcode = 1, badValue = requestedVisual)
+                if (depth != visualDepth) return writeError(error = 8, opcode = 1, badValue = requestedDepth)
             }
             XWindowClass.InputOnly -> {
                 if (requestedDepth != 0) return writeError(error = 8, opcode = 1, badValue = requestedDepth)
-                if (visual != X11Ids.RootVisual) return writeError(error = 8, opcode = 1, badValue = requestedVisual)
+                if (visual != parentWindow.visual) return writeError(error = 8, opcode = 1, badValue = requestedVisual)
                 if (borderWidth != 0) return writeError(error = 8, opcode = 1, badValue = borderWidth)
                 if ((mask and InputOnlyWindowAttributeValueMask.inv()) != 0) {
                     return writeError(error = 8, opcode = 1, badValue = mask)
@@ -8248,7 +8253,7 @@ internal class X11Connection(
             else -> encodeZPixmap(image, drawable.depth, planeMask)
         }
         val reply = reply(extra = drawable.depth, payloadUnits = bytes.size / 4)
-        byteOrder.put32(reply, 8, if (state.window(drawableId) != null) X11Ids.RootVisual else 0)
+        byteOrder.put32(reply, 8, state.window(drawableId)?.visual ?: 0)
         byteOrder.put32(reply, 12, bytes.size)
         bytes.copyInto(reply, 32)
         write(reply)
@@ -8314,7 +8319,7 @@ internal class X11Connection(
         val visual = byteOrder.u32(body, 8)
         if (!resourceIdAvailable(id, opcode = 78)) return
         if (state.window(windowId) == null) return writeError(error = 3, opcode = 78, badValue = windowId)
-        if (visual != X11Ids.RootVisual) return writeError(error = 8, opcode = 78, badValue = visual)
+        if (!X11Ids.isSupportedVisual(visual)) return writeError(error = 8, opcode = 78, badValue = visual)
         if (alloc == 1) return writeError(error = 8, opcode = 78, badValue = alloc)
         state.putColormap(id)
         own(id)
@@ -8820,8 +8825,15 @@ internal class X11Connection(
         val requestedWidth = byteOrder.u16(body, 4)
         val requestedHeight = byteOrder.u16(body, 6)
         val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put16(reply, 8, requestedWidth.coerceAtLeast(1))
-        byteOrder.put16(reply, 10, requestedHeight.coerceAtLeast(1))
+        val bestWidth = requestedWidth.coerceAtLeast(1)
+        val bestHeight = requestedHeight.coerceAtLeast(1)
+        if (sizeClass == QueryBestSizeCursor) {
+            byteOrder.put16(reply, 8, bestWidth.coerceAtMost(state.width))
+            byteOrder.put16(reply, 10, bestHeight.coerceAtMost(state.height))
+        } else {
+            byteOrder.put16(reply, 8, bestWidth)
+            byteOrder.put16(reply, 10, bestHeight)
+        }
         write(reply)
     }
 
@@ -10138,12 +10150,13 @@ internal class X11Connection(
         val visual = if (requestedVisual == XWindowClass.CopyFromParent) parentWindow.visual else requestedVisual
         when (windowClass) {
             XWindowClass.InputOutput -> {
-                if (depth != X11Ids.RootDepth) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = requestedDepth)
-                if (visual != X11Ids.RootVisual) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = requestedVisual)
+                val visualDepth = X11Ids.visualDepth(visual)
+                    ?: return writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = requestedVisual)
+                if (depth != visualDepth) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = requestedDepth)
             }
             XWindowClass.InputOnly -> {
                 if (requestedDepth != 0) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = requestedDepth)
-                if (visual != X11Ids.RootVisual) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = requestedVisual)
+                if (visual != parentWindow.visual) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = requestedVisual)
                 if (borderWidth != 0) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = borderWidth)
                 if ((valueMask and InputOnlyWindowAttributeValueMask.inv()) != 0) {
                     return writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = valueMask)

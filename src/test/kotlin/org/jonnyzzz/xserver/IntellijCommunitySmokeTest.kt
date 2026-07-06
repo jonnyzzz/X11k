@@ -204,6 +204,40 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij render band diagnostics split top frame section from text report`() {
+        val text =
+            """
+            RENDER operations:
+            - #42 Composite minor=8
+
+            RENDER operations intersecting top mapped root-child band:
+            - region=10,20 1260x120 window=0x200003
+            - #41 Composite minor=8 root=10,20 65x2 local=0,0 65x2 sourcePopulation=0x400120#1 paints=1 first=#40/Composite last=#40/Composite
+
+            RENDER operations intersecting right mapped root-child band:
+            - region=1174,20 96x860 window=0x200003
+            - None.
+
+            RENDER operations intersecting bottom mapped root-child band:
+            - region=10,784 1260x96 window=0x200003
+            - None.
+
+            Recent PutImage commands:
+            - None.
+            """.trimIndent()
+
+        val top = intellijRenderBandSection(text, "top")
+        val right = intellijRenderBandSection(text, "right")
+        val missing = intellijRenderBandSection(text, "left")
+
+        assertTrue(top.startsWith("RENDER operations intersecting top mapped root-child band:"), top)
+        assertTrue(top.contains("sourcePopulation=0x400120#1"), top)
+        assertFalse(top.contains("right mapped root-child band"), top)
+        assertTrue(right.contains("region=1174,20 96x860"), right)
+        assertEquals("", missing)
+    }
+
+    @Test
     fun `intellij parity readiness waits for post markdown indexing completion`() {
         val baseLog =
             """
@@ -286,6 +320,20 @@ class IntellijCommunitySmokeTest {
 
         assertTrue(source.contains("options/ui.lnf.xml"), source)
         assertTrue(source.contains("""<option name="differentiateProjects" value="false" />"""), source)
+        assertTrue(source.contains("""<option name="mainMenuDisplayMode" value="SEPARATE_TOOLBAR" />"""), source)
+        assertTrue(source.contains("""<option name="showMainMenu" value="true" />"""), source)
+        assertTrue(source.contains("""<option name="useProjectColorsInMainToolbar" value="false" />"""), source)
+        assertTrue(source.contains("""<option name="useSolutionColorsInMainToolbar" value="false" />"""), source)
+    }
+
+    @Test
+    fun `intellij parity reuses idea config between xvfb reference and kotlin run`() {
+        val source = Files.readString(projectRoot().resolve("src/test/kotlin/org/jonnyzzz/xserver/IntellijCommunitySmokeTest.kt"))
+
+        assertTrue(source.contains("val sharedConfig = cleanIntellijConfigDir()"), source)
+        assertTrue(source.contains("runIntellijAgainstXvfb(referenceImage, url, sharedConfig)"), source)
+        assertTrue(source.contains("runIntellijAgainstKotlinServer(port, clientImage, url, sharedConfig)"), source)
+        assertTrue(source.contains("""withFileSystemBind(configDir.toString(), "/tmp/idea-config", BindMode.READ_WRITE)"""), source)
     }
 
     @Test
@@ -573,8 +621,9 @@ class IntellijCommunitySmokeTest {
         assumeTrue(imageExists(clientImage), "Build $clientImage first with scripts/run-supervised.sh gradle dockerBuildX11Client")
         assumeTrue(imageExists(referenceImage), "Build $referenceImage first with scripts/run-supervised.sh gradle dockerBuildX11Images")
 
-        val reference = runIntellijAgainstXvfb(referenceImage, url)
-        val actual = runIntellijAgainstKotlinServer(port, clientImage, url)
+        val sharedConfig = cleanIntellijConfigDir()
+        val reference = runIntellijAgainstXvfb(referenceImage, url, sharedConfig)
+        val actual = runIntellijAgainstKotlinServer(port, clientImage, url, sharedConfig)
 
         val composedSvg = composeSvgLayers(actual.svgLayers, IntellijCaptureWidth, IntellijCaptureHeight)
         val composedSvgCapture = visualCapture(composedSvg)
@@ -645,8 +694,18 @@ class IntellijCommunitySmokeTest {
         return cache
     }
 
-    private fun intellijContainer(image: String): GenericContainer<*> =
-        GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
+    private fun cleanIntellijConfigDir(): Path {
+        val root = projectRoot()
+        val config = root.resolve("build/tmp/intellij-community-smoke/idea-config").normalize()
+        val buildTmp = root.resolve("build/tmp").normalize()
+        check(config.startsWith(buildTmp)) { "Refusing to use IntelliJ config outside build/tmp/: $config" }
+        config.toFile().deleteRecursively()
+        Files.createDirectories(config)
+        return config
+    }
+
+    private fun intellijContainer(image: String, configDir: Path? = null): GenericContainer<*> {
+        val container = GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
             .withFileSystemBind(cleanProjectExport().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
             .withFileSystemBind(
                 projectRoot().resolve("docker/x11-client/run-intellij.sh").toString(),
@@ -656,6 +715,11 @@ class IntellijCommunitySmokeTest {
             .withFileSystemBind(intellijCacheDir().toString(), "/tmp/idea-cache", BindMode.READ_WRITE)
             .withEnv("IDEA_CACHE_DIR", "/tmp/idea-cache")
             .withCommand("sleep", "900")
+        if (configDir != null) {
+            container.withFileSystemBind(configDir.toString(), "/tmp/idea-config", BindMode.READ_WRITE)
+        }
+        return container
+    }
 
     private fun execContainerShell(container: GenericContainer<*>, timeoutSeconds: Int, script: String) =
         container.execInContainer("timeout", "${timeoutSeconds}s", "sh", "-lc", script)
@@ -744,8 +808,8 @@ class IntellijCommunitySmokeTest {
         return lastSvg
     }
 
-    private fun runIntellijAgainstXvfb(image: String, url: String?): IntellijReferenceCapture =
-        intellijContainer(image)
+    private fun runIntellijAgainstXvfb(image: String, url: String?, configDir: Path): IntellijReferenceCapture =
+        intellijContainer(image, configDir)
             .use { container ->
                 container.start()
                 compileRobotCapture(container)
@@ -854,7 +918,7 @@ class IntellijCommunitySmokeTest {
                 }
             }
 
-    private fun runIntellijAgainstKotlinServer(port: Int, image: String, url: String?): IntellijKotlinCapture {
+    private fun runIntellijAgainstKotlinServer(port: Int, image: String, url: String?, configDir: Path): IntellijKotlinCapture {
         XServer(
             ServerOptions(
                 host = "0.0.0.0",
@@ -865,7 +929,7 @@ class IntellijCommunitySmokeTest {
             ),
         ).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
-            intellijContainer(image)
+            intellijContainer(image, configDir)
                 .use { container ->
                     container.start()
                     compileRobotCapture(container)
@@ -1368,6 +1432,7 @@ class IntellijCommunitySmokeTest {
         File(directory, "intellij-kotlin-screen.svg").writeText(actual.svg)
         File(directory, "intellij-kotlin.html").writeText(actual.html)
         File(directory, "intellij-kotlin-text.txt").writeText(actual.text)
+        dumpIntellijRenderBandArtifacts(directory, actual.text)
         File(directory, "intellij-kotlin-state.json").writeText(actual.stateJson)
         File(directory, "intellij-kotlin-svg-layers.txt").writeText(svgLayerInventory(actual.svgLayers))
         File(directory, "intellij-kotlin-html-previews.txt").writeText(htmlPreviewInventory(htmlWindowPreviewSurfaces(actual.html)))
@@ -1397,6 +1462,20 @@ class IntellijCommunitySmokeTest {
         val directory = intellijSmokeArtifactsDirectory()
         logs.forEach { artifact ->
             File(directory, artifact.fileName).writeText(artifact.text)
+        }
+    }
+
+    private fun dumpIntellijRenderBandArtifacts(directory: File, text: String) {
+        mapOf(
+            "top-frame" to "top",
+            "right-frame" to "right",
+            "bottom-frame" to "bottom",
+        ).forEach { (fileBand, reportBand) ->
+            File(directory, "intellij-kotlin-$fileBand-render-operations.txt").writeText(
+                intellijRenderBandSection(text, reportBand).ifBlank {
+                    "RENDER operations intersecting $reportBand mapped root-child band:\n- None.\n"
+                },
+            )
         }
     }
 
@@ -1834,6 +1913,19 @@ class IntellijCommunitySmokeTest {
 
     private fun Rectangle?.toMetricString(): String =
         this?.let { "${it.x},${it.y} ${it.width}x${it.height}" } ?: "none"
+
+    private fun intellijRenderBandSection(text: String, band: String): String {
+        val header = "RENDER operations intersecting $band mapped root-child band:"
+        val start = text.indexOf(header)
+        if (start < 0) return ""
+        val nextBand = Regex("""\nRENDER operations intersecting (top|right|bottom) mapped root-child band:""")
+            .find(text, start + header.length)
+            ?.range
+            ?.first
+        val nextSection = text.indexOf("\nRecent PutImage commands:", start).takeIf { it >= 0 }
+        val end = listOfNotNull(nextBand, nextSection).minOrNull() ?: text.length
+        return text.substring(start, end).trimEnd() + "\n"
+    }
 
     private fun visualDiffImage(expected: BufferedImage, actual: BufferedImage): BufferedImage {
         val width = maxOf(expected.width, actual.width)
