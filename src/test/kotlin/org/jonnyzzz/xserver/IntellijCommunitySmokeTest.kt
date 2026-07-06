@@ -365,6 +365,31 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij render band diagnostics summarize two row operation buckets`() {
+        val section =
+            """
+            RENDER operations intersecting top mapped root-child band:
+            - region=10,20 100x8 window=0x200003
+            - #41 Composite minor=8 root=10,24 65x2 local=0,4 65x2 op=3 src=0x600240 mask=0x0 dst=0x60004a srcOrigin=0,0 maskOrigin=0,0 dst=0,4 65x2 source=0x600240/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60023f#124 paints=1 framebuffer=624x2 crc32=0xa3949057 result=65x2 crc32=0x11111111 pixels=[0xff26282c]
+            - #42 Composite minor=8 root=75,24 20x2 local=65,4 20x2 op=3 src=0x600240 mask=0x0 dst=0x60004a srcOrigin=65,0 maskOrigin=0,0 dst=65,4 20x2 source=0x600240/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60023f#124 paints=1 framebuffer=624x2 crc32=0xa3949057 result=20x2 crc32=0x22222222 pixels=[0xff26282c]
+            - #43 FillRectangles minor=26 root=10,20 100x8 local=0,0 100x8 op=3 dst=0x60004a color=9983,10495,11519,65535 rects=1 destination=0x60004a/pixmap repeat=none result=100x8 crc32=0x33333333 pixels=[0xff26282c]
+            """.trimIndent()
+
+        val summary = intellijRenderBandOperationRowBuckets(section)
+
+        assertTrue(summary.startsWith("RENDER operation row buckets:"), summary)
+        assertTrue(summary.contains("rows=0-1 rootY=20-21 operations=1 first=#43 last=#43"), summary)
+        assertTrue(summary.contains("rows=4-5 rootY=24-25 operations=3 first=#41 last=#43"), summary)
+        assertTrue(
+            summary.contains(
+                "families=2xComposite/minor=8/op=3/src=0x600240/mask=0x0/dst=0x60004a/repeat=normal/filter=good/sourceFramebuffer=624x2/0xa3949057",
+            ),
+            summary,
+        )
+        assertTrue(summary.contains("thinOperations=2 thinFamilies=2xComposite/minor=8/op=3/src=0x600240"), summary)
+    }
+
+    @Test
     fun `intellij parity readiness waits for post markdown indexing completion`() {
         val baseLog =
             """
@@ -2346,6 +2371,9 @@ class IntellijCommunitySmokeTest {
             File(directory, "intellij-kotlin-$fileBand-render-families.txt").writeText(
                 intellijRenderBandOperationFamilies(section),
             )
+            File(directory, "intellij-kotlin-$fileBand-render-row-buckets.txt").writeText(
+                intellijRenderBandOperationRowBuckets(section),
+            )
         }
     }
 
@@ -2409,6 +2437,7 @@ class IntellijCommunitySmokeTest {
         val sourcePopulation = Regex("""\bsourcePopulation=(0x[0-9a-f]+#\d+)""").find(line)?.groupValues?.get(1)
         val framebuffer = Regex("""\bframebuffer=(\d+x\d+)\s+crc32=(0x[0-9a-f]+)""").find(line)
         val result = Regex("""\sresult=(\d+x\d+)\s+crc32=(0x[0-9a-f]+)""").find(line)
+        val root = Regex("""\broot=(-?\d+),(-?\d+)\s+(\d+)x(\d+)""").find(line)
         val key = IntellijRenderOperationFamilyKey(
             operation = header.groupValues[2],
             minorOpcode = header.groupValues[3].toInt(),
@@ -2427,14 +2456,120 @@ class IntellijCommunitySmokeTest {
         return IntellijRenderBandOperation(
             id = header.groupValues[1].toInt(),
             key = key,
+            rootRectangle = root?.let { match ->
+                Rectangle(
+                    match.groupValues[1].toInt(),
+                    match.groupValues[2].toInt(),
+                    match.groupValues[3].toInt(),
+                    match.groupValues[4].toInt(),
+                )
+            },
             resultSize = result?.groupValues?.get(1),
             resultCrc32 = result?.groupValues?.get(2),
         )
     }
 
+    private fun intellijRenderBandOperationRowBuckets(section: String, bucketHeight: Int = 2): String {
+        require(bucketHeight > 0) { "bucketHeight must be positive" }
+        val region = intellijRenderBandRegion(section)
+        val operations = section.lineSequence()
+            .mapNotNull(::parseIntellijRenderBandOperation)
+            .toList()
+        if (region == null || operations.isEmpty()) return "RENDER operation row buckets:\n- None.\n"
+
+        val buckets = sortedMapOf<Int, MutableList<IntellijRenderBandOperation>>()
+        operations.forEach { operation ->
+            val root = operation.rootRectangle ?: return@forEach
+            val top = maxOf(root.y, region.y)
+            val bottom = minOf(root.y + root.height, region.y + region.height) - 1
+            if (bottom < top) return@forEach
+            val firstBucket = (top - region.y) / bucketHeight
+            val lastBucket = (bottom - region.y) / bucketHeight
+            for (bucket in firstBucket..lastBucket) {
+                buckets.getOrPut(bucket) { mutableListOf() } += operation
+            }
+        }
+
+        if (buckets.isEmpty()) return "RENDER operation row buckets:\n- None.\n"
+        return buildString {
+            appendLine("RENDER operation row buckets:")
+            buckets.forEach { (bucket, bucketOperations) ->
+                val start = bucket * bucketHeight
+                val end = minOf(region.height - 1, start + bucketHeight - 1)
+                val thinOperations = bucketOperations.filter { it.usesThinSourceOrRegion(bucketHeight) }
+                append("- rows=")
+                append(if (start == end) start.toString() else "$start-$end")
+                append(" rootY=")
+                append(region.y + start)
+                if (start != end) append("-").append(region.y + end)
+                append(" operations=")
+                append(bucketOperations.size)
+                append(" first=#")
+                append(bucketOperations.minOf { it.id })
+                append(" last=#")
+                append(bucketOperations.maxOf { it.id })
+                append(" families=")
+                append(intellijRenderBandFamilySummary(bucketOperations))
+                append(" thinOperations=")
+                append(thinOperations.size)
+                append(" thinFamilies=")
+                append(intellijRenderBandFamilySummary(thinOperations))
+                appendLine()
+            }
+        }
+    }
+
+    private fun intellijRenderBandRegion(section: String): Rectangle? {
+        val match = Regex("""(?m)^-\s+region=(-?\d+),(-?\d+)\s+(\d+)x(\d+)""").find(section) ?: return null
+        return Rectangle(
+            match.groupValues[1].toInt(),
+            match.groupValues[2].toInt(),
+            match.groupValues[3].toInt(),
+            match.groupValues[4].toInt(),
+        )
+    }
+
+    private fun intellijRenderBandFamilySummary(operations: List<IntellijRenderBandOperation>, limit: Int = 4): String =
+        operations
+            .groupBy { it.key }
+            .entries
+            .sortedWith(
+                compareByDescending<Map.Entry<IntellijRenderOperationFamilyKey, List<IntellijRenderBandOperation>>> { it.value.size }
+                    .thenBy { it.value.minOf { operation -> operation.id } },
+            )
+            .take(limit)
+            .joinToString(";") { (key, group) ->
+                "${group.size}x${intellijRenderBandFamilyLabel(key)}"
+            }
+            .ifBlank { "none" }
+
+    private fun IntellijRenderBandOperation.usesThinSourceOrRegion(bucketHeight: Int): Boolean {
+        val root = rootRectangle
+        if (root != null && (root.height <= bucketHeight || root.width <= bucketHeight)) return true
+        val sourceSize = key.sourceFramebufferSize ?: return false
+        val sourceHeight = sourceSize.substringAfter('x', "").toIntOrNull() ?: return false
+        return sourceHeight <= bucketHeight
+    }
+
+    private fun intellijRenderBandFamilyLabel(key: IntellijRenderOperationFamilyKey): String =
+        buildString {
+            append(key.operation)
+            append("/minor=").append(key.minorOpcode)
+            key.renderOperation?.let { append("/op=").append(it) }
+            key.sourceId?.let { append("/src=").append(it) }
+            key.maskId?.let { append("/mask=").append(it) }
+            key.destinationId?.let { append("/dst=").append(it) }
+            key.sourceRepeat?.let { append("/repeat=").append(it) }
+            key.sourceFilter?.let { append("/filter=").append(it) }
+            key.sourceFramebufferSize?.let { size ->
+                append("/sourceFramebuffer=").append(size).append('/').append(key.sourceFramebufferCrc32 ?: "none")
+            }
+        }
+
     private data class IntellijRenderBandOperation(
         val id: Int,
         val key: IntellijRenderOperationFamilyKey,
+        val rootRectangle: Rectangle?,
         val resultSize: String?,
         val resultCrc32: String?,
     )
