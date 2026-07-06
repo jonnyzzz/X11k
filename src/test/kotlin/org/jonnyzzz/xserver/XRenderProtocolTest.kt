@@ -11130,7 +11130,7 @@ class XRenderProtocolTest {
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xfff2_000d.toInt(), pixelAt(image, imageWidth = 11, x = 0, y = 0))
                 assertEquals(0xffbf_0040.toInt(), pixelAt(image, imageWidth = 11, x = 2, y = 0))
-                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 11, x = 10, y = 0))
+                assertEquals(0xff00_00fe.toInt(), pixelAt(image, imageWidth = 11, x = 10, y = 0))
 
                 out.write(
                     renderComposite(

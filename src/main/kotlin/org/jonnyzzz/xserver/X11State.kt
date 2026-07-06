@@ -7283,9 +7283,9 @@ internal class X11State(
 
     private fun interpolatePixel(start: XRenderColor, end: XRenderColor, ratio: Double): Int {
         fun channel(shift: Int): Int {
-            val a = start.channel(shift)
-            val b = end.channel(shift)
-            return (a + (b - a) * ratio).roundToInt().coerceIn(0, 255)
+            val a = start.rawChannel(shift)
+            val b = end.rawChannel(shift)
+            return ((a + (b - a) * ratio) / 257.0).roundToInt().coerceIn(0, 255)
         }
         return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
     }
@@ -11581,12 +11581,15 @@ internal data class XRenderColor(
         argb32Pixel
 
     fun channel(shift: Int): Int =
+        rawChannel(shift) ushr 8
+
+    fun rawChannel(shift: Int): Int =
         when (shift) {
             24 -> alpha
             16 -> red
             8 -> green
             else -> blue
-        } ushr 8
+        }
 }
 
 internal data class XColorPoint(
