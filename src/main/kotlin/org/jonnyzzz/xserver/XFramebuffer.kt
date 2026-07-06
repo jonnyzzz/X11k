@@ -3,7 +3,9 @@ package org.jonnyzzz.xserver
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
 import java.util.Base64
+import javax.imageio.IIOImage
 import javax.imageio.ImageIO
+import javax.imageio.stream.MemoryCacheImageOutputStream
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -5539,7 +5541,18 @@ internal class XFramebuffer(
             val buffered = BufferedImage(image.width, image.height, BufferedImage.TYPE_INT_ARGB)
             buffered.setRGB(0, 0, image.width, image.height, image.pixels, 0, image.width)
             val output = ByteArrayOutputStream()
-            ImageIO.write(buffered, "png", output)
+            val writers = ImageIO.getImageWritersByFormatName("png")
+            check(writers.hasNext()) { "No PNG ImageIO writer is available" }
+            val writer = writers.next()
+            try {
+                MemoryCacheImageOutputStream(output).use { imageOutput ->
+                    writer.output = imageOutput
+                    writer.write(null, IIOImage(buffered, null, null), writer.defaultWriteParam)
+                    imageOutput.flush()
+                }
+            } finally {
+                writer.dispose()
+            }
             return "data:image/png;base64," + Base64.getEncoder().encodeToString(output.toByteArray())
         }
 

@@ -1,11 +1,52 @@
 package org.jonnyzzz.xserver
 
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class XFramebufferTest {
+    @Test
+    fun `image data uri generation is stable under concurrent diagnostics`() {
+        val image = XImagePixels(
+            width = 8,
+            height = 8,
+            pixels = IntArray(64) { index ->
+                XFramebuffer.argb(0xff00_0000.toInt() or ((index * 37) and 0x00ff_ffff))
+            },
+        )
+        val start = CountDownLatch(1)
+        val failure = AtomicReference<Throwable?>(null)
+        val workerCount = 12
+        val finished = CountDownLatch(workerCount)
+        (0 until workerCount).forEach { worker ->
+            thread(start = true, isDaemon = true, name = "image-data-uri-test-$worker") {
+                start.await()
+                try {
+                    repeat(50) {
+                        try {
+                            val uri = XFramebuffer.imageDataUri(image)
+                            check(uri.startsWith("data:image/png;base64,")) { "Unexpected data URI prefix" }
+                        } catch (t: Throwable) {
+                            failure.compareAndSet(null, t)
+                        }
+                    }
+                } finally {
+                    finished.countDown()
+                }
+            }
+        }
+
+        start.countDown()
+        assertTrue(finished.await(10, TimeUnit.SECONDS), "All imageDataUri worker threads should finish")
+        failure.get()?.let { throw AssertionError("Concurrent imageDataUri generation failed", it) }
+    }
+
     @Test
     fun `core raster operations apply all GX functions and plane masks`() {
         val source = 0x00f0_0f0f
