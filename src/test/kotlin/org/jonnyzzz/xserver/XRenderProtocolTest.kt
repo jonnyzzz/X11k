@@ -105,14 +105,14 @@ class XRenderProtocolTest {
     }
 
     @Test
-    fun `RENDER text report summarizes operations intersecting mapped top band`() {
-        XServer(ServerOptions(port = 0, width = 96, height = 64)).use { server ->
+    fun `RENDER text report summarizes operations intersecting mapped frame bands`() {
+        XServer(ServerOptions(port = 0, width = 300, height = 320)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             Socket("127.0.0.1", server.localPort).use { socket ->
                 socket.soTimeout = 5_000
                 setup(socket)
                 val out = socket.getOutputStream()
-                out.write(createWindowRequest(WindowId, x = 10, y = 10, width = 40, height = 30, borderWidth = 0))
+                out.write(createWindowRequest(WindowId, x = 10, y = 10, width = 220, height = 260, borderWidth = 0))
                 out.write(mapWindowRequest(WindowId))
                 out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
                 out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
@@ -120,10 +120,30 @@ class XRenderProtocolTest {
                     renderComposite(
                         source = SolidPictureId,
                         destination = PictureId,
-                        destinationX = 5,
-                        destinationY = 6,
-                        width = 9,
-                        height = 10,
+                        destinationX = 10,
+                        destinationY = 10,
+                        width = 8,
+                        height = 8,
+                    ),
+                )
+                out.write(
+                    renderComposite(
+                        source = SolidPictureId,
+                        destination = PictureId,
+                        destinationX = 150,
+                        destinationY = 140,
+                        width = 8,
+                        height = 8,
+                    ),
+                )
+                out.write(
+                    renderComposite(
+                        source = SolidPictureId,
+                        destination = PictureId,
+                        destinationX = 10,
+                        destinationY = 200,
+                        width = 8,
+                        height = 8,
                     ),
                 )
                 out.flush()
@@ -131,13 +151,28 @@ class XRenderProtocolTest {
                 var text = ""
                 waitUntil {
                     text = httpGet(server.localPort, "/text.txt")
-                    text.contains("Composite minor=8 root=15,16 9x10 local=5,6 9x10")
+                    text.contains("Composite minor=8 root=20,210 8x8 local=10,200 8x8")
                 }
                 assertContains(text, "RENDER operations intersecting top mapped root-child band:")
-                assertContains(text, "region=10,10 40x30 window=0x${WindowId.toString(16)}")
-                assertContains(text, "Composite minor=8 root=15,16 9x10 local=5,6 9x10")
+                assertContains(text, "RENDER operations intersecting right mapped root-child band:")
+                assertContains(text, "RENDER operations intersecting bottom mapped root-child band:")
+                assertContains(text, "region=10,10 220x120 window=0x${WindowId.toString(16)}")
+                assertContains(text, "region=134,10 96x260 window=0x${WindowId.toString(16)}")
+                assertContains(text, "region=10,174 220x96 window=0x${WindowId.toString(16)}")
+                val top = renderBandSection(text, "top")
+                val right = renderBandSection(text, "right")
+                val bottom = renderBandSection(text, "bottom")
+                assertContains(top, "Composite minor=8 root=20,20 8x8 local=10,10 8x8")
+                assertFalse(top.contains("Composite minor=8 root=160,150 8x8 local=150,140 8x8"), top)
+                assertFalse(top.contains("Composite minor=8 root=20,210 8x8 local=10,200 8x8"), top)
+                assertContains(right, "Composite minor=8 root=160,150 8x8 local=150,140 8x8")
+                assertFalse(right.contains("Composite minor=8 root=20,20 8x8 local=10,10 8x8"), right)
+                assertFalse(right.contains("Composite minor=8 root=20,210 8x8 local=10,200 8x8"), right)
+                assertContains(bottom, "Composite minor=8 root=20,210 8x8 local=10,200 8x8")
+                assertFalse(bottom.contains("Composite minor=8 root=20,20 8x8 local=10,10 8x8"), bottom)
+                assertFalse(bottom.contains("Composite minor=8 root=160,150 8x8 local=150,140 8x8"), bottom)
                 val stateJson = httpGet(server.localPort, "/state.json")
-                assertContains(stateJson, """"destinationRegion":{"x":5,"y":6,"width":9,"height":10}""")
+                assertContains(stateJson, """"destinationRegion":{"x":10,"y":200,"width":8,"height":8}""")
             }
             server.close()
             serverThread.join(1_000)
@@ -15838,6 +15873,19 @@ class XRenderProtocolTest {
             ((bytes[offset + 1].toInt() and 0xff) shl 8) or
             ((bytes[offset + 2].toInt() and 0xff) shl 16) or
             ((bytes[offset + 3].toInt() and 0xff) shl 24)
+
+    private fun renderBandSection(text: String, band: String): String {
+        val header = "RENDER operations intersecting $band mapped root-child band:"
+        val start = text.indexOf(header)
+        if (start < 0) return ""
+        val nextBand = Regex("""\nRENDER operations intersecting (top|right|bottom) mapped root-child band:""")
+            .find(text, start + header.length)
+            ?.range
+            ?.first
+        val nextSection = text.indexOf("\nRecent PutImage commands:", start).takeIf { it >= 0 }
+        val end = listOfNotNull(nextBand, nextSection).minOrNull() ?: text.length
+        return text.substring(start, end)
+    }
 
     private companion object {
         const val WindowId = 0x0020_0001

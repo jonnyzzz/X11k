@@ -5,6 +5,8 @@ internal object TextScreenRenderer {
     private const val MaxRenderOperationsInTextReport = 30
     private const val MaxRegionalRenderOperationsInTextReport = 200
     private const val TopMappedRootChildBandHeight = 120
+    private const val RightMappedRootChildBandWidth = 96
+    private const val BottomMappedRootChildBandHeight = 96
 
     fun html(snapshot: XScreenSnapshot): String =
         XmlDom.html {
@@ -343,7 +345,7 @@ internal object TextScreenRenderer {
                 }
             }
             appendLine()
-            appendTopMappedRootChildRenderBand(snapshot)
+            appendMappedRootChildRenderBands(snapshot)
             appendLine()
             appendLine("Recent PutImage commands:")
             val putImages = snapshot.drawings.filter { it.putImage != null }.takeLast(30).asReversed()
@@ -483,21 +485,52 @@ internal object TextScreenRenderer {
             appendLine(RenderCredit.Text)
         }
 
-    private fun StringBuilder.appendTopMappedRootChildRenderBand(snapshot: XScreenSnapshot) {
-        appendLine("RENDER operations intersecting top mapped root-child band:")
+    private fun StringBuilder.appendMappedRootChildRenderBands(snapshot: XScreenSnapshot) {
         val frame = snapshot.windows
             .filter { it.id != X11Ids.RootWindow && it.parentId == X11Ids.RootWindow && it.mapped }
             .maxByOrNull { it.width.toLong() * it.height.toLong() }
         if (frame == null) {
+            appendLine("RENDER operations intersecting top mapped root-child band:")
             appendLine("- None.")
             return
         }
-        val region = XRectangleCommand(
-            x = frame.x,
-            y = frame.y,
-            width = frame.width,
-            height = minOf(TopMappedRootChildBandHeight, frame.height),
+
+        val bands = listOf(
+            "top" to XRectangleCommand(
+                x = frame.x,
+                y = frame.y,
+                width = frame.width,
+                height = minOf(TopMappedRootChildBandHeight, frame.height),
+            ),
+            "right" to XRectangleCommand(
+                x = frame.x + maxOf(0, frame.width - minOf(RightMappedRootChildBandWidth, frame.width)),
+                y = frame.y,
+                width = minOf(RightMappedRootChildBandWidth, frame.width),
+                height = frame.height,
+            ),
+            "bottom" to XRectangleCommand(
+                x = frame.x,
+                y = frame.y + maxOf(0, frame.height - minOf(BottomMappedRootChildBandHeight, frame.height)),
+                width = frame.width,
+                height = minOf(BottomMappedRootChildBandHeight, frame.height),
+            ),
         )
+
+        for ((band, region) in bands) {
+            appendRenderOperationsIntersectingMappedRootChildBand(snapshot, frame, band, region)
+            appendLine()
+        }
+    }
+
+    private fun StringBuilder.appendRenderOperationsIntersectingMappedRootChildBand(
+        snapshot: XScreenSnapshot,
+        frame: XWindowSnapshot,
+        band: String,
+        region: XRectangleCommand,
+    ) {
+        append("RENDER operations intersecting ")
+        append(band)
+        appendLine(" mapped root-child band:")
         append("- region=")
         appendRegion(region)
         append(" window=")
