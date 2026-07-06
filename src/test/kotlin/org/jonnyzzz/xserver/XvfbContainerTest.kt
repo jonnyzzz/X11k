@@ -20,6 +20,21 @@ import kotlin.test.assertTrue
 
 class XvfbContainerTest {
     @Test
+    fun `visual metrics include signed mismatch delta histograms`() {
+        val expected = BufferedImage(3, 1, BufferedImage.TYPE_INT_ARGB)
+        val actual = BufferedImage(3, 1, BufferedImage.TYPE_INT_ARGB)
+        expected.setRGB(0, 0, 0xff05_0505.toInt())
+        actual.setRGB(0, 0, 0xff04_0404.toInt())
+        expected.setRGB(1, 0, 0xff21_2121.toInt())
+        actual.setRGB(1, 0, 0xff20_2020.toInt())
+        expected.setRGB(2, 0, 0xff00_00ff.toInt())
+        actual.setRGB(2, 0, 0xff00_00fe.toInt())
+
+        assertEquals("-1,-1,-1,0:2 0,0,-1,0:1", mismatchDeltaHistogram(expected, actual))
+        assertEquals("-1:2", grayMismatchDeltaHistogram(expected, actual))
+    }
+
+    @Test
     fun `docker baseline can run xdpyinfo against xvfb`() {
         assumeDockerAndImage(REFERENCE_IMAGE)
 
@@ -995,6 +1010,8 @@ class XvfbContainerTest {
                 appendLine("sampledDistance=${imageDistance(expected.image, actual.image)}")
                 appendLine("mismatchBounds=${mismatchBounds(expected.image, actual.image).toMetricString()}")
                 appendLine("mismatchSamples=${mismatchSamples(expected.image, actual.image)}")
+                appendLine("mismatchDeltaHistogram=${mismatchDeltaHistogram(expected.image, actual.image)}")
+                appendLine("grayMismatchDeltaHistogram=${grayMismatchDeltaHistogram(expected.image, actual.image)}")
                 if (safeLabel.contains("xcalc")) {
                     append(xcalcRegionMetrics(expected.image, actual.image))
                 }
@@ -1422,6 +1439,57 @@ class XvfbContainerTest {
         }
         return if (samples.isEmpty()) "none" else samples.joinToString("; ")
     }
+
+    private fun mismatchDeltaHistogram(expected: BufferedImage, actual: BufferedImage, limit: Int = 12): String {
+        val counts = linkedMapOf<String, Int>()
+        forEachSharedMismatch(expected, actual) { expectedRgb, actualRgb ->
+            val delta = listOf(
+                ((actualRgb ushr 16) and 0xff) - ((expectedRgb ushr 16) and 0xff),
+                ((actualRgb ushr 8) and 0xff) - ((expectedRgb ushr 8) and 0xff),
+                (actualRgb and 0xff) - (expectedRgb and 0xff),
+                ((actualRgb ushr 24) and 0xff) - ((expectedRgb ushr 24) and 0xff),
+            ).joinToString(",")
+            counts[delta] = (counts[delta] ?: 0) + 1
+        }
+        return histogramString(counts, limit)
+    }
+
+    private fun grayMismatchDeltaHistogram(expected: BufferedImage, actual: BufferedImage, limit: Int = 12): String {
+        val counts = linkedMapOf<String, Int>()
+        forEachSharedMismatch(expected, actual) { expectedRgb, actualRgb ->
+            if (!isGray(expectedRgb) || !isGray(actualRgb)) return@forEachSharedMismatch
+            val delta = (actualRgb and 0xff) - (expectedRgb and 0xff)
+            val key = delta.toString()
+            counts[key] = (counts[key] ?: 0) + 1
+        }
+        return histogramString(counts, limit)
+    }
+
+    private fun forEachSharedMismatch(expected: BufferedImage, actual: BufferedImage, block: (expectedRgb: Int, actualRgb: Int) -> Unit) {
+        val width = minOf(expected.width, actual.width)
+        val height = minOf(expected.height, actual.height)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val expectedRgb = expected.getRGB(x, y)
+                val actualRgb = actual.getRGB(x, y)
+                if (expectedRgb != actualRgb) block(expectedRgb, actualRgb)
+            }
+        }
+    }
+
+    private fun isGray(argb: Int): Boolean {
+        val red = (argb ushr 16) and 0xff
+        val green = (argb ushr 8) and 0xff
+        val blue = argb and 0xff
+        return red == green && green == blue
+    }
+
+    private fun histogramString(counts: Map<String, Int>, limit: Int): String =
+        counts.entries
+            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+            .take(limit)
+            .joinToString(" ") { (key, count) -> "$key:$count" }
+            .ifEmpty { "none" }
 
     private fun visualDiffImage(expected: BufferedImage, actual: BufferedImage): BufferedImage {
         val width = maxOf(expected.width, actual.width)
