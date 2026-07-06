@@ -16,6 +16,10 @@ THREAD_DUMP_MAX_JVMS="${GRADLE_THREAD_DUMP_MAX_JVMS:-8}"
 DOCKER_DIAGNOSTICS="${GRADLE_DOCKER_DIAGNOSTICS:-1}"
 STALE_TESTCONTAINERS_CLEANUP="${GRADLE_STALE_TESTCONTAINERS_CLEANUP:-1}"
 STALE_TESTCONTAINERS_SECONDS="${GRADLE_STALE_TESTCONTAINERS_SECONDS:-3600}"
+NATIVE_CRASH_SCAN_FIND_TIMEOUT_SECONDS="${GRADLE_NATIVE_CRASH_SCAN_FIND_TIMEOUT_SECONDS:-5}"
+NATIVE_CRASH_SCAN_GREP_TIMEOUT_SECONDS="${GRADLE_NATIVE_CRASH_SCAN_GREP_TIMEOUT_SECONDS:-2}"
+NATIVE_CRASH_SCAN_MAX_FILES="${GRADLE_NATIVE_CRASH_SCAN_MAX_FILES:-200}"
+NATIVE_CRASH_SCAN_MAX_BYTES="${GRADLE_NATIVE_CRASH_SCAN_MAX_BYTES:-1048576}"
 
 usage() {
   cat <<USAGE
@@ -34,6 +38,10 @@ Environment:
   GRADLE_LOCK_DIR=$LOCK_DIR
   GRADLE_DOCKER_DIAGNOSTICS=$DOCKER_DIAGNOSTICS
   GRADLE_STALE_TESTCONTAINERS_CLEANUP=$STALE_TESTCONTAINERS_CLEANUP
+  GRADLE_NATIVE_CRASH_SCAN_FIND_TIMEOUT_SECONDS=$NATIVE_CRASH_SCAN_FIND_TIMEOUT_SECONDS
+  GRADLE_NATIVE_CRASH_SCAN_GREP_TIMEOUT_SECONDS=$NATIVE_CRASH_SCAN_GREP_TIMEOUT_SECONDS
+  GRADLE_NATIVE_CRASH_SCAN_MAX_FILES=$NATIVE_CRASH_SCAN_MAX_FILES
+  GRADLE_NATIVE_CRASH_SCAN_MAX_BYTES=$NATIVE_CRASH_SCAN_MAX_BYTES
 
 On wall-clock or output-idle timeout the script writes jps, jcmd/jstack thread
 dumps, Docker/Testcontainers diagnostics, and output tails before terminating the
@@ -343,9 +351,52 @@ diagnose_gradle() {
   { echo "DIAGNOSTICS=$diag_file" >> "$RUN_INFO_FILE"; } || true
 }
 
+native_crash_candidate_files() {
+  printf '%s\n' "$STDOUT_FILE" "$STDERR_FILE"
+  run_bounded "$NATIVE_CRASH_SCAN_FIND_TIMEOUT_SECONDS" find \
+    "$ROOT/build/test-results/test" "$ROOT/build/tmp" \
+    -type f \
+    -newer "$RUN_INFO_FILE" \
+    \( -name 'TEST-*.xml' \
+      -o -name 'hs_err_pid*.log' \
+      -o -name '*.log' \
+      -o -name '*.txt' \
+      -o -name '*.out' \
+      -o -name '*.err' \
+      -o -name '*.xml' \) \
+    -size -"${NATIVE_CRASH_SCAN_MAX_BYTES}c" \
+    -print 2>/dev/null || true
+  run_bounded "$NATIVE_CRASH_SCAN_FIND_TIMEOUT_SECONDS" find "$ROOT" \
+    -maxdepth 3 -type f -newer "$RUN_INFO_FILE" -name 'hs_err_pid*.log' -print 2>/dev/null || true
+}
+
+scan_native_crash_anchors() {
+  local pattern file size matches status=0
+  pattern='SIG[A-Z]+|Problematic frame|java_error|hs_err|XextFindDisplay|fatal error has been detected'
+  native_crash_candidate_files \
+    | awk 'NF && !seen[$0]++ { print }' \
+    | head -"$NATIVE_CRASH_SCAN_MAX_FILES" \
+    | while read -r file; do
+      [[ -f "$file" ]] || continue
+      size="$(wc -c < "$file" 2>/dev/null || echo 0)"
+      [[ "$size" =~ ^[0-9]+$ ]] || size=0
+      if (( size > NATIVE_CRASH_SCAN_MAX_BYTES )) && [[ "$(basename "$file")" != hs_err_pid*.log ]]; then
+        echo "-- skipped $file (${size} bytes > ${NATIVE_CRASH_SCAN_MAX_BYTES}) --"
+        continue
+      fi
+      matches="$(run_bounded "$NATIVE_CRASH_SCAN_GREP_TIMEOUT_SECONDS" grep -nI -E "$pattern" "$file" 2>/dev/null)" || status=$?
+      if [[ "$status" -eq 124 ]]; then
+        echo "-- grep timed out after ${NATIVE_CRASH_SCAN_GREP_TIMEOUT_SECONDS}s: $file --"
+      elif [[ -n "$matches" ]]; then
+        printf '%s\n' "$matches" | sed "s#^#$file:#"
+      fi
+      status=0
+    done
+}
+
 dump_failure_artifacts() {
   local reason="$1"
-  local safe_reason diag_file native_scan_file native_scan_status
+  local safe_reason diag_file native_scan_file
   safe_reason="$(printf '%s' "$reason" | tr -cd '[:alnum:]_-')"
   diag_file="$THIS_RUN_DIR/diagnostics-${safe_reason}-$(date -u +%Y%m%d-%H%M%S).txt"
   {
@@ -368,16 +419,8 @@ dump_failure_artifacts() {
     echo
     echo "== native crash anchors =="
     native_scan_file="$THIS_RUN_DIR/native-crash-scan.txt"
-    native_scan_status=0
-    run_bounded "$DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" grep -R -n -E \
-      'SIG[A-Z]+|Problematic frame|java_error|hs_err|XextFindDisplay|fatal error has been detected' \
-      "$ROOT/build/test-results/test" "$ROOT/build/tmp" "$STDOUT_FILE" "$STDERR_FILE" \
-      >"$native_scan_file" 2>/dev/null || native_scan_status=$?
-    if [[ "$native_scan_status" -eq 124 ]]; then
-      echo "native crash scan timed out after ${DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS}s"
-    elif [[ "$native_scan_status" -ne 0 && "$native_scan_status" -ne 1 ]]; then
-      echo "native crash scan exited with status $native_scan_status"
-    fi
+    echo "Scanning text artifacts only: max_files=${NATIVE_CRASH_SCAN_MAX_FILES}, max_bytes=${NATIVE_CRASH_SCAN_MAX_BYTES}, find_timeout=${NATIVE_CRASH_SCAN_FIND_TIMEOUT_SECONDS}s, grep_timeout=${NATIVE_CRASH_SCAN_GREP_TIMEOUT_SECONDS}s"
+    scan_native_crash_anchors >"$native_scan_file" 2>/dev/null || true
     head -240 "$native_scan_file" 2>/dev/null || true
     echo
     echo "== intellij smoke artifacts =="

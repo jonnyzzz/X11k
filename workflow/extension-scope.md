@@ -26,6 +26,7 @@ These extensions may be advertised and maintained because they are already in th
 | `XKEYBOARD` | Keyboard discovery and map compatibility for JVM and Electron clients. |
 | `RANDR` | Fixed-screen monitor, DPI, output, and size reporting. |
 | `SYNC` | Counters, alarms, and fences when clients use them for presentation or coordination. |
+| `DOUBLE-BUFFER` | Java2D/AWT DBE discovery and back-buffer drawable compatibility; keep it minimal unless target-client traces show real DBE swaps or attributes need deeper behavior. |
 | `XC-MISC` | XID range allocation compatibility. |
 | `XINERAMA` | Legacy single-screen geometry fallback. |
 | `MIT-SCREEN-SAVER` | Query/suspend compatibility for desktop toolkits. |

@@ -603,6 +603,22 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij xvfb reference can run bounded extension experiments`() {
+        val source = Files.readString(projectRoot().resolve("src/test/kotlin/org/jonnyzzz/xserver/IntellijCommunitySmokeTest.kt"))
+        val xvfbAnchor = "    private fun runIntellijAgainstXvfb(image: String, url: String?, configDir: Path): IntellijReferenceCapture ="
+        val xvfbEnd = "\n    private fun runIntellijAgainstKotlinServer("
+        assertTrue(source.contains(xvfbAnchor), source)
+        assertTrue(source.contains(xvfbEnd), source)
+        val xvfbBody = sourceBodyBetweenLast(source, xvfbAnchor, xvfbEnd)
+        assertTrue(xvfbBody.contains("val xvfbExtraArgs = intellijXvfbExtraArgs()"), xvfbBody)
+        assertTrue(xvfbBody.contains("XVFB_EXTRA_ARGS='\${xvfbExtraArgs}'"), xvfbBody)
+        assertTrue(xvfbBody.contains(">/tmp/xvfb-extra-args.log"), xvfbBody)
+        assertTrue(xvfbBody.contains("Xvfb :99 -screen 0"), xvfbBody)
+        assertTrue(xvfbBody.contains("XVFB_EXTRA_ARGS >/tmp/xvfb.log"), xvfbBody)
+        assertTrue(xvfbBody.contains("intellij-xvfb-extra-args.log"), xvfbBody)
+    }
+
+    @Test
     fun `intellij glx jcef diagnostics summary extracts preflight and angle failures`() {
         val kotlinText =
             """
@@ -1012,6 +1028,14 @@ class IntellijCommunitySmokeTest {
     private fun intellijDebugValue(): String =
         if (intellijDebugEnabled()) "true" else "false"
 
+    private fun intellijXvfbExtraArgs(): String =
+        (System.getProperty("x.intellijXvfbExtraArgs") ?: System.getenv("X_INTELLIJ_XVFB_EXTRA_ARGS")).orEmpty()
+            .also { value ->
+                require(Regex("""[- A-Za-z0-9_./:=+]*""").matches(value)) {
+                    "Unsafe Xvfb extra args: $value"
+                }
+            }
+
     private fun isPortAvailable(port: Int): Boolean =
         runCatching { ServerSocket(port).use { true } }.getOrDefault(false)
 
@@ -1109,6 +1133,7 @@ class IntellijCommunitySmokeTest {
                 container.start()
                 compileRobotCapture(container)
                 compileIntellijUiDiagnosticsAgent(container)
+                val xvfbExtraArgs = intellijXvfbExtraArgs()
                 val result = execIntellijShell(
                     container,
                     """
@@ -1122,7 +1147,9 @@ class IntellijCommunitySmokeTest {
                     if [ -n "${url.orEmpty()}" ]; then
                       export IDEA_URL="${url.orEmpty()}"
                     fi
-                    Xvfb :99 -screen 0 ${IntellijCaptureWidth}x${IntellijCaptureHeight}x24 >/tmp/xvfb.log 2>&1 &
+                    XVFB_EXTRA_ARGS='${xvfbExtraArgs}'
+                    printf '%s\n' "${'$'}XVFB_EXTRA_ARGS" >/tmp/xvfb-extra-args.log
+                    Xvfb :99 -screen 0 ${IntellijCaptureWidth}x${IntellijCaptureHeight}x24 ${'$'}XVFB_EXTRA_ARGS >/tmp/xvfb.log 2>&1 &
                     xvfb=${'$'}!
                     echo "${'$'}xvfb" >/tmp/xvfb.pid
                     for _ in ${'$'}(seq 1 80); do
@@ -1176,6 +1203,7 @@ class IntellijCommunitySmokeTest {
                     "/tmp/run-intellij-env.log" to "intellij-xvfb-run-intellij-env.log",
                     "/tmp/idea-ui-runtime-diagnostics.log" to "intellij-xvfb-ui-runtime-diagnostics.log",
                     "/tmp/run-intellij-cksum.log" to "intellij-xvfb-run-intellij-cksum.log",
+                    "/tmp/xvfb-extra-args.log" to "intellij-xvfb-extra-args.log",
                 )
                 try {
                     waitForIntellijParityReady(

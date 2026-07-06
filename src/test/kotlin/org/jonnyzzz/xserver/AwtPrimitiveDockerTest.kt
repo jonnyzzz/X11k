@@ -48,11 +48,12 @@ class AwtPrimitiveDockerTest {
             title = "AWT BufferStrategy Probe",
             mainClass = "AwtBufferStrategyProbe",
             source = AwtBufferStrategyProbeSource,
-            readinessText = "RENDER.Composite:",
+            readinessText = "DOUBLE-BUFFER.SwapBuffers:",
         )
 
         assertContains(result.text, "AWT BufferStrategy Probe")
         assertContains(result.text, "CreatePixmap:")
+        assertContains(result.text, "DOUBLE-BUFFER.SwapBuffers:")
         assertContains(result.text, "RENDER.")
         val paintedPixels = result.stats.maxOf { it.nonWhitePixels }
         assertTrue(paintedPixels > 100, "BufferStrategy frame should be presented into a visible window, got ${result.stats}\n${result.text}\n${result.log}")
@@ -602,6 +603,22 @@ class AwtPrimitiveDockerTest {
         )
     }
 
+    private fun dumpAwtProbeReadinessArtifacts(
+        title: String,
+        text: String,
+        svg: String,
+        html: String,
+        log: String,
+    ): String {
+        val safeLabel = "${safeArtifactLabel(title)}-readiness-timeout"
+        val directory = awtArtifactsDirectory()
+        File(directory, "$safeLabel-text.txt").writeText(text)
+        File(directory, "$safeLabel-screen.svg").writeText(svg)
+        File(directory, "$safeLabel.html").writeText(html)
+        File(directory, "$safeLabel-log.txt").writeText(log)
+        return File(directory, safeLabel).path
+    }
+
     private fun dumpAwtVisualProbeArtifacts(title: String, result: KotlinVisualProbeResult) {
         val safeLabel = safeArtifactLabel(title)
         val directory = awtArtifactsDirectory()
@@ -731,7 +748,26 @@ class AwtPrimitiveDockerTest {
                     )
                     assertEquals(0, startResult.exitCode, startResult.stderr + startResult.stdout)
 
-                    waitUntil {
+                    waitUntil(
+                        failureMessage = {
+                            val text = runCatching { httpGet(port, "/text.txt") }.getOrElse { it.toString() }
+                            val svg = runCatching { httpGet(port, "/screen.svg") }.getOrElse { it.toString() }
+                            val html = runCatching { httpGet(port, "/") }.getOrElse { it.toString() }
+                            val log = container.execInContainer("sh", "-lc", "cat /tmp/awt-primitive.log 2>/dev/null || true").stdout
+                            val artifactPrefix = dumpAwtProbeReadinessArtifacts(title, text, svg, html, log)
+                            buildString {
+                                appendLine("AWT probe did not become SVG-ready before timeout")
+                                appendLine("artifacts=$artifactPrefix-*")
+                                appendLine("textHasTitle=${text.contains(title)}")
+                                appendLine("textHasReadiness=${text.contains(readinessText)}")
+                                appendLine("textHasRender=${text.contains("RENDER.")}")
+                                appendLine("svgHasFramebufferClass=${svg.hasSvgClass("framebuffer-image")}")
+                                appendLine("svgImageTags=${Regex("""<image\b""").findAll(svg).count()}")
+                                appendLine("textTail=${text.takeLast(2000)}")
+                                appendLine("logTail=${log.takeLast(2000)}")
+                            }
+                        },
+                    ) {
                         val currentText = httpGet(port, "/text.txt")
                         currentText.contains(title) &&
                             currentText.contains(readinessText) &&

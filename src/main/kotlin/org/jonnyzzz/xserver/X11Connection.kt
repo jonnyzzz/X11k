@@ -226,6 +226,10 @@ internal class X11Connection(
                 randr(minorOpcode, body, opcode)
                 return
             }
+            if (extension.name == "DOUBLE-BUFFER") {
+                doubleBuffer(minorOpcode, body, opcode)
+                return
+            }
         }
         when (opcode) {
             1 -> createWindow(minorOpcode, body)
@@ -8257,7 +8261,7 @@ internal class X11Connection(
             else -> encodeZPixmap(image, drawable.depth, planeMask)
         }
         val reply = reply(extra = drawable.depth, payloadUnits = bytes.size / 4)
-        byteOrder.put32(reply, 8, state.window(drawableId)?.visual ?: 0)
+        byteOrder.put32(reply, 8, state.drawableVisual(drawableId))
         byteOrder.put32(reply, 12, bytes.size)
         bytes.copyInto(reply, 32)
         write(reply)
@@ -8904,6 +8908,7 @@ internal class X11Connection(
             XScreenSaver.MajorOpcode -> "MIT-SCREEN-SAVER.${XScreenSaver.operationName(minorOpcode)}"
             XSync.MajorOpcode -> "SYNC.${XSync.operationName(minorOpcode)}"
             XRandr.MajorOpcode -> "RANDR.${XRandr.operationName(minorOpcode)}"
+            XDoubleBuffer.MajorOpcode -> "DOUBLE-BUFFER.${XDoubleBuffer.operationName(minorOpcode)}"
             1 -> "CreateWindow"
             2 -> "ChangeWindowAttributes"
             3 -> "GetWindowAttributes"
@@ -9038,6 +9043,128 @@ internal class X11Connection(
             name.copyInto(reply, offset)
             offset += name.size
         }
+        write(reply)
+    }
+
+    private fun doubleBuffer(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        when (minorOpcode) {
+            XDoubleBuffer.GetVersion -> dbeGetVersion(body, majorOpcode)
+            XDoubleBuffer.AllocateBackBufferName -> dbeAllocateBackBufferName(body, majorOpcode)
+            XDoubleBuffer.DeallocateBackBufferName -> dbeDeallocateBackBufferName(body, majorOpcode)
+            XDoubleBuffer.SwapBuffers -> dbeSwapBuffers(body, majorOpcode)
+            XDoubleBuffer.BeginIdiom -> dbeEmptyRequest(body, majorOpcode, XDoubleBuffer.BeginIdiom)
+            XDoubleBuffer.EndIdiom -> dbeEmptyRequest(body, majorOpcode, XDoubleBuffer.EndIdiom)
+            XDoubleBuffer.GetVisualInfo -> dbeGetVisualInfo(body, majorOpcode)
+            XDoubleBuffer.GetBackBufferAttributes -> dbeGetBackBufferAttributes(body, majorOpcode)
+            else -> unsupportedRequest(majorOpcode, minorOpcode, "DOUBLE-BUFFER.${XDoubleBuffer.operationName(minorOpcode)}")
+        }
+    }
+
+    private fun dbeGetVersion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XDoubleBuffer.GetVersion, badValue = 0)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        reply[8] = XDoubleBuffer.MajorVersion.toByte()
+        reply[9] = XDoubleBuffer.MinorVersion.toByte()
+        write(reply)
+    }
+
+    private fun dbeAllocateBackBufferName(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XDoubleBuffer.AllocateBackBufferName, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        val window = state.window(windowId) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XDoubleBuffer.AllocateBackBufferName, badValue = windowId)
+        if (window.windowClass != XWindowClass.InputOutput) {
+            return writeError(error = 8, opcode = majorOpcode, minorOpcode = XDoubleBuffer.AllocateBackBufferName, badValue = windowId)
+        }
+        val buffer = byteOrder.u32(body, 4)
+        if (!resourceIdAvailable(buffer, majorOpcode, XDoubleBuffer.AllocateBackBufferName)) return
+        val swapAction = body[8].toInt() and 0xff
+        if (swapAction !in XDoubleBuffer.SwapUndefined..XDoubleBuffer.SwapCopied) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XDoubleBuffer.AllocateBackBufferName, badValue = swapAction)
+        }
+        state.putDbeBackBuffer(XDbeBackBuffer(id = buffer, windowId = windowId, swapAction = swapAction))
+        own(buffer)
+    }
+
+    private fun dbeDeallocateBackBufferName(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XDoubleBuffer.DeallocateBackBufferName, badValue = 0)
+        val buffer = byteOrder.u32(body, 0)
+        if (!state.removeDbeBackBuffer(buffer)) {
+            return writeError(error = XDoubleBuffer.BadBuffer, opcode = majorOpcode, minorOpcode = XDoubleBuffer.DeallocateBackBufferName, badValue = buffer)
+        }
+        ownedResources.remove(buffer)
+    }
+
+    private fun dbeSwapBuffers(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XDoubleBuffer.SwapBuffers, badValue = 0)
+        val count = byteOrder.u32(body, 0)
+        val expectedSize = 4L + count.toLong() * 8L
+        if (expectedSize > Int.MAX_VALUE || body.size != expectedSize.toInt()) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XDoubleBuffer.SwapBuffers, badValue = 0)
+        }
+        var offset = 4
+        repeat(count) {
+            val windowId = byteOrder.u32(body, offset)
+            if (state.window(windowId) == null) {
+                return writeError(error = 3, opcode = majorOpcode, minorOpcode = XDoubleBuffer.SwapBuffers, badValue = windowId)
+            }
+            val swapAction = body[offset + 4].toInt() and 0xff
+            if (swapAction !in XDoubleBuffer.SwapUndefined..XDoubleBuffer.SwapCopied) {
+                return writeError(error = 2, opcode = majorOpcode, minorOpcode = XDoubleBuffer.SwapBuffers, badValue = swapAction)
+            }
+            offset += 8
+        }
+    }
+
+    private fun dbeEmptyRequest(body: ByteArray, majorOpcode: Int, minorOpcode: Int) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = 0)
+    }
+
+    private fun dbeGetVisualInfo(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XDoubleBuffer.GetVisualInfo, badValue = 0)
+        val count = byteOrder.u32(body, 0)
+        val expectedSize = 4L + count.toLong() * 4L
+        if (expectedSize > Int.MAX_VALUE || body.size != expectedSize.toInt()) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XDoubleBuffer.GetVisualInfo, badValue = 0)
+        }
+        val drawables = if (count == 0) {
+            listOf(X11Ids.RootWindow)
+        } else {
+            (0 until count).map { index -> byteOrder.u32(body, 4 + index * 4) }
+        }
+        for (drawable in drawables) {
+            if (state.drawable(drawable) == null) {
+                return writeError(error = 9, opcode = majorOpcode, minorOpcode = XDoubleBuffer.GetVisualInfo, badValue = drawable)
+            }
+        }
+        val visuals = listOf(
+            X11Ids.RootVisual to X11Ids.RootDepth,
+            X11Ids.XvfbLikeRootVisualAlias to X11Ids.RootDepth,
+            X11Ids.RgbaVisual to X11Ids.RgbaDepth,
+            X11Ids.XvfbLikeRgbaVisualAlias to X11Ids.RgbaDepth,
+        )
+        val payloadBytes = drawables.size * (4 + visuals.size * 8)
+        val reply = reply(extra = 0, payloadUnits = payloadBytes / 4)
+        byteOrder.put32(reply, 8, drawables.size)
+        var offset = 32
+        repeat(drawables.size) {
+            byteOrder.put32(reply, offset, visuals.size)
+            offset += 4
+            for ((visual, depth) in visuals) {
+                byteOrder.put32(reply, offset, visual)
+                reply[offset + 4] = depth.toByte()
+                reply[offset + 5] = 0
+                offset += 8
+            }
+        }
+        write(reply)
+    }
+
+    private fun dbeGetBackBufferAttributes(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XDoubleBuffer.GetBackBufferAttributes, badValue = 0)
+        val buffer = byteOrder.u32(body, 0)
+        val backBuffer = state.dbeBackBuffer(buffer)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, backBuffer?.windowId ?: 0)
         write(reply)
     }
 

@@ -257,6 +257,7 @@ internal class X11State(
     private val syncFences = linkedMapOf<Int, XSyncFence>()
     private val syncPriorities = linkedMapOf<XEventSink, Int>()
     private val syncCounterWaiters = mutableListOf<XSyncCounterWaiter>()
+    private val dbeBackBuffers = linkedMapOf<Int, XDbeBackBuffer>()
     private var fontPath: List<String> = emptyList()
     private var pointerControl = XPointerControlSettings()
     private var pointerMapping = XPointerMapping.Default
@@ -389,6 +390,13 @@ internal class X11State(
             firstEvent = XRandr.FirstEvent,
             firstError = XRandr.FirstError,
         ),
+        XExtension(
+            name = "DOUBLE-BUFFER",
+            majorOpcode = XDoubleBuffer.MajorOpcode,
+            firstEvent = XDoubleBuffer.FirstEvent,
+            firstError = XDoubleBuffer.FirstError,
+            aliases = setOf("DBE"),
+        ),
     )
 
     init {
@@ -474,6 +482,14 @@ internal class X11State(
             glxWindows.remove(glxWindowId)
             resourceOwners.remove(glxWindowId)
         }
+        val removedBackBuffers = dbeBackBuffers.values
+            .filter { it.windowId in removed }
+            .map { it.id }
+            .toSet()
+        for (bufferId in removedBackBuffers) {
+            dbeBackBuffers.remove(bufferId)
+            resourceOwners.remove(bufferId)
+        }
         val xfixesSelectionNotifyDispatches = selectionOwners
             .filterValues { it.windowId in removed }
             .flatMap { (selection) ->
@@ -495,7 +511,7 @@ internal class X11State(
         saveSets.entries.removeIf { it.value.isEmpty() }
         removeEventSelections(removed)
         val pointerUngrabResult = releaseInputGrabsForResources(removed)
-        val removedResources = removed + removedGlxWindows
+        val removedResources = removed + removedGlxWindows + removedBackBuffers
         discardRetainedResourceIds(removedResources)
         return XWindowRemoval(
             removedResources = removedResources,
@@ -575,6 +591,7 @@ internal class X11State(
             glxPixmaps.remove(id)
             glxWindows.remove(id)
             glxPbuffers.remove(id)
+            dbeBackBuffers.remove(id)
             pictures.remove(id)
             glyphSets.remove(id)
             xfixesRegions.remove(id)
@@ -4049,6 +4066,7 @@ internal class X11State(
                 when {
                     windows.containsKey(drawableId) -> "window"
                     pixmaps.containsKey(drawableId) -> "pixmap"
+                    dbeBackBuffers.containsKey(drawableId) -> "dbe-back-buffer"
                     else -> "missing"
                 }
             } ?: when {
@@ -5108,11 +5126,14 @@ internal class X11State(
         windows[id]?.takeIf { it.windowClass == XWindowClass.InputOutput }
             ?.let { XDrawable(it.x, it.y, it.width, it.height, it.borderWidth, X11Ids.RootWindow, it.depth) }
             ?: pixmaps[id]?.let { XDrawable(0, 0, it.width, it.height, 0, it.rootId, it.depth) }
+            ?: dbeWindow(id)?.takeIf { it.windowClass == XWindowClass.InputOutput }
+                ?.let { XDrawable(0, 0, it.width, it.height, 0, X11Ids.RootWindow, it.depth) }
 
     @Synchronized
     fun drawableGeometry(id: Int): XDrawable? =
         windows[id]?.let { XDrawable(it.x, it.y, it.width, it.height, it.borderWidth, X11Ids.RootWindow, it.depth) }
             ?: pixmaps[id]?.let { XDrawable(0, 0, it.width, it.height, 0, it.rootId, it.depth) }
+            ?: dbeWindow(id)?.let { XDrawable(0, 0, it.width, it.height, 0, X11Ids.RootWindow, it.depth) }
 
     @Synchronized
     fun putPixmap(pixmap: XPixmap) {
@@ -5124,11 +5145,24 @@ internal class X11State(
 
     @Synchronized
     fun drawableGeneration(id: Int): Long? =
-        windows[id]?.generation ?: pixmaps[id]?.generation
+        windows[id]?.generation ?: pixmaps[id]?.generation ?: dbeWindow(id)?.generation
+
+    @Synchronized
+    fun drawableVisual(id: Int): Int =
+        windows[id]?.visual ?: dbeWindow(id)?.visual ?: 0
 
     @Synchronized
     fun pixmapImage(id: Int): XImagePixels? =
         pixmaps[id]?.framebuffer?.snapshot()
+
+    private fun dbeWindow(backBufferId: Int): XWindow? =
+        dbeBackBuffers[backBufferId]?.windowId?.let { windows[it] }
+
+    private fun dbeWindowIdForDrawable(drawableId: Int): Int? =
+        dbeBackBuffers[drawableId]?.windowId?.takeIf { windows.containsKey(it) }
+
+    private fun framebufferForDrawable(drawableId: Int): XFramebuffer? =
+        windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: dbeWindow(drawableId)?.framebuffer
 
     @Synchronized
     fun putImage(
@@ -5141,7 +5175,7 @@ internal class X11State(
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): Boolean {
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = framebufferForDrawable(drawableId) ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         return framebuffer.changedBy {
             putImage(x, y, image, effectiveClip, function, planeMask, wireDepth = drawableDepth(drawableId).wireDepth())
@@ -5164,8 +5198,8 @@ internal class X11State(
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): XCopyResult? {
-        val source = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
-        val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
+        val source = framebufferForDrawable(sourceDrawableId) ?: return null
+        val destination = framebufferForDrawable(destinationDrawableId) ?: return null
         val effectiveClip = effectiveDrawableClip(destinationDrawableId, clipRectangles, subwindowMode)
         val destinationDepth = drawableDepth(destinationDrawableId)
         return source.copyAreaTo(
@@ -5200,7 +5234,7 @@ internal class X11State(
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): XCopyPaintResult? {
-        val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
+        val destination = framebufferForDrawable(destinationDrawableId) ?: return null
         val before = destination.snapshotRegion(destinationX, destinationY, width, height)
         val copy = copyArea(
             sourceDrawableId = sourceDrawableId,
@@ -5240,8 +5274,8 @@ internal class X11State(
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): XCopyResult? {
-        val source = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
-        val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
+        val source = framebufferForDrawable(sourceDrawableId) ?: return null
+        val destination = framebufferForDrawable(destinationDrawableId) ?: return null
         val effectiveClip = effectiveDrawableClip(destinationDrawableId, clipRectangles, subwindowMode)
         val sourceDepth = drawableDepth(sourceDrawableId)
         val destinationDepth = drawableDepth(destinationDrawableId)
@@ -5288,7 +5322,7 @@ internal class X11State(
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): XCopyPaintResult? {
-        val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
+        val destination = framebufferForDrawable(destinationDrawableId) ?: return null
         val before = destination.snapshotRegion(destinationX, destinationY, width, height)
         val copy = copyPlane(
             sourceDrawableId = sourceDrawableId,
@@ -6833,7 +6867,7 @@ internal class X11State(
     private fun XPicture.drawableFramebuffer(): XFramebuffer? {
         val sourceDrawableId = drawableId ?: return null
         retainedDrawableFramebuffer?.let { return it }
-        return windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer
+        return framebufferForDrawable(sourceDrawableId)
     }
 
     private fun XPicture.insidePictureClip(x: Int, y: Int): Boolean {
@@ -7212,7 +7246,7 @@ internal class X11State(
         if (width <= 0 || height <= 0) return XImagePixels(0, 0, IntArray(0))
         if (width.toLong() * height.toLong() > MaxGetImagePixels) return null
         if (drawableId == X11Ids.RootWindow) return compositedRootImage(x, y, width, height)
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return null
+        val framebuffer = framebufferForDrawable(drawableId) ?: return null
         val pixels = IntArray(width * height)
         for (row in 0 until height) {
             for (column in 0 until width) {
@@ -7548,7 +7582,7 @@ internal class X11State(
         tileStippleXOrigin: Int = 0,
         tileStippleYOrigin: Int = 0,
     ): Boolean {
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = framebufferForDrawable(drawableId) ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         val drawableDepth = drawableDepth(drawableId)
         val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
@@ -7597,7 +7631,7 @@ internal class X11State(
     }
 
     private fun drawableDepth(drawableId: Int): Int =
-        windows[drawableId]?.depth ?: pixmaps[drawableId]?.depth ?: X11Ids.RootDepth
+        windows[drawableId]?.depth ?: pixmaps[drawableId]?.depth ?: dbeWindow(drawableId)?.depth ?: X11Ids.RootDepth
 
     private fun preserveCoreSourcePixel(function: Int, planeMask: Int, depth: Int): Boolean =
         function == XGraphicsContext.GXcopy && planeMask == -1 && depth in setOf(1, 8, 16)
@@ -7667,7 +7701,7 @@ internal class X11State(
         clipRectangles: List<XRectangleCommand>?,
         subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
     ): List<XRectangleCommand>? {
-        val window = windows[drawableId] ?: return clipRectangles
+        val window = windows[drawableId] ?: dbeWindowIdForDrawable(drawableId)?.let { windows[it] } ?: return clipRectangles
         val shapeClip = intersectClips(window.boundingShape, window.clipShape)
         val drawableClip = intersectClips(clipRectangles, shapeClip)
         if (subwindowMode == XGraphicsContext.SubwindowModeIncludeInferiors) return drawableClip
@@ -7681,7 +7715,7 @@ internal class X11State(
         val drawableId = picture.drawableId ?: return picture.clipRectangles
         val drawableClip = effectiveDrawableClip(drawableId, picture.clipRectangles)
         if (picture.subwindowMode == XRender.SubwindowModeIncludeInferiors) return drawableClip
-        val window = windows[drawableId] ?: return drawableClip
+        val window = windows[drawableId] ?: dbeWindowIdForDrawable(drawableId)?.let { windows[it] } ?: return drawableClip
         val childClips = mappedChildClipRectangles(window)
         if (childClips.isEmpty()) return drawableClip
         val baseClip = drawableClip ?: listOf(XRectangleCommand(0, 0, window.width, window.height))
@@ -7764,7 +7798,7 @@ internal class X11State(
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): Boolean {
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = framebufferForDrawable(drawableId) ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         val drawableDepth = drawableDepth(drawableId)
         val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
@@ -7809,7 +7843,7 @@ internal class X11State(
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): Boolean {
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = framebufferForDrawable(drawableId) ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         val drawableDepth = drawableDepth(drawableId)
         val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
@@ -7865,7 +7899,7 @@ internal class X11State(
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): Boolean {
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = framebufferForDrawable(drawableId) ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         val drawableDepth = drawableDepth(drawableId)
         val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
@@ -7922,7 +7956,7 @@ internal class X11State(
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): Boolean {
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = framebufferForDrawable(drawableId) ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         val drawableDepth = drawableDepth(drawableId)
         val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
@@ -7999,7 +8033,7 @@ internal class X11State(
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): Boolean {
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = framebufferForDrawable(drawableId) ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         val drawableDepth = drawableDepth(drawableId)
         val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
@@ -8046,7 +8080,7 @@ internal class X11State(
         tileStippleXOrigin: Int = 0,
         tileStippleYOrigin: Int = 0,
     ): Boolean {
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = framebufferForDrawable(drawableId) ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         val drawableDepth = drawableDepth(drawableId)
         val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
@@ -8107,7 +8141,7 @@ internal class X11State(
         tileStippleXOrigin: Int = 0,
         tileStippleYOrigin: Int = 0,
     ): Boolean {
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = framebufferForDrawable(drawableId) ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         val drawableDepth = drawableDepth(drawableId)
         val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
@@ -8160,7 +8194,7 @@ internal class X11State(
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): Boolean {
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = framebufferForDrawable(drawableId) ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         val drawableDepth = drawableDepth(drawableId)
         val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
@@ -8949,6 +8983,21 @@ internal class X11State(
     fun pixmap(id: Int): XPixmap? = pixmaps[id]
 
     @Synchronized
+    fun putDbeBackBuffer(backBuffer: XDbeBackBuffer) {
+        dbeBackBuffers[backBuffer.id] = backBuffer
+    }
+
+    @Synchronized
+    fun dbeBackBuffer(id: Int): XDbeBackBuffer? = dbeBackBuffers[id]
+
+    @Synchronized
+    fun removeDbeBackBuffer(id: Int): Boolean {
+        val removed = dbeBackBuffers.remove(id) != null
+        if (removed) resourceOwners.remove(id)
+        return removed
+    }
+
+    @Synchronized
     fun hasFont(id: Int): Boolean = fonts.containsKey(id)
 
     @Synchronized
@@ -9019,7 +9068,8 @@ internal class X11State(
             glxContexts.containsKey(id) ||
             glxPixmaps.containsKey(id) ||
             glxWindows.containsKey(id) ||
-            glxPbuffers.containsKey(id)
+            glxPbuffers.containsKey(id) ||
+            dbeBackBuffers.containsKey(id)
 
     @Synchronized
     fun allocateSetupResourceIds(): XClientSetupResourceIds {
@@ -9160,8 +9210,9 @@ internal class X11State(
     fun draw(command: XDrawingCommand) {
         val resolvedDrawableGeneration = command.drawableGeneration ?: drawableGeneration(command.drawableId)
         val resolvedSourceDrawableGeneration = command.sourceDrawableId?.let { command.sourceDrawableGeneration ?: drawableGeneration(it) }
-        if (command.framebufferPainted && windows[command.drawableId]?.generation == resolvedDrawableGeneration) {
-            windows[command.drawableId]?.framebufferClientPainted = true
+        val paintedWindowId = if (command.drawableId in windows) command.drawableId else dbeWindowIdForDrawable(command.drawableId)
+        if (command.framebufferPainted && paintedWindowId != null && windows[paintedWindowId]?.generation == resolvedDrawableGeneration) {
+            windows[paintedWindowId]?.framebufferClientPainted = true
         }
         drawings += command.copy(
             drawableGeneration = resolvedDrawableGeneration,
@@ -10719,6 +10770,12 @@ internal data class XSyncFence(
     val id: Int,
     val drawableId: Int,
     val triggered: Boolean,
+)
+
+internal data class XDbeBackBuffer(
+    val id: Int,
+    val windowId: Int,
+    val swapAction: Int,
 )
 
 internal data class XPointerControlSettings(

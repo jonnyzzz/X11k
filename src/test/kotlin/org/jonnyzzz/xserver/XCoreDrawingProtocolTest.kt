@@ -1200,6 +1200,7 @@ class XCoreDrawingProtocolTest {
                 out.write(queryExtensionRequest("GLX"))
                 out.write(queryExtensionRequest("XFIXES"))
                 out.write(queryExtensionRequest("SHAPE"))
+                out.write(queryExtensionRequest("DOUBLE-BUFFER"))
                 out.flush()
 
                 assertError(socket.getInputStream(), error = 16, opcode = 98, badValue = 0, sequence = 1)
@@ -1238,6 +1239,13 @@ class XCoreDrawingProtocolTest {
                 assertEquals(XShape.MajorOpcode, shape[9].toInt() and 0xff)
                 assertEquals(XShape.FirstEvent, shape[10].toInt() and 0xff)
                 assertEquals(XShape.FirstError, shape[11].toInt() and 0xff)
+
+                val dbe = readReply(socket.getInputStream())
+                assertEquals(10, u16le(dbe, 2))
+                assertEquals(1, dbe[8].toInt())
+                assertEquals(XDoubleBuffer.MajorOpcode, dbe[9].toInt() and 0xff)
+                assertEquals(XDoubleBuffer.FirstEvent, dbe[10].toInt() and 0xff)
+                assertEquals(XDoubleBuffer.FirstError, dbe[11].toInt() and 0xff)
             }
             server.close()
             serverThread.join(1_000)
@@ -1259,9 +1267,9 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 16, opcode = 99, badValue = 0, sequence = 1)
 
                 val reply = readReply(socket.getInputStream())
-                assertEquals(14, reply[1].toInt() and 0xff)
+                assertEquals(15, reply[1].toInt() and 0xff)
                 assertEquals(2, u16le(reply, 2))
-                assertEquals(33, u32le(reply, 4))
+                assertEquals(36, u32le(reply, 4))
                 var offset = 32
                 val names = mutableListOf<String>()
                 repeat(reply[1].toInt() and 0xff) {
@@ -1269,8 +1277,76 @@ class XCoreDrawingProtocolTest {
                     names += reply.copyOfRange(offset, offset + length).decodeToString()
                     offset += length
                 }
-                assertEquals(listOf("GLX", "BIG-REQUESTS", "RENDER", "MIT-SHM", "XFIXES", "SHAPE", "XKEYBOARD", "XINERAMA", "XTEST", "XC-MISC", "MIT-SUNDRY-NONSTANDARD", "MIT-SCREEN-SAVER", "SYNC", "RANDR"), names)
+                assertEquals(listOf("GLX", "BIG-REQUESTS", "RENDER", "MIT-SHM", "XFIXES", "SHAPE", "XKEYBOARD", "XINERAMA", "XTEST", "XC-MISC", "MIT-SUNDRY-NONSTANDARD", "MIT-SCREEN-SAVER", "SYNC", "RANDR", "DOUBLE-BUFFER"), names)
             }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `DOUBLE-BUFFER supports Java2D back buffer discovery and drawing aliases`() {
+        val backBuffer = 0x0020_0900
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(request(XDoubleBuffer.MajorOpcode, XDoubleBuffer.GetVersion, ByteArray(0)))
+                out.write(dbeGetVersionRequest())
+                out.write(dbeGetVisualInfoRequest(X11Ids.RootWindow))
+                out.write(dbeGetBackBufferAttributesRequest(backBuffer))
+                out.write(createWindowRequest(WindowId, width = 40, height = 30))
+                out.write(dbeAllocateBackBufferNameRequest(WindowId, backBuffer, XDoubleBuffer.SwapCopied))
+                out.write(dbeGetBackBufferAttributesRequest(backBuffer))
+                out.write(createGcRequest(GcId, foreground = Red, drawable = backBuffer))
+                out.write(polyFillRectangleRequest(backBuffer, GcId, listOf(XRectangleCommand(2, 3, 5, 4))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 10, height = 10))
+                out.write(dbeSwapBuffersRequest(WindowId, XDoubleBuffer.SwapCopied))
+                out.write(dbeDeallocateBackBufferNameRequest(backBuffer))
+                out.write(dbeGetBackBufferAttributesRequest(backBuffer))
+                out.write(dbeDeallocateBackBufferNameRequest(backBuffer))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = XDoubleBuffer.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XDoubleBuffer.GetVersion)
+
+                val version = readReply(socket.getInputStream())
+                assertEquals(2, u16le(version, 2))
+                assertEquals(XDoubleBuffer.MajorVersion, version[8].toInt() and 0xff)
+                assertEquals(XDoubleBuffer.MinorVersion, version[9].toInt() and 0xff)
+
+                val visualInfo = readReply(socket.getInputStream())
+                assertEquals(3, u16le(visualInfo, 2))
+                assertEquals(9, u32le(visualInfo, 4))
+                assertEquals(1, u32le(visualInfo, 8))
+                assertEquals(4, u32le(visualInfo, 32))
+                assertEquals(X11Ids.RootVisual, u32le(visualInfo, 36))
+                assertEquals(X11Ids.RootDepth, visualInfo[40].toInt() and 0xff)
+                assertEquals(X11Ids.RgbaVisual, u32le(visualInfo, 52))
+                assertEquals(X11Ids.RgbaDepth, visualInfo[56].toInt() and 0xff)
+
+                val missingAttributes = readReply(socket.getInputStream())
+                assertEquals(4, u16le(missingAttributes, 2))
+                assertEquals(0, u32le(missingAttributes, 8))
+
+                val attributes = readReply(socket.getInputStream())
+                assertEquals(7, u16le(attributes, 2))
+                assertEquals(WindowId, u32le(attributes, 8))
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(10, u16le(image, 2))
+                val opaqueRed = 0xffff_0000.toInt()
+                assertEquals(opaqueRed, pixelAt(image, imageWidth = 10, x = 2, y = 3))
+                assertEquals(opaqueRed, pixelAt(image, imageWidth = 10, x = 6, y = 6))
+                assertNotEquals(opaqueRed, pixelAt(image, imageWidth = 10, x = 1, y = 3))
+
+                val removedAttributes = readReply(socket.getInputStream())
+                assertEquals(13, u16le(removedAttributes, 2))
+                assertEquals(0, u32le(removedAttributes, 8))
+                assertError(socket.getInputStream(), error = XDoubleBuffer.BadBuffer, opcode = XDoubleBuffer.MajorOpcode, badValue = backBuffer, sequence = 14, minorOpcode = XDoubleBuffer.DeallocateBackBufferName)
+            }
+            waitForStateContains(server.localPort, """"drawable":"0x${backBuffer.toString(16)}"""")
             server.close()
             serverThread.join(1_000)
         }
@@ -23306,6 +23382,50 @@ class XCoreDrawingProtocolTest {
             put32le(body, offset + 4, delay)
         }
         return renderRequest(31, body)
+    }
+
+    private fun dbeGetVersionRequest(major: Int = XDoubleBuffer.MajorVersion, minor: Int = XDoubleBuffer.MinorVersion): ByteArray {
+        val body = ByteArray(4)
+        body[0] = major.toByte()
+        body[1] = minor.toByte()
+        return request(XDoubleBuffer.MajorOpcode, XDoubleBuffer.GetVersion, body)
+    }
+
+    private fun dbeAllocateBackBufferNameRequest(window: Int, buffer: Int, swapAction: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, window)
+        put32le(body, 4, buffer)
+        body[8] = swapAction.toByte()
+        return request(XDoubleBuffer.MajorOpcode, XDoubleBuffer.AllocateBackBufferName, body)
+    }
+
+    private fun dbeDeallocateBackBufferNameRequest(buffer: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, buffer)
+        return request(XDoubleBuffer.MajorOpcode, XDoubleBuffer.DeallocateBackBufferName, body)
+    }
+
+    private fun dbeSwapBuffersRequest(window: Int, swapAction: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, 1)
+        put32le(body, 4, window)
+        body[8] = swapAction.toByte()
+        return request(XDoubleBuffer.MajorOpcode, XDoubleBuffer.SwapBuffers, body)
+    }
+
+    private fun dbeGetVisualInfoRequest(vararg drawables: Int): ByteArray {
+        val body = ByteArray(4 + drawables.size * 4)
+        put32le(body, 0, drawables.size)
+        drawables.forEachIndexed { index, drawable ->
+            put32le(body, 4 + index * 4, drawable)
+        }
+        return request(XDoubleBuffer.MajorOpcode, XDoubleBuffer.GetVisualInfo, body)
+    }
+
+    private fun dbeGetBackBufferAttributesRequest(buffer: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, buffer)
+        return request(XDoubleBuffer.MajorOpcode, XDoubleBuffer.GetBackBufferAttributes, body)
     }
 
     private fun readReply(input: InputStream, byteOrderByte: Int = 0x6c): ByteArray {
