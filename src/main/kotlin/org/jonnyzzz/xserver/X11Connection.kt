@@ -4890,10 +4890,10 @@ internal class X11Connection(
         repeat(stopsCount) { index ->
             stops += byteOrder.u32(body, 24 + index * 4)
         }
-        val colors = ArrayList<Int>(stopsCount)
+        val colors = ArrayList<XRenderColor>(stopsCount)
         repeat(stopsCount) { index ->
             val offset = colorOffset.toInt() + index * 8
-            colors += XRender.argb32Pixel(
+            colors += XRenderColor(
                 red = byteOrder.u16(body, offset),
                 green = byteOrder.u16(body, offset + 2),
                 blue = byteOrder.u16(body, offset + 4),
@@ -4972,7 +4972,7 @@ internal class X11Connection(
         countOffset: Int,
         stopsOffset: Int,
         minorOpcode: Int,
-    ): Pair<List<Int>, List<Int>>? {
+    ): Pair<List<Int>, List<XRenderColor>>? {
         val stopsCount = byteOrder.u32(body, countOffset)
         if (stopsCount < 0) {
             writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
@@ -4987,7 +4987,7 @@ internal class X11Connection(
         return renderGradientStops(body, countOffset, stopsOffset)
     }
 
-    private fun renderGradientStops(body: ByteArray, countOffset: Int, stopsOffset: Int): Pair<List<Int>, List<Int>>? {
+    private fun renderGradientStops(body: ByteArray, countOffset: Int, stopsOffset: Int): Pair<List<Int>, List<XRenderColor>>? {
         val stopsCount = byteOrder.u32(body, countOffset)
         if (stopsCount < 0) return null
         val colorOffset = stopsOffset.toLong() + stopsCount.toLong() * 4L
@@ -4997,10 +4997,10 @@ internal class X11Connection(
         repeat(stopsCount) { index ->
             stops += byteOrder.u32(body, stopsOffset + index * 4)
         }
-        val colors = ArrayList<Int>(stopsCount)
+        val colors = ArrayList<XRenderColor>(stopsCount)
         repeat(stopsCount) { index ->
             val offset = colorOffset + index * 8
-            colors += XRender.argb32Pixel(
+            colors += XRenderColor(
                 red = byteOrder.u16(body, offset.toInt()),
                 green = byteOrder.u16(body, offset.toInt() + 2),
                 blue = byteOrder.u16(body, offset.toInt() + 4),

@@ -453,6 +453,8 @@ internal object TextScreenRenderer {
                         append(gradient.stopHex.joinToString(",", prefix = "[", postfix = "]"))
                         append(" colors=")
                         append(gradient.colorHex.joinToString(",", prefix = "[", postfix = "]"))
+                        append(" rawColors=")
+                        append(gradient.rawColorHex.joinToString(",", prefix = "[", postfix = "]"))
                     }
                     picture.radialGradient?.let { gradient ->
                         append(" radialGradient=")
@@ -463,6 +465,8 @@ internal object TextScreenRenderer {
                         append(gradient.stopHex.joinToString(",", prefix = "[", postfix = "]"))
                         append(" colors=")
                         append(gradient.colorHex.joinToString(",", prefix = "[", postfix = "]"))
+                        append(" rawColors=")
+                        append(gradient.rawColorHex.joinToString(",", prefix = "[", postfix = "]"))
                     }
                     picture.conicalGradient?.let { gradient ->
                         append(" conicalGradient=")
@@ -473,6 +477,8 @@ internal object TextScreenRenderer {
                         append(gradient.stopHex.joinToString(",", prefix = "[", postfix = "]"))
                         append(" colors=")
                         append(gradient.colorHex.joinToString(",", prefix = "[", postfix = "]"))
+                        append(" rawColors=")
+                        append(gradient.rawColorHex.joinToString(",", prefix = "[", postfix = "]"))
                     }
                     appendLine()
                 }
@@ -671,6 +677,8 @@ internal object TextScreenRenderer {
                 append(gradient.stopHex.joinToString(",", prefix = "[", postfix = "]"))
                 append(" colors=")
                 append(gradient.colorHex.joinToString(",", prefix = "[", postfix = "]"))
+                append(" rawColors=")
+                append(gradient.rawColorHex.joinToString(",", prefix = "[", postfix = "]"))
             }
             picture.radialGradient?.let { gradient ->
                 append(" radial=")
@@ -681,6 +689,8 @@ internal object TextScreenRenderer {
                 append(gradient.stopHex.joinToString(",", prefix = "[", postfix = "]"))
                 append(" colors=")
                 append(gradient.colorHex.joinToString(",", prefix = "[", postfix = "]"))
+                append(" rawColors=")
+                append(gradient.rawColorHex.joinToString(",", prefix = "[", postfix = "]"))
             }
             picture.conicalGradient?.let { gradient ->
                 append(" conical=")
@@ -691,6 +701,8 @@ internal object TextScreenRenderer {
                 append(gradient.stopHex.joinToString(",", prefix = "[", postfix = "]"))
                 append(" colors=")
                 append(gradient.colorHex.joinToString(",", prefix = "[", postfix = "]"))
+                append(" rawColors=")
+                append(gradient.rawColorHex.joinToString(",", prefix = "[", postfix = "]"))
             }
         }
         provenance.source?.let { appendPicture("source", it) }

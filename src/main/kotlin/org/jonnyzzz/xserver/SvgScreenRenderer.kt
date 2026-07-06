@@ -282,6 +282,11 @@ internal object SvgScreenRenderer {
                         if (colorIndex > 0) append(',')
                         append('"').append(value).append('"')
                     }
+                    append("""],"rawColors":[""")
+                    gradient.rawColorHex.forEachIndexed { colorIndex, value ->
+                        if (colorIndex > 0) append(',')
+                        append('"').append(value).append('"')
+                    }
                     append("""]}""")
                 }
                 picture.radialGradient?.let { gradient ->
@@ -295,6 +300,11 @@ internal object SvgScreenRenderer {
                         if (colorIndex > 0) append(',')
                         append('"').append(value).append('"')
                     }
+                    append("""],"rawColors":[""")
+                    gradient.rawColorHex.forEachIndexed { colorIndex, value ->
+                        if (colorIndex > 0) append(',')
+                        append('"').append(value).append('"')
+                    }
                     append("""]}""")
                 }
                 picture.conicalGradient?.let { gradient ->
@@ -305,6 +315,11 @@ internal object SvgScreenRenderer {
                     }
                     append("""],"colors":[""")
                     gradient.colorHex.forEachIndexed { colorIndex, value ->
+                        if (colorIndex > 0) append(',')
+                        append('"').append(value).append('"')
+                    }
+                    append("""],"rawColors":[""")
+                    gradient.rawColorHex.forEachIndexed { colorIndex, value ->
                         if (colorIndex > 0) append(',')
                         append('"').append(value).append('"')
                     }
@@ -2050,6 +2065,11 @@ internal object SvgScreenRenderer {
                 if (index > 0) append(',')
                 append('"').append(value).append('"')
             }
+            append("""],"rawColors":[""")
+            gradient.rawColorHex.forEachIndexed { index, value ->
+                if (index > 0) append(',')
+                append('"').append(value).append('"')
+            }
             append("""]}""")
         }
         picture.radialGradient?.let { gradient ->
@@ -2063,6 +2083,11 @@ internal object SvgScreenRenderer {
                 if (index > 0) append(',')
                 append('"').append(value).append('"')
             }
+            append("""],"rawColors":[""")
+            gradient.rawColorHex.forEachIndexed { index, value ->
+                if (index > 0) append(',')
+                append('"').append(value).append('"')
+            }
             append("""]}""")
         }
         picture.conicalGradient?.let { gradient ->
@@ -2073,6 +2098,11 @@ internal object SvgScreenRenderer {
             }
             append("""],"colors":[""")
             gradient.colorHex.forEachIndexed { index, value ->
+                if (index > 0) append(',')
+                append('"').append(value).append('"')
+            }
+            append("""],"rawColors":[""")
+            gradient.rawColorHex.forEachIndexed { index, value ->
                 if (index > 0) append(',')
                 append('"').append(value).append('"')
             }

@@ -4094,7 +4094,8 @@ internal class X11State(
                     p1 = gradient.p1,
                     p2 = gradient.p2,
                     stops = gradient.stops,
-                    colors = gradient.colors,
+                    colors = gradient.colors.map { it.argb32Pixel },
+                    rawColors = gradient.colors,
                 )
             },
             radialGradient = picture.radialGradient?.let { gradient ->
@@ -4102,7 +4103,8 @@ internal class X11State(
                     inner = gradient.inner,
                     outer = gradient.outer,
                     stops = gradient.stops,
-                    colors = gradient.colors,
+                    colors = gradient.colors.map { it.argb32Pixel },
+                    rawColors = gradient.colors,
                 )
             },
             conicalGradient = picture.conicalGradient?.let { gradient ->
@@ -4110,7 +4112,8 @@ internal class X11State(
                     center = gradient.center,
                     angle = gradient.angle,
                     stops = gradient.stops,
-                    colors = gradient.colors,
+                    colors = gradient.colors.map { it.argb32Pixel },
+                    rawColors = gradient.colors,
                 )
             },
             repeat = picture.repeat,
@@ -7215,7 +7218,7 @@ internal class X11State(
         return ((m00 * x + m01 * y + m02) / w) to ((m10 * x + m11 * y + m12) / w)
     }
 
-    private fun sampleGradientPosition(position: Double?, pairs: List<Pair<Int, Int>>, fixedStops: List<Double>, repeat: Int): Int {
+    private fun sampleGradientPosition(position: Double?, pairs: List<Pair<Int, XRenderColor>>, fixedStops: List<Double>, repeat: Int): Int {
         val repeatedPosition = position?.let { repeatPosition(it, fixedStops.first(), fixedStops.last(), repeat) }
         return if (repeatedPosition == null) {
             0
@@ -7226,7 +7229,7 @@ internal class X11State(
         }
     }
 
-    private fun normalRepeatPixel(position: Double, pairs: List<Pair<Int, Int>>, fixedStops: List<Double>): Int {
+    private fun normalRepeatPixel(position: Double, pairs: List<Pair<Int, XRenderColor>>, fixedStops: List<Double>): Int {
         if (position < fixedStops.first()) {
             val startStop = fixedStops.last() - 1.0
             val endStop = fixedStops.first()
@@ -7240,9 +7243,9 @@ internal class X11State(
         return stopPixel(position, pairs, fixedStops)
     }
 
-    private fun stopPixel(position: Double, pairs: List<Pair<Int, Int>>, fixedStops: List<Double>): Int {
-        if (position <= fixedStops.first()) return pairs.first().second
-        var pixel = pairs.last().second
+    private fun stopPixel(position: Double, pairs: List<Pair<Int, XRenderColor>>, fixedStops: List<Double>): Int {
+        if (position <= fixedStops.first()) return pairs.first().second.argb32Pixel
+        var pixel = pairs.last().second.argb32Pixel
         for (index in 0 until pairs.lastIndex) {
             val startStop = fixedStops[index]
             val endStop = fixedStops[index + 1]
@@ -7254,8 +7257,8 @@ internal class X11State(
         return pixel
     }
 
-    private fun interpolateStopPixel(position: Double, startStop: Double, endStop: Double, startPixel: Int, endPixel: Int): Int {
-        if (endStop <= startStop) return endPixel
+    private fun interpolateStopPixel(position: Double, startStop: Double, endStop: Double, startPixel: XRenderColor, endPixel: XRenderColor): Int {
+        if (endStop <= startStop) return endPixel.argb32Pixel
         val ratio = (position - startStop) / (endStop - startStop)
         return interpolatePixel(startPixel, endPixel, ratio)
     }
@@ -7278,10 +7281,10 @@ internal class X11State(
         return if (offset <= 1.0) offset else 2.0 - offset
     }
 
-    private fun interpolatePixel(start: Int, end: Int, ratio: Double): Int {
+    private fun interpolatePixel(start: XRenderColor, end: XRenderColor, ratio: Double): Int {
         fun channel(shift: Int): Int {
-            val a = (start ushr shift) and 0xff
-            val b = (end ushr shift) and 0xff
+            val a = start.channel(shift)
+            val b = end.channel(shift)
             return (a + (b - a) * ratio).roundToInt().coerceIn(0, 255)
         }
         return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
@@ -11352,7 +11355,7 @@ internal data class XLinearGradient(
     val p1: XFixedPoint,
     val p2: XFixedPoint,
     val stops: List<Int>,
-    val colors: List<Int>,
+    val colors: List<XRenderColor>,
 )
 
 internal data class XFixedCircle(
@@ -11364,14 +11367,14 @@ internal data class XRadialGradient(
     val inner: XFixedCircle,
     val outer: XFixedCircle,
     val stops: List<Int>,
-    val colors: List<Int>,
+    val colors: List<XRenderColor>,
 )
 
 internal data class XConicalGradient(
     val center: XFixedPoint,
     val angle: Int,
     val stops: List<Int>,
-    val colors: List<Int>,
+    val colors: List<XRenderColor>,
 )
 
 internal val IdentityTransform: List<Int> = listOf(
@@ -11568,8 +11571,22 @@ internal data class XRenderColor(
     val blue: Int,
     val alpha: Int,
 ) {
+    val argb32Pixel: Int get() = XRender.argb32Pixel(red = red, green = green, blue = blue, alpha = alpha)
+    val rawHex: String
+        get() = listOf(red, green, blue, alpha).joinToString(separator = ",") {
+            "0x${it.toUInt().toString(16).padStart(4, '0')}"
+        }
+
     fun toPixel(): Int =
-        XRender.argb32Pixel(red = red, green = green, blue = blue, alpha = alpha)
+        argb32Pixel
+
+    fun channel(shift: Int): Int =
+        when (shift) {
+            24 -> alpha
+            16 -> red
+            8 -> green
+            else -> blue
+        } ushr 8
 }
 
 internal data class XColorPoint(
@@ -12260,11 +12277,13 @@ internal data class XLinearGradientSnapshot(
     val p2: XFixedPoint,
     val stops: List<Int>,
     val colors: List<Int>,
+    val rawColors: List<XRenderColor>,
 ) {
     val p1Hex: String get() = pointHex(p1)
     val p2Hex: String get() = pointHex(p2)
     val stopHex: List<String> get() = stops.map { "0x${it.toUInt().toString(16)}" }
     val colorHex: List<String> get() = colors.map { "0x${it.toUInt().toString(16).padStart(8, '0')}" }
+    val rawColorHex: List<String> get() = rawColors.map { it.rawHex }
 
 }
 
@@ -12273,11 +12292,13 @@ internal data class XRadialGradientSnapshot(
     val outer: XFixedCircle,
     val stops: List<Int>,
     val colors: List<Int>,
+    val rawColors: List<XRenderColor>,
 ) {
     val innerHex: String get() = circleHex(inner)
     val outerHex: String get() = circleHex(outer)
     val stopHex: List<String> get() = stops.map { "0x${it.toUInt().toString(16)}" }
     val colorHex: List<String> get() = colors.map { "0x${it.toUInt().toString(16).padStart(8, '0')}" }
+    val rawColorHex: List<String> get() = rawColors.map { it.rawHex }
 
     private fun circleHex(circle: XFixedCircle): String =
         "${pointHex(circle.center)},r=0x${circle.radius.toUInt().toString(16)}"
@@ -12288,11 +12309,13 @@ internal data class XConicalGradientSnapshot(
     val angle: Int,
     val stops: List<Int>,
     val colors: List<Int>,
+    val rawColors: List<XRenderColor>,
 ) {
     val centerHex: String get() = pointHex(center)
     val angleHex: String get() = "0x${angle.toUInt().toString(16)}"
     val stopHex: List<String> get() = stops.map { "0x${it.toUInt().toString(16)}" }
     val colorHex: List<String> get() = colors.map { "0x${it.toUInt().toString(16).padStart(8, '0')}" }
+    val rawColorHex: List<String> get() = rawColors.map { it.rawHex }
 }
 
 private fun pointHex(point: XFixedPoint): String =

@@ -2291,7 +2291,8 @@ class XRenderProtocolTest {
                 assertContains(json, """"repeat":"pad"""")
                 assertContains(json, """"filter":"bilinear"""")
                 assertContains(json, """"transform":["0x10000","0x0","0x10000","0x0","0x10000","0x20000","0x0","0x0","0x10000"]""")
-                assertContains(json, """"linearGradient":{"p1":"0x0,0x0","p2":"0x20000,0x0","stops":["0x0","0x10000"],"colors":["0xffff0000","0xff0000ff"]}""")
+                assertContains(json, """"linearGradient":{"p1":"0x0,0x0","p2":"0x20000,0x0","stops":["0x0","0x10000"],"colors":["0xffff0000","0xff0000ff"]""")
+                assertContains(json, """"rawColors":["0xffff,0x0000,0x0000,0xffff","0x0000,0x0000,0xffff,0xffff"]""")
                 assertContains(json, """"result":{"width":2,"height":1,"crc32":""")
                 assertContains(json, """"operation":"FreePicture","detail":"picture=$gradientId","provenance":{"freed":{"id":"$gradientId","drawable":"none","kind":"linear-gradient"""")
 
@@ -11106,8 +11107,8 @@ class XRenderProtocolTest {
                         p2 = 10 to 0,
                         stops = listOf(0, 0x0001_0000),
                         colors = listOf(
-                            RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
-                            RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                            RenderColor(red = 0xff80, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0x0000, blue = 0xff40, alpha = 0xffff),
                         ),
                     ),
                 )
@@ -11156,9 +11157,11 @@ class XRenderProtocolTest {
                 assertContains(json, """"kind":"linear-gradient"""")
                 assertContains(json, """"stops":["0x0","0x10000"]""")
                 assertContains(json, """"colors":["0xffff0000","0xff0000ff"]""")
+                assertContains(json, """"rawColors":["0xff80,0x0000,0x0000,0xffff","0x0000,0x0000,0xff40,0xffff"]""")
                 val text = httpGet(server.localPort, "/text.txt")
                 assertContains(text, "CreateLinearGradient")
                 assertContains(text, "linearGradient=0x0,0x0->0xa0000,0x0")
+                assertContains(text, "rawColors=[0xff80,0x0000,0x0000,0xffff,0x0000,0x0000,0xff40,0xffff]")
             }
             server.close()
             serverThread.join(1_000)
