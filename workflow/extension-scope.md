@@ -31,11 +31,12 @@ These extensions may be advertised and maintained because they are already in th
 | `XINERAMA` | Legacy single-screen geometry fallback. |
 | `MIT-SCREEN-SAVER` | Query/suspend compatibility for desktop toolkits. |
 | `GLX` | Probe and lifecycle surface only; keep real GL rendering out of scope unless IntelliJ/JCEF or VSCode cannot run with software/XRender paths. |
+| `XInputExtension` | Minimal discovery and device-inventory surface only; keep broad XI2 event/input semantics parked unless target-client traces require them. |
 | `XTEST` | Test and automation support only; do not expand it as a runtime requirement without trace evidence. |
 | `MIT-SUNDRY-NONSTANDARD` | Legacy probe compatibility only; avoid new work without trace evidence. |
 
 ## Parked Until Proven
 
-Do not implement or advertise additional extensions such as `Composite`, `DAMAGE`, `Present`, `XInputExtension`/XI2, `DRI2`, `DRI3`, or desktop-environment-specific extensions unless an IntelliJ IDEA or VSCode trace proves that absence blocks startup, input, or visual parity.
+Do not implement or advertise additional extensions such as `Composite`, `DAMAGE`, `Present`, broad `XInputExtension`/XI2 behavior beyond the current minimal discovery surface, `DRI2`, `DRI3`, or desktop-environment-specific extensions unless an IntelliJ IDEA or VSCode trace proves that absence blocks startup, input, or visual parity.
 
 When a parked extension becomes necessary, start with discovery replies and the exact requests observed in the trace. Keep rendering and semantic state preservation ahead of broad protocol coverage.

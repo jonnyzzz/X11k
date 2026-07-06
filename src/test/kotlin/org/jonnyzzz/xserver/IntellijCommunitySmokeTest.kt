@@ -298,6 +298,10 @@ class IntellijCommunitySmokeTest {
             assertTrue(metrics.contains("robotVsXvfbSampledDistance="), metrics)
             assertTrue(metrics.contains("svgVsXvfbMismatchBounds="), metrics)
             assertTrue(metrics.contains("robotVsSvgMismatchBounds="), metrics)
+            assertTrue(metrics.contains("robotVsXvfbMismatchRows=10:1"), metrics)
+            assertTrue(metrics.contains("svgVsXvfbMismatchRows=20:1"), metrics)
+            assertTrue(metrics.contains("robotVsSvgMismatchRows=10:1 20:1"), metrics)
+            assertTrue(metrics.contains("robotVsXvfbMismatchTwoPixelRows=10-11:1"), metrics)
         } finally {
             directory.deleteRecursively()
         }
@@ -2227,6 +2231,12 @@ class IntellijCommunitySmokeTest {
             appendLine("robotVsXvfbMismatchBounds=${mismatchBounds(expected.image, actualRobot.image).toMetricString()}")
             appendLine("svgVsXvfbMismatchBounds=${mismatchBounds(expected.image, actualSvg.image).toMetricString()}")
             appendLine("robotVsSvgMismatchBounds=${mismatchBounds(actualRobot.image, actualSvg.image).toMetricString()}")
+            appendLine("robotVsXvfbMismatchRows=${mismatchRowBuckets(expected.image, actualRobot.image, bucketHeight = 1)}")
+            appendLine("svgVsXvfbMismatchRows=${mismatchRowBuckets(expected.image, actualSvg.image, bucketHeight = 1)}")
+            appendLine("robotVsSvgMismatchRows=${mismatchRowBuckets(actualRobot.image, actualSvg.image, bucketHeight = 1)}")
+            appendLine("robotVsXvfbMismatchTwoPixelRows=${mismatchRowBuckets(expected.image, actualRobot.image, bucketHeight = 2)}")
+            appendLine("svgVsXvfbMismatchTwoPixelRows=${mismatchRowBuckets(expected.image, actualSvg.image, bucketHeight = 2)}")
+            appendLine("robotVsSvgMismatchTwoPixelRows=${mismatchRowBuckets(actualRobot.image, actualSvg.image, bucketHeight = 2)}")
         }
 
     private fun dominantColors(image: BufferedImage, limit: Int): String {
@@ -3009,6 +3019,32 @@ class IntellijCommunitySmokeTest {
             }
         }
         return if (maxX < minX || maxY < minY) null else Rectangle(minX, minY, maxX - minX + 1, maxY - minY + 1)
+    }
+
+    private fun mismatchRowBuckets(expected: BufferedImage, actual: BufferedImage, bucketHeight: Int, limit: Int = 16): String {
+        require(bucketHeight > 0) { "bucketHeight must be positive" }
+        val width = minOf(expected.width, actual.width)
+        val height = minOf(expected.height, actual.height)
+        val buckets = IntArray((height + bucketHeight - 1) / bucketHeight)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                if (rgbDistance(expected.getRGB(x, y), actual.getRGB(x, y)) != 0) {
+                    buckets[y / bucketHeight]++
+                }
+            }
+        }
+        return buckets
+            .withIndex()
+            .filter { it.value > 0 }
+            .sortedWith(compareByDescending<IndexedValue<Int>> { it.value }.thenBy { it.index })
+            .take(limit)
+            .joinToString(" ") { (index, count) ->
+                val start = index * bucketHeight
+                val end = minOf(height - 1, start + bucketHeight - 1)
+                val label = if (start == end) start.toString() else "$start-$end"
+                "$label:$count"
+            }
+            .ifBlank { "none" }
     }
 
     private fun Rectangle?.toMetricString(): String =
