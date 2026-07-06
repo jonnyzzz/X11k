@@ -6723,7 +6723,7 @@ internal class X11State(
             return top + (bottom - top) * fy
         }
         fun alpha(pixel: Int): Int = (pixel ushr 24) and 0xff
-        fun premultiplied(pixel: Int, shift: Int): Double = ((pixel ushr shift) and 0xff) * alpha(pixel) / 255.0
+        fun channel(pixel: Int, shift: Int): Int = (pixel ushr shift) and 0xff
         fun channelValue(value: Double): Int =
             floor(value)
                 .toInt()
@@ -6732,16 +6732,16 @@ internal class X11State(
             interpolate(alpha(p00).toDouble(), alpha(p10).toDouble(), alpha(p01).toDouble(), alpha(p11).toDouble()),
         )
         if (outAlpha == 0) return 0
-        fun channel(shift: Int): Int {
-            val premultipliedChannel = interpolate(
-                premultiplied(p00, shift),
-                premultiplied(p10, shift),
-                premultiplied(p01, shift),
-                premultiplied(p11, shift),
+        fun interpolatedChannel(shift: Int): Int =
+            channelValue(
+                interpolate(
+                    channel(p00, shift).toDouble(),
+                    channel(p10, shift).toDouble(),
+                    channel(p01, shift).toDouble(),
+                    channel(p11, shift).toDouble(),
+                ),
             )
-            return channelValue(premultipliedChannel * 255.0 / outAlpha)
-        }
-        return (outAlpha shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+        return (outAlpha shl 24) or (interpolatedChannel(16) shl 16) or (interpolatedChannel(8) shl 8) or interpolatedChannel(0)
     }
 
     // XRender exposes good/best as higher-quality filters; use bilinear until convolution filters are implemented.

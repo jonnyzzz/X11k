@@ -1402,7 +1402,7 @@ class XRenderProtocolTest {
                 out.flush()
 
                 val image = readReply(socket.getInputStream())
-                assertEquals(0x7f00_ff00, pixelAt(image, imageWidth = 1, x = 0, y = 0))
+                assertEquals(0x7f00_7f00, pixelAt(image, imageWidth = 1, x = 0, y = 0))
             }
             server.close()
             serverThread.join(1_000)
@@ -10695,7 +10695,7 @@ class XRenderProtocolTest {
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xff7f_7f00.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 0))
                 assertEquals(0xff7f_0080.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 1))
-                assertEquals(0x7f00_ff00, pixelAt(image, imageWidth = 1, x = 0, y = 2))
+                assertEquals(0x7f00_7f00, pixelAt(image, imageWidth = 1, x = 0, y = 2))
                 assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 3))
                 assertEquals(0xff7f_7f00.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 4))
             }
@@ -10802,6 +10802,96 @@ class XRenderProtocolTest {
                 assertPixelRow(image, imageWidth = 8, y = 1, expected = bilinearRow)
                 assertPixelRow(image, imageWidth = 8, y = 2, expected = bilinearRow)
                 assertPixelRow(image, imageWidth = 8, y = 3, expected = bilinearRow)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER OpOver good filter matches Xvfb transformed repeated ARGB32 pixmap strip`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 4, height = 2))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                listOf(
+                    RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0x8000),
+                    RenderColor(red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xc000),
+                    RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0x4000),
+                    RenderColor(red = 0xffff, green = 0xffff, blue = 0x0000, alpha = 0xffff),
+                    RenderColor(red = 0xffff, green = 0x0000, blue = 0xffff, alpha = 0x6000),
+                    RenderColor(red = 0x0000, green = 0xffff, blue = 0xffff, alpha = 0xa000),
+                    RenderColor(red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xe000),
+                    RenderColor(red = 0x4000, green = 0x4000, blue = 0x4000, alpha = 0x2000),
+                ).forEachIndexed { index, color ->
+                    out.write(
+                        renderFillRectangles(
+                            PixmapPictureId,
+                            x = index % 4,
+                            y = index / 4,
+                            width = 1,
+                            height = 1,
+                            red = color.red,
+                            green = color.green,
+                            blue = color.blue,
+                            alpha = color.alpha,
+                        ),
+                    )
+                }
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 8, height = 1, red = 0x2020, green = 0x2020, blue = 0x2020, alpha = 0xffff))
+                out.write(renderChangePicture(PixmapPictureId, repeat = XRender.RepeatNormal))
+                out.write(renderSetPictureFilter(PixmapPictureId, "good", values = emptyList()))
+                out.write(
+                    renderSetPictureTransform(
+                        PixmapPictureId,
+                        listOf(
+                            0x0001_0000,
+                            0,
+                            -0x0003_c000,
+                            0,
+                            0x0001_0000,
+                            0x0000_4000,
+                            0,
+                            0,
+                            0x0001_0000,
+                        ),
+                    ),
+                )
+                out.write(
+                    renderComposite(
+                        PixmapPictureId,
+                        PictureId,
+                        operation = XRender.OpOver,
+                        destinationX = 0,
+                        destinationY = 0,
+                        width = 8,
+                        height = 1,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertPixelRow(
+                    image,
+                    imageWidth = 8,
+                    y = 0,
+                    expected = listOf(
+                        0xffce_4e4e.toInt(),
+                        0xff1a_da7a.toInt(),
+                        0xff73_73d3.toInt(),
+                        0xffe5_a525.toInt(),
+                        0xffce_4e4e.toInt(),
+                        0xff1a_da7a.toInt(),
+                        0xff73_73d3.toInt(),
+                        0xffe5_a525.toInt(),
+                    ),
+                )
             }
             server.close()
             serverThread.join(1_000)
