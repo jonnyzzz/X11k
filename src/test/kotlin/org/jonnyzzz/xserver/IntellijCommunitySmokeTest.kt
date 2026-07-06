@@ -378,7 +378,16 @@ class IntellijCommunitySmokeTest {
                     """
                     agentLoaded=true
                     runtimeMainMenuDisplayMode=Merge with Main Toolbar
+                    runtimeStateMainMenuDisplayMode=MERGED_WITH_MAIN_TOOLBAR
+                    runtimeShadowStateMainMenuDisplayMode=MERGED_WITH_MAIN_TOOLBAR
+                    runtimeMainMenuDisplayModePrev=Hide under Hamburger Button
                     runtimeShowMainMenu=true
+                    runtimeStateShowMainMenu=true
+                    runtimeShadowStateShowMainMenu=true
+                    runtimeShowMainToolbar=false
+                    runtimeStateModificationCount=3
+                    runtimeSettingsIdentity=101
+                    runtimeStateIdentity=202
                     runtimeMenuButtonInToolbar=true
                     runtimeHideNativeLinuxTitleNotSupportedReason=INCOMPATIBLE_JBR
                     runtimeJbrWindowMoveSupported=false
@@ -391,7 +400,16 @@ class IntellijCommunitySmokeTest {
                     """
                     agentLoaded=true
                     runtimeMainMenuDisplayMode=Hide under Hamburger Button
+                    runtimeStateMainMenuDisplayMode=UNDER_HAMBURGER_BUTTON
+                    runtimeShadowStateMainMenuDisplayMode=UNDER_HAMBURGER_BUTTON
+                    runtimeMainMenuDisplayModePrev=Hide under Hamburger Button
                     runtimeShowMainMenu=true
+                    runtimeStateShowMainMenu=true
+                    runtimeShadowStateShowMainMenu=true
+                    runtimeShowMainToolbar=false
+                    runtimeStateModificationCount=0
+                    runtimeSettingsIdentity=303
+                    runtimeStateIdentity=404
                     runtimeMenuButtonInToolbar=true
                     runtimeHideNativeLinuxTitleNotSupportedReason=INCOMPATIBLE_JBR
                     runtimeJbrWindowMoveSupported=false
@@ -416,6 +434,10 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("kotlinRuntimeAgentLoaded=true"), summary)
         assertTrue(summary.contains("xvfbRuntimeMainMenuDisplayMode=Merge with Main Toolbar"), summary)
         assertTrue(summary.contains("kotlinRuntimeMainMenuDisplayMode=Hide under Hamburger Button"), summary)
+        assertTrue(summary.contains("xvfbRuntimeStateMainMenuDisplayMode=MERGED_WITH_MAIN_TOOLBAR"), summary)
+        assertTrue(summary.contains("kotlinRuntimeStateMainMenuDisplayMode=UNDER_HAMBURGER_BUTTON"), summary)
+        assertTrue(summary.contains("xvfbRuntimeStateModificationCount=3"), summary)
+        assertTrue(summary.contains("kotlinRuntimeStateModificationCount=0"), summary)
         assertTrue(summary.contains("xvfbRuntimeMenuButtonInToolbar=true"), summary)
         assertTrue(summary.contains("kotlinRuntimeMenuButtonInToolbar=true"), summary)
         assertTrue(summary.contains("CustomWindowHeaderUtil"), summary)
@@ -440,7 +462,16 @@ class IntellijCommunitySmokeTest {
                     """
                     agentLoaded=true
                     runtimeMainMenuDisplayMode=Hide under Hamburger Button
+                    runtimeStateMainMenuDisplayMode=UNDER_HAMBURGER_BUTTON
+                    runtimeShadowStateMainMenuDisplayMode=UNDER_HAMBURGER_BUTTON
+                    runtimeMainMenuDisplayModePrev=Hide under Hamburger Button
                     runtimeShowMainMenu=true
+                    runtimeStateShowMainMenu=true
+                    runtimeShadowStateShowMainMenu=true
+                    runtimeShowMainToolbar=false
+                    runtimeStateModificationCount=0
+                    runtimeSettingsIdentity=303
+                    runtimeStateIdentity=404
                     runtimeMenuButtonInToolbar=true
                     runtimeHideNativeLinuxTitleNotSupportedReason=INCOMPATIBLE_JBR
                     runtimeJbrWindowMoveSupported=false
@@ -479,6 +510,8 @@ class IntellijCommunitySmokeTest {
         assertTrue(source.contains("""<option name="useSolutionColorsInMainToolbar" value="false" />"""), source)
         assertTrue(harness.contains("XIntellijUiDiagnosticsAgent"), harness)
         assertTrue(harness.contains("runtimeMenuButtonInToolbar"), harness)
+        assertTrue(harness.contains("runtimeStateMainMenuDisplayMode"), harness)
+        assertTrue(harness.contains("intellij-kotlin-config-options-inventory.log"), harness)
         assertTrue(harness.contains("javac --add-modules jdk.attach -d /tmp"), harness)
     }
 
@@ -1034,6 +1067,7 @@ class IntellijCommunitySmokeTest {
                     "/tmp/xprop-xvfb-root.log" to "intellij-xvfb-xprop-root.log",
                     "/tmp/idea-extra.vmoptions" to "intellij-xvfb-idea-extra.vmoptions",
                     "/tmp/idea-config/options/ui.lnf.xml" to "intellij-xvfb-ui-lnf.xml",
+                    "/tmp/idea-config-options-inventory.log" to "intellij-xvfb-config-options-inventory.log",
                     "/tmp/run-intellij-env.log" to "intellij-xvfb-run-intellij-env.log",
                     "/tmp/idea-ui-runtime-diagnostics.log" to "intellij-xvfb-ui-runtime-diagnostics.log",
                     "/tmp/run-intellij-cksum.log" to "intellij-xvfb-run-intellij-cksum.log",
@@ -1048,6 +1082,7 @@ class IntellijCommunitySmokeTest {
                         extraLogs = extraLogs,
                     )
                     captureIntellijRuntimeUiDiagnostics(container, "/tmp/idea-xvfb.pid")
+                    captureIntellijConfigOptionsInventory(container)
                     val capture = execIntellijShell(
                         container,
                         """
@@ -1152,6 +1187,7 @@ class IntellijCommunitySmokeTest {
                         "/tmp/xprop-kotlin-root.log" to "intellij-kotlin-xprop-root.log",
                         "/tmp/idea-extra.vmoptions" to "intellij-kotlin-idea-extra.vmoptions",
                         "/tmp/idea-config/options/ui.lnf.xml" to "intellij-kotlin-ui-lnf.xml",
+                        "/tmp/idea-config-options-inventory.log" to "intellij-kotlin-config-options-inventory.log",
                         "/tmp/run-intellij-env.log" to "intellij-kotlin-run-intellij-env.log",
                         "/tmp/idea-ui-runtime-diagnostics.log" to "intellij-kotlin-ui-runtime-diagnostics.log",
                         "/tmp/run-intellij-cksum.log" to "intellij-kotlin-run-intellij-cksum.log",
@@ -1166,6 +1202,7 @@ class IntellijCommunitySmokeTest {
                             extraLogs = extraLogs,
                         )
                         captureIntellijRuntimeUiDiagnostics(container, "/tmp/idea-parity.pid")
+                        captureIntellijConfigOptionsInventory(container)
                         execIntellijShell(
                             container,
                             """
@@ -1580,6 +1617,29 @@ class IntellijCommunitySmokeTest {
         assertEquals(0, result.exitCode, result.stderr + result.stdout)
     }
 
+    private fun captureIntellijConfigOptionsInventory(container: GenericContainer<*>) {
+        val result = execContainerShell(
+            container,
+            30,
+            """
+            set +e
+            {
+              echo "optionsDir=/tmp/idea-config/options"
+              if [ -d /tmp/idea-config/options ]; then
+                find /tmp/idea-config/options -maxdepth 1 -type f -print | sort | while read file; do
+                  echo "--- ${'$'}file"
+                  sed -n '1,220p' "${'$'}file" 2>/dev/null
+                done
+              else
+                echo "optionsDirMissing=true"
+              fi
+            } > /tmp/idea-config-options-inventory.log
+            exit 0
+            """.trimIndent(),
+        )
+        assertEquals(0, result.exitCode, result.stderr + result.stdout)
+    }
+
     private fun robotCaptureSource(): String =
         """
         import java.awt.Rectangle;
@@ -1626,10 +1686,21 @@ class IntellijCommunitySmokeTest {
               out.println("agentLoaded=true");
               Object uiSettings = callStatic("com.intellij.ide.ui.UISettings", "getInstance");
               Object uiShadow = callStatic("com.intellij.ide.ui.UISettings", "getShadowInstance");
+              Object state = call(uiSettings, "getState");
+              Object shadowState = call(uiShadow, "getState");
               out.println("runtimeMainMenuDisplayMode=" + call(uiSettings, "getMainMenuDisplayMode"));
+              out.println("runtimeStateMainMenuDisplayMode=" + call(state, "getMainMenuDisplayMode"));
+              out.println("runtimeShadowStateMainMenuDisplayMode=" + call(shadowState, "getMainMenuDisplayMode"));
+              out.println("runtimeMainMenuDisplayModePrev=" + call(uiSettings, "getMainMenuDisplayModePrev"));
               out.println("runtimeShowMainMenu=" + call(uiSettings, "getShowMainMenu"));
+              out.println("runtimeStateShowMainMenu=" + call(state, "getShowMainMenu"));
+              out.println("runtimeShadowStateShowMainMenu=" + call(shadowState, "getShowMainMenu"));
+              out.println("runtimeShowMainToolbar=" + call(uiSettings, "getShowMainToolbar"));
               out.println("runtimeShowNewMainToolbar=" + call(uiSettings, "getShowNewMainToolbar"));
               out.println("runtimeMergeMainMenuWithWindowTitle=" + call(uiSettings, "getMergeMainMenuWithWindowTitle"));
+              out.println("runtimeStateModificationCount=" + call(state, "getModificationCount"));
+              out.println("runtimeSettingsIdentity=" + System.identityHashCode(uiSettings));
+              out.println("runtimeStateIdentity=" + System.identityHashCode(state));
               out.println("runtimeShadowMainMenuDisplayMode=" + call(uiShadow, "getMainMenuDisplayMode"));
               out.println("runtimeShadowShowMainMenu=" + call(uiShadow, "getShowMainMenu"));
               out.println("runtimeShadowShowNewMainToolbar=" + call(uiShadow, "getShowNewMainToolbar"));
@@ -1804,7 +1875,16 @@ class IntellijCommunitySmokeTest {
 
         val requiredFields = listOf(
             "RuntimeMainMenuDisplayMode",
+            "RuntimeStateMainMenuDisplayMode",
+            "RuntimeShadowStateMainMenuDisplayMode",
+            "RuntimeMainMenuDisplayModePrev",
             "RuntimeShowMainMenu",
+            "RuntimeStateShowMainMenu",
+            "RuntimeShadowStateShowMainMenu",
+            "RuntimeShowMainToolbar",
+            "RuntimeStateModificationCount",
+            "RuntimeSettingsIdentity",
+            "RuntimeStateIdentity",
             "RuntimeMenuButtonInToolbar",
             "RuntimeHideNativeLinuxTitleNotSupportedReason",
             "RuntimeJbrWindowMoveSupported",
@@ -1970,8 +2050,26 @@ class IntellijCommunitySmokeTest {
             appendLine("kotlinRuntimeAgentLoaded=${propertyValue(kotlinRuntime, "agentLoaded")}")
             appendLine("xvfbRuntimeMainMenuDisplayMode=${propertyValue(xvfbRuntime, "runtimeMainMenuDisplayMode")}")
             appendLine("kotlinRuntimeMainMenuDisplayMode=${propertyValue(kotlinRuntime, "runtimeMainMenuDisplayMode")}")
+            appendLine("xvfbRuntimeStateMainMenuDisplayMode=${propertyValue(xvfbRuntime, "runtimeStateMainMenuDisplayMode")}")
+            appendLine("kotlinRuntimeStateMainMenuDisplayMode=${propertyValue(kotlinRuntime, "runtimeStateMainMenuDisplayMode")}")
+            appendLine("xvfbRuntimeShadowStateMainMenuDisplayMode=${propertyValue(xvfbRuntime, "runtimeShadowStateMainMenuDisplayMode")}")
+            appendLine("kotlinRuntimeShadowStateMainMenuDisplayMode=${propertyValue(kotlinRuntime, "runtimeShadowStateMainMenuDisplayMode")}")
+            appendLine("xvfbRuntimeMainMenuDisplayModePrev=${propertyValue(xvfbRuntime, "runtimeMainMenuDisplayModePrev")}")
+            appendLine("kotlinRuntimeMainMenuDisplayModePrev=${propertyValue(kotlinRuntime, "runtimeMainMenuDisplayModePrev")}")
             appendLine("xvfbRuntimeShowMainMenu=${propertyValue(xvfbRuntime, "runtimeShowMainMenu")}")
             appendLine("kotlinRuntimeShowMainMenu=${propertyValue(kotlinRuntime, "runtimeShowMainMenu")}")
+            appendLine("xvfbRuntimeStateShowMainMenu=${propertyValue(xvfbRuntime, "runtimeStateShowMainMenu")}")
+            appendLine("kotlinRuntimeStateShowMainMenu=${propertyValue(kotlinRuntime, "runtimeStateShowMainMenu")}")
+            appendLine("xvfbRuntimeShadowStateShowMainMenu=${propertyValue(xvfbRuntime, "runtimeShadowStateShowMainMenu")}")
+            appendLine("kotlinRuntimeShadowStateShowMainMenu=${propertyValue(kotlinRuntime, "runtimeShadowStateShowMainMenu")}")
+            appendLine("xvfbRuntimeShowMainToolbar=${propertyValue(xvfbRuntime, "runtimeShowMainToolbar")}")
+            appendLine("kotlinRuntimeShowMainToolbar=${propertyValue(kotlinRuntime, "runtimeShowMainToolbar")}")
+            appendLine("xvfbRuntimeStateModificationCount=${propertyValue(xvfbRuntime, "runtimeStateModificationCount")}")
+            appendLine("kotlinRuntimeStateModificationCount=${propertyValue(kotlinRuntime, "runtimeStateModificationCount")}")
+            appendLine("xvfbRuntimeSettingsIdentity=${propertyValue(xvfbRuntime, "runtimeSettingsIdentity")}")
+            appendLine("kotlinRuntimeSettingsIdentity=${propertyValue(kotlinRuntime, "runtimeSettingsIdentity")}")
+            appendLine("xvfbRuntimeStateIdentity=${propertyValue(xvfbRuntime, "runtimeStateIdentity")}")
+            appendLine("kotlinRuntimeStateIdentity=${propertyValue(kotlinRuntime, "runtimeStateIdentity")}")
             appendLine("xvfbRuntimeMenuButtonInToolbar=${propertyValue(xvfbRuntime, "runtimeMenuButtonInToolbar")}")
             appendLine("kotlinRuntimeMenuButtonInToolbar=${propertyValue(kotlinRuntime, "runtimeMenuButtonInToolbar")}")
             appendLine("xvfbRuntimeHideNativeLinuxTitleNotSupportedReason=${propertyValue(xvfbRuntime, "runtimeHideNativeLinuxTitleNotSupportedReason")}")
