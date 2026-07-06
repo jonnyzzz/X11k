@@ -762,6 +762,8 @@ internal object TextScreenRenderer {
                 append(framebuffer.height)
                 append(" crc32=")
                 append(framebuffer.crc32Hex)
+                append(" pixels=")
+                append(framebuffer.pixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
             }
         }
         provenance.freed?.let { appendPicture("freed", it) }

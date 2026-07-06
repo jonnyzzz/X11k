@@ -347,8 +347,8 @@ class IntellijCommunitySmokeTest {
             """
             RENDER operations intersecting top mapped root-child band:
             - region=10,20 1260x120 window=0x200003
-            - #41 Composite minor=8 root=10,20 256x256 local=0,0 256x256 op=3 src=0x600280 mask=0x0 dst=0x60004a srcOrigin=0,0 maskOrigin=0,0 dst=0,0 256x256 source=0x600280/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60027f#131 paints=1 first=#40/Composite last=#40/Composite drawings=1 firstDrawing=CopyArea@[0,0 624x2] lastDrawing=CopyArea lastResult=624x2 crc32=0x3eb827c6 framebuffer=624x2 crc32=0x3eb827c6 result=256x256 crc32=0x812ddd86 pixels=[0xff26282c]
-            - #42 Composite minor=8 root=266,20 256x256 local=256,0 256x256 op=3 src=0x600280 mask=0x0 dst=0x60004a srcOrigin=256,0 maskOrigin=0,0 dst=256,0 256x256 source=0x600280/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60027f#131 paints=1 first=#40/Composite last=#40/Composite drawings=1 firstDrawing=CopyArea@[0,0 624x2] lastDrawing=CopyArea lastResult=624x2 crc32=0x3eb827c6 framebuffer=624x2 crc32=0x3eb827c6 result=256x256 crc32=0x70487e06 pixels=[0xff3b3329]
+            - #41 Composite minor=8 root=10,20 256x256 local=0,0 256x256 op=3 src=0x600280 mask=0x0 dst=0x60004a srcOrigin=0,0 maskOrigin=0,0 dst=0,0 256x256 source=0x600280/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60027f#131 paints=1 first=#40/Composite last=#40/Composite drawings=1 firstDrawing=CopyArea@[0,0 624x2] lastDrawing=CopyArea lastResult=624x2 crc32=0x3eb827c6 framebuffer=624x2 crc32=0x3eb827c6 pixels=[0xff26282c,0xff3b3329] result=256x256 crc32=0x812ddd86 pixels=[0xff26282c]
+            - #42 Composite minor=8 root=266,20 256x256 local=256,0 256x256 op=3 src=0x600280 mask=0x0 dst=0x60004a srcOrigin=256,0 maskOrigin=0,0 dst=256,0 256x256 source=0x600280/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60027f#131 paints=1 first=#40/Composite last=#40/Composite drawings=1 firstDrawing=CopyArea@[0,0 624x2] lastDrawing=CopyArea lastResult=624x2 crc32=0x3eb827c6 framebuffer=624x2 crc32=0x3eb827c6 pixels=[0xff26282c,0xff3b3329] result=256x256 crc32=0x70487e06 pixels=[0xff3b3329]
             - #43 FillRectangles minor=26 root=10,54 1260x803 local=0,34 1260x803 op=1 dst=0x60004a color=6655,6911,7423,65535 rects=1 destination=0x60004a/pixmap repeat=none result=1260x803 crc32=0x2428c97c pixels=[0xff191a1c]
             """.trimIndent()
 
@@ -361,6 +361,8 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("sourcePopulation=0x60027f#131"), summary)
         assertTrue(summary.contains("sourceFramebuffer=624x2/0x3eb827c6"), summary)
         assertTrue(summary.contains("results=256x256/0x812ddd86,256x256/0x70487e06"), summary)
+        assertTrue(summary.contains("sourcePixels=[0xff26282c,0xff3b3329]"), summary)
+        assertTrue(summary.contains("resultPixels=[0xff26282c]|[0xff3b3329]"), summary)
         assertTrue(summary.contains("count=1 first=#43 last=#43 operation=FillRectangles minor=26"), summary)
     }
 
@@ -370,8 +372,8 @@ class IntellijCommunitySmokeTest {
             """
             RENDER operations intersecting top mapped root-child band:
             - region=10,20 100x8 window=0x200003
-            - #41 Composite minor=8 root=10,24 65x2 local=0,4 65x2 op=3 src=0x600240 mask=0x0 dst=0x60004a srcOrigin=0,0 maskOrigin=0,0 dst=0,4 65x2 source=0x600240/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60023f#124 paints=1 framebuffer=624x2 crc32=0xa3949057 result=65x2 crc32=0x11111111 pixels=[0xff26282c]
-            - #42 Composite minor=8 root=75,24 20x2 local=65,4 20x2 op=3 src=0x600240 mask=0x0 dst=0x60004a srcOrigin=65,0 maskOrigin=0,0 dst=65,4 20x2 source=0x600240/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60023f#124 paints=1 framebuffer=624x2 crc32=0xa3949057 result=20x2 crc32=0x22222222 pixels=[0xff26282c]
+            - #41 Composite minor=8 root=10,24 65x2 local=0,4 65x2 op=3 src=0x600240 mask=0x0 dst=0x60004a srcOrigin=0,0 maskOrigin=0,0 dst=0,4 65x2 source=0x600240/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60023f#124 paints=1 framebuffer=624x2 crc32=0xa3949057 pixels=[0xff26282c,0xff3b3329] result=65x2 crc32=0x11111111 pixels=[0xff26282c]
+            - #42 Composite minor=8 root=75,24 20x2 local=65,4 20x2 op=3 src=0x600240 mask=0x0 dst=0x60004a srcOrigin=65,0 maskOrigin=0,0 dst=65,4 20x2 source=0x600240/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60023f#124 paints=1 framebuffer=624x2 crc32=0xa3949057 pixels=[0xff26282c,0xff3b3329] result=20x2 crc32=0x22222222 pixels=[0xff3b3329]
             - #43 FillRectangles minor=26 root=10,20 100x8 local=0,0 100x8 op=3 dst=0x60004a color=9983,10495,11519,65535 rects=1 destination=0x60004a/pixmap repeat=none result=100x8 crc32=0x33333333 pixels=[0xff26282c]
             """.trimIndent()
 
@@ -387,6 +389,8 @@ class IntellijCommunitySmokeTest {
             summary,
         )
         assertTrue(summary.contains("thinOperations=2 thinFamilies=2xComposite/minor=8/op=3/src=0x600240"), summary)
+        assertTrue(summary.contains("samples=2xComposite/minor=8/op=3/src=0x600240"), summary)
+        assertTrue(summary.contains("/sourcePixels=[0xff26282c,0xff3b3329]/resultPixels=[0xff26282c]|[0xff3b3329]"), summary)
     }
 
     @Test
@@ -2399,6 +2403,8 @@ class IntellijCommunitySmokeTest {
                         .distinct()
                         .joinToString(",") { (size, crc32) -> "$size/${crc32 ?: "none"}" }
                         .ifBlank { "none" }
+                    val sourcePixels = intellijRenderBandPixelSamples(group.mapNotNull { it.sourceFramebufferPixels })
+                    val resultPixels = intellijRenderBandPixelSamples(group.mapNotNull { it.resultPixels })
                     append("- count=")
                     append(group.size)
                     append(" first=#")
@@ -2426,6 +2432,10 @@ class IntellijCommunitySmokeTest {
                     }
                     append(" results=")
                     append(results)
+                    append(" sourcePixels=")
+                    append(sourcePixels)
+                    append(" resultPixels=")
+                    append(resultPixels)
                     appendLine()
                 }
         }
@@ -2435,8 +2445,8 @@ class IntellijCommunitySmokeTest {
         val header = Regex("""^-\s+#(\d+)\s+(\S+)\s+minor=(\d+)""").find(line) ?: return null
         val sourceFragment = line.substringAfter(" source=", "").substringBefore(" destination=", "")
         val sourcePopulation = Regex("""\bsourcePopulation=(0x[0-9a-f]+#\d+)""").find(line)?.groupValues?.get(1)
-        val framebuffer = Regex("""\bframebuffer=(\d+x\d+)\s+crc32=(0x[0-9a-f]+)""").find(line)
-        val result = Regex("""\sresult=(\d+x\d+)\s+crc32=(0x[0-9a-f]+)""").find(line)
+        val framebuffer = Regex("""\bframebuffer=(\d+x\d+)\s+crc32=(0x[0-9a-f]+)(?:\s+pixels=(\[[^]]*]))?""").find(line)
+        val result = Regex("""\sresult=(\d+x\d+)\s+crc32=(0x[0-9a-f]+)(?:\s+pixels=(\[[^]]*]))?""").find(line)
         val root = Regex("""\broot=(-?\d+),(-?\d+)\s+(\d+)x(\d+)""").find(line)
         val key = IntellijRenderOperationFamilyKey(
             operation = header.groupValues[2],
@@ -2464,8 +2474,10 @@ class IntellijCommunitySmokeTest {
                     match.groupValues[4].toInt(),
                 )
             },
+            sourceFramebufferPixels = framebuffer?.groupValues?.getOrNull(3)?.takeIf { it.isNotBlank() },
             resultSize = result?.groupValues?.get(1),
             resultCrc32 = result?.groupValues?.get(2),
+            resultPixels = result?.groupValues?.getOrNull(3)?.takeIf { it.isNotBlank() },
         )
     }
 
@@ -2510,10 +2522,14 @@ class IntellijCommunitySmokeTest {
                 append(bucketOperations.maxOf { it.id })
                 append(" families=")
                 append(intellijRenderBandFamilySummary(bucketOperations))
+                append(" samples=")
+                append(intellijRenderBandSampleSummary(bucketOperations))
                 append(" thinOperations=")
                 append(thinOperations.size)
                 append(" thinFamilies=")
                 append(intellijRenderBandFamilySummary(thinOperations))
+                append(" thinSamples=")
+                append(intellijRenderBandSampleSummary(thinOperations))
                 appendLine()
             }
         }
@@ -2543,6 +2559,37 @@ class IntellijCommunitySmokeTest {
             }
             .ifBlank { "none" }
 
+    private fun intellijRenderBandSampleSummary(operations: List<IntellijRenderBandOperation>, limit: Int = 4): String =
+        operations
+            .groupBy { it.key }
+            .entries
+            .sortedWith(
+                compareByDescending<Map.Entry<IntellijRenderOperationFamilyKey, List<IntellijRenderBandOperation>>> { it.value.size }
+                    .thenBy { it.value.minOf { operation -> operation.id } },
+            )
+            .take(limit)
+            .joinToString(";") { (key, group) ->
+                val sourcePixels = intellijRenderBandPixelSamples(group.mapNotNull { it.sourceFramebufferPixels })
+                val resultPixels = intellijRenderBandPixelSamples(group.mapNotNull { it.resultPixels })
+                "${group.size}x${intellijRenderBandFamilyLabel(key)}/sourcePixels=$sourcePixels/resultPixels=$resultPixels"
+            }
+            .ifBlank { "none" }
+
+    private fun intellijRenderBandPixelSamples(samples: List<String>, limit: Int = 2): String =
+        samples
+            .distinct()
+            .take(limit)
+            .joinToString("|") { intellijRenderBandCompactPixelSample(it) }
+            .ifBlank { "none" }
+
+    private fun intellijRenderBandCompactPixelSample(sample: String, pixelLimit: Int = 4): String {
+        val pixels = sample.removePrefix("[").removeSuffix("]")
+            .split(',')
+            .filter { it.isNotBlank() }
+        if (pixels.size <= pixelLimit) return sample
+        return pixels.take(pixelLimit).joinToString(",", prefix = "[", postfix = ",...]")
+    }
+
     private fun IntellijRenderBandOperation.usesThinSourceOrRegion(bucketHeight: Int): Boolean {
         val root = rootRectangle
         if (root != null && (root.height <= bucketHeight || root.width <= bucketHeight)) return true
@@ -2570,8 +2617,10 @@ class IntellijCommunitySmokeTest {
         val id: Int,
         val key: IntellijRenderOperationFamilyKey,
         val rootRectangle: Rectangle?,
+        val sourceFramebufferPixels: String?,
         val resultSize: String?,
         val resultCrc32: String?,
+        val resultPixels: String?,
     )
 
     private data class IntellijRenderOperationFamilyKey(
