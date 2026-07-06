@@ -8,6 +8,7 @@ import org.testcontainers.containers.BindMode
 import org.testcontainers.utility.DockerImageName
 import java.awt.Rectangle
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.awt.image.BufferedImage
 import java.net.Socket
@@ -108,6 +109,25 @@ class IntellijCommunitySmokeTest {
         assertEquals(0, layers.single().y)
         assertEquals(4, layers.single().width)
         assertEquals(3, layers.single().height)
+    }
+
+    @Test
+    fun `intellij smoke svg selection picks frame closest to robot capture`() {
+        val robotImage = solidImage(6, 6, 0xff33_6699.toInt())
+        val farImage = solidImage(6, 6, 0xff33_6699.toInt()).also { image ->
+            image.setRGB(1, 1, 0xff99_6633.toInt())
+        }
+        val farSvg = svgWithRootImage(farImage)
+        val closeSvg = svgWithRootImage(robotImage)
+
+        val selected = closestIntellijSvgToRobot(
+            robot = visualCapture(robotImage),
+            candidates = listOf(farSvg, closeSvg),
+            width = 6,
+            height = 6,
+        )
+
+        assertEquals(closeSvg, selected)
     }
 
     @Test
@@ -486,6 +506,35 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij runtime ui diagnostics require matching visible chrome state`() {
+        val logs = listOf(
+            IntellijLogArtifact(
+                fileName = "intellij-xvfb-ui-runtime-diagnostics.log",
+                text = runtimeUiDiagnosticLog(
+                    mainMenuDisplayMode = "Merge with Main Toolbar",
+                    stateMainMenuDisplayMode = "MERGED_WITH_MAIN_TOOLBAR",
+                    stateModificationCount = 3,
+                ),
+            ),
+            IntellijLogArtifact(
+                fileName = "intellij-kotlin-ui-runtime-diagnostics.log",
+                text = runtimeUiDiagnosticLog(
+                    mainMenuDisplayMode = "Hide under Hamburger Button",
+                    stateMainMenuDisplayMode = "UNDER_HAMBURGER_BUTTON",
+                    stateModificationCount = 0,
+                ),
+            ),
+        )
+
+        val failure = assertFailsWith<AssertionError> {
+            assertIntellijRuntimeUiDiagnosticsPresent(logs)
+        }
+
+        assertTrue(failure.message.orEmpty().contains("RuntimeMainMenuDisplayMode"), failure.message)
+        assertTrue(failure.message.orEmpty().contains("RuntimeStateModificationCount"), failure.message)
+    }
+
+    @Test
     fun `intellij robot capture delay is configurable`() {
         val source = robotCaptureSource()
 
@@ -518,9 +567,11 @@ class IntellijCommunitySmokeTest {
     @Test
     fun `intellij parity uses isolated idea config for xvfb reference and kotlin run`() {
         val source = Files.readString(projectRoot().resolve("src/test/kotlin/org/jonnyzzz/xserver/IntellijCommunitySmokeTest.kt"))
-        val parityBody = source
-            .substringAfter("    @Test\n    fun `intellij community robot and svg roughly match xvfb reference`()")
-            .substringBefore("\n    private fun projectRoot()")
+        val parityAnchor = "    @Test\n    fun `intellij community robot and svg roughly match xvfb reference`()"
+        val parityEnd = "\n    private fun projectRoot()"
+        assertTrue(source.contains(parityAnchor), source)
+        assertTrue(source.contains(parityEnd), source)
+        val parityBody = sourceBodyBetweenLast(source, parityAnchor, parityEnd)
 
         assertTrue(parityBody.contains("""val referenceConfig = cleanIntellijConfigDir("xvfb")"""), parityBody)
         assertTrue(parityBody.contains("""val kotlinConfig = cleanIntellijConfigDir("kotlin")"""), parityBody)
@@ -529,6 +580,26 @@ class IntellijCommunitySmokeTest {
         assertFalse(parityBody.contains("sharedConfig"), parityBody)
         assertFalse(parityBody.contains("cleanIntellijConfigDir()"), parityBody)
         assertTrue(source.contains("""withFileSystemBind(configDir.toString(), "/tmp/idea-config", BindMode.READ_WRITE)"""), source)
+    }
+
+    @Test
+    fun `intellij parity brackets robot capture with nearest svg frame`() {
+        val source = Files.readString(projectRoot().resolve("src/test/kotlin/org/jonnyzzz/xserver/IntellijCommunitySmokeTest.kt"))
+        val parityAnchor = "    private fun runIntellijAgainstKotlinServer(port: Int, image: String, url: String?, configDir: Path): IntellijKotlinCapture"
+        val parityEnd = "\n    private fun waitForIntellijParityReady("
+        assertTrue(source.contains(parityAnchor), source)
+        assertTrue(source.contains(parityEnd), source)
+        val parityBody = sourceBodyBetweenLast(source, parityAnchor, parityEnd)
+
+        val beforeIndex = parityBody.indexOf("val svgBeforeRobot = waitForStableIntellijSvg(port)")
+        val robotIndex = parityBody.indexOf("val robot = visualCapture(capture.stdout)")
+        val afterIndex = parityBody.indexOf("""val svgAfterRobot = httpGet(port, "/screen.svg")""")
+        val closestIndex = parityBody.indexOf("val svg = closestIntellijSvgToRobot(robot, listOf(svgBeforeRobot, svgAfterRobot))")
+
+        assertTrue(beforeIndex >= 0, parityBody)
+        assertTrue(robotIndex > beforeIndex, parityBody)
+        assertTrue(afterIndex > robotIndex, parityBody)
+        assertTrue(closestIndex > afterIndex, parityBody)
     }
 
     @Test
@@ -843,6 +914,16 @@ class IntellijCommunitySmokeTest {
     private fun projectRoot(): Path =
         Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize()
 
+    private fun sourceBodyBetweenLast(source: String, start: String, end: String): String {
+        val endIndex = source.lastIndexOf(end)
+        assertTrue(endIndex >= 0, source)
+        val startIndex = source.lastIndexOf(start, endIndex)
+        assertTrue(startIndex >= 0, source)
+        return source.substring(startIndex + start.length, endIndex).also {
+            assertTrue(it.isNotBlank(), source)
+        }
+    }
+
     private fun cleanProjectExport(): Path {
         val root = projectRoot()
         val export = root.resolve("build/tmp/intellij-community-smoke/project").normalize()
@@ -1004,6 +1085,22 @@ class IntellijCommunitySmokeTest {
             "IntelliJ screen SVG did not stabilize before capture; lastDistance=$lastDistance visible=$visible",
         )
         return lastSvg
+    }
+
+    private fun closestIntellijSvgToRobot(
+        robot: VisualCapture,
+        candidates: List<String>,
+        width: Int = IntellijCaptureWidth,
+        height: Int = IntellijCaptureHeight,
+    ): String {
+        val scored = candidates.mapNotNull { svg ->
+            val layers = svgCompositionLayers(svg)
+            if (layers.isEmpty()) return@mapNotNull null
+            val capture = visualCapture(composeSvgLayers(layers, width, height))
+            svg to fullImageDistance(robot.image, capture.image)
+        }
+        return scored.minByOrNull { it.second }?.first
+            ?: error("IntelliJ screen SVG did not expose composable layers near Robot capture")
     }
 
     private fun runIntellijAgainstXvfb(image: String, url: String?, configDir: Path): IntellijReferenceCapture =
@@ -1219,7 +1316,7 @@ class IntellijCommunitySmokeTest {
                             DISPLAY=host.docker.internal:$display xprop -root >/tmp/xprop-kotlin-root.log 2>&1 || true
                             """.trimIndent(),
                         )
-                        val svg = waitForStableIntellijSvg(port)
+                        val svgBeforeRobot = waitForStableIntellijSvg(port)
                         val capture = execIntellijShell(
                             container,
                             """
@@ -1230,6 +1327,9 @@ class IntellijCommunitySmokeTest {
                             """.trimIndent(),
                         )
                         assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
+                        val robot = visualCapture(capture.stdout)
+                        val svgAfterRobot = httpGet(port, "/screen.svg")
+                        val svg = closestIntellijSvgToRobot(robot, listOf(svgBeforeRobot, svgAfterRobot))
                         val html = httpGet(port, "/")
                         val text = httpGet(port, "/text.txt")
                         val stateJson = httpGet(port, "/state.json")
@@ -1240,7 +1340,7 @@ class IntellijCommunitySmokeTest {
                             extraLogs = extraLogs,
                         )
                         return IntellijKotlinCapture(
-                            robot = visualCapture(capture.stdout),
+                            robot = robot,
                             text = text,
                             stateJson = stateJson,
                             svg = svg,
@@ -1785,6 +1885,30 @@ class IntellijCommunitySmokeTest {
     private fun runIntellijScriptSource(): String =
         Files.readString(projectRoot().resolve("docker/x11-client/run-intellij.sh"))
 
+    private fun runtimeUiDiagnosticLog(
+        mainMenuDisplayMode: String,
+        stateMainMenuDisplayMode: String,
+        stateModificationCount: Int,
+    ): String =
+        """
+        agentLoaded=true
+        runtimeMainMenuDisplayMode=$mainMenuDisplayMode
+        runtimeStateMainMenuDisplayMode=$stateMainMenuDisplayMode
+        runtimeShadowStateMainMenuDisplayMode=$stateMainMenuDisplayMode
+        runtimeMainMenuDisplayModePrev=Hide under Hamburger Button
+        runtimeShowMainMenu=true
+        runtimeStateShowMainMenu=true
+        runtimeShadowStateShowMainMenu=true
+        runtimeShowMainToolbar=false
+        runtimeStateModificationCount=$stateModificationCount
+        runtimeSettingsIdentity=101
+        runtimeStateIdentity=202
+        runtimeMenuButtonInToolbar=true
+        runtimeHideNativeLinuxTitleNotSupportedReason=INCOMPATIBLE_JBR
+        runtimeJbrWindowMoveSupported=false
+        runtimeStartupIsXToolkit=true
+        """.trimIndent()
+
     private fun composeSvgLayers(layers: List<SvgLayer>, width: Int, height: Int): BufferedImage {
         val image = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
         val graphics = image.createGraphics()
@@ -1909,7 +2033,38 @@ class IntellijCommunitySmokeTest {
             missingFields.isEmpty(),
             "Incomplete IntelliJ runtime UI diagnostics: ${missingFields.joinToString(" ")}\n$summary",
         )
+
+        val comparableFields = listOf(
+            "RuntimeMainMenuDisplayMode",
+            "RuntimeStateMainMenuDisplayMode",
+            "RuntimeShadowStateMainMenuDisplayMode",
+            "RuntimeMainMenuDisplayModePrev",
+            "RuntimeShowMainMenu",
+            "RuntimeStateShowMainMenu",
+            "RuntimeShadowStateShowMainMenu",
+            "RuntimeShowMainToolbar",
+            "RuntimeStateModificationCount",
+            "RuntimeMenuButtonInToolbar",
+            "RuntimeHideNativeLinuxTitleNotSupportedReason",
+            "RuntimeJbrWindowMoveSupported",
+            "RuntimeStartupIsXToolkit",
+        )
+        val divergentFields = comparableFields.mapNotNull { field ->
+            val xvfbValue = summaryValue(summary, "xvfb$field")
+            val kotlinValue = summaryValue(summary, "kotlin$field")
+            if (xvfbValue == kotlinValue) null else "$field: xvfb=$xvfbValue kotlin=$kotlinValue"
+        }
+        assertTrue(
+            divergentFields.isEmpty(),
+            "IntelliJ runtime UI state diverged between Xvfb and Kotlin: ${divergentFields.joinToString("; ")}\n$summary",
+        )
     }
+
+    private fun summaryValue(summary: String, name: String): String =
+        summary.lineSequence()
+            .firstOrNull { it.startsWith("$name=") }
+            ?.substringAfter('=')
+            ?: "<missing>"
 
     private fun dumpIntellijRenderBandArtifacts(directory: File, text: String) {
         mapOf(
@@ -2556,6 +2711,28 @@ class IntellijCommunitySmokeTest {
         )
     }
 
+    private fun solidImage(width: Int, height: Int, argb: Int): BufferedImage =
+        BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB).also { image ->
+            val graphics = image.createGraphics()
+            try {
+                graphics.color = java.awt.Color(argb, true)
+                graphics.fillRect(0, 0, width, height)
+            } finally {
+                graphics.dispose()
+            }
+        }
+
+    private fun svgWithRootImage(image: BufferedImage): String {
+        val output = ByteArrayOutputStream()
+        ImageIO.write(image, "png", output)
+        val encoded = Base64.getEncoder().encodeToString(output.toByteArray())
+        return """
+            <svg viewBox="0 0 ${image.width} ${image.height}">
+              <image class="framebuffer-image screen-framebuffer-image" data-source="composited-root" data-window-id="0x26" x="0" y="0" width="${image.width}" height="${image.height}" href="data:image/png;base64,$encoded"/>
+            </svg>
+        """.trimIndent()
+    }
+
     private fun assertIntellijVisualClose(expected: VisualCapture, actual: VisualCapture, label: String) {
         assertEquals(expected.width, actual.width, "$label width should match Xvfb reference")
         assertEquals(expected.height, actual.height, "$label height should match Xvfb reference")
@@ -2597,6 +2774,19 @@ class IntellijCommunitySmokeTest {
             }
         }
         return total.toDouble() / samples.toDouble()
+    }
+
+    private fun fullImageDistance(reference: BufferedImage, actual: BufferedImage): Double {
+        assertEquals(reference.width, actual.width, "image width should match")
+        assertEquals(reference.height, actual.height, "image height should match")
+        var total = 0L
+        val pixels = reference.width * reference.height
+        for (y in 0 until reference.height) {
+            for (x in 0 until reference.width) {
+                total += rgbDistance(reference.getRGB(x, y), actual.getRGB(x, y))
+            }
+        }
+        return total.toDouble() / pixels.toDouble()
     }
 
     private fun rgbDistance(left: Int, right: Int): Int =
