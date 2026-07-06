@@ -2305,6 +2305,104 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER Composite provenance retains core populated pixmap source after FreePicture`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 2, height = 1))
+                out.write(createGcRequest(PutImageGcId, PixmapId))
+                out.write(
+                    putImage32OnlyRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 1,
+                        pixels = intArrayOf(0xffff_0000.toInt(), 0xff00_ff00.toInt()),
+                    ),
+                )
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderComposite(PixmapPictureId, PictureId, width = 2, height = 1, operation = XRender.OpSrc, destinationX = 0, destinationY = 0))
+                out.write(renderFreePictureRequest(PixmapPictureId))
+                out.flush()
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""operation":"FreePicture"""")
+                }
+                val pixmapId = "0x${PixmapId.toUInt().toString(16)}"
+                val pixmapPictureId = "0x${PixmapPictureId.toUInt().toString(16)}"
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"operation":"Composite"""")
+                assertContains(json, """"source":{"id":"$pixmapPictureId","drawable":"$pixmapId","kind":"pixmap"""")
+                assertContains(json, """"sourcePopulation":{"drawable":"$pixmapId"""")
+                assertContains(json, """"paintCount":0""")
+                assertContains(json, """"drawingPaintCount":1""")
+                assertContains(json, """"lastDrawingPaint":{"drawable":"$pixmapId"""")
+                assertContains(json, """"kind":"PutImage"""")
+                assertContains(json, """"putImage":{""")
+                assertContains(json, """"decodedPixels":["0xffff0000","0xff00ff00"]""")
+                assertContains(json, """"framebuffer":{"width":2,"height":1,"crc32":""")
+                assertContains(json, """"operation":"FreePicture","detail":"picture=$pixmapPictureId","provenance":{"freed":{"id":"$pixmapPictureId","drawable":"$pixmapId","kind":"pixmap"""")
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "sourcePopulation=$pixmapId#")
+                assertContains(text, "paints=0")
+                assertContains(text, "drawings=1")
+                assertContains(text, "lastDrawing=PutImage putImageCrc32=")
+                assertContains(text, "framebuffer=2x1 crc32=")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER pixmap render history retains composite source population`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 2, height = 1))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 32, width = 2, height = 1))
+                out.write(createGcRequest(PutImageGcId, PixmapId))
+                out.write(
+                    putImage32OnlyRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 1,
+                        pixels = intArrayOf(0xffff_0000.toInt(), 0xff00_ff00.toInt()),
+                    ),
+                )
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.Argb32Format))
+                out.write(renderComposite(PixmapPictureId, MaskPictureId, width = 2, height = 1, operation = XRender.OpSrc, destinationX = 0, destinationY = 0))
+                out.write(renderFreePictureRequest(PixmapPictureId))
+                out.flush()
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""operation":"FreePicture"""")
+                }
+                val sourcePixmapId = "0x${PixmapId.toUInt().toString(16)}"
+                val destinationPixmapId = "0x${MaskPixmapId.toUInt().toString(16)}"
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"id":"$destinationPixmapId"""")
+                assertContains(json, """"renderOperations":[{""")
+                assertContains(json, """"sourcePopulation":{"drawable":"$sourcePixmapId"""")
+                assertContains(json, """"drawingPaintCount":1""")
+                assertContains(json, """"lastDrawingPaint":{"drawable":"$sourcePixmapId"""")
+                assertContains(json, """"kind":"PutImage"""")
+                assertContains(json, """"framebuffer":{"width":2,"height":1,"crc32":""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER picture attributes are retained in semantic snapshot`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

@@ -1927,14 +1927,37 @@ internal object SvgScreenRenderer {
     }
 
     private fun StringBuilder.appendRenderDrawablePopulation(population: XRenderDrawablePopulationSnapshot) {
-        append("""{"drawable":"${population.drawableIdHex}","generation":${population.generation},"paintCount":${population.paintCount},"firstPaint":""")
-        appendRenderDrawablePaint(population.firstPaint)
-        append(""","lastPaint":""")
-        appendRenderDrawablePaint(population.lastPaint)
+        append("""{"drawable":"${population.drawableIdHex}","generation":${population.generation},"paintCount":${population.paintCount}""")
+        population.firstPaint?.let { paint ->
+            append(""","firstPaint":""")
+            appendRenderDrawablePaint(paint, includeSourcePopulation = false)
+        }
+        population.lastPaint?.let { paint ->
+            append(""","lastPaint":""")
+            appendRenderDrawablePaint(paint, includeSourcePopulation = false)
+        }
+        if (population.drawingPaintCount > 0) {
+            append(""","drawingPaintCount":${population.drawingPaintCount}""")
+        }
+        population.firstDrawingPaint?.let { paint ->
+            append(""","firstDrawingPaint":""")
+            appendCoreDrawablePaint(paint)
+        }
+        population.lastDrawingPaint?.let { paint ->
+            append(""","lastDrawingPaint":""")
+            appendCoreDrawablePaint(paint)
+        }
+        population.framebuffer?.let { framebuffer ->
+            append(""","framebuffer":""")
+            appendRenderOperationResult(framebuffer)
+        }
         append('}')
     }
 
-    private fun StringBuilder.appendRenderDrawablePaint(paint: XRenderDrawablePaintSnapshot) {
+    private fun StringBuilder.appendRenderDrawablePaint(
+        paint: XRenderDrawablePaintSnapshot,
+        includeSourcePopulation: Boolean = true,
+    ) {
         append("""{"id":${paint.id},"minorOpcode":${paint.minorOpcode},"operation":"${escapeJson(paint.operation)}","detail":"${escapeJson(paint.detail)}"""")
         paint.source?.let { picture ->
             append(""","source":""")
@@ -1950,6 +1973,32 @@ internal object SvgScreenRenderer {
         paint.result?.let { result ->
             append(""","result":""")
             appendRenderOperationResult(result)
+        }
+        if (includeSourcePopulation) {
+            paint.sourcePopulation?.let { population ->
+                append(""","sourcePopulation":""")
+                appendRenderDrawablePopulation(population)
+            }
+        }
+        append('}')
+    }
+
+    private fun StringBuilder.appendCoreDrawablePaint(paint: XCoreDrawablePaintSnapshot) {
+        append("""{"drawable":"${paint.drawableIdHex}","generation":""")
+        paint.drawableGeneration?.let { append(it) } ?: append("null")
+        append(""","kind":"${paint.kind.name}","foreground":"${paint.foregroundHex}","background":"${paint.backgroundHex}","framebufferBacked":${paint.framebufferBacked},"framebufferPainted":${paint.framebufferPainted},"sourceDrawable":""")
+        paint.sourceDrawableIdHex?.let { append('"').append(it).append('"') } ?: append("null")
+        append(""","sourceGeneration":""")
+        paint.sourceDrawableGeneration?.let { append(it) } ?: append("null")
+        append(""","rectangles":[""")
+        paint.rectangles.forEachIndexed { index, rectangle ->
+            if (index > 0) append(',')
+            append("""{"x":${rectangle.x},"y":${rectangle.y},"width":${rectangle.width},"height":${rectangle.height}}""")
+        }
+        append(']')
+        paint.putImage?.let { metadata ->
+            append(""","putImage":""")
+            appendPutImageMetadata(metadata)
         }
         append('}')
     }

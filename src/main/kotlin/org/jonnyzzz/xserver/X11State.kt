@@ -44,6 +44,12 @@ internal data class XRenderFillExecution(
     val destinationDrawableGeneration: Long? = null,
 )
 
+private data class XCoreDrawablePaintPopulation(
+    val count: Int,
+    val first: XCoreDrawablePaintSnapshot?,
+    val last: XCoreDrawablePaintSnapshot?,
+)
+
 internal data class XRenderCompositeExecution(
     val result: XRenderImageResult? = null,
     val provenance: XRenderOperationProvenance? = null,
@@ -5063,19 +5069,25 @@ internal class X11State(
         val livePixmap = pixmaps[drawableId]
         val retainedFramebuffer = picture.retainedDrawableFramebuffer
         if (retainedFramebuffer != null && livePixmap?.framebuffer !== retainedFramebuffer) {
+            val generation = picture.retainedDrawableGeneration ?: 0L
             return renderDrawablePopulationSnapshot(
                 drawableId = drawableId,
-                generation = picture.retainedDrawableGeneration ?: 0L,
+                generation = generation,
                 paints = picture.retainedRenderPaints,
+                drawingPaints = drawingPopulationForDrawable(drawableId, generation),
+                framebuffer = retainedFramebuffer,
             )
         }
         return livePixmap
-            ?.let { renderDrawablePopulationSnapshot(it.id, it.generation, it.renderPaints) }
+            ?.let { renderDrawablePopulationSnapshot(it.id, it.generation, it.renderPaints, drawingPopulationForDrawable(it.id, it.generation), it.framebuffer) }
             ?: retainedFramebuffer?.let {
+                val generation = picture.retainedDrawableGeneration ?: 0L
                 renderDrawablePopulationSnapshot(
                     drawableId = drawableId,
-                    generation = picture.retainedDrawableGeneration ?: 0L,
+                    generation = generation,
                     paints = picture.retainedRenderPaints,
+                    drawingPaints = drawingPopulationForDrawable(drawableId, generation),
+                    framebuffer = it,
                 )
             }
     }
@@ -5084,16 +5096,60 @@ internal class X11State(
         drawableId: Int,
         generation: Long,
         paints: List<XRenderDrawablePaintSnapshot>,
+        drawingPaints: XCoreDrawablePaintPopulation,
+        framebuffer: XFramebuffer?,
     ): XRenderDrawablePopulationSnapshot? {
-        if (paints.isEmpty()) return null
+        val framebufferResult = framebuffer
+            ?.takeIf { it.hasPaintedContent() || paints.isNotEmpty() || drawingPaints.count > 0 }
+            ?.snapshot()
+            ?.let(::renderResultSnapshot)
+        if (paints.isEmpty() && drawingPaints.count == 0 && framebufferResult == null) return null
         return XRenderDrawablePopulationSnapshot(
             drawableId = drawableId,
             generation = generation,
             paintCount = paints.size,
-            firstPaint = paints.first(),
-            lastPaint = paints.last(),
+            firstPaint = paints.firstOrNull(),
+            lastPaint = paints.lastOrNull(),
+            drawingPaintCount = drawingPaints.count,
+            firstDrawingPaint = drawingPaints.first,
+            lastDrawingPaint = drawingPaints.last,
+            framebuffer = framebufferResult,
         )
     }
+
+    private fun drawingPopulationForDrawable(drawableId: Int, generation: Long): XCoreDrawablePaintPopulation {
+        var count = 0
+        var first: XCoreDrawablePaintSnapshot? = null
+        var last: XCoreDrawablePaintSnapshot? = null
+        for (drawing in drawings) {
+            if (
+                drawing.drawableId == drawableId &&
+                drawing.drawableGeneration == generation &&
+                drawing.framebufferBacked
+            ) {
+                val snapshot = drawing.coreDrawablePaintSnapshot()
+                if (first == null) first = snapshot
+                last = snapshot
+                count++
+            }
+        }
+        return XCoreDrawablePaintPopulation(count = count, first = first, last = last)
+    }
+
+    private fun XDrawingCommand.coreDrawablePaintSnapshot(): XCoreDrawablePaintSnapshot =
+        XCoreDrawablePaintSnapshot(
+            drawableId = drawableId,
+            drawableGeneration = drawableGeneration,
+            kind = kind,
+            foreground = foreground,
+            background = background,
+            rectangles = rectangles.map { it.copy() },
+            sourceDrawableId = sourceDrawableId,
+            sourceDrawableGeneration = sourceDrawableGeneration,
+            framebufferBacked = framebufferBacked,
+            framebufferPainted = framebufferPainted,
+            putImage = putImage,
+        )
 
     private fun renderDrawablePaintSnapshot(operation: XRenderOperation): XRenderDrawablePaintSnapshot =
         XRenderDrawablePaintSnapshot(
@@ -5105,6 +5161,7 @@ internal class X11State(
             mask = operation.provenance?.mask,
             destinationRegion = operation.provenance?.destinationRegion,
             result = operation.provenance?.result,
+            sourcePopulation = operation.provenance?.sourcePopulation,
         )
 
     @Synchronized
@@ -12113,8 +12170,12 @@ internal data class XRenderDrawablePopulationSnapshot(
     val drawableId: Int,
     val generation: Long,
     val paintCount: Int,
-    val firstPaint: XRenderDrawablePaintSnapshot,
-    val lastPaint: XRenderDrawablePaintSnapshot,
+    val firstPaint: XRenderDrawablePaintSnapshot?,
+    val lastPaint: XRenderDrawablePaintSnapshot?,
+    val drawingPaintCount: Int = 0,
+    val firstDrawingPaint: XCoreDrawablePaintSnapshot? = null,
+    val lastDrawingPaint: XCoreDrawablePaintSnapshot? = null,
+    val framebuffer: XRenderOperationResultSnapshot? = null,
 ) {
     val drawableIdHex: String get() = "0x${drawableId.toUInt().toString(16)}"
 }
@@ -12128,7 +12189,27 @@ internal data class XRenderDrawablePaintSnapshot(
     val mask: XRenderPictureSnapshot?,
     val destinationRegion: XRectangleCommand?,
     val result: XRenderOperationResultSnapshot?,
+    val sourcePopulation: XRenderDrawablePopulationSnapshot? = null,
 )
+
+internal data class XCoreDrawablePaintSnapshot(
+    val drawableId: Int,
+    val drawableGeneration: Long?,
+    val kind: XDrawingKind,
+    val foreground: Int,
+    val background: Int,
+    val rectangles: List<XRectangleCommand>,
+    val sourceDrawableId: Int?,
+    val sourceDrawableGeneration: Long?,
+    val framebufferBacked: Boolean,
+    val framebufferPainted: Boolean,
+    val putImage: XPutImageMetadata?,
+) {
+    val drawableIdHex: String get() = "0x${drawableId.toUInt().toString(16)}"
+    val sourceDrawableIdHex: String? get() = sourceDrawableId?.let { "0x${it.toUInt().toString(16)}" }
+    val foregroundHex: String get() = "0x${foreground.toUInt().toString(16)}"
+    val backgroundHex: String get() = "0x${background.toUInt().toString(16)}"
+}
 
 internal data class XRenderOperationResultSnapshot(
     val width: Int,

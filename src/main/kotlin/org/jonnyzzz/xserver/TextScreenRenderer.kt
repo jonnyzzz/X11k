@@ -703,21 +703,53 @@ internal object TextScreenRenderer {
             append(population.generation)
             append(" paints=")
             append(population.paintCount)
-            append(" first=#")
-            append(population.firstPaint.id)
-            append('/')
-            append(population.firstPaint.operation)
-            append(" last=#")
-            append(population.lastPaint.id)
-            append('/')
-            append(population.lastPaint.operation)
-            population.lastPaint.result?.let { result ->
+            population.firstPaint?.let { first ->
+                append(" first=#")
+                append(first.id)
+                append('/')
+                append(first.operation)
+            }
+            population.lastPaint?.let { last ->
+                append(" last=#")
+                append(last.id)
+                append('/')
+                append(last.operation)
+            }
+            if (population.drawingPaintCount > 0) {
+                append(" drawings=")
+                append(population.drawingPaintCount)
+                population.firstDrawingPaint?.let { first ->
+                    append(" firstDrawing=")
+                    append(first.kind.name)
+                    append('@')
+                    append(first.rectangles.joinToString(",", prefix = "[", postfix = "]") { rectangle ->
+                        "${rectangle.x},${rectangle.y} ${rectangle.width}x${rectangle.height}"
+                    })
+                }
+                population.lastDrawingPaint?.let { last ->
+                    append(" lastDrawing=")
+                    append(last.kind.name)
+                    last.putImage?.let { putImage ->
+                        append(" putImageCrc32=")
+                        append(putImage.crc32Hex)
+                    }
+                }
+            }
+            population.lastPaint?.result?.let { result ->
                 append(" lastResult=")
                 append(result.width)
                 append('x')
                 append(result.height)
                 append(" crc32=")
                 append(result.crc32Hex)
+            }
+            population.framebuffer?.let { framebuffer ->
+                append(" framebuffer=")
+                append(framebuffer.width)
+                append('x')
+                append(framebuffer.height)
+                append(" crc32=")
+                append(framebuffer.crc32Hex)
             }
         }
         provenance.freed?.let { appendPicture("freed", it) }
