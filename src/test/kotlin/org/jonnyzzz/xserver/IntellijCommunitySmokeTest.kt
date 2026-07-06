@@ -131,6 +131,36 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij smoke svg selection reports full frame distance`() {
+        val robotImage = solidImage(6, 6, 0xff22_4466.toInt())
+        val closeImage = solidImage(6, 6, 0xff22_4466.toInt())
+        val offSampleImage = solidImage(6, 6, 0xff22_4466.toInt()).also { image ->
+            image.setRGB(3, 3, 0xffaa_6633.toInt())
+        }
+        val closeSvg = svgWithRootImage(closeImage)
+
+        val selected = closestIntellijSvgToRobotScore(
+            robot = visualCapture(robotImage),
+            candidates = listOf(svgWithRootImage(offSampleImage), closeSvg),
+            width = 6,
+            height = 6,
+        )
+        val offSampleScore = closestIntellijSvgToRobotScore(
+            robot = visualCapture(robotImage),
+            candidates = listOf(svgWithRootImage(offSampleImage)),
+            width = 6,
+            height = 6,
+        )
+
+        assertEquals(0.0, selected.distance)
+        assertEquals(closeSvg, selected.svg)
+        assertTrue(
+            offSampleScore.distance > 0.0,
+            "Full-frame scoring should catch pixels that sampled scoring would skip",
+        )
+    }
+
+    @Test
     fun `intellij html preview parser identifies large retained surfaces`() {
         val html =
             """
@@ -583,23 +613,37 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
-    fun `intellij parity brackets robot capture with nearest svg frame`() {
+    fun `intellij parity retries robot capture with nearest svg frame`() {
         val source = Files.readString(projectRoot().resolve("src/test/kotlin/org/jonnyzzz/xserver/IntellijCommunitySmokeTest.kt"))
         val parityAnchor = "    private fun runIntellijAgainstKotlinServer(port: Int, image: String, url: String?, configDir: Path): IntellijKotlinCapture"
         val parityEnd = "\n    private fun waitForIntellijParityReady("
+        val captureAnchor = "    private fun captureIntellijKotlinRobotAndSvg("
+        val captureEnd = "\n    private fun runIntellijAgainstXvfb("
         assertTrue(source.contains(parityAnchor), source)
         assertTrue(source.contains(parityEnd), source)
+        assertTrue(source.contains(captureAnchor), source)
+        assertTrue(source.contains(captureEnd), source)
         val parityBody = sourceBodyBetweenLast(source, parityAnchor, parityEnd)
+        val captureBody = sourceBodyBetweenLast(source, captureAnchor, captureEnd)
 
-        val beforeIndex = parityBody.indexOf("val svgBeforeRobot = waitForStableIntellijSvg(port)")
-        val robotIndex = parityBody.indexOf("val robot = visualCapture(capture.stdout)")
-        val afterIndex = parityBody.indexOf("""val svgAfterRobot = httpGet(port, "/screen.svg")""")
-        val closestIndex = parityBody.indexOf("val svg = closestIntellijSvgToRobot(robot, listOf(svgBeforeRobot, svgAfterRobot))")
+        val helperCallIndex = parityBody.indexOf("val robotAndSvg = captureIntellijKotlinRobotAndSvg(container, display, port)")
+        val beforeIndex = captureBody.indexOf("val svgBeforeRobot = waitForStableIntellijSvg(port)")
+        val robotIndex = captureBody.indexOf("val robot = visualCapture(capture.stdout)")
+        val afterIndex = captureBody.indexOf("""val svgAfterRobot = httpGet(port, "/screen.svg")""")
+        val closestIndex = captureBody.indexOf("val selected = closestIntellijSvgToRobotScore(robot, listOf(svgBeforeRobot, svgAfterRobot))")
 
+        assertTrue(helperCallIndex >= 0, parityBody)
         assertTrue(beforeIndex >= 0, parityBody)
-        assertTrue(robotIndex > beforeIndex, parityBody)
-        assertTrue(afterIndex > robotIndex, parityBody)
-        assertTrue(closestIndex > afterIndex, parityBody)
+        assertTrue(robotIndex > beforeIndex, captureBody)
+        assertTrue(afterIndex > robotIndex, captureBody)
+        assertTrue(closestIndex > afterIndex, captureBody)
+        assertTrue(captureBody.contains("repeat(IntellijRobotSvgCaptureAttempts)"), captureBody)
+        assertTrue(captureBody.contains("IntellijRobotSvgCaptureDistanceThreshold"), captureBody)
+        assertTrue(captureBody.contains("frame.robotSvgDistance < currentBest.robotSvgDistance"), captureBody)
+        assertTrue(captureBody.contains("""return best ?: error("IntelliJ Robot/SVG capture did not produce a composable frame")"""), captureBody)
+        assertTrue(parityBody.contains("text = robotAndSvg.text"), parityBody)
+        assertTrue(parityBody.contains("stateJson = robotAndSvg.stateJson"), parityBody)
+        assertTrue(parityBody.contains("html = robotAndSvg.html"), parityBody)
     }
 
     @Test
@@ -1116,15 +1160,60 @@ class IntellijCommunitySmokeTest {
         candidates: List<String>,
         width: Int = IntellijCaptureWidth,
         height: Int = IntellijCaptureHeight,
-    ): String {
+    ): String =
+        closestIntellijSvgToRobotScore(robot, candidates, width, height).svg
+
+    private fun closestIntellijSvgToRobotScore(
+        robot: VisualCapture,
+        candidates: List<String>,
+        width: Int = IntellijCaptureWidth,
+        height: Int = IntellijCaptureHeight,
+    ): IntellijSvgScore {
         val scored = candidates.mapNotNull { svg ->
             val layers = svgCompositionLayers(svg)
             if (layers.isEmpty()) return@mapNotNull null
             val capture = visualCapture(composeSvgLayers(layers, width, height))
-            svg to fullImageDistance(robot.image, capture.image)
+            IntellijSvgScore(svg, fullImageDistance(robot.image, capture.image))
         }
-        return scored.minByOrNull { it.second }?.first
+        return scored.minByOrNull { it.distance }
             ?: error("IntelliJ screen SVG did not expose composable layers near Robot capture")
+    }
+
+    private fun captureIntellijKotlinRobotAndSvg(
+        container: GenericContainer<*>,
+        display: Int,
+        port: Int,
+    ): IntellijRobotSvgFrame {
+        var best: IntellijRobotSvgFrame? = null
+        repeat(IntellijRobotSvgCaptureAttempts) { attempt ->
+            val svgBeforeRobot = waitForStableIntellijSvg(port)
+            val capture = execIntellijShell(
+                container,
+                """
+                set -eu
+                pid=${'$'}(cat /tmp/idea-parity.pid)
+                kill -0 "${'$'}pid"
+                DISPLAY=host.docker.internal:$display java -Dx.captureDelayMs=0 -cp /tmp XIntellijRobotCapture
+                """.trimIndent(),
+            )
+            assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
+            val robot = visualCapture(capture.stdout)
+            val svgAfterRobot = httpGet(port, "/screen.svg")
+            val selected = closestIntellijSvgToRobotScore(robot, listOf(svgBeforeRobot, svgAfterRobot))
+            val frame = IntellijRobotSvgFrame(
+                robot = robot,
+                svg = selected.svg,
+                text = httpGet(port, "/text.txt"),
+                stateJson = httpGet(port, "/state.json"),
+                html = httpGet(port, "/"),
+                robotSvgDistance = selected.distance,
+            )
+            if (frame.robotSvgDistance <= IntellijRobotSvgCaptureDistanceThreshold) return frame
+            val currentBest = best
+            if (currentBest == null || frame.robotSvgDistance < currentBest.robotSvgDistance) best = frame
+            if (attempt + 1 < IntellijRobotSvgCaptureAttempts) Thread.sleep(1_000)
+        }
+        return best ?: error("IntelliJ Robot/SVG capture did not produce a composable frame")
     }
 
     private fun runIntellijAgainstXvfb(image: String, url: String?, configDir: Path): IntellijReferenceCapture =
@@ -1344,23 +1433,7 @@ class IntellijCommunitySmokeTest {
                             DISPLAY=host.docker.internal:$display xprop -root >/tmp/xprop-kotlin-root.log 2>&1 || true
                             """.trimIndent(),
                         )
-                        val svgBeforeRobot = waitForStableIntellijSvg(port)
-                        val capture = execIntellijShell(
-                            container,
-                            """
-                            set -eu
-                            pid=${'$'}(cat /tmp/idea-parity.pid)
-                            kill -0 "${'$'}pid"
-                            DISPLAY=host.docker.internal:$display java -Dx.captureDelayMs=0 -cp /tmp XIntellijRobotCapture
-                            """.trimIndent(),
-                        )
-                        assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
-                        val robot = visualCapture(capture.stdout)
-                        val svgAfterRobot = httpGet(port, "/screen.svg")
-                        val svg = closestIntellijSvgToRobot(robot, listOf(svgBeforeRobot, svgAfterRobot))
-                        val html = httpGet(port, "/")
-                        val text = httpGet(port, "/text.txt")
-                        val stateJson = httpGet(port, "/state.json")
+                        val robotAndSvg = captureIntellijKotlinRobotAndSvg(container, display, port)
                         val logs = collectIntellijLogs(
                             container = container,
                             prefix = "intellij-kotlin",
@@ -1368,12 +1441,12 @@ class IntellijCommunitySmokeTest {
                             extraLogs = extraLogs,
                         )
                         return IntellijKotlinCapture(
-                            robot = robot,
-                            text = text,
-                            stateJson = stateJson,
-                            svg = svg,
-                            html = html,
-                            svgLayers = svgCompositionLayers(svg),
+                            robot = robotAndSvg.robot,
+                            text = robotAndSvg.text,
+                            stateJson = robotAndSvg.stateJson,
+                            svg = robotAndSvg.svg,
+                            html = robotAndSvg.html,
+                            svgLayers = svgCompositionLayers(robotAndSvg.svg),
                             logs = logs,
                         )
                     } finally {
@@ -2851,6 +2924,20 @@ class IntellijCommunitySmokeTest {
         val logs: List<IntellijLogArtifact>,
     )
 
+    private data class IntellijRobotSvgFrame(
+        val robot: VisualCapture,
+        val svg: String,
+        val text: String,
+        val stateJson: String,
+        val html: String,
+        val robotSvgDistance: Double,
+    )
+
+    private data class IntellijSvgScore(
+        val svg: String,
+        val distance: Double,
+    )
+
     private data class IntellijLogArtifact(
         val fileName: String,
         val text: String,
@@ -2922,5 +3009,7 @@ class IntellijCommunitySmokeTest {
         const val IntellijOpenWaitSeconds = 300
         const val IntellijParityReadyWaitSeconds = 240
         const val IntellijContainerCommandTimeoutSeconds = 900
+        const val IntellijRobotSvgCaptureAttempts = 4
+        const val IntellijRobotSvgCaptureDistanceThreshold = 1.0
     }
 }
