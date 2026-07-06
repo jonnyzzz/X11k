@@ -523,6 +523,11 @@ class HttpRenderingTest {
                     Regex("""<image\b(?=[^>]*\bdata-window-id="0x200001")(?=[^>]*\bdata-pixmap-id="0x200100")(?=[^>]*\bwidth="96")(?=[^>]*\bheight="64")""").containsMatchIn(svg),
                     "Oversized backing pixmap should render at pixmap size under the window clip instead of being scaled to window size",
                 )
+                assertEquals(
+                    true,
+                    Regex("""<image\b(?=[^>]*\bdata-window-id="0x200001")(?=[^>]*\bdata-pixmap-id="0x200100")(?=[^>]*\bdata-visible-x="10")(?=[^>]*\bdata-visible-y="20")(?=[^>]*\bdata-visible-width="64")(?=[^>]*\bdata-visible-height="64")""").containsMatchIn(svg),
+                    "Oversized backing pixmap images should retain visible-window bounds for semantic SVG composition",
+                )
 
                 val json = httpGet(server.localPort, "/state.json").body
                 assertContains(json, """"matchingWindows":["0x200001"]""")

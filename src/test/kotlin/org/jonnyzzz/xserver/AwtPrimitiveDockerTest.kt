@@ -21,6 +21,35 @@ import kotlin.test.assertTrue
 
 class AwtPrimitiveDockerTest {
     @Test
+    fun `svg framebuffer parser keeps image geometry distinct from visible bounds`() {
+        val png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+        val images = pngDataUris(
+            """
+            <svg>
+              <image class="framebuffer-image"
+                     data-window-id="0x200001"
+                     data-visible-x="10"
+                     data-visible-y="20"
+                     data-visible-width="64"
+                     data-visible-height="64"
+                     x="1"
+                     y="2"
+                     width="96"
+                     height="80"
+                     href="data:image/png;base64,$png"/>
+            </svg>
+            """.trimIndent(),
+        )
+
+        assertEquals(1, images.size)
+        assertEquals(1, images.single().x)
+        assertEquals(2, images.single().y)
+        assertEquals(96, images.single().width)
+        assertEquals(80, images.single().height)
+        assertEquals(listOf(Rectangle(10, 20, 64, 64)), images.single().clipRectangles)
+    }
+
+    @Test
     fun `awt primitives render through xrender pipeline into framebuffer`() {
         val result = runAwtProbe(
             port = 6210,
@@ -928,23 +957,77 @@ class AwtPrimitiveDockerTest {
                     y = y,
                     width = width,
                     height = height,
+                    hidden = isInsideHiddenSvgGroup(svg, match.range.first),
+                    clipRectangles = svgVisibleRectangle(tag),
                 )
             }
             .toList()
 
     private fun svgImageAttribute(tag: String, name: String): Int? =
-        Regex("""\b$name="(-?\d+)"""").find(tag)?.groupValues?.get(1)?.toInt()
+        svgStringAttribute(tag, name)?.toInt()
+
+    private fun svgStringAttribute(tag: String, name: String): String? =
+        Regex("""(?:^|[<\s])${Regex.escape(name)}\s*=\s*(['"])(.*?)\1""").find(tag)?.groupValues?.get(2)
+
+    private fun isInsideHiddenSvgGroup(svg: String, offset: Int): Boolean {
+        val hiddenStack = mutableListOf<Boolean>()
+        Regex("""<g\b[^>]*>|</g>""")
+            .findAll(svg.substring(0, offset.coerceIn(0, svg.length)))
+            .forEach { match ->
+                val tag = match.value
+                if (tag.startsWith("</")) {
+                    if (hiddenStack.isNotEmpty()) hiddenStack.removeAt(hiddenStack.lastIndex)
+                } else {
+                    hiddenStack += svgVisibilityHidden(tag) ?: (hiddenStack.lastOrNull() == true)
+                }
+            }
+        return hiddenStack.lastOrNull() == true
+    }
+
+    private fun svgVisibilityHidden(tag: String): Boolean? {
+        val visibility = svgStringAttribute(tag, "visibility")
+            ?: svgStringAttribute(tag, "style")
+                ?.split(';')
+                ?.mapNotNull { declaration ->
+                    val parts = declaration.split(':', limit = 2)
+                    parts.getOrNull(1)?.trim().takeIf { parts.getOrNull(0)?.trim() == "visibility" }
+                }
+                ?.lastOrNull()
+        return when (visibility?.trim()) {
+            "hidden", "collapse" -> true
+            "visible" -> false
+            else -> null
+        }
+    }
+
+    private fun svgVisibleRectangle(tag: String): List<Rectangle> {
+        val x = svgImageAttribute(tag, "data-visible-x") ?: return emptyList()
+        val y = svgImageAttribute(tag, "data-visible-y") ?: return emptyList()
+        val width = svgImageAttribute(tag, "data-visible-width") ?: return emptyList()
+        val height = svgImageAttribute(tag, "data-visible-height") ?: return emptyList()
+        return if (width > 0 && height > 0) listOf(Rectangle(x, y, width, height)) else emptyList()
+    }
 
     private fun composeEmbeddedFramebuffers(embeddedFramebuffers: List<EmbeddedPng>): BufferedImage {
-        val width = embeddedFramebuffers.maxOfOrNull { it.x + it.width } ?: 0
-        val height = embeddedFramebuffers.maxOfOrNull { it.y + it.height } ?: 0
+        val visibleFramebuffers = embeddedFramebuffers.filterNot { it.hidden }.ifEmpty { embeddedFramebuffers }
+        val width = visibleFramebuffers.maxOfOrNull { it.x + it.width } ?: 0
+        val height = visibleFramebuffers.maxOfOrNull { it.y + it.height } ?: 0
         require(width > 0 && height > 0) { "No framebuffer geometry to compose: $embeddedFramebuffers" }
         val image = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
         val graphics = image.createGraphics()
         try {
-            for (embedded in embeddedFramebuffers) {
+            for (embedded in visibleFramebuffers) {
                 val layer = ImageIO.read(ByteArrayInputStream(embedded.bytes)) ?: continue
-                graphics.drawImage(layer, embedded.x, embedded.y, embedded.width, embedded.height, null)
+                if (embedded.clipRectangles.isEmpty()) {
+                    graphics.drawImage(layer, embedded.x, embedded.y, embedded.width, embedded.height, null)
+                } else {
+                    val originalClip = graphics.clip
+                    for (clip in embedded.clipRectangles) {
+                        graphics.clip = clip
+                        graphics.drawImage(layer, embedded.x, embedded.y, embedded.width, embedded.height, null)
+                    }
+                    graphics.clip = originalClip
+                }
             }
         } finally {
             graphics.dispose()
@@ -1122,6 +1205,8 @@ class AwtPrimitiveDockerTest {
         val y: Int,
         val width: Int,
         val height: Int,
+        val hidden: Boolean = false,
+        val clipRectangles: List<Rectangle> = emptyList(),
     )
 
     private data class ImageStats(
