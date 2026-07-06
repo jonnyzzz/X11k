@@ -292,6 +292,9 @@ class IntellijCommunitySmokeTest {
 
             val metrics = File(directory, "intellij-top-frame-band-metrics.txt").readText()
             assertTrue(metrics.contains("region=10,20 1260x120"), metrics)
+            assertTrue(metrics.contains("xvfbDominantColors=0xff101010:"), metrics)
+            assertTrue(metrics.contains("kotlinRobotDominantColors=0xff101010:"), metrics)
+            assertTrue(metrics.contains("kotlinSvgDominantColors=0xff101010:"), metrics)
             assertTrue(metrics.contains("robotVsXvfbSampledDistance="), metrics)
             assertTrue(metrics.contains("svgVsXvfbMismatchBounds="), metrics)
             assertTrue(metrics.contains("robotVsSvgMismatchBounds="), metrics)
@@ -2188,6 +2191,9 @@ class IntellijCommunitySmokeTest {
             appendLine("xvfb=$expected")
             appendLine("kotlinRobot=$actualRobot")
             appendLine("kotlinSvg=$actualSvg")
+            appendLine("xvfbDominantColors=${dominantColors(expected.image, 12)}")
+            appendLine("kotlinRobotDominantColors=${dominantColors(actualRobot.image, 12)}")
+            appendLine("kotlinSvgDominantColors=${dominantColors(actualSvg.image, 12)}")
             appendLine("robotVsXvfbCoverageRatio=${ratio(actualRobot.nonWhitePixels, expected.nonWhitePixels)}")
             appendLine("svgVsXvfbCoverageRatio=${ratio(actualSvg.nonWhitePixels, expected.nonWhitePixels)}")
             appendLine("robotVsXvfbAverageRgbDelta=${abs(actualRobot.averageRgb - expected.averageRgb)}")
@@ -2199,6 +2205,22 @@ class IntellijCommunitySmokeTest {
             appendLine("svgVsXvfbMismatchBounds=${mismatchBounds(expected.image, actualSvg.image).toMetricString()}")
             appendLine("robotVsSvgMismatchBounds=${mismatchBounds(actualRobot.image, actualSvg.image).toMetricString()}")
         }
+
+    private fun dominantColors(image: BufferedImage, limit: Int): String {
+        val counts = HashMap<Int, Int>()
+        for (y in 0 until image.height) {
+            for (x in 0 until image.width) {
+                val argb = image.getRGB(x, y)
+                counts[argb] = (counts[argb] ?: 0) + 1
+            }
+        }
+        return counts.entries
+            .sortedWith(compareByDescending<Map.Entry<Int, Int>> { it.value }.thenBy { it.key })
+            .take(limit)
+            .joinToString(" ") { (argb, count) ->
+                "0x${argb.toUInt().toString(16).padStart(8, '0')}:$count"
+            }
+    }
 
     private fun dumpIntellijLogArtifacts(logs: List<IntellijLogArtifact>) {
         val directory = intellijSmokeArtifactsDirectory()
