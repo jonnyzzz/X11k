@@ -30,8 +30,8 @@ class XCoreDrawingProtocolTest {
                 assertEquals(900, u16le(setupReply, screenOffset + 22))
                 assertEquals(325, u16le(setupReply, screenOffset + 24))
                 assertEquals(229, u16le(setupReply, screenOffset + 26))
-                assertEquals(listOf(X11Ids.RootVisual), visuals.getValue(X11Ids.RootDepth))
-                assertEquals(listOf(X11Ids.RgbaVisual), visuals.getValue(X11Ids.RgbaDepth))
+                assertEquals(listOf(X11Ids.RootVisual, X11Ids.XvfbLikeRootVisualAlias), visuals.getValue(X11Ids.RootDepth))
+                assertEquals(listOf(X11Ids.RgbaVisual, X11Ids.XvfbLikeRgbaVisualAlias), visuals.getValue(X11Ids.RgbaDepth))
             }
             server.close()
             serverThread.join(1_000)
@@ -749,6 +749,57 @@ class XCoreDrawingProtocolTest {
 
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CreatePixmap PutImage and GetImage support advertised depth 16 ZPixmap`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val data = ByteArray(4)
+                put16le(data, 0, 0xf800)
+                put16le(data, 2, 0x07e0)
+
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 1, depth = 16))
+                out.write(createGcRequest(GcId, foreground = 0, drawable = PixmapId))
+                out.write(putImageRawRequest(PixmapId, GcId, format = 2, width = 2, height = 1, depth = 16, data = data))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(16, image[1].toInt() and 0xff)
+                assertEquals(4, u32le(image, 12))
+                assertEquals(0xf800, u16le(image, 32))
+                assertEquals(0x07e0, u16le(image, 34))
+
+                val maskedData = ByteArray(4)
+                put16le(maskedData, 0, 0xf800)
+                out.write(createGcRequest(GcId + 1, foreground = 0, drawable = PixmapId))
+                out.write(changeGcRasterRequest(GcId + 1, planeMask = 0xf800))
+                out.write(putImageRawRequest(PixmapId, GcId + 1, format = 2, width = 1, height = 1, depth = 16, data = maskedData))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val maskedImage = readReply(socket.getInputStream())
+                assertEquals(0xf800, u16le(maskedImage, 32))
+                assertEquals(0x07e0, u16le(maskedImage, 34))
+
+                out.write(changeGcRasterRequest(GcId + 1, function = GXinvert, planeMask = 0xffff))
+                out.write(putImageRawRequest(PixmapId, GcId + 1, format = 2, width = 1, height = 1, depth = 16, data = maskedData))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val invertedImage = readReply(socket.getInputStream())
+                assertEquals(0x07ff, u16le(invertedImage, 32))
+                assertEquals(0x07e0, u16le(invertedImage, 34))
             }
             server.close()
             serverThread.join(1_000)
@@ -12703,6 +12754,38 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreateColormap and CreateWindow accept advertised Xvfb-like visual aliases`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createColormapRequest(ColormapId, window = X11Ids.RootWindow, visual = X11Ids.XvfbLikeRgbaVisualAlias))
+                out.write(
+                    createWindowRequest(
+                        WindowId,
+                        depth = X11Ids.RgbaDepth,
+                        visual = X11Ids.XvfbLikeRgbaVisualAlias,
+                        colormap = ColormapId,
+                        backgroundPixel = 0x1122_3344,
+                    ),
+                )
+                out.write(mapWindowRequest(WindowId))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream(), WindowId)
+                val image = readReply(socket.getInputStream())
+                assertEquals(X11Ids.XvfbLikeRgbaVisualAlias, u32le(image, 8))
+                assertEquals(0xff22_3344.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CreateWindow validates depth class visual and InputOnly rules without reserving id`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -24053,6 +24136,7 @@ class XCoreDrawingProtocolTest {
         const val Blue = 0x0000_00ff
         const val GXnoop = 0x5
         const val GXxor = 0x6
+        const val GXinvert = 0xa
         const val FillStippled = 2
         const val FillOpaqueStippled = 3
         const val FullCircleAngle = 360 * 64

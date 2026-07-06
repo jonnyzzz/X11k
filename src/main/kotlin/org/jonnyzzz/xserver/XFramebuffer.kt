@@ -5401,9 +5401,10 @@ internal class XFramebuffer(
         if (preserveAlpha && function == XGraphicsContext.GXcopy && planeMask == -1) return source
         val effectiveSource = wireDepth?.let { wirePixelForDepth(source, it) } ?: source
         val effectiveDestination = wireDepth?.let { wirePixelForDepth(destination, it) } ?: destination
-        val mask = planeMask and CorePixelMask
-        val sourcePixel = effectiveSource and CorePixelMask
-        val destinationPixel = effectiveDestination and CorePixelMask
+        val coreMask = wireDepth?.let { if (it >= 32) -1 else (1 shl it) - 1 } ?: CorePixelMask
+        val mask = planeMask and coreMask
+        val sourcePixel = effectiveSource and coreMask
+        val destinationPixel = effectiveDestination and coreMask
         val functionPixel = when (function) {
             XGraphicsContext.GXclear -> 0
             XGraphicsContext.GXand -> sourcePixel and destinationPixel
@@ -5420,9 +5421,9 @@ internal class XFramebuffer(
             XGraphicsContext.GXcopyInverted -> sourcePixel.inv()
             XGraphicsContext.GXorInverted -> sourcePixel.inv() or destinationPixel
             XGraphicsContext.GXnand -> (sourcePixel and destinationPixel).inv()
-            XGraphicsContext.GXset -> CorePixelMask
+            XGraphicsContext.GXset -> coreMask
             else -> sourcePixel
-        } and CorePixelMask
+        } and coreMask
         return (effectiveDestination and 0xff00_0000.toInt()) or ((destinationPixel and mask.inv()) or (functionPixel and mask))
     }
 
@@ -5433,6 +5434,16 @@ internal class XFramebuffer(
                 val lowByte = pixel and 0xff
                 val alphaByte = (pixel ushr 24) and 0xff
                 if (alphaByte == 0xff && lowByte != 0) lowByte else alphaByte or lowByte
+            }
+            16 -> {
+                if ((pixel ushr 24) == 0 && pixel <= 0xffff) {
+                    pixel
+                } else {
+                    val red = (pixel ushr 16) and 0xff
+                    val green = (pixel ushr 8) and 0xff
+                    val blue = pixel and 0xff
+                    ((red and 0xf8) shl 8) or ((green and 0xfc) shl 3) or (blue ushr 3)
+                }
             }
             else -> pixel
         }

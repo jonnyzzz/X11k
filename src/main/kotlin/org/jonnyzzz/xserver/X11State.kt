@@ -7600,16 +7600,26 @@ internal class X11State(
         windows[drawableId]?.depth ?: pixmaps[drawableId]?.depth ?: X11Ids.RootDepth
 
     private fun preserveCoreSourcePixel(function: Int, planeMask: Int, depth: Int): Boolean =
-        function == XGraphicsContext.GXcopy && planeMask == -1 && depth in setOf(1, 8)
+        function == XGraphicsContext.GXcopy && planeMask == -1 && depth in setOf(1, 8, 16)
 
     private fun Int.wireDepth(): Int? =
-        takeIf { it in setOf(1, 8) }
+        takeIf { it in setOf(1, 8, 16) }
 
     private fun corePixelForDepth(pixel: Int, depth: Int): Int =
         when (depth) {
             1 -> pixel and 1
             4 -> pixel and 0x0f
             8 -> (pixel and 0xff) shl 24
+            16 -> {
+                if ((pixel ushr 24) == 0 && pixel <= 0xffff) {
+                    pixel
+                } else {
+                    val red = (pixel ushr 16) and 0xff
+                    val green = (pixel ushr 8) and 0xff
+                    val blue = pixel and 0xff
+                    ((red and 0xf8) shl 8) or ((green and 0xfc) shl 3) or (blue ushr 3)
+                }
+            }
             else -> pixel
         }
 
@@ -7623,6 +7633,10 @@ internal class X11State(
                 val lowByte = pixel and 0xff
                 val alphaByte = (pixel ushr 24) and 0xff
                 val wirePixel = if (alphaByte == 0xff && lowByte != 0) lowByte else alphaByte or lowByte
+                if (preserveAlpha) corePixelForDepth(wirePixel, depth) else wirePixel
+            }
+            16 -> {
+                val wirePixel = corePixelForDepth(pixel, depth)
                 if (preserveAlpha) corePixelForDepth(wirePixel, depth) else wirePixel
             }
             else -> pixel

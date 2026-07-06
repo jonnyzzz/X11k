@@ -116,6 +116,20 @@ internal object SetupReply {
                 greenMask = 0x0000_ff00,
                 blueMask = 0x0000_00ff,
             ),
+            XVisualDescription(
+                id = X11Ids.XvfbLikeRootVisualAlias,
+                depth = RootDepth,
+                redMask = 0x00ff_0000,
+                greenMask = 0x0000_ff00,
+                blueMask = 0x0000_00ff,
+            ),
+            XVisualDescription(
+                id = X11Ids.XvfbLikeRgbaVisualAlias,
+                depth = X11Ids.RgbaDepth,
+                redMask = 0x00ff_0000,
+                greenMask = 0x0000_ff00,
+                blueMask = 0x0000_00ff,
+            ),
         )
         val depthBytes = XPixmapFormats.All.sumOf { format -> 8 + visuals.count { it.depth == format.depth } * 24 }
         val screenBytes = 40 + depthBytes
@@ -231,6 +245,7 @@ internal object XPixmapFormats {
         XPixmapFormatEntry(depth = 1, bitsPerPixel = 1, scanlinePad = 32),
         XPixmapFormatEntry(depth = 4, bitsPerPixel = 8, scanlinePad = 32),
         XPixmapFormatEntry(depth = 8, bitsPerPixel = 8, scanlinePad = 32),
+        XPixmapFormatEntry(depth = 16, bitsPerPixel = 16, scanlinePad = 32),
         XPixmapFormatEntry(depth = 24, bitsPerPixel = 32, scanlinePad = 32),
         XPixmapFormatEntry(depth = 32, bitsPerPixel = 32, scanlinePad = 32),
     )
@@ -248,13 +263,15 @@ internal object X11Ids {
     const val DefaultColormap = 0x0000_0027
     const val RootVisual = 0x0000_0028
     const val RgbaVisual = 0x0000_0029
+    const val XvfbLikeRootVisualAlias = 0x0000_01cf
+    const val XvfbLikeRgbaVisualAlias = 0x0000_0213
     const val RootDepth = 24
     const val RgbaDepth = 32
 
     fun visualDepth(visual: Int): Int? =
         when (visual) {
-            RootVisual -> RootDepth
-            RgbaVisual -> RgbaDepth
+            RootVisual, XvfbLikeRootVisualAlias -> RootDepth
+            RgbaVisual, XvfbLikeRgbaVisualAlias -> RgbaDepth
             else -> null
         }
 

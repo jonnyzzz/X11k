@@ -3647,17 +3647,21 @@ internal class X11Connection(
         putPictFormat(formats, 56, XRender.A8Format, depth = 8, redShift = 0, redMask = 0, greenShift = 0, greenMask = 0, blueShift = 0, blueMask = 0, alphaShift = 0, alphaMask = 0xff)
         putPictFormat(formats, 84, XRender.A1Format, depth = 1, redShift = 0, redMask = 0, greenShift = 0, greenMask = 0, blueShift = 0, blueMask = 0, alphaShift = 0, alphaMask = 0x1)
 
-        val screen = ByteArray(40)
+        val screen = ByteArray(56)
         byteOrder.put32(screen, 0, 2)
         byteOrder.put32(screen, 4, XRender.Rgb24Format)
         screen[8] = 24
-        byteOrder.put16(screen, 10, 1)
+        byteOrder.put16(screen, 10, 2)
         byteOrder.put32(screen, 16, X11Ids.RootVisual)
         byteOrder.put32(screen, 20, XRender.Rgb24Format)
-        screen[24] = 32
-        byteOrder.put16(screen, 26, 1)
-        byteOrder.put32(screen, 32, X11Ids.RgbaVisual)
-        byteOrder.put32(screen, 36, XRender.Argb32Format)
+        byteOrder.put32(screen, 24, X11Ids.XvfbLikeRootVisualAlias)
+        byteOrder.put32(screen, 28, XRender.Rgb24Format)
+        screen[32] = 32
+        byteOrder.put16(screen, 34, 2)
+        byteOrder.put32(screen, 40, X11Ids.RgbaVisual)
+        byteOrder.put32(screen, 44, XRender.Argb32Format)
+        byteOrder.put32(screen, 48, X11Ids.XvfbLikeRgbaVisualAlias)
+        byteOrder.put32(screen, 52, XRender.Argb32Format)
 
         val subpixels = ByteArray(4)
         byteOrder.put32(subpixels, 0, 5)
@@ -3666,7 +3670,7 @@ internal class X11Connection(
         byteOrder.put32(reply, 8, 4)
         byteOrder.put32(reply, 12, 1)
         byteOrder.put32(reply, 16, 2)
-        byteOrder.put32(reply, 20, 2)
+        byteOrder.put32(reply, 20, 4)
         byteOrder.put32(reply, 24, 1)
         payload.copyInto(reply, 32)
         write(reply)
@@ -8271,6 +8275,7 @@ internal class X11Connection(
                 when (bitsPerPixel) {
                     1 -> if ((value and 1) != 0) bytes[rowOffset + x / 8] = (bytes[rowOffset + x / 8].toInt() or (1 shl (x % 8))).toByte()
                     8 -> bytes[rowOffset + x] = value.toByte()
+                    16 -> ByteOrder.LsbFirst.put16(bytes, rowOffset + x * 2, value)
                     32 -> ByteOrder.LsbFirst.put32(bytes, rowOffset + x * 4, value)
                 }
             }
@@ -8287,8 +8292,27 @@ internal class X11Connection(
                 val alphaByte = (pixel ushr 24) and 0xff
                 if (alphaByte == 0xff && lowByte != 0) lowByte else alphaByte or lowByte
             }
+            16 -> argbToRgb565(pixel)
             else -> pixel
         }
+
+    private fun argbToRgb565(pixel: Int): Int {
+        if ((pixel ushr 24) == 0 && pixel <= 0xffff) return pixel
+        val red = (pixel ushr 16) and 0xff
+        val green = (pixel ushr 8) and 0xff
+        val blue = pixel and 0xff
+        return ((red and 0xf8) shl 8) or ((green and 0xfc) shl 3) or (blue ushr 3)
+    }
+
+    private fun rgb565ToArgb(pixel: Int): Int {
+        val red5 = (pixel ushr 11) and 0x1f
+        val green6 = (pixel ushr 5) and 0x3f
+        val blue5 = pixel and 0x1f
+        val red = (red5 shl 3) or (red5 ushr 2)
+        val green = (green6 shl 2) or (green6 ushr 4)
+        val blue = (blue5 shl 3) or (blue5 ushr 2)
+        return 0xff00_0000.toInt() or (red shl 16) or (green shl 8) or blue
+    }
 
     private fun encodeXyPixmap(image: XImagePixels, depth: Int, planeMask: Int): ByteArray {
         val effectiveDepth = depth.coerceIn(0, 32)
@@ -12895,6 +12919,7 @@ internal class X11Connection(
                 val pixel = when (bitsPerPixel) {
                     1 -> if (imagePlaneBit(data, rowOffset, x)) 1 else 0
                     8 -> data[rowOffset + x].toInt() and 0xff
+                    16 -> ByteOrder.LsbFirst.u16(data, rowOffset + x * 2)
                     32 -> ByteOrder.LsbFirst.u32(data, rowOffset + x * 4)
                     else -> return null
                 }
@@ -12986,6 +13011,7 @@ internal class X11Connection(
     private fun imagePixelForDepth(pixel: Int, depth: Int): Int =
         when (depth) {
             8 -> (pixel and 0xff) shl 24
+            16 -> rgb565ToArgb(pixel)
             24 -> XFramebuffer.opaque(pixel)
             32 -> XFramebuffer.argb(pixel)
             else -> pixel

@@ -90,6 +90,7 @@ class X11HandshakeTest {
             SetupPixmapFormat(depth = 1, bitsPerPixel = 1, scanlinePad = 32),
             SetupPixmapFormat(depth = 4, bitsPerPixel = 8, scanlinePad = 32),
             SetupPixmapFormat(depth = 8, bitsPerPixel = 8, scanlinePad = 32),
+            SetupPixmapFormat(depth = 16, bitsPerPixel = 16, scanlinePad = 32),
             SetupPixmapFormat(depth = 24, bitsPerPixel = 32, scanlinePad = 32),
             SetupPixmapFormat(depth = 32, bitsPerPixel = 32, scanlinePad = 32),
         )
@@ -105,8 +106,9 @@ class X11HandshakeTest {
                         SetupDepth(depth = 1, visualCount = 0),
                         SetupDepth(depth = 4, visualCount = 0),
                         SetupDepth(depth = 8, visualCount = 0),
-                        SetupDepth(depth = 24, visualCount = 1),
-                        SetupDepth(depth = 32, visualCount = 1),
+                        SetupDepth(depth = 16, visualCount = 0),
+                        SetupDepth(depth = 24, visualCount = 2),
+                        SetupDepth(depth = 32, visualCount = 2),
                     ),
                     rest.screenDepths(),
                 )
