@@ -1181,6 +1181,26 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `advertised extension event codes do not overlap`() {
+        val eventCodesByExtension = mapOf(
+            "MIT-SHM" to setOf(XShm.FirstEvent),
+            "XKEYBOARD" to setOf(XXkb.FirstEvent),
+            "XFIXES" to setOf(XFixes.FirstEvent + XFixes.SelectionNotify, XFixes.FirstEvent + XFixes.CursorNotify),
+            "SHAPE" to setOf(XShape.FirstEvent + XShape.Notify),
+            "MIT-SCREEN-SAVER" to setOf(XScreenSaver.FirstEvent),
+            "SYNC" to setOf(XSync.FirstEvent),
+            "RANDR" to setOf(XRandr.FirstEvent + XRandr.ScreenChangeNotify, XRandr.FirstEvent + XRandr.Notify),
+            "XInputExtension" to setOf(XXInput.FirstEvent),
+        )
+        val duplicates = eventCodesByExtension
+            .flatMap { (extension, codes) -> codes.map { code -> code to extension } }
+            .groupBy({ it.first }, { it.second })
+            .filterValues { it.size > 1 }
+
+        assertEquals(emptyMap(), duplicates)
+    }
+
+    @Test
     fun `QueryExtension validates length and returns extension presence with stream recovery`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1217,7 +1237,10 @@ class XCoreDrawingProtocolTest {
 
                 val xinput = readReply(socket.getInputStream())
                 assertEquals(6, u16le(xinput, 2))
-                assertEquals(0, xinput[8].toInt())
+                assertEquals(1, xinput[8].toInt())
+                assertEquals(XXInput.MajorOpcode, xinput[9].toInt() and 0xff)
+                assertEquals(XXInput.FirstEvent, xinput[10].toInt() and 0xff)
+                assertEquals(XXInput.FirstError, xinput[11].toInt() and 0xff)
 
                 val glx = readReply(socket.getInputStream())
                 assertEquals(7, u16le(glx, 2))
@@ -1267,9 +1290,9 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 16, opcode = 99, badValue = 0, sequence = 1)
 
                 val reply = readReply(socket.getInputStream())
-                assertEquals(15, reply[1].toInt() and 0xff)
+                assertEquals(16, reply[1].toInt() and 0xff)
                 assertEquals(2, u16le(reply, 2))
-                assertEquals(36, u32le(reply, 4))
+                assertEquals(40, u32le(reply, 4))
                 var offset = 32
                 val names = mutableListOf<String>()
                 repeat(reply[1].toInt() and 0xff) {
@@ -1277,7 +1300,7 @@ class XCoreDrawingProtocolTest {
                     names += reply.copyOfRange(offset, offset + length).decodeToString()
                     offset += length
                 }
-                assertEquals(listOf("GLX", "BIG-REQUESTS", "RENDER", "MIT-SHM", "XFIXES", "SHAPE", "XKEYBOARD", "XINERAMA", "XTEST", "XC-MISC", "MIT-SUNDRY-NONSTANDARD", "MIT-SCREEN-SAVER", "SYNC", "RANDR", "DOUBLE-BUFFER"), names)
+                assertEquals(listOf("GLX", "BIG-REQUESTS", "RENDER", "MIT-SHM", "XFIXES", "SHAPE", "XKEYBOARD", "XINERAMA", "XTEST", "XC-MISC", "MIT-SUNDRY-NONSTANDARD", "MIT-SCREEN-SAVER", "SYNC", "RANDR", "DOUBLE-BUFFER", "XInputExtension"), names)
             }
             server.close()
             serverThread.join(1_000)

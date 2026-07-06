@@ -230,6 +230,10 @@ internal class X11Connection(
                 doubleBuffer(minorOpcode, body, opcode)
                 return
             }
+            if (extension.name == "XInputExtension") {
+                xinput(minorOpcode, body, opcode)
+                return
+            }
         }
         when (opcode) {
             1 -> createWindow(minorOpcode, body)
@@ -8909,6 +8913,7 @@ internal class X11Connection(
             XSync.MajorOpcode -> "SYNC.${XSync.operationName(minorOpcode)}"
             XRandr.MajorOpcode -> "RANDR.${XRandr.operationName(minorOpcode)}"
             XDoubleBuffer.MajorOpcode -> "DOUBLE-BUFFER.${XDoubleBuffer.operationName(minorOpcode)}"
+            XXInput.MajorOpcode -> "XInputExtension.${XXInput.operationName(minorOpcode)}"
             1 -> "CreateWindow"
             2 -> "ChangeWindowAttributes"
             3 -> "GetWindowAttributes"
@@ -9044,6 +9049,219 @@ internal class X11Connection(
             offset += name.size
         }
         write(reply)
+    }
+
+    private fun xinput(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        when (minorOpcode) {
+            XXInput.GetExtensionVersion -> xinputGetExtensionVersion(body, majorOpcode)
+            XXInput.ListInputDevices -> xinputListInputDevices(body, majorOpcode)
+            XXInput.XIQueryVersion -> xinputXiQueryVersion(body, majorOpcode)
+            XXInput.XIQueryDevice -> xinputXiQueryDevice(body, majorOpcode)
+            XXInput.XISelectEvents -> xinputXiSelectEvents(body, majorOpcode)
+            XXInput.XIGetSelectedEvents -> xinputXiGetSelectedEvents(body, majorOpcode)
+            XXInput.XIListProperties -> xinputXiListProperties(body, majorOpcode)
+            XXInput.XIGetProperty -> xinputXiGetProperty(body, majorOpcode)
+            else -> unsupportedRequest(majorOpcode, minorOpcode, "XInputExtension.${XXInput.operationName(minorOpcode)}")
+        }
+    }
+
+    private fun xinputGetExtensionVersion(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.GetExtensionVersion, badValue = 0)
+        val nameLength = byteOrder.u16(body, 0)
+        if (body.size != 4 + paddedLength(nameLength)) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.GetExtensionVersion, badValue = 0)
+        }
+        val reply = reply(extra = XXInput.GetExtensionVersion, payloadUnits = 0)
+        byteOrder.put16(reply, 8, XXInput.MajorVersion)
+        byteOrder.put16(reply, 10, XXInput.MinorVersion)
+        reply[12] = 1
+        write(reply)
+    }
+
+    private fun xinputListInputDevices(body: ByteArray, majorOpcode: Int) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.ListInputDevices, badValue = 0)
+        val payload = xinputLegacyDevicePayload()
+        val reply = reply(extra = XXInput.ListInputDevices, payloadUnits = payload.size / 4)
+        reply[8] = 2
+        payload.copyInto(reply, 32)
+        write(reply)
+    }
+
+    private fun xinputXiQueryVersion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.XIQueryVersion, badValue = 0)
+        val clientMajor = byteOrder.u16(body, 0)
+        val clientMinor = byteOrder.u16(body, 2)
+        if (clientMajor < XXInput.MajorVersion) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXInput.XIQueryVersion, badValue = clientMajor)
+        }
+        val (major, minor) = when {
+            clientMajor > XXInput.MajorVersion -> XXInput.MajorVersion to XXInput.MinorVersion
+            else -> XXInput.MajorVersion to minOf(clientMinor, XXInput.MinorVersion)
+        }
+        val reply = reply(extra = XXInput.XIQueryVersion, payloadUnits = 0)
+        byteOrder.put16(reply, 8, major)
+        byteOrder.put16(reply, 10, minor)
+        write(reply)
+    }
+
+    private fun xinputXiQueryDevice(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.XIQueryDevice, badValue = 0)
+        val deviceId = byteOrder.u16(body, 0)
+        val deviceIds = xinputDeviceIds(deviceId)
+            ?: return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXInput.XIQueryDevice, badValue = deviceId)
+        val payload = xinputXi2DevicePayload(deviceIds)
+        val reply = reply(extra = XXInput.XIQueryDevice, payloadUnits = payload.size / 4)
+        byteOrder.put16(reply, 8, deviceIds.size)
+        payload.copyInto(reply, 32)
+        write(reply)
+    }
+
+    private fun xinputXiSelectEvents(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        state.window(windowId) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = windowId)
+        val maskCount = byteOrder.u16(body, 4)
+        if (maskCount == 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = 0)
+        var offset = 8
+        repeat(maskCount) {
+            if (offset + 4 > body.size) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = 0)
+            val maskUnits = byteOrder.u16(body, offset + 2)
+            val nextOffset = offset.toLong() + 4L + maskUnits.toLong() * 4L
+            if (nextOffset > body.size) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = 0)
+            offset = nextOffset.toInt()
+        }
+        if (offset != body.size) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = 0)
+    }
+
+    private fun xinputXiGetSelectedEvents(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.XIGetSelectedEvents, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        state.window(windowId) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XXInput.XIGetSelectedEvents, badValue = windowId)
+        write(reply(extra = XXInput.XIGetSelectedEvents, payloadUnits = 0))
+    }
+
+    private fun xinputXiListProperties(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.XIListProperties, badValue = 0)
+        val deviceId = byteOrder.u16(body, 0)
+        if (xinputDeviceIds(deviceId) == null) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXInput.XIListProperties, badValue = deviceId)
+        }
+        write(reply(extra = XXInput.XIListProperties, payloadUnits = 0))
+    }
+
+    private fun xinputXiGetProperty(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 20) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.XIGetProperty, badValue = 0)
+        val deviceId = byteOrder.u16(body, 0)
+        if (xinputDeviceIds(deviceId) == null) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXInput.XIGetProperty, badValue = deviceId)
+        }
+        val delete = body[2].toInt() and 0xff
+        if (delete !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXInput.XIGetProperty, badValue = delete)
+        write(reply(extra = XXInput.XIGetProperty, payloadUnits = 0))
+    }
+
+    private fun xinputDeviceIds(deviceId: Int): List<Int>? =
+        when (deviceId) {
+            XXInput.XIAllDevices, XXInput.XIAllMasterDevices -> listOf(XXInput.MasterPointerId, XXInput.MasterKeyboardId)
+            XXInput.MasterPointerId -> listOf(XXInput.MasterPointerId)
+            XXInput.MasterKeyboardId -> listOf(XXInput.MasterKeyboardId)
+            else -> null
+        }
+
+    private fun xinputLegacyDevicePayload(): ByteArray {
+        val pointerName = "Virtual core pointer".encodeToByteArray()
+        val keyboardName = "Virtual core keyboard".encodeToByteArray()
+        val rawSize = 16 + 4 + 8 + 1 + pointerName.size + 1 + keyboardName.size
+        val payload = ByteArray(paddedLength(rawSize))
+        val pointerType = state.internAtom("MOUSE", onlyIfExists = false)
+        val keyboardType = state.internAtom("KEYBOARD", onlyIfExists = false)
+
+        byteOrder.put32(payload, 0, pointerType)
+        payload[4] = XXInput.MasterPointerId.toByte()
+        payload[5] = 1
+        payload[6] = XXInput.IsXPointer.toByte()
+        payload[7] = 0
+
+        byteOrder.put32(payload, 8, keyboardType)
+        payload[12] = XXInput.MasterKeyboardId.toByte()
+        payload[13] = 1
+        payload[14] = XXInput.IsXKeyboard.toByte()
+        payload[15] = 0
+
+        var offset = 16
+        payload[offset] = XXInput.ButtonClass.toByte()
+        payload[offset + 1] = 4
+        byteOrder.put16(payload, offset + 2, state.pointerMapping().size)
+        offset += 4
+
+        payload[offset] = XXInput.KeyClass.toByte()
+        payload[offset + 1] = 8
+        payload[offset + 2] = XKeyboard.MinKeycode.toByte()
+        payload[offset + 3] = XKeyboard.MaxKeycode.toByte()
+        byteOrder.put16(payload, offset + 4, XKeyboard.MaxKeycode - XKeyboard.MinKeycode + 1)
+        offset += 8
+
+        payload[offset++] = pointerName.size.toByte()
+        pointerName.copyInto(payload, offset)
+        offset += pointerName.size
+        payload[offset++] = keyboardName.size.toByte()
+        keyboardName.copyInto(payload, offset)
+
+        return payload
+    }
+
+    private fun xinputXi2DevicePayload(deviceIds: List<Int>): ByteArray {
+        val chunks = deviceIds.map { deviceId -> xinputXi2DeviceChunk(deviceId) }
+        val payload = ByteArray(chunks.sumOf { it.size })
+        var offset = 0
+        for (chunk in chunks) {
+            chunk.copyInto(payload, offset)
+            offset += chunk.size
+        }
+        return payload
+    }
+
+    private fun xinputXi2DeviceChunk(deviceId: Int): ByteArray {
+        val isPointer = deviceId == XXInput.MasterPointerId
+        val name = (if (isPointer) "Virtual core pointer" else "Virtual core keyboard").encodeToByteArray()
+        val nameBytes = paddedLength(name.size)
+        val deviceClass = if (isPointer) xinputXi2ButtonClass(deviceId) else xinputXi2KeyClass(deviceId)
+        val bytes = ByteArray(12 + nameBytes + deviceClass.size)
+        byteOrder.put16(bytes, 0, deviceId)
+        byteOrder.put16(bytes, 2, if (isPointer) XXInput.XIMasterPointer else XXInput.XIMasterKeyboard)
+        byteOrder.put16(bytes, 4, if (isPointer) XXInput.MasterKeyboardId else XXInput.MasterPointerId)
+        byteOrder.put16(bytes, 6, 1)
+        byteOrder.put16(bytes, 8, name.size)
+        bytes[10] = 1
+        name.copyInto(bytes, 12)
+        deviceClass.copyInto(bytes, 12 + nameBytes)
+        return bytes
+    }
+
+    private fun xinputXi2ButtonClass(sourceId: Int): ByteArray {
+        val buttons = state.pointerMapping().size
+        val maskBytes = paddedLength((buttons + 7) / 8)
+        val bytes = ByteArray(8 + maskBytes + buttons * 4)
+        byteOrder.put16(bytes, 0, XXInput.XIButtonClass)
+        byteOrder.put16(bytes, 2, bytes.size / 4)
+        byteOrder.put16(bytes, 4, sourceId)
+        byteOrder.put16(bytes, 6, buttons)
+        return bytes
+    }
+
+    private fun xinputXi2KeyClass(sourceId: Int): ByteArray {
+        val keycodes = XKeyboard.MinKeycode..XKeyboard.MaxKeycode
+        val bytes = ByteArray(8 + keycodes.count() * 4)
+        byteOrder.put16(bytes, 0, XXInput.XIKeyClass)
+        byteOrder.put16(bytes, 2, bytes.size / 4)
+        byteOrder.put16(bytes, 4, sourceId)
+        byteOrder.put16(bytes, 6, keycodes.count())
+        var offset = 8
+        for (keycode in keycodes) {
+            byteOrder.put32(bytes, offset, keycode)
+            offset += 4
+        }
+        return bytes
     }
 
     private fun doubleBuffer(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {

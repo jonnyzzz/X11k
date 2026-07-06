@@ -397,6 +397,12 @@ internal class X11State(
             firstError = XDoubleBuffer.FirstError,
             aliases = setOf("DBE"),
         ),
+        XExtension(
+            name = "XInputExtension",
+            majorOpcode = XXInput.MajorOpcode,
+            firstEvent = XXInput.FirstEvent,
+            firstError = XXInput.FirstError,
+        ),
     )
 
     init {

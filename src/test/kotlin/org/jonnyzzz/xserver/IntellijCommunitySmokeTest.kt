@@ -349,10 +349,10 @@ class IntellijCommunitySmokeTest {
                 text =
                     """
                     DISPLAY=host.docker.internal:231
-                    XDG_CURRENT_DESKTOP=GNOME
-                    XDG_SESSION_TYPE=x11
-                    DESKTOP_SESSION=gnome
-                    AWT_TOOLKIT=XToolkit
+                    XDG_CURRENT_DESKTOP=<unset>
+                    XDG_SESSION_TYPE=<unset>
+                    DESKTOP_SESSION=<unset>
+                    AWT_TOOLKIT=<unset>
                     _JAVA_AWT_WM_NONREPARENTING=1
                     IDEA_REMOTE_X11_WORKAROUND=false
                     IDEA_X11_DEBUG=true
@@ -379,15 +379,15 @@ class IntellijCommunitySmokeTest {
                 fileName = "intellij-kotlin-extensions-xdpyinfo.log",
                 text =
                     """
-                    number of extensions:    1
+                    number of extensions:    2
                         GLX
+                        XInputExtension
                     """.trimIndent(),
             ),
             IntellijLogArtifact(
                 fileName = "intellij-kotlin-run.log",
                 text =
                     """
-                    sun.awt.X11.XToolkit checkXInput WARNING: X Input extension isnt available
                     2026-07-06 INFO - #com.intellij.openapi.wm.impl.customFrameDecorations.header.CustomWindowHeaderUtil - native Linux title is not supported because _NET protocol is not supported
                     2026-07-06 INFO - #com.intellij.ide.ui.MainMenuDisplayMode - mainMenuDisplayMode=SEPARATE_TOOLBAR
                     """.trimIndent(),
@@ -419,15 +419,15 @@ class IntellijCommunitySmokeTest {
                 text =
                     """
                     agentLoaded=true
-                    runtimeMainMenuDisplayMode=Hide under Hamburger Button
-                    runtimeStateMainMenuDisplayMode=UNDER_HAMBURGER_BUTTON
-                    runtimeShadowStateMainMenuDisplayMode=UNDER_HAMBURGER_BUTTON
+                    runtimeMainMenuDisplayMode=Merge with Main Toolbar
+                    runtimeStateMainMenuDisplayMode=MERGED_WITH_MAIN_TOOLBAR
+                    runtimeShadowStateMainMenuDisplayMode=MERGED_WITH_MAIN_TOOLBAR
                     runtimeMainMenuDisplayModePrev=Hide under Hamburger Button
                     runtimeShowMainMenu=true
                     runtimeStateShowMainMenu=true
                     runtimeShadowStateShowMainMenu=true
                     runtimeShowMainToolbar=false
-                    runtimeStateModificationCount=0
+                    runtimeStateModificationCount=3
                     runtimeSettingsIdentity=303
                     runtimeStateIdentity=404
                     runtimeMenuButtonInToolbar=true
@@ -443,21 +443,21 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("xvfbDisplay=:99"), summary)
         assertTrue(summary.contains("kotlinDisplay=host.docker.internal:231"), summary)
         assertTrue(summary.contains("xvfbXdgCurrentDesktop=<unset>"), summary)
-        assertTrue(summary.contains("kotlinXdgCurrentDesktop=GNOME"), summary)
+        assertTrue(summary.contains("kotlinXdgCurrentDesktop=<unset>"), summary)
         assertTrue(summary.contains("xvfbMainMenuDisplayMode=SEPARATE_TOOLBAR"), summary)
         assertTrue(summary.contains("kotlinMainMenuDisplayMode=SEPARATE_TOOLBAR"), summary)
         assertTrue(summary.contains("xvfbListsXInputExtension=true"), summary)
-        assertTrue(summary.contains("kotlinListsXInputExtension=false"), summary)
+        assertTrue(summary.contains("kotlinListsXInputExtension=true"), summary)
         assertTrue(summary.contains("xvfbXInputWarning=false"), summary)
-        assertTrue(summary.contains("kotlinXInputWarning=true"), summary)
+        assertTrue(summary.contains("kotlinXInputWarning=false"), summary)
         assertTrue(summary.contains("xvfbRuntimeAgentLoaded=true"), summary)
         assertTrue(summary.contains("kotlinRuntimeAgentLoaded=true"), summary)
         assertTrue(summary.contains("xvfbRuntimeMainMenuDisplayMode=Merge with Main Toolbar"), summary)
-        assertTrue(summary.contains("kotlinRuntimeMainMenuDisplayMode=Hide under Hamburger Button"), summary)
+        assertTrue(summary.contains("kotlinRuntimeMainMenuDisplayMode=Merge with Main Toolbar"), summary)
         assertTrue(summary.contains("xvfbRuntimeStateMainMenuDisplayMode=MERGED_WITH_MAIN_TOOLBAR"), summary)
-        assertTrue(summary.contains("kotlinRuntimeStateMainMenuDisplayMode=UNDER_HAMBURGER_BUTTON"), summary)
+        assertTrue(summary.contains("kotlinRuntimeStateMainMenuDisplayMode=MERGED_WITH_MAIN_TOOLBAR"), summary)
         assertTrue(summary.contains("xvfbRuntimeStateModificationCount=3"), summary)
-        assertTrue(summary.contains("kotlinRuntimeStateModificationCount=0"), summary)
+        assertTrue(summary.contains("kotlinRuntimeStateModificationCount=3"), summary)
         assertTrue(summary.contains("xvfbRuntimeMenuButtonInToolbar=true"), summary)
         assertTrue(summary.contains("kotlinRuntimeMenuButtonInToolbar=true"), summary)
         assertTrue(summary.contains("CustomWindowHeaderUtil"), summary)

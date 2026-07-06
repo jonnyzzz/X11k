@@ -39,7 +39,7 @@ class VSCodeSmokeTest {
             - 0x200003 parent=0x26 label="code" geometry=0,0 1279x899 class=InputOutput depth=24 visual=0x28 backgroundPixel=-592396 backgroundPixmap=none borderPixel=0 borderPixmap=none bitGravity=1 winGravity=1 backingStore=0 backingPlanes=-1 backingPixel=0 saveUnder=false overrideRedirect=false colormap=0x27 cursor=0x20000d mapped=true focused=true stack=4
 
             Extension queries:
-            - #57 XInputExtension supported=false
+            - #57 XInputExtension supported=true
             - #56 XFIXES supported=true
             - #55 SYNC supported=true
             - #51 RENDER supported=true
@@ -67,8 +67,8 @@ class VSCodeSmokeTest {
 
         assertTrue(summary.contains("vscodeWindowEvidence=true"), summary)
         assertTrue(summary.contains("vscodeUnsupportedRequests=None"), summary)
-        assertTrue(summary.contains("vscodeUnsupportedExtensions=DRI3 XInputExtension"), summary)
-        assertTrue(summary.contains("vscodeSupportedExtensions=GLX RENDER SYNC XFIXES"), summary)
+        assertTrue(summary.contains("vscodeUnsupportedExtensions=DRI3"), summary)
+        assertTrue(summary.contains("vscodeSupportedExtensions=GLX RENDER SYNC XFIXES XInputExtension"), summary)
         assertTrue(summary.contains("vscodeGlxOperations=GetFBConfigs QueryServerString QueryVersion SetClientInfo2ARB"), summary)
         assertTrue(
             summary.contains("vscodeServerGlxExtensions=GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es2_profile GLX_EXT_create_context_es_profile"),
