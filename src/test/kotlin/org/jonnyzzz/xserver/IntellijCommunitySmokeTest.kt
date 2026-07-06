@@ -516,12 +516,18 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
-    fun `intellij parity reuses idea config between xvfb reference and kotlin run`() {
+    fun `intellij parity uses isolated idea config for xvfb reference and kotlin run`() {
         val source = Files.readString(projectRoot().resolve("src/test/kotlin/org/jonnyzzz/xserver/IntellijCommunitySmokeTest.kt"))
+        val parityBody = source
+            .substringAfter("    @Test\n    fun `intellij community robot and svg roughly match xvfb reference`()")
+            .substringBefore("\n    private fun projectRoot()")
 
-        assertTrue(source.contains("val sharedConfig = cleanIntellijConfigDir()"), source)
-        assertTrue(source.contains("runIntellijAgainstXvfb(referenceImage, url, sharedConfig)"), source)
-        assertTrue(source.contains("runIntellijAgainstKotlinServer(port, clientImage, url, sharedConfig)"), source)
+        assertTrue(parityBody.contains("""val referenceConfig = cleanIntellijConfigDir("xvfb")"""), parityBody)
+        assertTrue(parityBody.contains("""val kotlinConfig = cleanIntellijConfigDir("kotlin")"""), parityBody)
+        assertTrue(parityBody.contains("runIntellijAgainstXvfb(referenceImage, url, referenceConfig)"), parityBody)
+        assertTrue(parityBody.contains("runIntellijAgainstKotlinServer(port, clientImage, url, kotlinConfig)"), parityBody)
+        assertFalse(parityBody.contains("sharedConfig"), parityBody)
+        assertFalse(parityBody.contains("cleanIntellijConfigDir()"), parityBody)
         assertTrue(source.contains("""withFileSystemBind(configDir.toString(), "/tmp/idea-config", BindMode.READ_WRITE)"""), source)
     }
 
@@ -810,9 +816,10 @@ class IntellijCommunitySmokeTest {
         assumeTrue(imageExists(clientImage), "Build $clientImage first with scripts/run-supervised.sh gradle dockerBuildX11Client")
         assumeTrue(imageExists(referenceImage), "Build $referenceImage first with scripts/run-supervised.sh gradle dockerBuildX11Images")
 
-        val sharedConfig = cleanIntellijConfigDir()
-        val reference = runIntellijAgainstXvfb(referenceImage, url, sharedConfig)
-        val actual = runIntellijAgainstKotlinServer(port, clientImage, url, sharedConfig)
+        val referenceConfig = cleanIntellijConfigDir("xvfb")
+        val kotlinConfig = cleanIntellijConfigDir("kotlin")
+        val reference = runIntellijAgainstXvfb(referenceImage, url, referenceConfig)
+        val actual = runIntellijAgainstKotlinServer(port, clientImage, url, kotlinConfig)
 
         val composedSvg = composeSvgLayers(actual.svgLayers, IntellijCaptureWidth, IntellijCaptureHeight)
         val composedSvgCapture = visualCapture(composedSvg)
@@ -884,9 +891,10 @@ class IntellijCommunitySmokeTest {
         return cache
     }
 
-    private fun cleanIntellijConfigDir(): Path {
+    private fun cleanIntellijConfigDir(name: String): Path {
+        require(name.matches(Regex("[a-z0-9-]+"))) { "Unsafe IntelliJ config directory name: $name" }
         val root = projectRoot()
-        val config = root.resolve("build/tmp/intellij-community-smoke/idea-config").normalize()
+        val config = root.resolve("build/tmp/intellij-community-smoke/idea-config-$name").normalize()
         val buildTmp = root.resolve("build/tmp").normalize()
         check(config.startsWith(buildTmp)) { "Refusing to use IntelliJ config outside build/tmp/: $config" }
         config.toFile().deleteRecursively()
