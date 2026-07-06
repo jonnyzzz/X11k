@@ -112,10 +112,28 @@ class XRenderProtocolTest {
                 socket.soTimeout = 5_000
                 setup(socket)
                 val out = socket.getOutputStream()
+                val inputOnlyWindow = WindowId + 1
                 out.write(createWindowRequest(WindowId, x = 10, y = 10, width = 220, height = 260, borderWidth = 0))
+                out.write(createInputOnlyWindowRequest(inputOnlyWindow, x = 10, y = 20, width = 1, height = 1))
                 out.write(mapWindowRequest(WindowId))
+                out.write(mapWindowRequest(inputOnlyWindow))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 8, height = 8))
                 out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
                 out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(
+                    renderFillRectangles(
+                        picture = MaskPictureId,
+                        x = 0,
+                        y = 0,
+                        width = 8,
+                        height = 8,
+                        red = 0x0000,
+                        green = 0x0000,
+                        blue = 0x0000,
+                        alpha = 0xffff,
+                    ),
+                )
                 out.write(
                     renderComposite(
                         source = SolidPictureId,
@@ -163,6 +181,7 @@ class XRenderProtocolTest {
                 val right = renderBandSection(text, "right")
                 val bottom = renderBandSection(text, "bottom")
                 assertContains(top, "Composite minor=8 root=20,20 8x8 local=10,10 8x8")
+                assertFalse(top.contains("FillRectangles minor=26 root=10,20 8x8 local=0,0 8x8"), top)
                 assertFalse(top.contains("Composite minor=8 root=160,150 8x8 local=150,140 8x8"), top)
                 assertFalse(top.contains("Composite minor=8 root=20,210 8x8 local=10,200 8x8"), top)
                 assertContains(right, "Composite minor=8 root=160,150 8x8 local=150,140 8x8")
@@ -14434,14 +14453,20 @@ class XRenderProtocolTest {
         return request(1, 24, body)
     }
 
-    private fun createInputOnlyWindowRequest(id: Int): ByteArray {
+    private fun createInputOnlyWindowRequest(
+        id: Int,
+        x: Int = 10,
+        y: Int = 20,
+        width: Int = 100,
+        height: Int = 80,
+    ): ByteArray {
         val body = ByteArray(28)
         put32le(body, 0, id)
         put32le(body, 4, X11Ids.RootWindow)
-        put16le(body, 8, 10)
-        put16le(body, 10, 20)
-        put16le(body, 12, 100)
-        put16le(body, 14, 80)
+        put16le(body, 8, x)
+        put16le(body, 10, y)
+        put16le(body, 12, width)
+        put16le(body, 14, height)
         put16le(body, 18, 2)
         put32le(body, 20, X11Ids.RootVisual)
         return request(1, 0, body)

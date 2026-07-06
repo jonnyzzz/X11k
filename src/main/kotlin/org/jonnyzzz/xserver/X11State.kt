@@ -3857,7 +3857,13 @@ internal class X11State(
         }
         fun sizeMatchingWindowIds(width: Int, height: Int): List<Int> =
             windowSnapshots
-                .filter { it.id != X11Ids.RootWindow && it.mapped && it.backingPixmapMatchWidth <= width && it.backingPixmapMatchHeight <= height }
+                .filter {
+                    it.id != X11Ids.RootWindow &&
+                        it.mapped &&
+                        it.windowClass == XWindowClass.InputOutput &&
+                        it.backingPixmapMatchWidth <= width &&
+                        it.backingPixmapMatchHeight <= height
+                }
                 .map { it.id }
         data class DrawableIdentity(val id: Int, val generation: Long)
         fun drawableIdentity(id: Int): DrawableIdentity? =
