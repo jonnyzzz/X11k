@@ -345,7 +345,7 @@ diagnose_gradle() {
 
 dump_failure_artifacts() {
   local reason="$1"
-  local safe_reason diag_file
+  local safe_reason diag_file native_scan_file native_scan_status
   safe_reason="$(printf '%s' "$reason" | tr -cd '[:alnum:]_-')"
   diag_file="$THIS_RUN_DIR/diagnostics-${safe_reason}-$(date -u +%Y%m%d-%H%M%S).txt"
   {
@@ -367,10 +367,18 @@ dump_failure_artifacts() {
     done
     echo
     echo "== native crash anchors =="
-    {
-      grep -R -n -E 'SIG[A-Z]+|Problematic frame|java_error|hs_err|XextFindDisplay|fatal error has been detected' \
-        "$ROOT/build/test-results/test" "$ROOT/build/tmp" "$STDOUT_FILE" "$STDERR_FILE" 2>/dev/null || true
-    } | head -240
+    native_scan_file="$THIS_RUN_DIR/native-crash-scan.txt"
+    native_scan_status=0
+    run_bounded "$DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" grep -R -n -E \
+      'SIG[A-Z]+|Problematic frame|java_error|hs_err|XextFindDisplay|fatal error has been detected' \
+      "$ROOT/build/test-results/test" "$ROOT/build/tmp" "$STDOUT_FILE" "$STDERR_FILE" \
+      >"$native_scan_file" 2>/dev/null || native_scan_status=$?
+    if [[ "$native_scan_status" -eq 124 ]]; then
+      echo "native crash scan timed out after ${DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS}s"
+    elif [[ "$native_scan_status" -ne 0 && "$native_scan_status" -ne 1 ]]; then
+      echo "native crash scan exited with status $native_scan_status"
+    fi
+    head -240 "$native_scan_file" 2>/dev/null || true
     echo
     echo "== intellij smoke artifacts =="
     if [[ -d "$ROOT/build/tmp/intellij-community-smoke" ]]; then

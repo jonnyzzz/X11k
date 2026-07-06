@@ -288,7 +288,7 @@ dump_diagnostics() {
 
 dump_failure_artifacts() {
   local reason="$1"
-  local safe_reason diag_file
+  local safe_reason diag_file crash_scan_file crash_scan_status
   safe_reason="$(printf '%s' "$reason" | tr -cd '[:alnum:]_-')"
   diag_file="$THIS_RUN_DIR/diagnostics-${safe_reason}-$(date -u +%Y%m%d-%H%M%S).txt"
   {
@@ -302,10 +302,18 @@ dump_failure_artifacts() {
     cat "$RUN_INFO_FILE" 2>/dev/null || true
     echo
     echo "== crash anchors =="
-    {
-      grep -R -n -E 'SIG[A-Z]+|Problematic frame|java_error|hs_err|XextFindDisplay|fatal error has been detected|AssertionFailedError' \
-        "$ROOT/build/test-results/test" "$ROOT/build/tmp" "$STDOUT_FILE" "$STDERR_FILE" 2>/dev/null || true
-    } | head -240
+    crash_scan_file="$THIS_RUN_DIR/crash-scan.txt"
+    crash_scan_status=0
+    run_bounded "$DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" grep -R -n -E \
+      'SIG[A-Z]+|Problematic frame|java_error|hs_err|XextFindDisplay|fatal error has been detected|AssertionFailedError' \
+      "$ROOT/build/test-results/test" "$ROOT/build/tmp" "$STDOUT_FILE" "$STDERR_FILE" \
+      >"$crash_scan_file" 2>/dev/null || crash_scan_status=$?
+    if [[ "$crash_scan_status" -eq 124 ]]; then
+      echo "crash scan timed out after ${DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS}s"
+    elif [[ "$crash_scan_status" -ne 0 && "$crash_scan_status" -ne 1 ]]; then
+      echo "crash scan exited with status $crash_scan_status"
+    fi
+    head -240 "$crash_scan_file" 2>/dev/null || true
     echo
     echo "== stdout tail =="
     tail -160 "$STDOUT_FILE" 2>/dev/null || true

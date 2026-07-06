@@ -211,7 +211,7 @@ internal class X11State(
     private var nextRetainedClientId = 1
     private var nextDrawableGeneration = 1L
     private var nextAtomId = 69
-    private var focusWindowId: Int = X11Ids.RootWindow
+    private var focusWindowId: Int = XInputFocus.PointerRoot
     private var focusRevertTo: Int = 0
     private var lastInputFocusChangeTime: Int = 0
     private var pointerX: Int = 0
@@ -10942,6 +10942,11 @@ internal object XKeyboardAutoRepeatMode {
     const val Off = 0
     const val On = 1
     const val Default = 2
+}
+
+internal object XInputFocus {
+    const val None = 0
+    const val PointerRoot = 1
 }
 
 internal data class XAccessHost(

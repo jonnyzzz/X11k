@@ -6334,7 +6334,7 @@ class XCoreDrawingProtocolTest {
 
                 val focus = readReply(socket.getInputStream())
                 assertEquals(7, u16le(focus, 2))
-                assertEquals(X11Ids.RootWindow, u32le(focus, 8))
+                assertEquals(1, u32le(focus, 8))
             }
             server.close()
             serverThread.join(1_000)
@@ -16288,6 +16288,28 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `GetInputFocus initially reports PointerRoot like Xvfb`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(getInputFocusRequest())
+                out.flush()
+
+                val focus = readReply(socket.getInputStream())
+                assertEquals(1, focus[0].toInt())
+                assertEquals(0, focus[1].toInt() and 0xff)
+                assertEquals(1, u16le(focus, 2))
+                assertEquals(1, u32le(focus, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SetInputFocus emits FocusIn and FocusOut to FocusChange selections`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -16652,7 +16674,7 @@ class XCoreDrawingProtocolTest {
                 val focus = readReply(socket.getInputStream())
                 assertEquals(1, focus[0].toInt())
                 assertEquals(0, focus[1].toInt() and 0xff)
-                assertEquals(X11Ids.RootWindow, u32le(focus, 8))
+                assertEquals(1, u32le(focus, 8))
             }
             server.close()
             serverThread.join(1_000)
@@ -16682,7 +16704,7 @@ class XCoreDrawingProtocolTest {
                 assertEquals(42, error[10].toInt() and 0xff)
 
                 val focus = readReply(socket.getInputStream())
-                assertEquals(X11Ids.RootWindow, u32le(focus, 8))
+                assertEquals(1, u32le(focus, 8))
             }
             server.close()
             serverThread.join(1_000)
@@ -16744,7 +16766,7 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 16, opcode = 42, badValue = 0, sequence = 1)
                 val focus = readReply(socket.getInputStream())
                 assertEquals(2, u16le(focus, 2))
-                assertEquals(X11Ids.RootWindow, u32le(focus, 8))
+                assertEquals(1, u32le(focus, 8))
             }
             server.close()
             serverThread.join(1_000)
@@ -16774,7 +16796,7 @@ class XCoreDrawingProtocolTest {
                 val focus = readReply(socket.getInputStream())
                 assertEquals(4, u16le(focus, 2))
                 assertEquals(0, focus[1].toInt() and 0xff)
-                assertEquals(X11Ids.RootWindow, u32le(focus, 8))
+                assertEquals(1, u32le(focus, 8))
 
                 val keymap = readReply(socket.getInputStream())
                 assertEquals(5, u16le(keymap, 2))
