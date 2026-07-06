@@ -37,6 +37,13 @@ internal data class XRenderImageResult(
     val painted: Boolean,
 )
 
+internal data class XRenderFillExecution(
+    val painted: Boolean = false,
+    val provenance: XRenderOperationProvenance? = null,
+    val destinationDrawableId: Int? = null,
+    val destinationDrawableGeneration: Long? = null,
+)
+
 internal data class XRenderCompositeExecution(
     val result: XRenderImageResult? = null,
     val provenance: XRenderOperationProvenance? = null,
@@ -3904,6 +3911,7 @@ internal class X11State(
                     .map { it.id },
                 matchingWindowIds = matchingWindows.ids,
                 provenanceMatchingWindowIds = matchingWindows.provenanceIds,
+                renderOperations = pixmap.renderPaints.toList(),
             )
         }
         val retainedPictureSurfaceSnapshots = pictures.values.mapNotNull { picture ->
@@ -3923,6 +3931,7 @@ internal class X11State(
                 matchingWindowIds = matchingWindows.ids,
                 provenanceMatchingWindowIds = matchingWindows.provenanceIds,
                 retainedPictureId = picture.id,
+                renderOperations = picture.retainedRenderPaints.toList(),
             )
         }
         val pixmapSnapshots = livePixmapSnapshots + retainedPictureSurfaceSnapshots
@@ -4996,8 +5005,83 @@ internal class X11State(
         val index = renderOperations.indexOfFirst { it.id == id }
         if (index >= 0) {
             renderOperations[index] = renderOperations[index].copy(provenance = provenance)
+            rememberRenderPaint(provenance.destination, renderOperations[index])
         }
     }
+
+    private fun rememberRenderPaint(destination: XRenderPictureSnapshot?, operation: XRenderOperation) {
+        val drawableId = destination?.drawableId ?: return
+        val destinationPicture = pictures[destination.id]
+        val destinationFramebuffer = destinationPicture?.drawableFramebuffer()
+        if (destinationFramebuffer != null) {
+            pictures.values
+                .filter { it.retainedDrawableFramebuffer === destinationFramebuffer }
+                .forEach { it.retainedRenderPaints.rememberRenderPaint(operation) }
+        }
+
+        val pixmap = pixmaps[drawableId] ?: return
+        if (destinationFramebuffer == null || pixmap.framebuffer === destinationFramebuffer) {
+            pixmap.rememberRenderPaint(operation)
+        }
+    }
+
+    private fun XPixmap.rememberRenderPaint(operation: XRenderOperation) {
+        renderPaints.rememberRenderPaint(operation)
+    }
+
+    private fun MutableList<XRenderDrawablePaintSnapshot>.rememberRenderPaint(operation: XRenderOperation) {
+        this += renderDrawablePaintSnapshot(operation)
+        if (size > MaxPixmapRenderOperations) {
+            removeAt(0)
+        }
+    }
+
+    private fun renderDrawablePopulationSnapshot(picture: XPicture): XRenderDrawablePopulationSnapshot? {
+        val drawableId = picture.drawableId ?: return null
+        val livePixmap = pixmaps[drawableId]
+        val retainedFramebuffer = picture.retainedDrawableFramebuffer
+        if (retainedFramebuffer != null && livePixmap?.framebuffer !== retainedFramebuffer) {
+            return renderDrawablePopulationSnapshot(
+                drawableId = drawableId,
+                generation = picture.retainedDrawableGeneration ?: 0L,
+                paints = picture.retainedRenderPaints,
+            )
+        }
+        return livePixmap
+            ?.let { renderDrawablePopulationSnapshot(it.id, it.generation, it.renderPaints) }
+            ?: retainedFramebuffer?.let {
+                renderDrawablePopulationSnapshot(
+                    drawableId = drawableId,
+                    generation = picture.retainedDrawableGeneration ?: 0L,
+                    paints = picture.retainedRenderPaints,
+                )
+            }
+    }
+
+    private fun renderDrawablePopulationSnapshot(
+        drawableId: Int,
+        generation: Long,
+        paints: List<XRenderDrawablePaintSnapshot>,
+    ): XRenderDrawablePopulationSnapshot? {
+        if (paints.isEmpty()) return null
+        return XRenderDrawablePopulationSnapshot(
+            drawableId = drawableId,
+            generation = generation,
+            paintCount = paints.size,
+            firstPaint = paints.first(),
+            lastPaint = paints.last(),
+        )
+    }
+
+    private fun renderDrawablePaintSnapshot(operation: XRenderOperation): XRenderDrawablePaintSnapshot =
+        XRenderDrawablePaintSnapshot(
+            id = operation.id,
+            minorOpcode = operation.minorOpcode,
+            operation = operation.operation,
+            detail = operation.detail,
+            destinationRegion = operation.provenance?.destinationRegion,
+            result = operation.provenance?.result,
+        )
 
     @Synchronized
     fun pictureSnapshot(picture: XPicture): XRenderPictureSnapshot =
@@ -6204,6 +6288,7 @@ internal class X11State(
                 mask = mask?.let(::renderPictureSnapshot),
                 destination = renderPictureSnapshot(destination),
                 destinationRegion = XRectangleCommand(destinationX, destinationY, width, height),
+                sourcePopulation = renderDrawablePopulationSnapshot(source),
                 result = renderResultSnapshot(result.image),
             ),
             destinationDrawableId = destinationDrawableId,
@@ -8089,11 +8174,12 @@ internal class X11State(
         destination: XPicture,
         pixel: Int,
         rectangles: List<XRectangleCommand>,
-    ): Boolean {
-        val framebuffer = destination.drawableFramebuffer() ?: return false
+    ): XRenderFillExecution {
+        val framebuffer = destination.drawableFramebuffer() ?: return XRenderFillExecution()
+        val destinationDrawableId = destination.drawableId ?: return XRenderFillExecution()
         val destinationClipMask = destination.clipMaskPredicate()
         val destinationPixel = renderPixelForPictureFormat(pixel, destination.format)
-        return framebuffer.changedBy {
+        val painted = framebuffer.changedBy {
             var painted = false
             for (rectangle in rectangles) {
                 painted = when (operation) {
@@ -8518,6 +8604,29 @@ internal class X11State(
             }
             painted
         }
+        if (!painted) return XRenderFillExecution(destinationDrawableId = destinationDrawableId)
+        val bounds = rectangles.paintBounds(framebuffer.width, framebuffer.height)
+        return XRenderFillExecution(
+            painted = true,
+            provenance = XRenderOperationProvenance(
+                destination = renderPictureSnapshot(destination),
+                destinationRegion = bounds,
+                result = bounds?.let { renderResultSnapshot(framebuffer.snapshotRegion(it.x, it.y, it.width, it.height)) },
+            ),
+            destinationDrawableId = destinationDrawableId,
+            destinationDrawableGeneration = destination.retainedOrLiveDrawableGeneration(),
+        )
+    }
+
+    private fun List<XRectangleCommand>.paintBounds(framebufferWidth: Int, framebufferHeight: Int): XRectangleCommand? {
+        val nonEmpty = filter { it.width > 0 && it.height > 0 }
+        if (nonEmpty.isEmpty()) return null
+        val minX = nonEmpty.minOf { it.x }.coerceAtLeast(0)
+        val minY = nonEmpty.minOf { it.y }.coerceAtLeast(0)
+        val maxX = nonEmpty.maxOf { it.x + it.width }.coerceAtMost(framebufferWidth)
+        val maxY = nonEmpty.maxOf { it.y + it.height }.coerceAtMost(framebufferHeight)
+        if (minX >= maxX || minY >= maxY) return null
+        return XRectangleCommand(minX, minY, maxX - minX, maxY - minY)
     }
 
     @Synchronized
@@ -9600,6 +9709,7 @@ internal class X11State(
         private const val MaxInputOperations = 200
         private const val MaxGlxOperations = 200
         private const val MaxRenderOperations = 10_000
+        private const val MaxPixmapRenderOperations = 32
         private const val MaxGetImagePixels = 16_777_216
         private const val MaxGlyphMaskPixels = 16_777_216
         private const val MaxCursorImagePixels = 16_777_216
@@ -10926,6 +11036,7 @@ internal data class XPixmap(
     val depth: Int,
     val rootId: Int = X11Ids.RootWindow,
     val framebuffer: XFramebuffer = XFramebuffer(width, height, preserveBackgroundAlpha = depth in setOf(1, 8)),
+    val renderPaints: MutableList<XRenderDrawablePaintSnapshot> = mutableListOf(),
 )
 
 private sealed interface XResolvedWindowBackground {
@@ -11088,6 +11199,7 @@ internal data class XPicture(
     var retainedDrawableFramebuffer: XFramebuffer? = null,
     var retainedDrawableDepth: Int? = null,
     var retainedDrawableGeneration: Long? = null,
+    val retainedRenderPaints: MutableList<XRenderDrawablePaintSnapshot> = mutableListOf(),
 ) {
     var alphaMapPicture: XPicture? = null
 }
@@ -11910,8 +12022,28 @@ internal data class XRenderOperationProvenance(
     val mask: XRenderPictureSnapshot? = null,
     val destination: XRenderPictureSnapshot? = null,
     val destinationRegion: XRectangleCommand? = null,
+    val sourcePopulation: XRenderDrawablePopulationSnapshot? = null,
     val freed: XRenderPictureSnapshot? = null,
     val result: XRenderOperationResultSnapshot? = null,
+)
+
+internal data class XRenderDrawablePopulationSnapshot(
+    val drawableId: Int,
+    val generation: Long,
+    val paintCount: Int,
+    val firstPaint: XRenderDrawablePaintSnapshot,
+    val lastPaint: XRenderDrawablePaintSnapshot,
+) {
+    val drawableIdHex: String get() = "0x${drawableId.toUInt().toString(16)}"
+}
+
+internal data class XRenderDrawablePaintSnapshot(
+    val id: Int,
+    val minorOpcode: Int,
+    val operation: String,
+    val detail: String,
+    val destinationRegion: XRectangleCommand?,
+    val result: XRenderOperationResultSnapshot?,
 )
 
 internal data class XRenderOperationResultSnapshot(
@@ -12013,6 +12145,7 @@ internal data class XPixmapSnapshot(
     val matchingWindowIds: List<Int>,
     val provenanceMatchingWindowIds: List<Int> = emptyList(),
     val retainedPictureId: Int? = null,
+    val renderOperations: List<XRenderDrawablePaintSnapshot> = emptyList(),
 ) {
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val pictureIdHexes: List<String> get() = pictureIds.map { "0x${it.toUInt().toString(16)}" }

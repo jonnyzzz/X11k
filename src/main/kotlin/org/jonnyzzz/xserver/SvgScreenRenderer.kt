@@ -133,6 +133,12 @@ internal object SvgScreenRenderer {
                 }
                 append("""],"retainedPicture":""")
                 pixmap.retainedPictureIdHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append(""","renderOperations":[""")
+                pixmap.renderOperations.forEachIndexed { operationIndex, operation ->
+                    if (operationIndex > 0) append(',')
+                    appendRenderDrawablePaint(operation)
+                }
+                append(']')
                 append('}')
             }
             append("""],"cursors":[""")
@@ -240,12 +246,7 @@ internal object SvgScreenRenderer {
             append("""],"renderOperations":${snapshot.renderOperations.size},"renderOperationDetails":[""")
             snapshot.renderOperations.forEachIndexed { index, operation ->
                 if (index > 0) append(',')
-                append("""{"id":${operation.id},"minorOpcode":${operation.minorOpcode},"operation":"${escapeJson(operation.operation)}","detail":"${escapeJson(operation.detail)}"""")
-                operation.provenance?.let { provenance ->
-                    append(""","provenance":""")
-                    appendRenderOperationProvenance(provenance)
-                }
-                append('}')
+                appendRenderOperation(operation)
             }
             append("""],"propertyOperations":[""")
             snapshot.propertyOperations.forEachIndexed { index, operation ->
@@ -1904,11 +1905,43 @@ internal object SvgScreenRenderer {
                 append("""{"x":${rectangle.x},"y":${rectangle.y},"width":${rectangle.width},"height":${rectangle.height}}""")
             }
         }
+        provenance.sourcePopulation?.let { population ->
+            field("sourcePopulation") { appendRenderDrawablePopulation(population) }
+        }
         provenance.freed?.let { picture ->
             field("freed") { appendRenderPictureSnapshot(picture) }
         }
         provenance.result?.let { result ->
             field("result") { appendRenderOperationResult(result) }
+        }
+        append('}')
+    }
+
+    private fun StringBuilder.appendRenderOperation(operation: XRenderOperation) {
+        append("""{"id":${operation.id},"minorOpcode":${operation.minorOpcode},"operation":"${escapeJson(operation.operation)}","detail":"${escapeJson(operation.detail)}"""")
+        operation.provenance?.let { provenance ->
+            append(""","provenance":""")
+            appendRenderOperationProvenance(provenance)
+        }
+        append('}')
+    }
+
+    private fun StringBuilder.appendRenderDrawablePopulation(population: XRenderDrawablePopulationSnapshot) {
+        append("""{"drawable":"${population.drawableIdHex}","generation":${population.generation},"paintCount":${population.paintCount},"firstPaint":""")
+        appendRenderDrawablePaint(population.firstPaint)
+        append(""","lastPaint":""")
+        appendRenderDrawablePaint(population.lastPaint)
+        append('}')
+    }
+
+    private fun StringBuilder.appendRenderDrawablePaint(paint: XRenderDrawablePaintSnapshot) {
+        append("""{"id":${paint.id},"minorOpcode":${paint.minorOpcode},"operation":"${escapeJson(paint.operation)}","detail":"${escapeJson(paint.detail)}"""")
+        paint.destinationRegion?.let { rectangle ->
+            append(""","destinationRegion":{"x":${rectangle.x},"y":${rectangle.y},"width":${rectangle.width},"height":${rectangle.height}}""")
+        }
+        paint.result?.let { result ->
+            append(""","result":""")
+            appendRenderOperationResult(result)
         }
         append('}')
     }

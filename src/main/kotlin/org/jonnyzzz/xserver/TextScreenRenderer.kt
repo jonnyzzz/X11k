@@ -118,6 +118,23 @@ internal object TextScreenRenderer {
                         append(" candidate-for=")
                         append(pixmap.matchingWindowIdHexes.joinToString(","))
                     }
+                    if (pixmap.renderOperations.isNotEmpty()) {
+                        val lastRender = pixmap.renderOperations.last()
+                        append(" renderOps=")
+                        append(pixmap.renderOperations.size)
+                        append(" lastRender=#")
+                        append(lastRender.id)
+                        append('/')
+                        append(lastRender.operation)
+                        lastRender.result?.let { result ->
+                            append(" result=")
+                            append(result.width)
+                            append('x')
+                            append(result.height)
+                            append(" crc32=")
+                            append(result.crc32Hex)
+                        }
+                    }
                     appendLine()
                 }
             }
@@ -679,6 +696,30 @@ internal object TextScreenRenderer {
         provenance.source?.let { appendPicture("source", it) }
         provenance.mask?.let { appendPicture("mask", it) }
         provenance.destination?.let { appendPicture("destination", it) }
+        provenance.sourcePopulation?.let { population ->
+            append(" sourcePopulation=")
+            append(population.drawableIdHex)
+            append("#")
+            append(population.generation)
+            append(" paints=")
+            append(population.paintCount)
+            append(" first=#")
+            append(population.firstPaint.id)
+            append('/')
+            append(population.firstPaint.operation)
+            append(" last=#")
+            append(population.lastPaint.id)
+            append('/')
+            append(population.lastPaint.operation)
+            population.lastPaint.result?.let { result ->
+                append(" lastResult=")
+                append(result.width)
+                append('x')
+                append(result.height)
+                append(" crc32=")
+                append(result.crc32Hex)
+            }
+        }
         provenance.freed?.let { appendPicture("freed", it) }
         provenance.result?.let { result ->
             append(" result=")

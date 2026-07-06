@@ -491,7 +491,7 @@ internal class X11Connection(
             21 -> renderAddGlyphsFromPicture(body)
             22 -> renderFreeGlyphs(body)
             23, 24, 25 -> renderCompositeGlyphs(minorOpcode, body)
-            26 -> renderFillRectangles(body)
+            26 -> renderFillRectangles(body, operationId)
             27 -> renderCreateCursor(body)
             28 -> renderSetPictureTransform(body)
             29 -> renderQueryFilters(body)
@@ -3761,6 +3761,7 @@ internal class X11Connection(
                 retainedDrawableFramebuffer = drawablePixmap?.framebuffer,
                 retainedDrawableDepth = drawablePixmap?.depth,
                 retainedDrawableGeneration = drawablePixmap?.generation,
+                retainedRenderPaints = drawablePixmap?.renderPaints?.toMutableList() ?: mutableListOf(),
             ).also { picture ->
                 picture.alphaMapPicture = attributes.alphaMap
                     ?.takeIf { it != 0 }
@@ -4614,7 +4615,7 @@ internal class X11Connection(
         return XCompositeGlyphParseResult(result)
     }
 
-    private fun renderFillRectangles(body: ByteArray) {
+    private fun renderFillRectangles(body: ByteArray, operationId: Int) {
         if (body.size < 16 || (body.size - 16) % 8 != 0) {
             return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 26, badValue = 0)
         }
@@ -4634,12 +4635,13 @@ internal class X11Connection(
         )
         val rectangles = rectangles(body, 16)
         val targetPixel = if (operation == XRender.OpClear) 0 else pixel
-        val painted = state.renderFillRectangles(operation, destination, targetPixel, rectangles)
-        if (painted) {
+        val execution = state.renderFillRectangles(operation, destination, targetPixel, rectangles)
+        if (execution.painted) {
+            execution.provenance?.let { state.annotateRenderOperation(operationId, it) }
             state.draw(
                 XDrawingCommand(
                     drawableId = destinationDrawableId,
-                    drawableGeneration = destination.retainedOrLiveDrawableGeneration(),
+                    drawableGeneration = execution.destinationDrawableGeneration,
                     kind = XDrawingKind.FillRectangle,
                     foreground = targetPixel,
                     rectangles = rectangles,

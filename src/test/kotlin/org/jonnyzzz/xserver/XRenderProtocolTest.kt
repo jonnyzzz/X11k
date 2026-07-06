@@ -3132,8 +3132,24 @@ class XRenderProtocolTest {
                 out.write(createPixmapRequest(PixmapId, depth = 32, width = 2, height = 1))
                 out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
                 out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 2, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.flush()
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""renderOperations":[{""")
+                }
+                val oldPixmapJson = httpGet(server.localPort, "/state.json")
+                    .substringAfter(""""id":"0x${PixmapId.toUInt().toString(16)}"""")
+                    .substringBefore(""""cursors":[""")
+                val oldFillId = Regex(""""renderOperations":\[\{"id":(\d+),"minorOpcode":26,"operation":"FillRectangles"""")
+                    .find(oldPixmapJson)
+                    ?.groupValues
+                    ?.get(1)
+                    ?: error("Missing retained source fill operation in $oldPixmapJson")
+
+                val reusedPictureId = PixmapPictureId + 0x40
                 out.write(freePixmapRequest(PixmapId))
                 out.write(createPixmapRequest(PixmapId, depth = 32, width = 2, height = 1))
+                out.write(renderCreatePicture(reusedPictureId, PixmapId, XRender.Argb32Format))
+                out.write(renderFillRectangles(reusedPictureId, x = 0, y = 0, width = 2, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
                 out.write(renderComposite(PixmapPictureId, PictureId, width = 2, height = 1, operation = XRender.OpSrc, destinationX = 0, destinationY = 0))
                 out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
                 out.flush()
@@ -3141,6 +3157,15 @@ class XRenderProtocolTest {
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 2, x = 0, y = 0))
                 assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 2, x = 1, y = 0))
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""sourcePopulation":{"drawable":"0x${PixmapId.toUInt().toString(16)}"""")
+                }
+                val compositeJson = httpGet(server.localPort, "/state.json")
+                assertContains(compositeJson, """"sourcePopulation":{"drawable":"0x${PixmapId.toUInt().toString(16)}","generation":""")
+                assertContains(compositeJson, """"paintCount":1""")
+                assertContains(compositeJson, """"firstPaint":{"id":$oldFillId,"minorOpcode":26,"operation":"FillRectangles"""")
+                assertContains(compositeJson, """"lastPaint":{"id":$oldFillId,"minorOpcode":26,"operation":"FillRectangles"""")
             }
             server.close()
             serverThread.join(1_000)
@@ -11346,6 +11371,83 @@ class XRenderProtocolTest {
                 val text = httpGet(server.localPort, "/text.txt")
                 assertContains(text, "CreateConicalGradient")
                 assertContains(text, "conicalGradient=0x18000,0x18000 angle=0x5a0000")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER composite source pixmap population survives render operation overflow`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 4, height = 2))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 4, height = 2, red = 0x1234, green = 0x5678, blue = 0x9abc, alpha = 0xffff))
+                repeat(10_005) {
+                    out.write(renderSetPictureClipRectangles(PictureId, rectangles = emptyList()))
+                }
+                out.flush()
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""renderOperations":10000""")
+                }
+                val json = httpGet(server.localPort, "/state.json")
+                val renderOperationDetails = json.substringAfter(""""renderOperationDetails":[""").substringBefore(""""propertyOperations":[""")
+                assertFalse(renderOperationDetails.contains(""""operation":"FillRectangles""""), renderOperationDetails)
+                val pixmapJson = json.substringAfter(""""id":"0x${PixmapId.toUInt().toString(16)}"""").substringBefore(""""cursors":[""")
+                assertContains(pixmapJson, """"renderOperations":[{""")
+                assertContains(pixmapJson, """"operation":"FillRectangles"""")
+                assertContains(pixmapJson, """"destinationRegion":{"x":0,"y":0,"width":4,"height":2}""")
+                assertContains(pixmapJson, """"result":{"width":4,"height":2,"crc32":""")
+
+                out.write(renderComposite(PixmapPictureId, PictureId, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 4, height = 2))
+                out.flush()
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""sourcePopulation":{"drawable":"0x${PixmapId.toUInt().toString(16)}"""")
+                }
+                val compositeJson = httpGet(server.localPort, "/state.json")
+                assertContains(compositeJson, """"sourcePopulation":{"drawable":"0x${PixmapId.toUInt().toString(16)}","generation":""")
+                assertContains(compositeJson, """"paintCount":1""")
+                assertContains(compositeJson, """"firstPaint":{"id":""")
+                assertContains(compositeJson, """"operation":"FillRectangles"""")
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "0x${PixmapId.toUInt().toString(16)} geometry=4x2 depth=32 painted=true")
+                assertContains(text, "renderOps=1 lastRender=#")
+                assertContains(text, "sourcePopulation=0x${PixmapId.toUInt().toString(16)}#")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER FillRectangles diagnostic result is clamped to drawable bounds`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 4, height = 2))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = -10, y = -20, width = 32, height = 24, red = 0x1234, green = 0x5678, blue = 0x9abc, alpha = 0xffff))
+                out.flush()
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""renderOperations":[{""")
+                }
+                val json = httpGet(server.localPort, "/state.json")
+                val pixmapJson = json.substringAfter(""""id":"0x${PixmapId.toUInt().toString(16)}"""").substringBefore(""""cursors":[""")
+                assertContains(pixmapJson, """"destinationRegion":{"x":0,"y":0,"width":4,"height":2}""")
+                assertContains(pixmapJson, """"result":{"width":4,"height":2,"crc32":""")
             }
             server.close()
             serverThread.join(1_000)
