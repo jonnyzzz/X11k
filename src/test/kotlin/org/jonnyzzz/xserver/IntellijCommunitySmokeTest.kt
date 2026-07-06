@@ -564,6 +564,18 @@ class IntellijCommunitySmokeTest {
                     runtimeHideNativeLinuxTitleNotSupportedReason=INCOMPATIBLE_JBR
                     runtimeJbrWindowMoveSupported=false
                     runtimeStartupIsXToolkit=true
+                    runtimeGraphicsDeviceClass=sun.awt.X11GraphicsDevice
+                    runtimeGraphicsDeviceId=:0.0
+                    runtimeGraphicsConfigurationClass=sun.java2d.xr.XRGraphicsConfig
+                    runtimeGraphicsConfigurationBounds=java.awt.Rectangle[x=0,y=0,width=1280,height=900]
+                    runtimeGraphicsConfigurationCount=60
+                    runtimeGraphicsColorModel=DirectColorModel: rmask=ff0000 gmask=ff00 bmask=ff amask=0
+                    runtimeGraphicsColorModelClass=java.awt.image.DirectColorModel
+                    runtimeGraphicsColorModelDepth=24
+                    runtimeGraphicsImageCapabilitiesAccelerated=false
+                    runtimeGraphicsImageCapabilitiesTrueVolatile=false
+                    runtimeGraphicsColorModelMasks=red=0xff0000 green=0xff00 blue=0xff alpha=0x0
+                    runtimeGraphicsConfigurations=0:sun.java2d.xr.XRGraphicsConfig:depth=24:bounds=java.awt.Rectangle[x=0,y=0,width=1280,height=900]
                     """.trimIndent(),
             ),
             IntellijLogArtifact(
@@ -586,6 +598,18 @@ class IntellijCommunitySmokeTest {
                     runtimeHideNativeLinuxTitleNotSupportedReason=INCOMPATIBLE_JBR
                     runtimeJbrWindowMoveSupported=false
                     runtimeStartupIsXToolkit=true
+                    runtimeGraphicsDeviceClass=sun.awt.X11GraphicsDevice
+                    runtimeGraphicsDeviceId=:0.0
+                    runtimeGraphicsConfigurationClass=sun.java2d.xr.XRGraphicsConfig
+                    runtimeGraphicsConfigurationBounds=java.awt.Rectangle[x=0,y=0,width=1280,height=900]
+                    runtimeGraphicsConfigurationCount=4
+                    runtimeGraphicsColorModel=DirectColorModel: rmask=ff0000 gmask=ff00 bmask=ff amask=0
+                    runtimeGraphicsColorModelClass=java.awt.image.DirectColorModel
+                    runtimeGraphicsColorModelDepth=24
+                    runtimeGraphicsImageCapabilitiesAccelerated=false
+                    runtimeGraphicsImageCapabilitiesTrueVolatile=false
+                    runtimeGraphicsColorModelMasks=red=0xff0000 green=0xff00 blue=0xff alpha=0x0
+                    runtimeGraphicsConfigurations=0:sun.java2d.xr.XRGraphicsConfig:depth=24:bounds=java.awt.Rectangle[x=0,y=0,width=1280,height=900]
                     """.trimIndent(),
             ),
         )
@@ -612,6 +636,11 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("kotlinRuntimeStateModificationCount=3"), summary)
         assertTrue(summary.contains("xvfbRuntimeMenuButtonInToolbar=true"), summary)
         assertTrue(summary.contains("kotlinRuntimeMenuButtonInToolbar=true"), summary)
+        assertTrue(summary.contains("xvfbRuntimeGraphicsConfigurationClass=sun.java2d.xr.XRGraphicsConfig"), summary)
+        assertTrue(summary.contains("kotlinRuntimeGraphicsConfigurationClass=sun.java2d.xr.XRGraphicsConfig"), summary)
+        assertTrue(summary.contains("xvfbRuntimeGraphicsConfigurationCount=60"), summary)
+        assertTrue(summary.contains("kotlinRuntimeGraphicsConfigurationCount=4"), summary)
+        assertTrue(summary.contains("kotlinRuntimeGraphicsImageCapabilitiesAccelerated=false"), summary)
         assertTrue(summary.contains("CustomWindowHeaderUtil"), summary)
         assertTrue(summary.contains("mainMenuDisplayMode=SEPARATE_TOOLBAR"), summary)
     }
@@ -2079,6 +2108,7 @@ class IntellijCommunitySmokeTest {
               out.println("runtimeX11IsUndefinedDesktop=" + callStatic("com.intellij.openapi.wm.impl.X11UiUtil", "isUndefinedDesktop"));
               out.println("runtimeX11IsTileWM=" + callStatic("com.intellij.openapi.wm.impl.X11UiUtil", "isTileWM"));
               out.println("runtimeX11IsWSL=" + callStatic("com.intellij.openapi.wm.impl.X11UiUtil", "isWSL"));
+              writeGraphicsDiagnostics(out);
             } catch (Throwable t) {
               try (PrintWriter out = new PrintWriter(file)) {
                 out.println("agentLoaded=false");
@@ -2086,6 +2116,56 @@ class IntellijCommunitySmokeTest {
                 t.printStackTrace(out);
               } catch (Throwable ignored) {
               }
+            }
+          }
+
+          private static void writeGraphicsDiagnostics(PrintWriter out) {
+            try {
+              java.awt.GraphicsEnvironment environment = java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment();
+              java.awt.GraphicsDevice device = environment.getDefaultScreenDevice();
+              java.awt.GraphicsConfiguration configuration = device.getDefaultConfiguration();
+              java.awt.GraphicsConfiguration[] configurations = device.getConfigurations();
+              java.awt.image.ColorModel colorModel = configuration.getColorModel();
+              java.awt.ImageCapabilities imageCapabilities = configuration.getImageCapabilities();
+              out.println("runtimeGraphicsDeviceClass=" + device.getClass().getName());
+              out.println("runtimeGraphicsDeviceId=" + device.getIDstring());
+              out.println("runtimeGraphicsConfigurationClass=" + configuration.getClass().getName());
+              out.println("runtimeGraphicsConfigurationBounds=" + configuration.getBounds());
+              out.println("runtimeGraphicsConfigurationCount=" + configurations.length);
+              out.println("runtimeGraphicsColorModel=" + colorModel);
+              out.println("runtimeGraphicsColorModelClass=" + colorModel.getClass().getName());
+              out.println("runtimeGraphicsColorModelDepth=" + colorModel.getPixelSize());
+              out.println("runtimeGraphicsImageCapabilitiesAccelerated=" + imageCapabilities.isAccelerated());
+              out.println("runtimeGraphicsImageCapabilitiesTrueVolatile=" + imageCapabilities.isTrueVolatile());
+              if (colorModel instanceof java.awt.image.DirectColorModel) {
+                java.awt.image.DirectColorModel direct = (java.awt.image.DirectColorModel) colorModel;
+                out.println("runtimeGraphicsColorModelMasks=red=0x" + Integer.toHexString(direct.getRedMask()) +
+                  " green=0x" + Integer.toHexString(direct.getGreenMask()) +
+                  " blue=0x" + Integer.toHexString(direct.getBlueMask()) +
+                  " alpha=0x" + Integer.toHexString(direct.getAlphaMask()));
+              } else {
+                out.println("runtimeGraphicsColorModelMasks=<not-direct>");
+              }
+              StringBuilder configSummary = new StringBuilder();
+              int limit = Math.min(configurations.length, 8);
+              for (int i = 0; i < limit; i++) {
+                if (i > 0) configSummary.append(" | ");
+                java.awt.GraphicsConfiguration item = configurations[i];
+                java.awt.image.ColorModel itemColorModel = item.getColorModel();
+                configSummary.append(i)
+                  .append(":")
+                  .append(item.getClass().getName())
+                  .append(":depth=")
+                  .append(itemColorModel.getPixelSize())
+                  .append(":bounds=")
+                  .append(item.getBounds());
+              }
+              if (configurations.length > limit) {
+                configSummary.append(" | omitted=").append(configurations.length - limit);
+              }
+              out.println("runtimeGraphicsConfigurations=" + configSummary);
+            } catch (Throwable t) {
+              out.println("runtimeGraphicsDiagnosticsError=" + t.getClass().getName() + ": " + t.getMessage());
             }
           }
 
@@ -2154,6 +2234,18 @@ class IntellijCommunitySmokeTest {
         runtimeHideNativeLinuxTitleNotSupportedReason=INCOMPATIBLE_JBR
         runtimeJbrWindowMoveSupported=false
         runtimeStartupIsXToolkit=true
+        runtimeGraphicsDeviceClass=sun.awt.X11GraphicsDevice
+        runtimeGraphicsDeviceId=:0.0
+        runtimeGraphicsConfigurationClass=sun.java2d.xr.XRGraphicsConfig
+        runtimeGraphicsConfigurationBounds=java.awt.Rectangle[x=0,y=0,width=1280,height=900]
+        runtimeGraphicsConfigurationCount=4
+        runtimeGraphicsColorModel=DirectColorModel: rmask=ff0000 gmask=ff00 bmask=ff amask=0
+        runtimeGraphicsColorModelClass=java.awt.image.DirectColorModel
+        runtimeGraphicsColorModelDepth=24
+        runtimeGraphicsImageCapabilitiesAccelerated=false
+        runtimeGraphicsImageCapabilitiesTrueVolatile=false
+        runtimeGraphicsColorModelMasks=red=0xff0000 green=0xff00 blue=0xff alpha=0x0
+        runtimeGraphicsConfigurations=0:sun.java2d.xr.XRGraphicsConfig:depth=24:bounds=java.awt.Rectangle[x=0,y=0,width=1280,height=900]
         """.trimIndent()
 
     private fun composeSvgLayers(layers: List<SvgLayer>, width: Int, height: Int): BufferedImage {
@@ -2359,6 +2451,18 @@ class IntellijCommunitySmokeTest {
             "RuntimeHideNativeLinuxTitleNotSupportedReason",
             "RuntimeJbrWindowMoveSupported",
             "RuntimeStartupIsXToolkit",
+            "RuntimeGraphicsDeviceClass",
+            "RuntimeGraphicsDeviceId",
+            "RuntimeGraphicsConfigurationClass",
+            "RuntimeGraphicsConfigurationBounds",
+            "RuntimeGraphicsConfigurationCount",
+            "RuntimeGraphicsColorModel",
+            "RuntimeGraphicsColorModelClass",
+            "RuntimeGraphicsColorModelDepth",
+            "RuntimeGraphicsColorModelMasks",
+            "RuntimeGraphicsImageCapabilitiesAccelerated",
+            "RuntimeGraphicsImageCapabilitiesTrueVolatile",
+            "RuntimeGraphicsConfigurations",
         )
         val missingFields = listOf("xvfb", "kotlin").flatMap { prefix ->
             requiredFields.mapNotNull { field ->
@@ -2842,6 +2946,30 @@ class IntellijCommunitySmokeTest {
             appendLine("kotlinRuntimeJbrWindowMoveSupported=${propertyValue(kotlinRuntime, "runtimeJbrWindowMoveSupported")}")
             appendLine("xvfbRuntimeStartupIsXToolkit=${propertyValue(xvfbRuntime, "runtimeStartupIsXToolkit")}")
             appendLine("kotlinRuntimeStartupIsXToolkit=${propertyValue(kotlinRuntime, "runtimeStartupIsXToolkit")}")
+            appendLine("xvfbRuntimeGraphicsDeviceClass=${propertyValue(xvfbRuntime, "runtimeGraphicsDeviceClass")}")
+            appendLine("kotlinRuntimeGraphicsDeviceClass=${propertyValue(kotlinRuntime, "runtimeGraphicsDeviceClass")}")
+            appendLine("xvfbRuntimeGraphicsDeviceId=${propertyValue(xvfbRuntime, "runtimeGraphicsDeviceId")}")
+            appendLine("kotlinRuntimeGraphicsDeviceId=${propertyValue(kotlinRuntime, "runtimeGraphicsDeviceId")}")
+            appendLine("xvfbRuntimeGraphicsConfigurationClass=${propertyValue(xvfbRuntime, "runtimeGraphicsConfigurationClass")}")
+            appendLine("kotlinRuntimeGraphicsConfigurationClass=${propertyValue(kotlinRuntime, "runtimeGraphicsConfigurationClass")}")
+            appendLine("xvfbRuntimeGraphicsConfigurationBounds=${propertyValue(xvfbRuntime, "runtimeGraphicsConfigurationBounds")}")
+            appendLine("kotlinRuntimeGraphicsConfigurationBounds=${propertyValue(kotlinRuntime, "runtimeGraphicsConfigurationBounds")}")
+            appendLine("xvfbRuntimeGraphicsConfigurationCount=${propertyValue(xvfbRuntime, "runtimeGraphicsConfigurationCount")}")
+            appendLine("kotlinRuntimeGraphicsConfigurationCount=${propertyValue(kotlinRuntime, "runtimeGraphicsConfigurationCount")}")
+            appendLine("xvfbRuntimeGraphicsColorModel=${propertyValue(xvfbRuntime, "runtimeGraphicsColorModel")}")
+            appendLine("kotlinRuntimeGraphicsColorModel=${propertyValue(kotlinRuntime, "runtimeGraphicsColorModel")}")
+            appendLine("xvfbRuntimeGraphicsColorModelClass=${propertyValue(xvfbRuntime, "runtimeGraphicsColorModelClass")}")
+            appendLine("kotlinRuntimeGraphicsColorModelClass=${propertyValue(kotlinRuntime, "runtimeGraphicsColorModelClass")}")
+            appendLine("xvfbRuntimeGraphicsColorModelDepth=${propertyValue(xvfbRuntime, "runtimeGraphicsColorModelDepth")}")
+            appendLine("kotlinRuntimeGraphicsColorModelDepth=${propertyValue(kotlinRuntime, "runtimeGraphicsColorModelDepth")}")
+            appendLine("xvfbRuntimeGraphicsColorModelMasks=${propertyValue(xvfbRuntime, "runtimeGraphicsColorModelMasks")}")
+            appendLine("kotlinRuntimeGraphicsColorModelMasks=${propertyValue(kotlinRuntime, "runtimeGraphicsColorModelMasks")}")
+            appendLine("xvfbRuntimeGraphicsImageCapabilitiesAccelerated=${propertyValue(xvfbRuntime, "runtimeGraphicsImageCapabilitiesAccelerated")}")
+            appendLine("kotlinRuntimeGraphicsImageCapabilitiesAccelerated=${propertyValue(kotlinRuntime, "runtimeGraphicsImageCapabilitiesAccelerated")}")
+            appendLine("xvfbRuntimeGraphicsImageCapabilitiesTrueVolatile=${propertyValue(xvfbRuntime, "runtimeGraphicsImageCapabilitiesTrueVolatile")}")
+            appendLine("kotlinRuntimeGraphicsImageCapabilitiesTrueVolatile=${propertyValue(kotlinRuntime, "runtimeGraphicsImageCapabilitiesTrueVolatile")}")
+            appendLine("xvfbRuntimeGraphicsConfigurations=${propertyValue(xvfbRuntime, "runtimeGraphicsConfigurations")}")
+            appendLine("kotlinRuntimeGraphicsConfigurations=${propertyValue(kotlinRuntime, "runtimeGraphicsConfigurations")}")
             appendLine("xvfbUiDecisionLines=${intellijUiDecisionLines(xvfbTrace).joinToString(" | ").ifEmpty { "None" }}")
             appendLine("kotlinUiDecisionLines=${intellijUiDecisionLines(kotlinTrace).joinToString(" | ").ifEmpty { "None" }}")
         }
