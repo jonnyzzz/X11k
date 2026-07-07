@@ -7,6 +7,7 @@ import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class XRenderProtocolTest {
     @Test
@@ -35,7 +36,7 @@ class XRenderProtocolTest {
                 assertEquals(4, u32le(formats, 8))
                 assertEquals(1, u32le(formats, 12))
                 assertEquals(2, u32le(formats, 16))
-                assertEquals(4, u32le(formats, 20))
+                assertEquals(X11Ids.RootVisualAliases.size + X11Ids.RgbaVisualAliases.size, u32le(formats, 20))
                 assertEquals(1, u32le(formats, 24))
                 assertEquals(XRender.Argb32Format, u32le(formats, 32))
                 assertEquals(32, formats[37].toInt() and 0xff)
@@ -43,17 +44,23 @@ class XRenderProtocolTest {
                 assertEquals(2, u32le(formats, screenOffset))
                 assertEquals(XRender.Rgb24Format, u32le(formats, screenOffset + 4))
                 assertEquals(24, formats[screenOffset + 8].toInt() and 0xff)
-                assertEquals(2, u16le(formats, screenOffset + 10))
-                assertEquals(X11Ids.RootVisual, u32le(formats, screenOffset + 16))
-                assertEquals(XRender.Rgb24Format, u32le(formats, screenOffset + 20))
-                assertEquals(X11Ids.XvfbLikeRootVisualAlias, u32le(formats, screenOffset + 24))
-                assertEquals(XRender.Rgb24Format, u32le(formats, screenOffset + 28))
-                assertEquals(32, formats[screenOffset + 32].toInt() and 0xff)
-                assertEquals(2, u16le(formats, screenOffset + 34))
-                assertEquals(X11Ids.RgbaVisual, u32le(formats, screenOffset + 40))
-                assertEquals(XRender.Argb32Format, u32le(formats, screenOffset + 44))
-                assertEquals(X11Ids.XvfbLikeRgbaVisualAlias, u32le(formats, screenOffset + 48))
-                assertEquals(XRender.Argb32Format, u32le(formats, screenOffset + 52))
+                assertEquals(X11Ids.RootVisualAliases.size, u16le(formats, screenOffset + 10))
+                val rootVisualOffset = screenOffset + 16
+                assertEquals(X11Ids.RootVisual, u32le(formats, rootVisualOffset))
+                assertEquals(XRender.Rgb24Format, u32le(formats, rootVisualOffset + 4))
+                val rootAliasOffset = rootVisualOffset + (X11Ids.RootVisualAliases.size - 1) * 8
+                assertEquals(X11Ids.XvfbLikeRootVisualAlias, u32le(formats, rootAliasOffset))
+                assertEquals(XRender.Rgb24Format, u32le(formats, rootAliasOffset + 4))
+                val rgbaDepthOffset = rootVisualOffset + X11Ids.RootVisualAliases.size * 8
+                assertEquals(32, formats[rgbaDepthOffset].toInt() and 0xff)
+                assertEquals(X11Ids.RgbaVisualAliases.size, u16le(formats, rgbaDepthOffset + 2))
+                val rgbaVisualOffset = rgbaDepthOffset + 8
+                assertEquals(X11Ids.RgbaVisual, u32le(formats, rgbaVisualOffset))
+                assertEquals(XRender.Argb32Format, u32le(formats, rgbaVisualOffset + 4))
+                val rgbaXvfbLikeOffset = rgbaVisualOffset + X11Ids.RgbaVisualAliases.indexOf(X11Ids.XvfbLikeRgbaVisualAlias) * 8
+                assertTrue(rgbaXvfbLikeOffset >= rgbaVisualOffset, "Xvfb-like RGBA alias must be advertised")
+                assertEquals(X11Ids.XvfbLikeRgbaVisualAlias, u32le(formats, rgbaXvfbLikeOffset))
+                assertEquals(XRender.Argb32Format, u32le(formats, rgbaXvfbLikeOffset + 4))
 
                 assertContains(httpGet(server.localPort, "/text.txt"), "RENDER supported=true")
             }

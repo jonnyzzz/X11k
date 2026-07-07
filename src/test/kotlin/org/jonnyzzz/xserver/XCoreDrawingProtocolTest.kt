@@ -30,8 +30,8 @@ class XCoreDrawingProtocolTest {
                 assertEquals(900, u16le(setupReply, screenOffset + 22))
                 assertEquals(325, u16le(setupReply, screenOffset + 24))
                 assertEquals(229, u16le(setupReply, screenOffset + 26))
-                assertEquals(listOf(X11Ids.RootVisual, X11Ids.XvfbLikeRootVisualAlias), visuals.getValue(X11Ids.RootDepth))
-                assertEquals(listOf(X11Ids.RgbaVisual, X11Ids.XvfbLikeRgbaVisualAlias), visuals.getValue(X11Ids.RgbaDepth))
+                assertEquals(X11Ids.RootVisualAliases, visuals.getValue(X11Ids.RootDepth))
+                assertEquals(X11Ids.RgbaVisualAliases, visuals.getValue(X11Ids.RgbaDepth))
             }
             server.close()
             serverThread.join(1_000)
@@ -1341,13 +1341,20 @@ class XCoreDrawingProtocolTest {
 
                 val visualInfo = readReply(socket.getInputStream())
                 assertEquals(3, u16le(visualInfo, 2))
-                assertEquals(9, u32le(visualInfo, 4))
+                assertEquals((4 + (X11Ids.RootVisualAliases.size + X11Ids.RgbaVisualAliases.size) * 8) / 4, u32le(visualInfo, 4))
                 assertEquals(1, u32le(visualInfo, 8))
-                assertEquals(4, u32le(visualInfo, 32))
+                assertEquals(X11Ids.RootVisualAliases.size + X11Ids.RgbaVisualAliases.size, u32le(visualInfo, 32))
                 assertEquals(X11Ids.RootVisual, u32le(visualInfo, 36))
                 assertEquals(X11Ids.RootDepth, visualInfo[40].toInt() and 0xff)
-                assertEquals(X11Ids.RgbaVisual, u32le(visualInfo, 52))
-                assertEquals(X11Ids.RgbaDepth, visualInfo[56].toInt() and 0xff)
+                val lastRootVisualOffset = 36 + (X11Ids.RootVisualAliases.size - 1) * 8
+                assertEquals(X11Ids.XvfbLikeRootVisualAlias, u32le(visualInfo, lastRootVisualOffset))
+                assertEquals(X11Ids.RootDepth, visualInfo[lastRootVisualOffset + 4].toInt() and 0xff)
+                val firstRgbaVisualOffset = 36 + X11Ids.RootVisualAliases.size * 8
+                assertEquals(X11Ids.RgbaVisual, u32le(visualInfo, firstRgbaVisualOffset))
+                assertEquals(X11Ids.RgbaDepth, visualInfo[firstRgbaVisualOffset + 4].toInt() and 0xff)
+                val lastRgbaVisualOffset = firstRgbaVisualOffset + (X11Ids.RgbaVisualAliases.size - 1) * 8
+                assertEquals(X11Ids.XvfbLikeRgbaVisualAlias, u32le(visualInfo, lastRgbaVisualOffset))
+                assertEquals(X11Ids.RgbaDepth, visualInfo[lastRgbaVisualOffset + 4].toInt() and 0xff)
 
                 val missingAttributes = readReply(socket.getInputStream())
                 assertEquals(4, u16le(missingAttributes, 2))

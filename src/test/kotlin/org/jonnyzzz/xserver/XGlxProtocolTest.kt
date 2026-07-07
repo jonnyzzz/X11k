@@ -45,7 +45,8 @@ class XGlxProtocolTest {
 
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFBConfigs, u32(0))
             val fbConfigs = readReply(socket.getInputStream())
-            assertEquals(6, u32le(fbConfigs, 8))
+            val expectedFbConfigCount = X11Ids.RootVisualAliases.size + 5
+            assertEquals(expectedFbConfigCount, u32le(fbConfigs, 8))
             assertEquals(XGlx.FbConfigAttributePairs, u32le(fbConfigs, 12))
             assertEquals(0x800B, u32le(fbConfigs, 32))
             assertEquals(X11Ids.RootVisual, u32le(fbConfigs, 36))
@@ -83,9 +84,17 @@ class XGlxProtocolTest {
             assertEquals(0, fbConfigAttributes.getValue(XGlx.MaxPbufferWidth))
             assertEquals(0, fbConfigAttributes.getValue(XGlx.MaxPbufferHeight))
             assertEquals(0, fbConfigAttributes.getValue(XGlx.MaxPbufferPixels))
+            val xvfbLikeVisualFbConfigAttributes = attributeMap(
+                fbConfigs,
+                offset = 32 + XGlx.FbConfigAttributePairs * 8 * (X11Ids.RootVisualAliases.size - 1),
+                count = XGlx.FbConfigAttributePairs,
+            )
+            assertEquals(X11Ids.XvfbLikeRootVisualAlias, xvfbLikeVisualFbConfigAttributes.getValue(XGlx.VisualIdExt))
+            assertEquals(X11Ids.XvfbLikeRootVisualAlias, xvfbLikeVisualFbConfigAttributes.getValue(XGlx.FbConfigId))
+            assertEquals(XGlx.WindowBit or XGlx.PixmapBit or XGlx.PbufferBit, xvfbLikeVisualFbConfigAttributes.getValue(XGlx.DrawableType))
             val lightweightVisualFbConfigAttributes = attributeMap(
                 fbConfigs,
-                offset = 32 + XGlx.FbConfigAttributePairs * 8,
+                offset = 32 + XGlx.FbConfigAttributePairs * 8 * X11Ids.RootVisualAliases.size,
                 count = XGlx.FbConfigAttributePairs,
             )
             assertEquals(X11Ids.RootVisual, lightweightVisualFbConfigAttributes.getValue(XGlx.VisualIdExt))
@@ -96,7 +105,7 @@ class XGlxProtocolTest {
             assertEquals(XGlx.WindowBit or XGlx.PixmapBit or XGlx.PbufferBit, lightweightVisualFbConfigAttributes.getValue(XGlx.DrawableType))
             val pbufferOnlyFbConfigAttributes = attributeMap(
                 fbConfigs,
-                offset = 32 + XGlx.FbConfigAttributePairs * 8 * 2,
+                offset = 32 + XGlx.FbConfigAttributePairs * 8 * (X11Ids.RootVisualAliases.size + 1),
                 count = XGlx.FbConfigAttributePairs,
             )
             assertEquals(0, pbufferOnlyFbConfigAttributes.getValue(XGlx.VisualIdExt))
@@ -106,7 +115,7 @@ class XGlxProtocolTest {
 
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetVisualConfigs, u32(0))
             val visuals = readReply(socket.getInputStream())
-            assertEquals(1, u32le(visuals, 8))
+            assertEquals(X11Ids.RootVisualAliases.size, u32le(visuals, 8))
             assertEquals(XGlx.VisualConfigValues, u32le(visuals, 12))
             assertEquals(X11Ids.RootVisual, u32le(visuals, 32))
             val visualConfig = intArrayPayload(visuals, offset = 32, count = XGlx.VisualConfigValues)
@@ -126,6 +135,9 @@ class XGlxProtocolTest {
             assertEquals(XGlx.DontCare, visualConfig[25])
             assertEquals(XGlx.DontCare, visualConfig[27])
             assertEquals(XGlx.DontCare, visualConfig[29])
+            val xvfbLikeVisualConfigOffset = 32 + XGlx.VisualConfigValues * 4 * (X11Ids.RootVisualAliases.size - 1)
+            assertEquals(X11Ids.XvfbLikeRootVisualAlias, u32le(visuals, xvfbLikeVisualConfigOffset))
+            assertEquals(4, u32le(visuals, xvfbLikeVisualConfigOffset + 4))
 
             val text = httpGet(socket, "/text.txt")
             assertTrue(text.contains("QueryServerString minor=19 screen=0 name=3 value=${XGlx.Extensions}"), text)
@@ -223,7 +235,7 @@ class XGlxProtocolTest {
             assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.GetVisualConfigs, sequence = 3)
             val visuals = readReply(socket.getInputStream())
             assertEquals(4, u16le(visuals, 2))
-            assertEquals(1, u32le(visuals, 8))
+            assertEquals(X11Ids.RootVisualAliases.size, u32le(visuals, 8))
             assertEquals(XGlx.VisualConfigValues, u32le(visuals, 12))
 
             assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.GetFBConfigs, sequence = 5)
@@ -231,7 +243,7 @@ class XGlxProtocolTest {
             assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.GetFBConfigs, sequence = 7)
             val fbConfigs = readReply(socket.getInputStream())
             assertEquals(8, u16le(fbConfigs, 2))
-            assertEquals(6, u32le(fbConfigs, 8))
+            assertEquals(X11Ids.RootVisualAliases.size + 5, u32le(fbConfigs, 8))
             assertEquals(XGlx.FbConfigAttributePairs, u32le(fbConfigs, 12))
 
             assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.QueryExtensionsString, sequence = 9)
@@ -1347,6 +1359,37 @@ class XGlxProtocolTest {
             val query = readReply(socket.getInputStream())
             assertEquals(9, u16le(query, 2))
             assertEquals(5, u32le(query, 8))
+        }
+    }
+
+    @Test
+    fun `GLX legacy context and pixmap accept advertised Xvfb-like root visual aliases`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_010c
+            val pixmap = 0x0020_010d
+            val glxPixmap = 0x0020_010e
+            val visual = X11Ids.XvfbLikeRootVisualAlias
+
+            writeRequest(socket, 53, 24, u32(pixmap) + u32(X11Ids.RootWindow) + u16(8) + u16(8))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContext, createContextBody(contextId, direct = false, visual = visual))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryContext, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateGLXPixmap, createGlxPixmapBody(pixmap, glxPixmap, visual = visual))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val query = readReply(socket.getInputStream())
+            assertEquals(3, u16le(query, 2))
+            val contextAttributes = attributeMap(query, offset = 32, count = u32le(query, 8))
+            assertEquals(visual, contextAttributes.getValue(XGlx.VisualIdExt))
+            assertEquals(visual, contextAttributes.getValue(XGlx.FbConfigId))
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(5, u16le(pointer, 2))
+            val json = httpGet(socket, "/state.json")
+            assertTrue(
+                json.contains(""""glxPixmaps":[{"id":"0x${glxPixmap.toString(16)}","pixmap":"0x${pixmap.toString(16)}","visual":"0x${visual.toString(16)}","fbConfig":"0x${visual.toString(16)}","screen":0,"width":8,"height":8,"depth":24,"eventMask":0,"textureTarget":${XGlx.Texture2DExt}}]"""),
+                json,
+            )
         }
     }
 

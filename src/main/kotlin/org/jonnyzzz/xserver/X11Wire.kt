@@ -101,36 +101,7 @@ internal object SetupReply {
         val pixmapFormatsLength = XPixmapFormats.All.size
         val screensLength = 1
         val depthsLength = XPixmapFormats.All.size
-        val visuals = listOf(
-            XVisualDescription(
-                id = X11Ids.RootVisual,
-                depth = RootDepth,
-                redMask = 0x00ff_0000,
-                greenMask = 0x0000_ff00,
-                blueMask = 0x0000_00ff,
-            ),
-            XVisualDescription(
-                id = X11Ids.RgbaVisual,
-                depth = X11Ids.RgbaDepth,
-                redMask = 0x00ff_0000,
-                greenMask = 0x0000_ff00,
-                blueMask = 0x0000_00ff,
-            ),
-            XVisualDescription(
-                id = X11Ids.XvfbLikeRootVisualAlias,
-                depth = RootDepth,
-                redMask = 0x00ff_0000,
-                greenMask = 0x0000_ff00,
-                blueMask = 0x0000_00ff,
-            ),
-            XVisualDescription(
-                id = X11Ids.XvfbLikeRgbaVisualAlias,
-                depth = X11Ids.RgbaDepth,
-                redMask = 0x00ff_0000,
-                greenMask = 0x0000_ff00,
-                blueMask = 0x0000_00ff,
-            ),
-        )
+        val visuals = X11Ids.VisualDescriptions
         val depthBytes = XPixmapFormats.All.sumOf { format -> 8 + visuals.count { it.depth == format.depth } * 24 }
         val screenBytes = 40 + depthBytes
         val additionalLength = 32 + vendorPaddedLength + pixmapFormatsLength * 8 + screenBytes
@@ -268,10 +239,33 @@ internal object X11Ids {
     const val RootDepth = 24
     const val RgbaDepth = 32
 
+    val RootVisualAliases: List<Int> =
+        listOf(RootVisual) + (0x0000_01bd..XvfbLikeRootVisualAlias).toList()
+    val RgbaVisualAliases: List<Int> =
+        listOf(RgbaVisual, 0x0000_0040) + (0x0000_020b..XvfbLikeRgbaVisualAlias).toList()
+    val VisualDescriptions: List<XVisualDescription> =
+        RootVisualAliases.map { visual ->
+            XVisualDescription(
+                id = visual,
+                depth = RootDepth,
+                redMask = 0x00ff_0000,
+                greenMask = 0x0000_ff00,
+                blueMask = 0x0000_00ff,
+            )
+        } + RgbaVisualAliases.map { visual ->
+            XVisualDescription(
+                id = visual,
+                depth = RgbaDepth,
+                redMask = 0x00ff_0000,
+                greenMask = 0x0000_ff00,
+                blueMask = 0x0000_00ff,
+            )
+        }
+
     fun visualDepth(visual: Int): Int? =
         when (visual) {
-            RootVisual, XvfbLikeRootVisualAlias -> RootDepth
-            RgbaVisual, XvfbLikeRgbaVisualAlias -> RgbaDepth
+            in RootVisualAliases -> RootDepth
+            in RgbaVisualAliases -> RgbaDepth
             else -> null
         }
 

@@ -3655,21 +3655,26 @@ internal class X11Connection(
         putPictFormat(formats, 56, XRender.A8Format, depth = 8, redShift = 0, redMask = 0, greenShift = 0, greenMask = 0, blueShift = 0, blueMask = 0, alphaShift = 0, alphaMask = 0xff)
         putPictFormat(formats, 84, XRender.A1Format, depth = 1, redShift = 0, redMask = 0, greenShift = 0, greenMask = 0, blueShift = 0, blueMask = 0, alphaShift = 0, alphaMask = 0x1)
 
-        val screen = ByteArray(56)
-        byteOrder.put32(screen, 0, 2)
+        val renderVisuals = listOf(
+            X11Ids.RootDepth to (X11Ids.RootVisualAliases to XRender.Rgb24Format),
+            X11Ids.RgbaDepth to (X11Ids.RgbaVisualAliases to XRender.Argb32Format),
+        )
+        val visualCount = renderVisuals.sumOf { (_, visualFormat) -> visualFormat.first.size }
+        val screen = ByteArray(8 + renderVisuals.sumOf { (_, visualFormat) -> 8 + visualFormat.first.size * 8 })
+        byteOrder.put32(screen, 0, renderVisuals.size)
         byteOrder.put32(screen, 4, XRender.Rgb24Format)
-        screen[8] = 24
-        byteOrder.put16(screen, 10, 2)
-        byteOrder.put32(screen, 16, X11Ids.RootVisual)
-        byteOrder.put32(screen, 20, XRender.Rgb24Format)
-        byteOrder.put32(screen, 24, X11Ids.XvfbLikeRootVisualAlias)
-        byteOrder.put32(screen, 28, XRender.Rgb24Format)
-        screen[32] = 32
-        byteOrder.put16(screen, 34, 2)
-        byteOrder.put32(screen, 40, X11Ids.RgbaVisual)
-        byteOrder.put32(screen, 44, XRender.Argb32Format)
-        byteOrder.put32(screen, 48, X11Ids.XvfbLikeRgbaVisualAlias)
-        byteOrder.put32(screen, 52, XRender.Argb32Format)
+        var screenOffset = 8
+        for ((depth, visualFormat) in renderVisuals) {
+            val (visuals, format) = visualFormat
+            screen[screenOffset] = depth.toByte()
+            byteOrder.put16(screen, screenOffset + 2, visuals.size)
+            screenOffset += 8
+            for (visual in visuals) {
+                byteOrder.put32(screen, screenOffset, visual)
+                byteOrder.put32(screen, screenOffset + 4, format)
+                screenOffset += 8
+            }
+        }
 
         val subpixels = ByteArray(4)
         byteOrder.put32(subpixels, 0, 5)
@@ -3678,7 +3683,7 @@ internal class X11Connection(
         byteOrder.put32(reply, 8, 4)
         byteOrder.put32(reply, 12, 1)
         byteOrder.put32(reply, 16, 2)
-        byteOrder.put32(reply, 20, 4)
+        byteOrder.put32(reply, 20, visualCount)
         byteOrder.put32(reply, 24, 1)
         payload.copyInto(reply, 32)
         write(reply)
@@ -5013,11 +5018,12 @@ internal class X11Connection(
     private fun glxGetVisualConfigs(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetVisualConfigs, badValue = 0)
         if (!glxScreenIsValid(body, offset = 0, minorOpcode = XGlx.GetVisualConfigs)) return
-        val config = XGlx.visualConfig()
-        val reply = reply(extra = 0, payloadUnits = config.size)
-        byteOrder.put32(reply, 8, 1)
+        val configs = XGlx.visualConfigs()
+        val payload = configs.flatMap { config -> config.asIterable() }.toIntArray()
+        val reply = reply(extra = 0, payloadUnits = payload.size)
+        byteOrder.put32(reply, 8, configs.size)
         byteOrder.put32(reply, 12, XGlx.VisualConfigValues)
-        putIntArray(reply, 32, config)
+        putIntArray(reply, 32, payload)
         write(reply)
     }
 
@@ -5138,7 +5144,7 @@ internal class X11Connection(
         val screen = byteOrder.u32(body, 8)
         if (!resourceIdAvailable(context, XGlx.MajorOpcode, 3, error = 11)) return
         if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = 3, badValue = screen)
-        if (visual != X11Ids.RootVisual) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = 3, badValue = visual)
+        if (!XGlx.isKnownVisualConfig(visual)) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = 3, badValue = visual)
         state.putGlxContext(
             XGlxContext(
                 id = context,
@@ -5227,13 +5233,13 @@ internal class X11Connection(
         val pixmap = byteOrder.u32(body, 8)
         val glxPixmap = byteOrder.u32(body, 12)
         if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateGLXPixmap, badValue = screen)
-        if (visual != X11Ids.RootVisual) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateGLXPixmap, badValue = visual)
+        if (!XGlx.isKnownVisualConfig(visual)) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateGLXPixmap, badValue = visual)
         createGlxPixmapResource(
             minorOpcode = XGlx.CreateGLXPixmap,
             pixmap = pixmap,
             glxPixmap = glxPixmap,
             visual = visual,
-            fbConfig = XGlx.RootFbConfigId,
+            fbConfig = visual,
             screen = screen,
         )
     }
@@ -9354,12 +9360,8 @@ internal class X11Connection(
                 return writeError(error = 9, opcode = majorOpcode, minorOpcode = XDoubleBuffer.GetVisualInfo, badValue = drawable)
             }
         }
-        val visuals = listOf(
-            X11Ids.RootVisual to X11Ids.RootDepth,
-            X11Ids.XvfbLikeRootVisualAlias to X11Ids.RootDepth,
-            X11Ids.RgbaVisual to X11Ids.RgbaDepth,
-            X11Ids.XvfbLikeRgbaVisualAlias to X11Ids.RgbaDepth,
-        )
+        val visuals = X11Ids.RootVisualAliases.map { it to X11Ids.RootDepth } +
+            X11Ids.RgbaVisualAliases.map { it to X11Ids.RgbaDepth }
         val payloadBytes = drawables.size * (4 + visuals.size * 8)
         val reply = reply(extra = 0, payloadUnits = payloadBytes / 4)
         byteOrder.put32(reply, 8, drawables.size)

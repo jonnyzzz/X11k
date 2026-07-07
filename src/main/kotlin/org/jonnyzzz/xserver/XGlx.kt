@@ -312,9 +312,12 @@ internal object XGlx {
             else -> floatArrayOf(0.0f)
         }
 
-    fun visualConfig(): IntArray =
+    fun visualConfigs(): List<IntArray> =
+        X11Ids.RootVisualAliases.map { visual -> visualConfig(visual) }
+
+    private fun visualConfig(visual: Int): IntArray =
         intArrayOf(
-            X11Ids.RootVisual,
+            visual,
             XVisualClassTrueColor,
             1,
             8,
@@ -360,6 +363,9 @@ internal object XGlx {
 
     fun fbConfigs(): List<IntArray> =
         FbConfigs.map { spec -> fbConfig(spec) }
+
+    fun isKnownVisualConfig(visual: Int): Boolean =
+        visual in X11Ids.RootVisualAliases
 
     fun isKnownFbConfig(id: Int): Boolean =
         FbConfigs.any { it.id == id }
@@ -432,14 +438,18 @@ internal object XGlx {
     const val VisualConfigValues = 40
     const val FbConfigAttributePairs = 44
 
-    private val FbConfigs = listOf(
-        FbConfigSpec(
-            id = RootFbConfigId,
-            visualId = X11Ids.RootVisual,
-            doubleBuffer = 1,
-            depthSize = 24,
-            stencilSize = 8,
-        ),
+    private val VisualFbConfigs: List<FbConfigSpec> =
+        X11Ids.RootVisualAliases.map { visual ->
+            FbConfigSpec(
+                id = visual,
+                visualId = visual,
+                doubleBuffer = 1,
+                depthSize = 24,
+                stencilSize = 8,
+            )
+        }
+
+    private val FbConfigs = VisualFbConfigs + listOf(
         FbConfigSpec(
             id = RootFbConfigId + 5,
             visualId = X11Ids.RootVisual,
