@@ -102,6 +102,23 @@ class VSCodeSmokeTest {
     }
 
     @Test
+    fun `vscode parity artifact directory is reset before a new bundle`() {
+        val directory = vscodeSmokeArtifactsDirectory()
+        val stale = File(directory, "vscode-xvfb-reference.png")
+        val retainedInputDirectory = File(directory, "project").also { it.mkdirs() }
+        val retainedInput = File(retainedInputDirectory, "README.md")
+        stale.writeText("stale image")
+        retainedInput.writeText("tracked input")
+
+        val prepared = prepareVSCodeParityArtifactsDirectory()
+
+        assertEquals(directory, prepared)
+        assertTrue(prepared.isDirectory)
+        assertFalse(stale.exists(), "stale VSCode parity artifacts must not survive into the next bundle")
+        assertTrue(retainedInput.isFile, "generated VSCode project input must survive artifact cleanup")
+    }
+
+    @Test
     fun `vscode svg composition skips hidden image layers`() {
         val visible = onePixelPngBase64(0xff12_3456.toInt())
         val hidden = onePixelPngBase64(0xffff_0000.toInt())
@@ -891,7 +908,7 @@ class VSCodeSmokeTest {
         composedSvg: BufferedImage,
         composedSvgCapture: VisualCapture,
     ) {
-        val directory = vscodeSmokeArtifactsDirectory()
+        val directory = prepareVSCodeParityArtifactsDirectory()
         ImageIO.write(reference.robot.image, "png", File(directory, "vscode-xvfb-reference.png"))
         ImageIO.write(actual.robot.image, "png", File(directory, "vscode-kotlin-robot.png"))
         ImageIO.write(composedSvg, "png", File(directory, "vscode-kotlin-svg-composed.png"))
@@ -952,6 +969,12 @@ class VSCodeSmokeTest {
 
     private fun vscodeSmokeArtifactsDirectory(): File =
         projectRoot().resolve("build/tmp/vscode-smoke").toFile().also { it.mkdirs() }
+
+    private fun prepareVSCodeParityArtifactsDirectory(): File =
+        projectRoot().resolve("build/tmp/vscode-smoke").toFile().also {
+            it.mkdirs()
+            it.listFiles()?.filter { child -> child.isFile }?.forEach { child -> child.delete() }
+        }
 
     private fun collectVSCodeLogs(container: GenericContainer<*>, prefix: String = "vscode-kotlin"): List<VSCodeLogArtifact> {
         val dynamicLogs = execContainerShell(

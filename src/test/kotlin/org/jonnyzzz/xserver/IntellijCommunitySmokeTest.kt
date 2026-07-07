@@ -992,6 +992,33 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij xvfb putimage trace summary reports absent trace artifact`() {
+        val summary = intellijXvfbPutImageStripProfiles(emptyList())
+
+        assertEquals(
+            "Xvfb PutImage thin strip profiles:\n- traceArtifact=absent\n",
+            summary,
+        )
+    }
+
+    @Test
+    fun `intellij parity artifact directory is reset before a new bundle`() {
+        val directory = intellijSmokeArtifactsDirectory()
+        val stale = File(directory, "intellij-xvfb-putimage-trace.log")
+        val retainedInputDirectory = File(directory, "project").also { it.mkdirs() }
+        val retainedInput = File(retainedInputDirectory, "README.md")
+        stale.writeText("stale trace")
+        retainedInput.writeText("tracked input")
+
+        val prepared = prepareIntellijParityArtifactsDirectory()
+
+        assertEquals(directory, prepared)
+        assertTrue(prepared.isDirectory)
+        assertFalse(stale.exists(), "stale IntelliJ parity artifacts must not survive into the next bundle")
+        assertTrue(retainedInput.isFile, "generated IntelliJ project/cache inputs must survive artifact cleanup")
+    }
+
+    @Test
     fun `intellij xvfb putimage trace proxy decodes big requests at extended offsets`() {
         val tempDir = Files.createTempDirectory("x11-putimage-trace-proxy")
         val sourceFile = tempDir.resolve("X11PutImageTraceProxy.java")
@@ -2940,7 +2967,7 @@ class IntellijCommunitySmokeTest {
         composedSvg: BufferedImage,
         composedSvgCapture: VisualCapture,
     ) {
-        val directory = intellijSmokeArtifactsDirectory()
+        val directory = prepareIntellijParityArtifactsDirectory()
         ImageIO.write(reference.robot.image, "png", File(directory, "intellij-xvfb-reference.png"))
         ImageIO.write(actual.robot.image, "png", File(directory, "intellij-kotlin-robot.png"))
         ImageIO.write(composedSvg, "png", File(directory, "intellij-kotlin-svg-composed.png"))
@@ -3196,7 +3223,9 @@ class IntellijCommunitySmokeTest {
     }
 
     private fun intellijXvfbPutImageStripProfiles(logs: List<IntellijLogArtifact>): String {
-        val trace = logs.firstOrNull { it.fileName == "intellij-xvfb-putimage-trace.log" }?.text.orEmpty()
+        val traceArtifact = logs.firstOrNull { it.fileName == "intellij-xvfb-putimage-trace.log" }
+            ?: return "Xvfb PutImage thin strip profiles:\n- traceArtifact=absent\n"
+        val trace = traceArtifact.text
         val entries = trace
             .lineSequence()
             .mapNotNull { intellijXvfbPutImageTraceEntry(it) }
@@ -3876,6 +3905,12 @@ class IntellijCommunitySmokeTest {
 
     private fun intellijSmokeArtifactsDirectory(): File =
         projectRoot().resolve("build/tmp/intellij-community-smoke").toFile().also { it.mkdirs() }
+
+    private fun prepareIntellijParityArtifactsDirectory(): File =
+        projectRoot().resolve("build/tmp/intellij-community-smoke").toFile().also {
+            it.mkdirs()
+            it.listFiles()?.filter { child -> child.isFile }?.forEach { child -> child.delete() }
+        }
 
     private fun collectIntellijLogs(
         container: GenericContainer<*>,
