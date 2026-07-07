@@ -309,6 +309,7 @@ class IntellijCommunitySmokeTest {
             assertTrue(File(directory, "intellij-top-frame-band-robot-vs-svg-diff.png").isFile)
             assertTrue(File(directory, "intellij-right-frame-band-metrics.txt").isFile)
             assertTrue(File(directory, "intellij-kotlin-top-frame-band-render-mismatch-tiles.txt").isFile)
+            assertTrue(File(directory, "intellij-kotlin-top-frame-band-render-producer-strips.txt").isFile)
 
             val metrics = File(directory, "intellij-top-frame-band-metrics.txt").readText()
             assertTrue(metrics.contains("region=10,20 1260x120"), metrics)
@@ -343,6 +344,10 @@ class IntellijCommunitySmokeTest {
             assertTrue(mismatchTiles.contains("comparison=robotVsSvg tile=0-31,10-11 root=10,30 32x2 mismatches=1"), mismatchTiles)
             assertTrue(mismatchTiles.contains("operations=0 first=none last=none operationPoints=none families=none"), mismatchTiles)
             assertTrue(mismatchTiles.contains("operationPoints=none"), mismatchTiles)
+
+            val producerStrips = File(directory, "intellij-kotlin-top-frame-band-render-producer-strips.txt").readText()
+            assertTrue(producerStrips.contains("RENDER producer strip profiles:"), producerStrips)
+            assertTrue(producerStrips.contains("- None."), producerStrips)
         } finally {
             directory.deleteRecursively()
         }
@@ -417,6 +422,42 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("sourcePixels=[0xff26282c,0xff3b3329]"), summary)
         assertTrue(summary.contains("resultPixels=[0xff26282c]|[0xff3b3329]"), summary)
         assertTrue(summary.contains("count=1 first=#43 last=#43 operation=FillRectangles minor=26"), summary)
+    }
+
+    @Test
+    fun `intellij render band diagnostics summarize producer strip profiles`() {
+        val section =
+            """
+            RENDER operations intersecting top mapped root-child band:
+            - region=10,20 1260x120 window=0x200003
+            - #41 Composite minor=8 root=10,20 256x256 local=0,0 256x256 op=3 src=0x600280 mask=0x0 dst=0x60004a srcOrigin=0,0 maskOrigin=0,0 dst=0,0 256x256 source=0x600280/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60027f#131 paints=1 first=#40/Composite last=#40/Composite drawings=1 firstDrawing=CopyArea@[0,0 624x2] lastDrawing=CopyArea lastResult=624x2 crc32=0x3eb827c6 framebuffer=624x2 crc32=0x3eb827c6 pixels=[0xff26282c,0xff3b3329] producerSourcePopulation=0x600120#12 paints=0 drawings=1 lastDrawing=PutImage putImageCrc32=0x13572468 putImage=format=2,depth=32,leftPad=0,size=624x2,dataBytes=4992,rowStride=2496,crc32=0x13572468,raw=[0x2c,0x28,0x26,0xff],decoded=[0xff26282c] producerFramebuffer=624x2 crc32=0x2468ace0 pixels=[0xff26282c,0xff3b3329] result=256x256 crc32=0x812ddd86 pixels=[0xff26282c]
+            - #42 Composite minor=8 root=266,20 256x256 local=256,0 256x256 op=3 src=0x600280 mask=0x0 dst=0x60004a srcOrigin=256,0 maskOrigin=0,0 dst=256,0 256x256 source=0x600280/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60027f#131 paints=1 first=#40/Composite last=#40/Composite drawings=1 firstDrawing=CopyArea@[0,0 624x2] lastDrawing=CopyArea lastResult=624x2 crc32=0x3eb827c6 framebuffer=624x2 crc32=0x3eb827c6 pixels=[0xff26282c,0xff3b3329] producerSourcePopulation=0x600120#12 paints=0 drawings=1 lastDrawing=PutImage putImageCrc32=0x13572468 putImage=format=2,depth=32,leftPad=0,size=624x2,dataBytes=4992,rowStride=2496,crc32=0x13572468,raw=[0x2c,0x28,0x26,0xff],decoded=[0xff26282c] producerFramebuffer=624x2 crc32=0x2468ace0 pixels=[0xff26282c,0xff3b3329] result=256x256 crc32=0x70487e06 pixels=[0xff3b3329]
+            - #43 Composite minor=8 root=10,54 1260x803 local=0,34 1260x803 op=3 src=0x60004a mask=0x0 dst=0x600043 srcOrigin=0,34 maskOrigin=0,0 dst=0,34 1260x803 source=0x60004a/pixmap repeat=none destination=0x600043/window repeat=none sourcePopulation=0x600049#39 paints=32 framebuffer=1260x860 crc32=0x2ff32fdc pixels=[0xff26282c] result=1260x803 crc32=0xb8b73315 pixels=[0xff26282c]
+            - #44 Composite minor=8 root=522,20 128x2 local=512,0 128x2 op=3 src=0x600281 mask=0x0 dst=0x60004a srcOrigin=512,0 maskOrigin=0,0 dst=512,0 128x2 source=0x600281/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x600281#1 paints=1 framebuffer=512x2 crc32=0x11111111 pixels=[0xff111111] producerSourcePopulation=0x600121#1 putImage=format=2,depth=32,leftPad=0,size=512x2,dataBytes=4096,rowStride=2048,crc32=0x11111111,raw=[0x11],decoded=[0xff111111] producerFramebuffer=512x2 crc32=0x11111111 result=128x2 crc32=0x11111112 pixels=[0xff111111]
+            - #45 Composite minor=8 root=650,20 128x2 local=640,0 128x2 op=3 src=0x600282 mask=0x0 dst=0x60004a srcOrigin=640,0 maskOrigin=0,0 dst=640,0 128x2 source=0x600282/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x600282#2 paints=1 framebuffer=512x2 crc32=0x22222222 pixels=[0xff222222] producerSourcePopulation=0x600122#2 putImage=format=2,depth=32,leftPad=0,size=512x2,dataBytes=4096,rowStride=2048,crc32=0x22222222,raw=[0x22],decoded=[0xff222222] producerFramebuffer=512x2 crc32=0x22222222 result=128x2 crc32=0x22222223 pixels=[0xff222222]
+            - #46 Composite minor=8 root=778,20 128x2 local=768,0 128x2 op=3 src=0x600282 mask=0x0 dst=0x60004a srcOrigin=768,0 maskOrigin=0,0 dst=768,0 128x2 source=0x600282/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x600282#2 paints=1 framebuffer=512x2 crc32=0x22222222 pixels=[0xff222222] producerSourcePopulation=0x600122#2 putImage=format=2,depth=32,leftPad=0,size=512x2,dataBytes=4096,rowStride=2048,crc32=0x22222222,raw=[0x22],decoded=[0xff222222] producerFramebuffer=512x2 crc32=0x22222222 result=128x2 crc32=0x22222224 pixels=[0xff222222]
+            """.trimIndent()
+
+        val summary = intellijRenderBandProducerStripProfiles(section)
+        val limited = intellijRenderBandProducerStripProfiles(section, limit = 1)
+
+        assertTrue(summary.startsWith("RENDER producer strip profiles:"), summary)
+        assertTrue(summary.contains("count=2 first=#41 last=#42"), summary)
+        assertTrue(summary.contains("src=0x600280 dst=0x60004a repeat=normal filter=good"), summary)
+        assertTrue(summary.contains("sourceFramebuffer=624x2/0x3eb827c6"), summary)
+        assertTrue(summary.contains("producerSourcePopulation=0x600120#12"), summary)
+        assertTrue(summary.contains("putImage=format=2,depth=32,leftPad=0,size=624x2,dataBytes=4992,rowStride=2496,crc32=0x13572468"), summary)
+        assertFalse(summary.contains("putImage=format=2,depth=32,leftPad=0,size=624x2,dataBytes=4992,rowStride=2496,crc32=0x13572468,raw="), summary)
+        assertTrue(summary.contains("raw=[0x2c,0x28,0x26,0xff]"), summary)
+        assertTrue(summary.contains("decoded=[0xff26282c]"), summary)
+        assertTrue(summary.contains("producerFramebuffer=624x2 crc32=0x2468ace0"), summary)
+        assertTrue(summary.contains("sourcePixels=[0xff26282c,0xff3b3329]"), summary)
+        assertTrue(summary.contains("resultPixels=[0xff26282c]|[0xff3b3329]"), summary)
+        assertFalse(summary.contains("0x60004a/pixmap repeat=none"), summary)
+        assertFalse(summary.contains("src=0x600281"), summary)
+        assertTrue(summary.contains("count=2 first=#45 last=#46"), summary)
+        assertTrue(limited.contains("count=2 first=#41 last=#42"), limited)
+        assertFalse(limited.contains("src=0x600282"), limited)
     }
 
     @Test
@@ -2427,6 +2468,7 @@ class IntellijCommunitySmokeTest {
             return
         }
         for ((fileLabel, metricLabel, reportBand, region) in intellijFrameBands(frame)) {
+            val renderSection = intellijRenderBandSection(text, reportBand)
             val expectedRegion = visualCapture(regionImage(expected.image, region))
             val robotRegion = visualCapture(regionImage(actualRobot.image, region))
             val svgRegion = visualCapture(regionImage(actualSvg.image, region))
@@ -2447,12 +2489,15 @@ class IntellijCommunitySmokeTest {
             )
             File(directory, "intellij-kotlin-$fileLabel-render-mismatch-tiles.txt").writeText(
                 intellijRenderBandMismatchTileSummary(
-                    section = intellijRenderBandSection(text, reportBand),
+                    section = renderSection,
                     region = region,
                     expected = expectedRegion.image,
                     actualRobot = robotRegion.image,
                     actualSvg = svgRegion.image,
                 ),
+            )
+            File(directory, "intellij-kotlin-$fileLabel-render-producer-strips.txt").writeText(
+                intellijRenderBandProducerStripProfiles(renderSection),
             )
         }
     }
@@ -2624,6 +2669,9 @@ class IntellijCommunitySmokeTest {
             )
             File(directory, "intellij-kotlin-$fileBand-render-row-buckets.txt").writeText(
                 intellijRenderBandOperationRowBuckets(section),
+            )
+            File(directory, "intellij-kotlin-$fileBand-render-producer-strips.txt").writeText(
+                intellijRenderBandProducerStripProfiles(section),
             )
         }
     }
@@ -2803,6 +2851,76 @@ class IntellijCommunitySmokeTest {
                 appendLine()
             }
         }
+    }
+
+    private fun intellijRenderBandProducerStripProfiles(section: String, limit: Int = 16): String {
+        require(limit > 0) { "limit must be positive" }
+        val stripOperations = section.lineSequence()
+            .mapNotNull(::parseIntellijRenderBandOperation)
+            .filter { operation ->
+                operation.key.operation == "Composite" &&
+                    operation.key.sourceFramebufferSize?.let(::intellijRenderBandIsProducerStripSize) == true &&
+                    operation.sourcePopulationDetail?.contains("producerSourcePopulation=") == true
+            }
+            .toList()
+        val stripGroups = stripOperations
+            .groupBy { it.key }
+            .entries
+            .filter { it.value.size > 1 }
+            .sortedWith(
+                compareByDescending<Map.Entry<IntellijRenderOperationFamilyKey, List<IntellijRenderBandOperation>>> { it.value.size }
+                    .thenBy { it.value.minOf { operation -> operation.id } },
+            )
+            .take(limit)
+        if (stripGroups.isEmpty()) return "RENDER producer strip profiles:\n- None.\n"
+
+        return buildString {
+            appendLine("RENDER producer strip profiles:")
+            stripGroups
+                .forEach { (key, group) ->
+                    val details = group.mapNotNull { it.sourcePopulationDetail }
+                    val sourcePixels = intellijRenderBandPixelSamples(group.mapNotNull { it.sourceFramebufferPixels })
+                    val resultPixels = intellijRenderBandPixelSamples(group.mapNotNull { it.resultPixels })
+                    append("- count=").append(group.size)
+                    append(" first=#").append(group.minOf { it.id })
+                    append(" last=#").append(group.maxOf { it.id })
+                    key.sourceId?.let { append(" src=").append(it) }
+                    key.destinationId?.let { append(" dst=").append(it) }
+                    key.sourceRepeat?.let { append(" repeat=").append(it) }
+                    key.sourceFilter?.let { append(" filter=").append(it) }
+                    key.sourceTransform?.let { append(" transform=").append(it) }
+                    key.sourceFramebufferSize?.let { size ->
+                        append(" sourceFramebuffer=").append(size).append('/').append(key.sourceFramebufferCrc32 ?: "none")
+                    }
+                    append(" ")
+                    append(intellijRenderBandProducerStripDetail(details))
+                    append(" sourcePixels=").append(sourcePixels)
+                    append(" resultPixels=").append(resultPixels)
+                    appendLine()
+                }
+        }
+    }
+
+    private fun intellijRenderBandIsProducerStripSize(size: String): Boolean {
+        val width = size.substringBefore('x').toIntOrNull() ?: return false
+        val height = size.substringAfter('x', "").toIntOrNull() ?: return false
+        return width >= 128 && height in 1..4
+    }
+
+    private fun intellijRenderBandProducerStripDetail(details: List<String>): String {
+        val detail = details.firstOrNull() ?: return "producer=none"
+        val producer = Regex("""\bproducerSourcePopulation=(0x[0-9a-f]+#\d+)""").find(detail)?.groupValues?.get(1)
+        val putImage = Regex("""\bputImage=[^ ]*?(?=,raw=|\s|$)""").find(detail)?.value
+        val raw = Regex("""\braw=\[[^]]*]""").find(detail)?.value
+        val decoded = Regex("""\bdecoded=\[[^]]*]""").find(detail)?.value
+        val producerFramebuffer = Regex("""\bproducerFramebuffer=\d+x\d+\s+crc32=0x[0-9a-f]+""").find(detail)?.value
+        return listOfNotNull(
+            producer?.let { "producerSourcePopulation=$it" },
+            putImage,
+            raw,
+            decoded,
+            producerFramebuffer,
+        ).joinToString(" ").ifBlank { "producer=none" }
     }
 
     private fun intellijRenderBandMismatchTileSummary(
