@@ -5184,7 +5184,27 @@ internal class X11State(
             height = image.height,
             crc32Hex = "0x${crc32.value.toString(16).padStart(8, '0')}",
             pixelSampleHex = image.pixels.take(16).map { "0x${it.toUInt().toString(16).padStart(8, '0')}" },
+            pointSampleHex = renderResultPointSamples(image),
         )
+    }
+
+    private fun renderResultPointSamples(image: XImagePixels, limit: Int = 24): List<String> {
+        val points = linkedSetOf<Pair<Int, Int>>()
+        fun add(x: Int, y: Int = 0) {
+            if (x in 0 until image.width && y in 0 until image.height) points += x to y
+        }
+        listOf(0, 1, 2, 3, 4, 8, 16).forEach(::add)
+        var x = 0
+        while (x < image.width && points.size < limit) {
+            add(x)
+            x += 32
+        }
+        return points
+            .take(limit)
+            .map { (sampleX, sampleY) ->
+                val pixel = image.pixels[sampleY * image.width + sampleX]
+                "$sampleX,$sampleY=0x${pixel.toUInt().toString(16).padStart(8, '0')}"
+            }
     }
 
     @Synchronized
@@ -12236,6 +12256,7 @@ internal data class XRenderOperationResultSnapshot(
     val height: Int,
     val crc32Hex: String,
     val pixelSampleHex: List<String>,
+    val pointSampleHex: List<String> = emptyList(),
 )
 
 internal data class XRenderPictureSnapshot(

@@ -2438,6 +2438,7 @@ class XRenderProtocolTest {
                 assertContains(json, """"lastDrawingPaint":{"drawable":"$sourcePixmapId"""")
                 assertContains(json, """"kind":"PutImage"""")
                 assertContains(json, """"destinationRegion":{"x":0,"y":0,"width":6,"height":2}""")
+                assertContains(json, """"pointSampleHex":["0,0=0xff000000","1,0=0xff00ff00"""")
 
                 val text = httpGet(server.localPort, "/text.txt")
                 assertContains(text, "source=0x${stripPicture.toUInt().toString(16)}/pixmap repeat=normal filter=good")
@@ -2448,6 +2449,7 @@ class XRenderProtocolTest {
                 assertContains(text, "producerSourcePopulation=$sourcePixmapId#")
                 assertContains(text, "drawings=1 lastDrawing=PutImage putImageCrc32=")
                 assertContains(text, "producerFramebuffer=6x2 crc32=")
+                assertContains(text, "pointPixels=[0,0=0xff000000,1,0=0xff00ff00")
             }
             server.close()
             serverThread.join(1_000)

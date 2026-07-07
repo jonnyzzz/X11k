@@ -455,7 +455,7 @@ class IntellijCommunitySmokeTest {
             """
             RENDER operations intersecting top mapped root-child band:
             - region=10,20 100x8 window=0x200003
-            - #41 Composite minor=8 root=10,24 65x2 local=0,4 65x2 op=3 src=0x600240 mask=0x0 dst=0x60004a srcOrigin=0,0 maskOrigin=0,0 dst=0,4 65x2 source=0x600240/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60023f#124 paints=1 framebuffer=624x2 crc32=0xa3949057 pixels=[0xff26282c,0xff3b3329] result=65x2 crc32=0x11111111 pixels=[0xff26282c]
+            - #41 Composite minor=8 root=10,24 65x2 local=0,4 65x2 op=3 src=0x600240 mask=0x0 dst=0x60004a srcOrigin=0,0 maskOrigin=0,0 dst=0,4 65x2 source=0x600240/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60023f#124 paints=1 framebuffer=624x2 crc32=0xa3949057 pixels=[0xff26282c,0xff3b3329] pointPixels=[0,0=0xff26282c,2,0=0xff3b3329] result=65x2 crc32=0x11111111 pixels=[0xff26282c] pointPixels=[0,0=0xff26282c,2,0=0xff302010]
             """.trimIndent()
         val expected = solidImage(100, 8, 0xff10_1010.toInt())
         val robot = solidImage(100, 8, 0xff10_1010.toInt()).also { image ->
@@ -482,7 +482,7 @@ class IntellijCommunitySmokeTest {
             ),
             summary,
         )
-        assertTrue(summary.contains("operationPoints=#41/root=12,24/dst=2,4/src=2,0"), summary)
+        assertTrue(summary.contains("operationPoints=#41/root=12,24/dst=2,4/resultPixel=0xff302010/src=2,0/srcPixel=0xff3b3329"), summary)
         assertFalse(summary.contains("comparison=svgVsXvfb"), summary)
         assertTrue(summary.contains("comparison=robotVsSvg tile=0-31,4-5 root=10,24 32x2 mismatches=2"), summary)
     }
@@ -2693,8 +2693,8 @@ class IntellijCommunitySmokeTest {
         val sourceFragment = line.substringAfter(" source=", "").substringBefore(" destination=", "")
         val sourcePopulation = Regex("""\bsourcePopulation=(0x[0-9a-f]+#\d+)""").find(line)?.groupValues?.get(1)
         val sourcePopulationDetail = intellijRenderBandSourcePopulationDetail(line)
-        val framebuffer = Regex("""\bframebuffer=(\d+x\d+)\s+crc32=(0x[0-9a-f]+)(?:\s+pixels=(\[[^]]*]))?""").find(line)
-        val result = Regex("""\sresult=(\d+x\d+)\s+crc32=(0x[0-9a-f]+)(?:\s+pixels=(\[[^]]*]))?""").find(line)
+        val framebuffer = Regex("""\bframebuffer=(\d+x\d+)\s+crc32=(0x[0-9a-f]+)(?:\s+pixels=(\[[^]]*]))?(?:\s+pointPixels=(\[[^]]*]))?""").find(line)
+        val result = Regex("""\sresult=(\d+x\d+)\s+crc32=(0x[0-9a-f]+)(?:\s+pixels=(\[[^]]*]))?(?:\s+pointPixels=(\[[^]]*]))?""").find(line)
         val root = Regex("""\broot=(-?\d+),(-?\d+)\s+(\d+)x(\d+)""").find(line)
         val sourceOrigin = Regex("""\bsrcOrigin=(-?\d+),(-?\d+)""").find(line)
         val destinationRegion = Regex("""\bdst=(-?\d+),(-?\d+)\s+(\d+)x(\d+)""").find(line)
@@ -2740,9 +2740,11 @@ class IntellijCommunitySmokeTest {
             },
             sourcePopulationDetail = sourcePopulationDetail,
             sourceFramebufferPixels = framebuffer?.groupValues?.getOrNull(3)?.takeIf { it.isNotBlank() },
+            sourceFramebufferPointPixels = intellijRenderBandPointSamples(framebuffer?.groupValues?.getOrNull(4)),
             resultSize = result?.groupValues?.get(1),
             resultCrc32 = result?.groupValues?.get(2),
             resultPixels = result?.groupValues?.getOrNull(3)?.takeIf { it.isNotBlank() },
+            resultPointPixels = intellijRenderBandPointSamples(result?.groupValues?.getOrNull(4)),
         )
     }
 
@@ -2912,10 +2914,17 @@ class IntellijCommunitySmokeTest {
                 val destination = operation.destinationRegion?.let { dst ->
                     "dst=${dst.x + rootLocalX},${dst.y + rootLocalY}"
                 } ?: "dst=none"
+                val resultPixel = operation.resultPointPixels[IntellijCoordinate(rootLocalX, rootLocalY)]
+                    ?.let { "/resultPixel=$it" }
+                    ?: ""
                 val source = operation.sourceOrigin?.let { src ->
-                    "src=${src.x + rootLocalX},${src.y + rootLocalY}"
+                    val sourcePoint = IntellijCoordinate(src.x + rootLocalX, src.y + rootLocalY)
+                    val sourcePixel = operation.sourceFramebufferPointPixels[sourcePoint]
+                        ?.let { "/srcPixel=$it" }
+                        ?: ""
+                    "src=${sourcePoint.x},${sourcePoint.y}$sourcePixel"
                 } ?: "src=none"
-                "#${operation.id}/root=${point.x},${point.y}/$destination/$source"
+                "#${operation.id}/root=${point.x},${point.y}/$destination$resultPixel/$source"
             }
             .distinct()
             .take(limit)
@@ -3001,8 +3010,18 @@ class IntellijCommunitySmokeTest {
         val end = line.indexOf(" result=", start).takeIf { it >= 0 } ?: line.length
         return line.substring(start, end)
             .replace(Regex("""\s+pixels=\[[^]]*]"""), "")
+            .replace(Regex("""\s+pointPixels=\[[^]]*]"""), "")
             .trim()
             .takeIf { it.isNotBlank() }
+    }
+
+    private fun intellijRenderBandPointSamples(sample: String?): Map<IntellijCoordinate, String> {
+        if (sample.isNullOrBlank()) return emptyMap()
+        return Regex("""(-?\d+),(-?\d+)=(0x[0-9a-f]+)""")
+            .findAll(sample)
+            .associate { match ->
+                IntellijCoordinate(match.groupValues[1].toInt(), match.groupValues[2].toInt()) to match.groupValues[3]
+            }
     }
 
     private fun intellijRenderBandPixelSamples(samples: List<String>, limit: Int = 2): String =
@@ -3057,9 +3076,11 @@ class IntellijCommunitySmokeTest {
         val destinationRegion: Rectangle?,
         val sourcePopulationDetail: String?,
         val sourceFramebufferPixels: String?,
+        val sourceFramebufferPointPixels: Map<IntellijCoordinate, String>,
         val resultSize: String?,
         val resultCrc32: String?,
         val resultPixels: String?,
+        val resultPointPixels: Map<IntellijCoordinate, String>,
     )
 
     private data class IntellijRenderOperationFamilyKey(

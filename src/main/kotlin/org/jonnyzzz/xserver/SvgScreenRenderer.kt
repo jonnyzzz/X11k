@@ -2032,6 +2032,13 @@ internal object SvgScreenRenderer {
             if (index > 0) append(',')
             append('"').append(value).append('"')
         }
+        if (result.pointSampleHex.isNotEmpty()) {
+            append("""],"pointSampleHex":[""")
+            result.pointSampleHex.forEachIndexed { index, value ->
+                if (index > 0) append(',')
+                append('"').append(value).append('"')
+            }
+        }
         append("""]}""")
     }
 

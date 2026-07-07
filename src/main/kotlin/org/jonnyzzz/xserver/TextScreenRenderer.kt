@@ -764,6 +764,10 @@ internal object TextScreenRenderer {
                 append(framebuffer.crc32Hex)
                 append(" pixels=")
                 append(framebuffer.pixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+                if (framebuffer.pointSampleHex.isNotEmpty()) {
+                    append(" pointPixels=")
+                    append(framebuffer.pointSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+                }
             }
             population.lastPaint?.sourcePopulation?.let { producer ->
                 append(" producerSourcePopulation=")
@@ -793,6 +797,10 @@ internal object TextScreenRenderer {
                     append(framebuffer.crc32Hex)
                     append(" pixels=")
                     append(framebuffer.pixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+                    if (framebuffer.pointSampleHex.isNotEmpty()) {
+                        append(" pointPixels=")
+                        append(framebuffer.pointSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+                    }
                 }
             }
         }
@@ -806,6 +814,10 @@ internal object TextScreenRenderer {
             append(result.crc32Hex)
             append(" pixels=")
             append(result.pixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+            if (result.pointSampleHex.isNotEmpty()) {
+                append(" pointPixels=")
+                append(result.pointSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+            }
         }
     }
 
