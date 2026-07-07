@@ -481,6 +481,53 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij putimage strip correlation joins xvfb trace and kotlin producer strips`() {
+        val logs = listOf(
+            IntellijLogArtifact(
+                fileName = "intellij-xvfb-putimage-trace.log",
+                text =
+                    """
+                    X11 PutImage trace proxy listening unix=/tmp/.X11-unix/X99 target=unix:/tmp/.X11-unix/X98
+                    connection=5 request=12220 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=624x2 leftPad=0 dataBytes=4992 crc32=0x1793d6e5 raw=[0x2c,0x28,0x26,0xff] decoded=[0xff26282c]
+                    connection=5 request=12236 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=600x2 leftPad=0 dataBytes=4800 crc32=0xcda50bae raw=[0x37,0x4f,0x34,0xff] decoded=[0xff344f37]
+                    """.trimIndent(),
+            ),
+        )
+        val text =
+            """
+            RENDER operations intersecting top mapped root-child band:
+            - region=10,20 1260x120 window=0x200003
+            - #41 Composite minor=8 root=10,20 256x256 local=0,0 256x256 op=3 src=0x600280 mask=0x0 dst=0x60004a srcOrigin=0,0 maskOrigin=0,0 dst=0,0 256x256 source=0x600280/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60027f#131 paints=1 first=#40/Composite last=#40/Composite drawings=1 firstDrawing=CopyArea@[0,0 624x2] lastDrawing=CopyArea lastResult=624x2 crc32=0x3eb827c6 framebuffer=624x2 crc32=0x3eb827c6 pixels=[0xff26282c,0xff3b3329] producerSourcePopulation=0x600120#12 paints=0 drawings=1 lastDrawing=PutImage putImageCrc32=0x13572468 putImage=format=2,depth=32,leftPad=0,size=624x2,dataBytes=4992,rowStride=2496,crc32=0x13572468,raw=[0x2c,0x28,0x26,0xff],decoded=[0xff26282c] producerFramebuffer=624x2 crc32=0x2468ace0 pixels=[0xff26282c,0xff3b3329] result=256x256 crc32=0x812ddd86 pixels=[0xff26282c]
+            - #42 Composite minor=8 root=266,20 256x256 local=256,0 256x256 op=3 src=0x600280 mask=0x0 dst=0x60004a srcOrigin=256,0 maskOrigin=0,0 dst=256,0 256x256 source=0x600280/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60027f#131 paints=1 first=#40/Composite last=#40/Composite drawings=1 firstDrawing=CopyArea@[0,0 624x2] lastDrawing=CopyArea lastResult=624x2 crc32=0x3eb827c6 framebuffer=624x2 crc32=0x3eb827c6 pixels=[0xff26282c,0xff3b3329] producerSourcePopulation=0x600120#12 paints=0 drawings=1 lastDrawing=PutImage putImageCrc32=0x13572468 putImage=format=2,depth=32,leftPad=0,size=624x2,dataBytes=4992,rowStride=2496,crc32=0x13572468,raw=[0x2c,0x28,0x26,0xff],decoded=[0xff26282c] producerFramebuffer=624x2 crc32=0x2468ace0 pixels=[0xff26282c,0xff3b3329] result=256x256 crc32=0x70487e06 pixels=[0xff3b3329]
+            - #43 Composite minor=8 root=10,54 128x2 local=0,34 128x2 op=3 src=0x600281 mask=0x0 dst=0x60004a srcOrigin=0,0 maskOrigin=0,0 dst=0,34 128x2 source=0x600281/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x600281#1 paints=1 framebuffer=128x2 crc32=0x11111111 pixels=[0xff111111] producerSourcePopulation=0x600121#1 putImage=format=2,depth=32,leftPad=0,size=128x2,dataBytes=1024,rowStride=512,crc32=0x11111111,raw=[0x11],decoded=[0xff111111] producerFramebuffer=128x2 crc32=0x11111111 result=128x2 crc32=0x11111112 pixels=[0xff111111]
+
+            RENDER operations intersecting right mapped root-child band:
+            - region=1174,20 96x860 window=0x200003
+            - None.
+
+            RENDER operations intersecting bottom mapped root-child band:
+            - region=10,784 1260x96 window=0x200003
+            - None.
+
+            Recent PutImage commands:
+            - None.
+            """.trimIndent()
+
+        val summary = intellijPutImageStripCorrelation(logs, text)
+
+        assertTrue(summary.startsWith("IntelliJ PutImage strip correlation:"), summary)
+        assertTrue(summary.contains("xvfbTrace=present xvfbGroups=2 kotlinGroups=1"), summary)
+        assertTrue(summary.contains("band=top count=2 first=#41 last=#42"), summary)
+        assertTrue(summary.contains("size=624x2 dataBytes=4992 crc32=0x13572468"), summary)
+        assertTrue(summary.contains("xvfbSameSize=1 xvfbSameCrc=0 status=crc-mismatch"), summary)
+        assertTrue(summary.contains("xvfbClosest=5#12220..5#12220 count=1 crc32=0x1793d6e5"), summary)
+        assertTrue(summary.contains("raw=[0x2c,0x28,0x26,0xff] decoded=[0xff26282c]"), summary)
+        assertTrue(summary.contains("producerFramebuffer=624x2 crc32=0x2468ace0"), summary)
+        assertTrue(summary.contains("xvfbOnly size=600x2 dataBytes=4800 crc32=0xcda50bae count=1"), summary)
+        assertFalse(summary.contains("size=128x2"), summary)
+    }
+
+    @Test
     fun `intellij render band diagnostics summarize two row operation buckets`() {
         val section =
             """
@@ -2987,6 +3034,9 @@ class IntellijCommunitySmokeTest {
         val logs = reference.logs + actual.logs
         dumpIntellijLogArtifacts(logs)
         File(directory, "intellij-xvfb-putimage-strip-profiles.txt").writeText(intellijXvfbPutImageStripProfiles(reference.logs))
+        File(directory, "intellij-putimage-strip-correlation.txt").writeText(
+            intellijPutImageStripCorrelation(reference.logs, actual.text),
+        )
         File(directory, "intellij-glx-jcef-diagnostics.txt").writeText(
             intellijGlxJcefDiagnosticsSummary(
                 logs,
@@ -3577,6 +3627,175 @@ class IntellijCommunitySmokeTest {
             producerFramebuffer,
         ).joinToString(" ").ifBlank { "producer=none" }
     }
+
+    private fun intellijPutImageStripCorrelation(
+        logs: List<IntellijLogArtifact>,
+        text: String,
+        limit: Int = 16,
+    ): String {
+        require(limit > 0) { "limit must be positive" }
+        val traceArtifact = logs.firstOrNull { it.fileName == "intellij-xvfb-putimage-trace.log" }
+        val xvfbGroups = traceArtifact?.text
+            ?.lineSequence()
+            ?.mapNotNull { intellijXvfbPutImageTraceEntry(it) }
+            ?.filter { it.format == 2 && it.depth == 32 && it.height <= 2 && it.width >= 100 }
+            ?.groupBy { IntellijPutImageStripKey("${it.width}x${it.height}", it.dataBytes, it.crc32, it.raw, it.decoded) }
+            ?.values
+            ?.map { group ->
+                val first = group.first()
+                val last = group.last()
+                IntellijXvfbPutImageStripGroup(
+                    count = group.size,
+                    firstConnection = first.connection,
+                    firstRequest = first.request,
+                    lastConnection = last.connection,
+                    lastRequest = last.request,
+                    key = IntellijPutImageStripKey(
+                        size = "${first.width}x${first.height}",
+                        dataBytes = first.dataBytes,
+                        crc32 = first.crc32,
+                        raw = first.raw,
+                        decoded = first.decoded,
+                    ),
+                )
+            }
+            ?.sortedWith(compareByDescending<IntellijXvfbPutImageStripGroup> { it.count }.thenBy { it.firstRequest })
+            ?: emptyList()
+        val kotlinGroups = intellijKotlinPutImageProducerStripGroups(text)
+            .sortedWith(compareByDescending<IntellijKotlinPutImageStripGroup> { it.count }.thenBy { it.firstOperation })
+        val xvfbBySize = xvfbGroups.groupBy { it.key.size }
+        val kotlinSizes = kotlinGroups.map { it.key.size }.toSet()
+
+        return buildString {
+            appendLine("IntelliJ PutImage strip correlation:")
+            append("xvfbTrace=").append(if (traceArtifact == null) "absent" else "present")
+            append(" xvfbGroups=").append(xvfbGroups.size)
+            append(" kotlinGroups=").append(kotlinGroups.size)
+            appendLine()
+            if (kotlinGroups.isEmpty() && xvfbGroups.isEmpty()) {
+                appendLine("- None.")
+                return@buildString
+            }
+            kotlinGroups.take(limit).forEach { group ->
+                val sameSize = xvfbBySize[group.key.size].orEmpty()
+                val sameCrc = sameSize.filter { it.key.crc32 == group.key.crc32 }
+                val closest = sameCrc.firstOrNull()
+                    ?: sameSize.maxWithOrNull(compareBy<IntellijXvfbPutImageStripGroup> { it.count }.thenByDescending { -it.firstRequest })
+                val status = when {
+                    sameCrc.isNotEmpty() -> "crc-match"
+                    sameSize.isNotEmpty() -> "crc-mismatch"
+                    else -> "xvfb-size-missing"
+                }
+                append("- band=").append(group.band)
+                append(" count=").append(group.count)
+                append(" first=#").append(group.firstOperation)
+                append(" last=#").append(group.lastOperation)
+                group.sourceId?.let { append(" src=").append(it) }
+                group.destinationId?.let { append(" dst=").append(it) }
+                group.repeat?.let { append(" repeat=").append(it) }
+                group.filter?.let { append(" filter=").append(it) }
+                group.transform?.let { append(" transform=").append(it) }
+                append(" size=").append(group.key.size)
+                append(" dataBytes=").append(group.key.dataBytes)
+                append(" crc32=").append(group.key.crc32)
+                append(" raw=").append(group.key.raw)
+                append(" decoded=").append(group.key.decoded)
+                group.sourceFramebuffer?.let { append(" sourceFramebuffer=").append(it) }
+                group.producerFramebuffer?.let { append(" ").append(it) }
+                append(" sourcePixels=").append(group.sourcePixels)
+                append(" resultPixels=").append(group.resultPixels)
+                append(" xvfbSameSize=").append(sameSize.size)
+                append(" xvfbSameCrc=").append(sameCrc.size)
+                append(" status=").append(status)
+                closest?.let { append(" xvfbClosest=").append(it.referenceLabel()) }
+                appendLine()
+            }
+            xvfbGroups
+                .filter { it.key.size !in kotlinSizes }
+                .take(limit)
+                .forEach { group ->
+                    append("- xvfbOnly size=").append(group.key.size)
+                    append(" dataBytes=").append(group.key.dataBytes)
+                    append(" crc32=").append(group.key.crc32)
+                    append(" count=").append(group.count)
+                    append(" first=").append(group.firstConnection).append('#').append(group.firstRequest)
+                    append(" last=").append(group.lastConnection).append('#').append(group.lastRequest)
+                    append(" raw=").append(group.key.raw)
+                    append(" decoded=").append(group.key.decoded)
+                    appendLine()
+                }
+        }
+    }
+
+    private fun intellijKotlinPutImageProducerStripGroups(text: String): List<IntellijKotlinPutImageStripGroup> =
+        listOf("top", "right", "bottom").flatMap { band ->
+            intellijRenderBandSection(text, band)
+                .lineSequence()
+                .mapNotNull(::parseIntellijRenderBandOperation)
+                .filter { operation ->
+                    operation.key.operation == "Composite" &&
+                        operation.key.sourceFramebufferSize?.let(::intellijRenderBandIsProducerStripSize) == true &&
+                        operation.sourcePopulationDetail?.contains("producerSourcePopulation=") == true
+                }
+                .mapNotNull { operation ->
+                    val detail = operation.sourcePopulationDetail ?: return@mapNotNull null
+                    val putImage = intellijPutImageStripKeyFromProducerDetail(detail) ?: return@mapNotNull null
+                    Triple(band, operation, putImage)
+                }
+        }
+            .groupBy { (band, operation, key) ->
+                IntellijKotlinPutImageStripGroupingKey(
+                    band = band,
+                    sourceId = operation.key.sourceId,
+                    destinationId = operation.key.destinationId,
+                    repeat = operation.key.sourceRepeat,
+                    filter = operation.key.sourceFilter,
+                    transform = operation.key.sourceTransform,
+                    sourceFramebuffer = operation.key.sourceFramebufferSize?.let { size ->
+                        "$size/${operation.key.sourceFramebufferCrc32 ?: "none"}"
+                    },
+                    producerFramebuffer = intellijProducerFramebufferFromDetail(operation.sourcePopulationDetail.orEmpty()),
+                    key = key,
+                )
+            }
+            .filter { it.value.size > 1 }
+            .map { (grouping, group) ->
+                val operations = group.map { it.second }
+                IntellijKotlinPutImageStripGroup(
+                    band = grouping.band,
+                    count = operations.size,
+                    firstOperation = operations.minOf { it.id },
+                    lastOperation = operations.maxOf { it.id },
+                    sourceId = grouping.sourceId,
+                    destinationId = grouping.destinationId,
+                    repeat = grouping.repeat,
+                    filter = grouping.filter,
+                    transform = grouping.transform,
+                    sourceFramebuffer = grouping.sourceFramebuffer,
+                    producerFramebuffer = grouping.producerFramebuffer,
+                    key = grouping.key,
+                    sourcePixels = intellijRenderBandPixelSamples(operations.mapNotNull { it.sourceFramebufferPixels }),
+                    resultPixels = intellijRenderBandPixelSamples(operations.mapNotNull { it.resultPixels }),
+                )
+            }
+
+    private fun intellijPutImageStripKeyFromProducerDetail(detail: String): IntellijPutImageStripKey? {
+        val match = Regex("""\bputImage=format=2,depth=32,leftPad=\d+,size=(\d+x\d+),dataBytes=(\d+),rowStride=\d+,crc32=(0x[0-9a-f]+),raw=(\[[^]]*]),decoded=(\[[^]]*])""")
+            .find(detail)
+            ?: return null
+        val size = match.groupValues[1]
+        if (!intellijRenderBandIsProducerStripSize(size)) return null
+        return IntellijPutImageStripKey(
+            size = size,
+            dataBytes = match.groupValues[2].toInt(),
+            crc32 = match.groupValues[3],
+            raw = match.groupValues[4],
+            decoded = match.groupValues[5],
+        )
+    }
+
+    private fun intellijProducerFramebufferFromDetail(detail: String): String? =
+        Regex("""\bproducerFramebuffer=\d+x\d+\s+crc32=0x[0-9a-f]+""").find(detail)?.value
 
     private fun intellijRenderBandMismatchTileSummary(
         section: String,
@@ -4945,6 +5164,55 @@ class IntellijCommunitySmokeTest {
         val crc32: String,
         val raw: String,
         val decoded: String,
+    )
+
+    private data class IntellijPutImageStripKey(
+        val size: String,
+        val dataBytes: Int,
+        val crc32: String,
+        val raw: String,
+        val decoded: String,
+    )
+
+    private data class IntellijXvfbPutImageStripGroup(
+        val count: Int,
+        val firstConnection: Int,
+        val firstRequest: Int,
+        val lastConnection: Int,
+        val lastRequest: Int,
+        val key: IntellijPutImageStripKey,
+    ) {
+        fun referenceLabel(): String =
+            "$firstConnection#$firstRequest..$lastConnection#$lastRequest count=$count crc32=${key.crc32} raw=${key.raw} decoded=${key.decoded}"
+    }
+
+    private data class IntellijKotlinPutImageStripGroupingKey(
+        val band: String,
+        val sourceId: String?,
+        val destinationId: String?,
+        val repeat: String?,
+        val filter: String?,
+        val transform: String?,
+        val sourceFramebuffer: String?,
+        val producerFramebuffer: String?,
+        val key: IntellijPutImageStripKey,
+    )
+
+    private data class IntellijKotlinPutImageStripGroup(
+        val band: String,
+        val count: Int,
+        val firstOperation: Int,
+        val lastOperation: Int,
+        val sourceId: String?,
+        val destinationId: String?,
+        val repeat: String?,
+        val filter: String?,
+        val transform: String?,
+        val sourceFramebuffer: String?,
+        val producerFramebuffer: String?,
+        val key: IntellijPutImageStripKey,
+        val sourcePixels: String,
+        val resultPixels: String,
     )
 
     private data class IntellijFrameBand(
