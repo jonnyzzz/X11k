@@ -2750,6 +2750,74 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER PutImage backed OpSrc through source clip copies retained strip pixels exactly`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val sourcePixmap = PixmapId
+                val sourcePicture = PixmapPictureId
+                val destinationPixmap = PixmapId + 0x20
+                val destinationPicture = PixmapPictureId + 0x20
+                val width = 24
+                val height = 2
+                val retainedTopStripRow = listOf(
+                    0xff26_282c.toInt(),
+                    0xff26_282c.toInt(),
+                    0xff26_282c.toInt(),
+                    0xff26_282c.toInt(),
+                    0xff26_282c.toInt(),
+                    0xff27_282d.toInt(),
+                    0xff26_282c.toInt(),
+                    0xff27_282d.toInt(),
+                    0xff27_282c.toInt(),
+                    0xff27_282d.toInt(),
+                    0xff27_282d.toInt(),
+                    0xff27_282d.toInt(),
+                    0xff27_282d.toInt(),
+                    0xff27_282d.toInt(),
+                    0xff27_292d.toInt(),
+                    0xff27_282d.toInt(),
+                    0xff28_282d.toInt(),
+                    0xff29_292f.toInt(),
+                    0xff2b_2a31.toInt(),
+                    0xff2e_2a33.toInt(),
+                    0xff31_2b36.toInt(),
+                    0xff33_2b38.toInt(),
+                    0xff36_2d3a.toInt(),
+                    0xff39_2d3d.toInt(),
+                )
+                val sourcePixels = (retainedTopStripRow + retainedTopStripRow).toIntArray()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(sourcePixmap, depth = 32, width = width, height = height))
+                out.write(createPixmapRequest(destinationPixmap, depth = 32, width = width, height = height))
+                out.write(createGcRequest(PutImageGcId, sourcePixmap))
+                out.write(putImage32OnlyRequest(sourcePixmap, width = width, height = height, pixels = sourcePixels))
+                out.write(renderCreatePicture(sourcePicture, sourcePixmap, XRender.Argb32Format))
+                out.write(renderCreatePicture(destinationPicture, destinationPixmap, XRender.Argb32Format))
+                out.write(renderSetPictureClipRectangles(sourcePicture, rectangles = listOf(XRectangleCommand(0, 0, width, height))))
+                out.write(renderComposite(sourcePicture, destinationPicture, operation = XRender.OpSrc, width = width, height = height, destinationX = 0, destinationY = 0))
+                out.write(getImageRequest(sourcePixmap, x = 0, y = 0, width = width, height = height))
+                out.write(getImageRequest(destinationPixmap, x = 0, y = 0, width = width, height = height))
+                out.flush()
+
+                val sourceImage = readReply(socket.getInputStream())
+                val destinationImage = readReply(socket.getInputStream())
+                assertEquals(32, sourceImage[1].toInt() and 0xff)
+                assertEquals(32, destinationImage[1].toInt() and 0xff)
+                listOf(sourceImage, destinationImage).forEach { image ->
+                    assertPixelRow(image, imageWidth = width, y = 0, expected = retainedTopStripRow)
+                    assertPixelRow(image, imageWidth = width, y = 1, expected = retainedTopStripRow)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER pixmap render history retains composite source population`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
