@@ -356,6 +356,20 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij robot svg candidate inventory includes frame band distances`() {
+        val inventory = intellijRobotSvgCandidateInventory(
+            listOf(
+                IntellijSvgCandidateDistance(index = 0, full = 0.25, top = 0.0, right = 0.1, bottom = 0.7),
+                IntellijSvgCandidateDistance(index = 1, full = null, top = null, right = null, bottom = null),
+            ),
+        )
+
+        assertTrue(inventory.contains("count=2"), inventory)
+        assertTrue(inventory.contains("0: full=0.25 top=0.0 right=0.1 bottom=0.7"), inventory)
+        assertTrue(inventory.contains("1: full=unavailable top=unavailable right=unavailable bottom=unavailable"), inventory)
+    }
+
+    @Test
     fun `intellij render band diagnostics split top frame section from text report`() {
         val text =
             """
@@ -1544,6 +1558,39 @@ class IntellijCommunitySmokeTest {
         return fullImageDistance(robot.image, capture.image)
     }
 
+    private fun intellijSvgCandidateDistances(
+        robot: VisualCapture,
+        candidates: List<String>,
+        text: String,
+        width: Int = IntellijCaptureWidth,
+        height: Int = IntellijCaptureHeight,
+    ): List<IntellijSvgCandidateDistance> {
+        val frameBands = largestMappedRootChildWindow(text)
+            ?.let { frame ->
+                intellijFrameBands(frame).associate { band -> band.reportBand to band.region }
+            }
+            .orEmpty()
+        return candidates.mapIndexed { index, svg ->
+            val layers = svgCompositionLayers(svg)
+            if (layers.isEmpty()) {
+                IntellijSvgCandidateDistance(index = index, full = null, top = null, right = null, bottom = null)
+            } else {
+                val candidate = visualCapture(composeSvgLayers(layers, width, height))
+                fun bandDistance(name: String): Double? =
+                    frameBands[name]?.let { region ->
+                        imageDistance(regionImage(robot.image, region), regionImage(candidate.image, region))
+                    }
+                IntellijSvgCandidateDistance(
+                    index = index,
+                    full = fullImageDistance(robot.image, candidate.image),
+                    top = bandDistance("top"),
+                    right = bandDistance("right"),
+                    bottom = bandDistance("bottom"),
+                )
+            }
+        }
+    }
+
     private fun intellijSvgCandidatesAfterRobotCapture(port: Int, svgBeforeRobot: String): List<String> =
         buildList {
             add(svgBeforeRobot)
@@ -1574,16 +1621,15 @@ class IntellijCommunitySmokeTest {
             val robot = visualCapture(capture.stdout)
             val svgCandidates = intellijSvgCandidatesAfterRobotCapture(port, svgBeforeRobot)
             val selected = closestIntellijSvgToRobotScore(robot, svgCandidates)
+            val text = httpGet(port, "/text.txt")
             val frame = IntellijRobotSvgFrame(
                 robot = robot,
                 svg = selected.svg,
-                text = httpGet(port, "/text.txt"),
+                text = text,
                 stateJson = httpGet(port, "/state.json"),
                 html = httpGet(port, "/"),
                 robotSvgDistance = selected.distance,
-                svgCandidateDistances = svgCandidates.mapIndexed { index, candidate ->
-                    index to intellijSvgDistanceToRobot(robot, candidate)
-                },
+                svgCandidateDistances = intellijSvgCandidateDistances(robot, svgCandidates, text),
             )
             if (frame.robotSvgDistance <= IntellijRobotSvgCaptureDistanceThreshold) return frame
             val currentBest = best
@@ -4101,11 +4147,16 @@ class IntellijCommunitySmokeTest {
             }
         }
 
-    private fun intellijRobotSvgCandidateInventory(candidateDistances: List<Pair<Int, Double?>>): String =
+    private fun intellijRobotSvgCandidateInventory(candidateDistances: List<IntellijSvgCandidateDistance>): String =
         buildString {
             appendLine("count=${candidateDistances.size}")
-            candidateDistances.forEach { (index, distance) ->
-                appendLine("$index: distance=${distance ?: "unavailable"}")
+            candidateDistances.forEach { distance ->
+                append(distance.index)
+                append(": full=").append(distance.full ?: "unavailable")
+                append(" top=").append(distance.top ?: "unavailable")
+                append(" right=").append(distance.right ?: "unavailable")
+                append(" bottom=").append(distance.bottom ?: "unavailable")
+                appendLine()
             }
         }
 
@@ -4662,7 +4713,7 @@ class IntellijCommunitySmokeTest {
         val svg: String,
         val html: String,
         val svgLayers: List<SvgLayer>,
-        val robotSvgCandidateDistances: List<Pair<Int, Double?>>,
+        val robotSvgCandidateDistances: List<IntellijSvgCandidateDistance>,
         val logs: List<IntellijLogArtifact>,
     )
 
@@ -4673,12 +4724,20 @@ class IntellijCommunitySmokeTest {
         val stateJson: String,
         val html: String,
         val robotSvgDistance: Double,
-        val svgCandidateDistances: List<Pair<Int, Double?>>,
+        val svgCandidateDistances: List<IntellijSvgCandidateDistance>,
     )
 
     private data class IntellijSvgScore(
         val svg: String,
         val distance: Double,
+    )
+
+    private data class IntellijSvgCandidateDistance(
+        val index: Int,
+        val full: Double?,
+        val top: Double?,
+        val right: Double?,
+        val bottom: Double?,
     )
 
     private data class IntellijLogArtifact(
