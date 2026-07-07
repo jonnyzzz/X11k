@@ -2360,6 +2360,101 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER repeated thin strip provenance exposes clipped PutImage producer source`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val stripPixmap = PixmapId + 20
+                val stripPicture = PixmapPictureId + 20
+                val sourcePixels = intArrayOf(
+                    0xffff_0000.toInt(),
+                    0xff00_ff00.toInt(),
+                    0xff00_00ff.toInt(),
+                    0xffff_ff00.toInt(),
+                    0xffff_00ff.toInt(),
+                    0xff00_ffff.toInt(),
+                    0xff20_2020.toInt(),
+                    0xff40_4040.toInt(),
+                    0xff60_6060.toInt(),
+                    0xff80_8080.toInt(),
+                    0xffa0_a0a0.toInt(),
+                    0xffc0_c0c0.toInt(),
+                )
+                out.write(createWindowRequest(WindowId, width = 16, height = 8))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 6, height = 2))
+                out.write(createGcRequest(PutImageGcId, PixmapId))
+                out.write(putImage32OnlyRequest(PixmapId, width = 6, height = 2, pixels = sourcePixels))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(createPixmapRequest(stripPixmap, depth = 32, width = 6, height = 2))
+                out.write(renderCreatePicture(stripPicture, stripPixmap, XRender.Argb32Format))
+                out.write(renderSetPictureClipRectangles(stripPicture, rectangles = listOf(XRectangleCommand(1, 0, 4, 2))))
+                out.write(renderComposite(PixmapPictureId, stripPicture, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 6, height = 2))
+                out.write(renderChangePictureClipMaskNone(stripPicture))
+                out.write(renderChangePicture(stripPicture, repeat = XRender.RepeatNormal))
+                out.write(renderSetPictureFilter(stripPicture, "good", values = emptyList()))
+                out.write(renderComposite(stripPicture, PictureId, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 8, height = 4))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 4))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                val firstStripRow = listOf(
+                    0xff00_0000.toInt(),
+                    0xff00_ff00.toInt(),
+                    0xff00_00ff.toInt(),
+                    0xffff_ff00.toInt(),
+                    0xffff_00ff.toInt(),
+                    0xff00_0000.toInt(),
+                    0xff00_0000.toInt(),
+                    0xff00_ff00.toInt(),
+                )
+                val secondStripRow = listOf(
+                    0xff00_0000.toInt(),
+                    0xff40_4040.toInt(),
+                    0xff60_6060.toInt(),
+                    0xff80_8080.toInt(),
+                    0xffa0_a0a0.toInt(),
+                    0xff00_0000.toInt(),
+                    0xff00_0000.toInt(),
+                    0xff40_4040.toInt(),
+                )
+                assertPixelRow(image, imageWidth = 8, y = 0, expected = firstStripRow)
+                assertPixelRow(image, imageWidth = 8, y = 1, expected = secondStripRow)
+                assertPixelRow(image, imageWidth = 8, y = 2, expected = firstStripRow)
+                assertPixelRow(image, imageWidth = 8, y = 3, expected = secondStripRow)
+
+                val sourcePixmapId = "0x${PixmapId.toUInt().toString(16)}"
+                val stripPixmapId = "0x${stripPixmap.toUInt().toString(16)}"
+                waitUntil {
+                    httpGet(server.localPort, "/text.txt").contains("producerSourcePopulation=$sourcePixmapId#")
+                }
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"sourcePopulation":{"drawable":"$stripPixmapId"""")
+                assertContains(json, """"lastPaint":{"id":""")
+                assertContains(json, """"operation":"Composite"""")
+                assertContains(json, """"sourcePopulation":{"drawable":"$sourcePixmapId"""")
+                assertContains(json, """"lastDrawingPaint":{"drawable":"$sourcePixmapId"""")
+                assertContains(json, """"kind":"PutImage"""")
+                assertContains(json, """"destinationRegion":{"x":0,"y":0,"width":6,"height":2}""")
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "source=0x${stripPicture.toUInt().toString(16)}/pixmap repeat=normal filter=good")
+                assertContains(text, "sourcePopulation=$stripPixmapId#")
+                assertContains(text, "paints=1")
+                assertContains(text, "last=#")
+                assertContains(text, "/Composite")
+                assertContains(text, "producerSourcePopulation=$sourcePixmapId#")
+                assertContains(text, "drawings=1 lastDrawing=PutImage putImageCrc32=")
+                assertContains(text, "producerFramebuffer=6x2 crc32=")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER pixmap render history retains composite source population`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

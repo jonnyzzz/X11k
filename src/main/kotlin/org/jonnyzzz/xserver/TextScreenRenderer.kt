@@ -765,6 +765,36 @@ internal object TextScreenRenderer {
                 append(" pixels=")
                 append(framebuffer.pixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
             }
+            population.lastPaint?.sourcePopulation?.let { producer ->
+                append(" producerSourcePopulation=")
+                append(producer.drawableIdHex)
+                append("#")
+                append(producer.generation)
+                append(" paints=")
+                append(producer.paintCount)
+                if (producer.drawingPaintCount > 0) {
+                    append(" drawings=")
+                    append(producer.drawingPaintCount)
+                    producer.lastDrawingPaint?.let { last ->
+                        append(" lastDrawing=")
+                        append(last.kind.name)
+                        last.putImage?.let { putImage ->
+                            append(" putImageCrc32=")
+                            append(putImage.crc32Hex)
+                        }
+                    }
+                }
+                producer.framebuffer?.let { framebuffer ->
+                    append(" producerFramebuffer=")
+                    append(framebuffer.width)
+                    append('x')
+                    append(framebuffer.height)
+                    append(" crc32=")
+                    append(framebuffer.crc32Hex)
+                    append(" pixels=")
+                    append(framebuffer.pixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+                }
+            }
         }
         provenance.freed?.let { appendPicture("freed", it) }
         provenance.result?.let { result ->
