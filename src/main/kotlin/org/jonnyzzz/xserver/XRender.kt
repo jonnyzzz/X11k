@@ -11,11 +11,13 @@ internal object XRender {
     const val GlyphSetError = FirstError + 3
     const val GlyphError = FirstError + 4
 
-    const val Argb32Format = 0x0000_0029
-    const val Rgb24Format = 0x0000_002a
-    const val A8Format = 0x0000_002b
-    const val A1Format = 0x0000_002c
-    val DirectFormats = setOf(Argb32Format, Rgb24Format, A8Format, A1Format)
+    const val A1Format = 0x0000_0023
+    const val A8Format = 0x0000_0024
+    const val Argb32Format = 0x0000_0025
+    const val Rgb24Format = 0x0000_0029
+    const val Bgr24Format = 0x0000_002a
+    const val Bgr32Format = 0x0000_0035
+    val DirectFormats = setOf(A1Format, A8Format, Argb32Format, Rgb24Format, Bgr24Format, Bgr32Format)
     val PictFormats = DirectFormats
 
     const val OpClear = 0
@@ -181,10 +183,23 @@ internal object XRender {
         when (format) {
             Argb32Format -> 32
             Rgb24Format -> 24
+            Bgr24Format -> 24
+            Bgr32Format -> 32
             A8Format -> 8
             A1Format -> 1
             else -> null
         }
+
+    fun isRgbLikeFormat(format: Int): Boolean =
+        format == Rgb24Format || format == Bgr24Format || format == Bgr32Format
+
+    fun isComponentFormat(format: Int): Boolean =
+        format == Argb32Format || isRgbLikeFormat(format)
+
+    fun bgrToRgb(pixel: Int): Int =
+        ((pixel and 0x0000_00ff) shl 16) or
+            (pixel and 0x0000_ff00) or
+            ((pixel ushr 16) and 0x0000_00ff)
 
     fun argb32Pixel(red: Int, green: Int, blue: Int, alpha: Int): Int =
         ((alpha ushr 8).coerceIn(0, 255) shl 24) or

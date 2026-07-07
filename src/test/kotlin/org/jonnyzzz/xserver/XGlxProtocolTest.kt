@@ -9,7 +9,7 @@ import kotlin.test.assertTrue
 
 class XGlxProtocolTest {
     private val expectedGlxVisualConfigCount =
-        X11Ids.RootVisualAliases.size + X11Ids.RgbaVisualAliases.count { it != X11Ids.RgbaVisual }
+        XGlx.visualConfigs().size
     private val xvfbLikeRootFbConfig = 0x54
     private val xvfbLikeRgbaFbConfig = 0x1b2
 
@@ -91,7 +91,7 @@ class XGlxProtocolTest {
             assertEquals(0, fbConfigAttributes.getValue(XGlx.MaxPbufferPixels))
             val xvfbLikeVisualFbConfigAttributes = attributeMap(
                 fbConfigs,
-                offset = 32 + XGlx.FbConfigAttributePairs * 8 * (X11Ids.RootVisualAliases.size - 1),
+                offset = 32 + XGlx.FbConfigAttributePairs * 8 * glxVisualConfigIndex(X11Ids.XvfbLikeRootVisualAlias),
                 count = XGlx.FbConfigAttributePairs,
             )
             assertEquals(X11Ids.XvfbLikeRootVisualAlias, xvfbLikeVisualFbConfigAttributes.getValue(XGlx.VisualIdExt))
@@ -158,7 +158,7 @@ class XGlxProtocolTest {
             assertEquals(XGlx.DontCare, visualConfig[25])
             assertEquals(XGlx.DontCare, visualConfig[27])
             assertEquals(XGlx.DontCare, visualConfig[29])
-            val xvfbLikeVisualConfigOffset = 32 + XGlx.VisualConfigValues * 4 * (X11Ids.RootVisualAliases.size - 1)
+            val xvfbLikeVisualConfigOffset = 32 + XGlx.VisualConfigValues * 4 * glxVisualConfigIndex(X11Ids.XvfbLikeRootVisualAlias)
             assertEquals(X11Ids.XvfbLikeRootVisualAlias, u32le(visuals, xvfbLikeVisualConfigOffset))
             assertEquals(4, u32le(visuals, xvfbLikeVisualConfigOffset + 4))
             val xvfbLikeVisualConfig = intArrayPayload(visuals, offset = xvfbLikeVisualConfigOffset, count = XGlx.VisualConfigValues)
@@ -2443,6 +2443,11 @@ class XGlxProtocolTest {
     private fun attributeMap(reply: ByteArray, offset: Int, count: Int): Map<Int, Int> =
         (0 until count).associate { index ->
             u32le(reply, offset + index * 8) to u32le(reply, offset + index * 8 + 4)
+        }
+
+    private fun glxVisualConfigIndex(visual: Int): Int =
+        XGlx.visualConfigs().indexOfFirst { config -> config.first() == visual }.also { index ->
+            assertTrue(index >= 0, "GLX visual config 0x${visual.toString(16)} must be advertised")
         }
 
     private fun intArrayPayload(reply: ByteArray, offset: Int, count: Int): IntArray =

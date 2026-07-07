@@ -235,16 +235,28 @@ internal object X11Ids {
     const val RootVisual = 0x0000_0028
     const val RgbaVisual = 0x0000_0029
     const val XvfbLikeRootVisualAlias = 0x0000_01cf
+    const val XvfbLikeBgrRootVisualAlias = 0x0000_01e3
     const val XvfbLikeRgbaVisualAlias = 0x0000_0213
+    const val XvfbLikeBgrRgbaVisualAlias = 0x0000_021d
     const val RootDepth = 24
     const val RgbaDepth = 32
 
-    val RootVisualAliases: List<Int> =
+    val RootRgbVisualAliases: List<Int> =
         listOf(RootVisual) + (0x0000_01bd..XvfbLikeRootVisualAlias).toList()
+    val RootBgrVisualAliases: List<Int> =
+        (0x0000_01d0..XvfbLikeBgrRootVisualAlias).toList()
+    val RootVisualAliases: List<Int> =
+        RootRgbVisualAliases + RootBgrVisualAliases
+    val RgbaRgbVisualAliases: List<Int> =
+        listOf(0x0000_0040) + (0x0000_020b..XvfbLikeRgbaVisualAlias).toList()
+    val RgbaBgrVisualAliases: List<Int> =
+        (0x0000_0214..XvfbLikeBgrRgbaVisualAlias).toList()
     val RgbaVisualAliases: List<Int> =
-        listOf(RgbaVisual, 0x0000_0040) + (0x0000_020b..XvfbLikeRgbaVisualAlias).toList()
+        RgbaRgbVisualAliases + RgbaBgrVisualAliases
+    val LegacyRgbaVisualAliases: List<Int> =
+        listOf(RgbaVisual)
     val VisualDescriptions: List<XVisualDescription> =
-        RootVisualAliases.map { visual ->
+        RootRgbVisualAliases.map { visual ->
             XVisualDescription(
                 id = visual,
                 depth = RootDepth,
@@ -252,7 +264,15 @@ internal object X11Ids {
                 greenMask = 0x0000_ff00,
                 blueMask = 0x0000_00ff,
             )
-        } + RgbaVisualAliases.map { visual ->
+        } + RootBgrVisualAliases.map { visual ->
+            XVisualDescription(
+                id = visual,
+                depth = RootDepth,
+                redMask = 0x0000_00ff,
+                greenMask = 0x0000_ff00,
+                blueMask = 0x00ff_0000,
+            )
+        } + RgbaRgbVisualAliases.map { visual ->
             XVisualDescription(
                 id = visual,
                 depth = RgbaDepth,
@@ -260,12 +280,21 @@ internal object X11Ids {
                 greenMask = 0x0000_ff00,
                 blueMask = 0x0000_00ff,
             )
+        } + RgbaBgrVisualAliases.map { visual ->
+            XVisualDescription(
+                id = visual,
+                depth = RgbaDepth,
+                redMask = 0x0000_00ff,
+                greenMask = 0x0000_ff00,
+                blueMask = 0x00ff_0000,
+            )
         }
 
     fun visualDepth(visual: Int): Int? =
         when (visual) {
             in RootVisualAliases -> RootDepth
             in RgbaVisualAliases -> RgbaDepth
+            in LegacyRgbaVisualAliases -> RgbaDepth
             else -> null
         }
 

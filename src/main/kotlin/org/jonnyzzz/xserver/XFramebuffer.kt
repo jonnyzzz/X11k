@@ -24,6 +24,27 @@ internal data class XCopyResult(
     val height: Int get() = image.height
 }
 
+internal data class XFramebufferSnapshot(
+    val width: Int,
+    val height: Int,
+    val pixels: IntArray,
+    val rawDrawablePixels: BooleanArray,
+) {
+    fun pixelAt(x: Int, y: Int): Int? =
+        if (x in 0 until width && y in 0 until height) {
+            pixels[y * width + x]
+        } else {
+            null
+        }
+
+    fun rawDrawablePixelAt(x: Int, y: Int): Boolean =
+        if (x in 0 until width && y in 0 until height) {
+            rawDrawablePixels[y * width + x]
+        } else {
+            true
+        }
+}
+
 private data class XPolygonEdgeTable(
     val yMin: Int,
     val yMax: Int,
@@ -114,9 +135,13 @@ internal class XFramebuffer(
         if (preserveBackgroundAlpha) backgroundPixel else opaque(backgroundPixel)
     }
     private var painted: Boolean = painted
+    private var rawDrawablePixels: BooleanArray = BooleanArray(this.width * this.height) { true }
     private var cachedDataUri: String? = null
 
     fun snapshot(): XImagePixels = XImagePixels(width, height, pixels.copyOf())
+
+    fun snapshotWithOrigins(): XFramebufferSnapshot =
+        XFramebufferSnapshot(width, height, pixels.copyOf(), rawDrawablePixels.copyOf())
 
     fun snapshotRegion(x: Int, y: Int, width: Int, height: Int): XImagePixels {
         if (width <= 0 || height <= 0) return XImagePixels(0, 0, IntArray(0))
@@ -134,9 +159,11 @@ internal class XFramebuffer(
         if (newWidth == this.width && newHeight == this.height) return
 
         val oldPixels = pixels
+        val oldRawDrawablePixels = rawDrawablePixels
         val oldWidth = this.width
         val oldHeight = this.height
         val newPixels = IntArray(newWidth * newHeight) { opaque(backgroundPixel) }
+        val newRawDrawablePixels = BooleanArray(newWidth * newHeight) { true }
         val copyWidth = minOf(oldWidth, newWidth)
         val copyHeight = minOf(oldHeight, newHeight)
         for (y in 0 until copyHeight) {
@@ -146,11 +173,18 @@ internal class XFramebuffer(
                 startIndex = y * oldWidth,
                 endIndex = y * oldWidth + copyWidth,
             )
+            oldRawDrawablePixels.copyInto(
+                destination = newRawDrawablePixels,
+                destinationOffset = y * newWidth,
+                startIndex = y * oldWidth,
+                endIndex = y * oldWidth + copyWidth,
+            )
         }
 
         this.width = newWidth
         this.height = newHeight
         pixels = newPixels
+        rawDrawablePixels = newRawDrawablePixels
         invalidate()
     }
 
@@ -166,6 +200,7 @@ internal class XFramebuffer(
         planeMask: Int = -1,
         clipMask: XClipMask? = null,
         wireDepth: Int? = null,
+        rawDrawablePixel: Boolean = true,
     ): Boolean {
         val bounds = clippedBounds(x, y, width, height) ?: return false
         val color = if (preserveAlpha || wireDepth != null) pixel else opaque(pixel)
@@ -174,13 +209,17 @@ internal class XFramebuffer(
             val offset = row * this.width
             for (column in bounds.destinationX until bounds.destinationX + bounds.width) {
                 if (!insideClip(column, row, clipRectangles, clipMask)) continue
-                pixels[offset + column] = corePixel(
+                setPixel(
+                    offset + column,
+                    corePixel(
                     source = color,
                     destination = pixels[offset + column],
                     function = function,
                     planeMask = planeMask,
                     preserveAlpha = preserveAlpha,
                     wireDepth = wireDepth,
+                    ),
+                    rawDrawablePixel,
                 )
                 painted = true
             }
@@ -203,6 +242,7 @@ internal class XFramebuffer(
         planeMask: Int = -1,
         preserveAlpha: Boolean = false,
         wireDepth: Int? = null,
+        rawDrawablePixel: Boolean = true,
         pixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         if (patternWidth <= 0 || patternHeight <= 0) return false
@@ -215,13 +255,17 @@ internal class XFramebuffer(
                 val sourceX = (column - patternXOrigin).floorMod(patternWidth)
                 val sourceY = (row - patternYOrigin).floorMod(patternHeight)
                 val source = pixelAt(sourceX, sourceY)?.let { if (preserveAlpha || wireDepth != null) it else opaque(it) } ?: continue
-                pixels[offset + column] = corePixel(
+                setPixel(
+                    offset + column,
+                    corePixel(
                     source = source,
                     destination = pixels[offset + column],
                     function = function,
                     planeMask = planeMask,
                     preserveAlpha = preserveAlpha,
                     wireDepth = wireDepth,
+                    ),
+                    rawDrawablePixel,
                 )
                 painted = true
             }
@@ -728,13 +772,17 @@ internal class XFramebuffer(
                 if (!insideClip(dx, dy, clipRectangles)) continue
                 if (!textPixel(text, column, row)) continue
                 val index = dy * width + dx
-                pixels[index] = corePixel(
+                setPixel(
+                    index,
+                    corePixel(
                     source = color,
                     destination = pixels[index],
                     function = function,
                     planeMask = planeMask,
                     preserveAlpha = preserveAlpha,
                     wireDepth = wireDepth,
+                    ),
+                    rawDrawablePixel = true,
                 )
                 painted = true
             }
@@ -749,6 +797,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -760,7 +809,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            over(pixel, pixels[y * this.width + x], maskAlpha)
+            over(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -770,6 +819,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -781,7 +831,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            overReverseOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            overReverseOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -791,6 +841,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -802,7 +853,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            disjointOverOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            disjointOverOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -812,6 +863,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -823,7 +875,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            conjointOverOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            conjointOverOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -833,6 +885,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -844,7 +897,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            conjointOverReverseOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            conjointOverReverseOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -854,6 +907,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -865,7 +919,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            disjointInOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            disjointInOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -875,6 +929,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -886,7 +941,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            conjointInOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            conjointInOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -896,6 +951,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -907,7 +963,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            add(pixel, pixels[y * this.width + x], maskAlpha)
+            add(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -917,6 +973,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -928,7 +985,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            saturate(pixel, pixels[y * this.width + x], maskAlpha)
+            saturate(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -938,6 +995,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -949,7 +1007,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            inOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            inOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -959,6 +1017,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -970,7 +1029,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            outOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            outOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -980,6 +1039,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -991,7 +1051,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            disjointOutOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            disjointOutOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1001,6 +1061,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1012,7 +1073,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            conjointOutOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            conjointOutOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1022,6 +1083,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1033,7 +1095,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            inReverseOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            inReverseOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1043,6 +1105,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1054,7 +1117,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            disjointInReverseOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            disjointInReverseOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1064,6 +1127,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1075,7 +1139,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            conjointInReverseOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            conjointInReverseOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1085,6 +1149,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1096,7 +1161,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            outReverseOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            outReverseOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1106,6 +1171,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1117,7 +1183,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            disjointOutReverseOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            disjointOutReverseOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1127,6 +1193,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1138,7 +1205,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            conjointOutReverseOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            conjointOutReverseOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1148,6 +1215,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1159,7 +1227,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            conjointAtopOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            conjointAtopOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1169,6 +1237,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1180,7 +1249,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            conjointAtopReverseOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            conjointAtopReverseOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1190,6 +1259,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1201,7 +1271,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            atopOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            atopOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1211,6 +1281,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1222,7 +1293,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            disjointAtopOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            disjointAtopOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1232,6 +1303,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1243,7 +1315,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            disjointAtopReverseOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            disjointAtopReverseOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1253,6 +1325,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1264,7 +1337,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            disjointXorOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            disjointXorOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1274,6 +1347,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1285,7 +1359,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            conjointXorOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            conjointXorOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1295,6 +1369,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1306,7 +1381,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            atopReverseOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            atopReverseOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1316,6 +1391,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1327,7 +1403,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            xorOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            xorOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1337,6 +1413,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1348,7 +1425,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            multiplyOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            multiplyOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1358,6 +1435,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1369,7 +1447,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            screenOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            screenOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1379,6 +1457,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1390,7 +1469,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            overlayOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            overlayOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1400,6 +1479,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1411,7 +1491,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            darkenOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            darkenOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1421,6 +1501,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1432,7 +1513,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            lightenOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            lightenOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1442,6 +1523,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1453,7 +1535,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            colorDodgeOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            colorDodgeOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1463,6 +1545,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1474,7 +1557,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            colorBurnOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            colorBurnOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1484,6 +1567,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1495,7 +1579,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            hardLightOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            hardLightOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1505,6 +1589,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1516,7 +1601,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            softLightOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            softLightOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1526,6 +1611,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1537,7 +1623,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            differenceOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            differenceOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1547,6 +1633,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1558,7 +1645,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            exclusionOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            exclusionOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1568,6 +1655,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1579,7 +1667,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            hslHueOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            hslHueOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1589,6 +1677,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1600,7 +1689,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            hslSaturationOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            hslSaturationOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1610,6 +1699,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1621,7 +1711,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            hslColorOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            hslColorOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1631,6 +1721,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        destinationFormat: Int = XRender.Rgb24Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer? = null,
@@ -1642,7 +1733,7 @@ internal class XFramebuffer(
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
                 ?: return@compositeBoundsOptional null
-            hslLuminosityOperator(pixel, pixels[y * this.width + x], maskAlpha)
+            hslLuminosityOperator(pixel, renderDestinationPixel(y * this.width + x, destinationFormat), maskAlpha)
         }
     }
 
@@ -1659,6 +1750,7 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer,
+        destinationFormat: Int = XRender.Rgb24Format,
         componentMask: Boolean = false,
         sourcePremultiplied: Boolean = false,
         sourcePixelAt: (x: Int, y: Int) -> Int?,
@@ -1668,10 +1760,10 @@ internal class XFramebuffer(
             val sourcePixel = sourcePixelAt(sourceX + x - originX, sourceY + y - originY) ?: return@compositeBoundsOptional null
             if (componentMask) {
                 val maskPixel = mask.pixelAt(x - destinationX, y - destinationY) ?: return@compositeBoundsOptional null
-                renderPixelComponentMask(sourcePixel, pixels[y * this.width + x], operation, maskPixel, sourcePremultiplied)
+                renderPixelComponentMask(sourcePixel, renderDestinationPixel(y * this.width + x, destinationFormat), operation, maskPixel, sourcePremultiplied)
             } else {
                 val maskAlpha = mask.alphaAt(x - destinationX, y - destinationY)
-                renderPixel(sourcePixel, pixels[y * this.width + x], operation, maskAlpha, sourcePremultiplied)
+                renderPixel(sourcePixel, renderDestinationPixel(y * this.width + x, destinationFormat), operation, maskAlpha, sourcePremultiplied)
             }
         }
     }
@@ -1691,6 +1783,7 @@ internal class XFramebuffer(
         maskX: Int = 0,
         maskY: Int = 0,
         maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
+        destinationFormat: Int = XRender.Rgb24Format,
     ): XImagePixels? {
         val bounds = clippedCopyBounds(
             sourceWidth = source.width,
@@ -1720,11 +1813,13 @@ internal class XFramebuffer(
                 val index = dy * this.width + dx
                 val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + dx - destinationX, maskY + dy - destinationY)
                     ?: continue
-                pixels[index] = renderPixel(sourcePixel, pixels[index], operation, maskAlpha)
+                setPixel(index, renderPixel(sourcePixel, renderDestinationPixel(index, destinationFormat), operation, maskAlpha), rawDrawablePixel = false)
                 painted = true
             }
         }
-        if (painted) markPainted()
+        if (painted) {
+            markPainted()
+        }
         return XImagePixels(bounds.width, bounds.height, copied)
     }
 
@@ -1743,6 +1838,7 @@ internal class XFramebuffer(
         maskY: Int = 0,
         maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
         maskPixelAt: ((x: Int, y: Int) -> Int?)? = null,
+        destinationFormat: Int = XRender.Rgb24Format,
         sourcePremultiplied: Boolean = false,
         sourcePixelAt: (x: Int, y: Int) -> Int,
     ): XImagePixels? {
@@ -1762,17 +1858,20 @@ internal class XFramebuffer(
                 val index = dy * this.width + dx
                 val mx = maskX + dx - destinationX
                 val my = maskY + dy - destinationY
-                pixels[index] = if (maskPixelAt != null) {
+                val resultPixel = if (maskPixelAt != null) {
                     val maskPixel = maskPixelAt.invoke(mx, my) ?: continue
-                    renderPixelComponentMask(sourcePixel, pixels[index], operation, maskPixel, sourcePremultiplied)
+                    renderPixelComponentMask(sourcePixel, renderDestinationPixel(index, destinationFormat), operation, maskPixel, sourcePremultiplied)
                 } else {
                     val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, mx, my) ?: continue
-                    renderPixel(sourcePixel, pixels[index], operation, maskAlpha, sourcePremultiplied)
+                    renderPixel(sourcePixel, renderDestinationPixel(index, destinationFormat), operation, maskAlpha, sourcePremultiplied)
                 }
+                setPixel(index, resultPixel, rawDrawablePixel = false)
                 painted = true
             }
         }
-        if (painted) markPainted()
+        if (painted) {
+            markPainted()
+        }
         return if (operation.returnsDestinationResultImage()) {
             snapshotRegion(bounds.destinationX, bounds.destinationY, bounds.width, bounds.height)
         } else {
@@ -1795,6 +1894,7 @@ internal class XFramebuffer(
         maskY: Int = 0,
         maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
         maskPixelAt: ((x: Int, y: Int) -> Int?)? = null,
+        destinationFormat: Int = XRender.Rgb24Format,
         sourcePremultiplied: Boolean = false,
         sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): XImagePixels? {
@@ -1814,17 +1914,20 @@ internal class XFramebuffer(
                 val index = dy * this.width + dx
                 val mx = maskX + dx - destinationX
                 val my = maskY + dy - destinationY
-                pixels[index] = if (maskPixelAt != null) {
+                val resultPixel = if (maskPixelAt != null) {
                     val maskPixel = maskPixelAt.invoke(mx, my) ?: continue
-                    renderPixelComponentMask(sourcePixel, pixels[index], operation, maskPixel, sourcePremultiplied)
+                    renderPixelComponentMask(sourcePixel, renderDestinationPixel(index, destinationFormat), operation, maskPixel, sourcePremultiplied)
                 } else {
                     val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, mx, my) ?: continue
-                    renderPixel(sourcePixel, pixels[index], operation, maskAlpha, sourcePremultiplied)
+                    renderPixel(sourcePixel, renderDestinationPixel(index, destinationFormat), operation, maskAlpha, sourcePremultiplied)
                 }
+                setPixel(index, resultPixel, rawDrawablePixel = false)
                 painted = true
             }
         }
-        if (painted) markPainted()
+        if (painted) {
+            markPainted()
+        }
         return if (operation.returnsDestinationResultImage()) {
             snapshotRegion(bounds.destinationX, bounds.destinationY, bounds.width, bounds.height)
         } else {
@@ -1863,11 +1966,15 @@ internal class XFramebuffer(
                 if (!insideClip(dx, dy, clipRectangles)) continue
                 val index = dy * this.width + dx
                 val sourcePixel = image.pixels[(bounds.sourceY + row) * image.width + bounds.sourceX + column]
-                pixels[index] = if (usesCoreRaster(function, planeMask)) {
+                setPixel(
+                    index,
+                    if (usesCoreRaster(function, planeMask)) {
                     corePixel(source = sourcePixel, destination = pixels[index], function = function, planeMask = planeMask, wireDepth = wireDepth)
                 } else {
                     sourcePixel
-                }
+                    },
+                    rawDrawablePixel = true,
+                )
                 painted = true
             }
         }
@@ -1901,9 +2008,16 @@ internal class XFramebuffer(
         ) ?: return null
 
         val copied = IntArray(bounds.width * bounds.height)
+        val copiedRawDrawablePixels = BooleanArray(bounds.width * bounds.height)
         for (row in 0 until bounds.height) {
             pixels.copyInto(
                 destination = copied,
+                destinationOffset = row * bounds.width,
+                startIndex = (bounds.sourceY + row) * this.width + bounds.sourceX,
+                endIndex = (bounds.sourceY + row) * this.width + bounds.sourceX + bounds.width,
+            )
+            rawDrawablePixels.copyInto(
+                destination = copiedRawDrawablePixels,
                 destinationOffset = row * bounds.width,
                 startIndex = (bounds.sourceY + row) * this.width + bounds.sourceX,
                 endIndex = (bounds.sourceY + row) * this.width + bounds.sourceX + bounds.width,
@@ -1919,13 +2033,19 @@ internal class XFramebuffer(
                 val dy = bounds.destinationY + row
                 if (!insideClip(bounds.sourceX + column, bounds.sourceY + row, sourceClipRectangles)) continue
                 if (!insideClip(dx, dy, clipRectangles)) continue
+                val sourceIndex = (bounds.sourceY + row) * this.width + bounds.sourceX + column
                 val index = dy * destination.width + dx
                 val sourcePixel = copied[row * bounds.width + column]
-                destination.pixels[index] = if (usesCoreRaster(function, planeMask)) {
-                    corePixel(source = sourcePixel, destination = destination.pixels[index], function = function, planeMask = planeMask, wireDepth = wireDepth)
+                val raster = usesCoreRaster(function, planeMask)
+                destination.setPixel(
+                    index,
+                    if (raster) {
+                        corePixel(source = sourcePixel, destination = destination.pixels[index], function = function, planeMask = planeMask, wireDepth = wireDepth)
                 } else {
                     sourcePixel
-                }
+                    },
+                    rawDrawablePixel = if (raster) true else copiedRawDrawablePixels[row * bounds.width + column],
+                )
                 minPaintedX = minOf(minPaintedX, dx)
                 minPaintedY = minOf(minPaintedY, dy)
                 maxPaintedX = maxOf(maxPaintedX, dx)
@@ -1992,7 +2112,9 @@ internal class XFramebuffer(
                 if (!insideClip(bounds.sourceX + column, bounds.sourceY + row, sourceClipRectangles)) continue
                 if (!insideClip(dx, dy, clipRectangles)) continue
                 val index = dy * destination.width + dx
-                destination.pixels[index] = if (usesCoreRaster(function, planeMask)) {
+                destination.setPixel(
+                    index,
+                    if (usesCoreRaster(function, planeMask)) {
                     corePixel(
                         source = targetPixel,
                         destination = destination.pixels[index],
@@ -2003,7 +2125,9 @@ internal class XFramebuffer(
                     )
                 } else {
                     targetPixel
-                }
+                    },
+                    rawDrawablePixel = true,
+                )
                 minPaintedX = minOf(minPaintedX, dx)
                 minPaintedY = minOf(minPaintedY, dy)
                 maxPaintedX = maxOf(maxPaintedX, dx)
@@ -2050,6 +2174,7 @@ internal class XFramebuffer(
         maskFormat: Int = XRender.A8Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
+        destinationFormat: Int = XRender.Rgb24Format,
         smoothEdges: Boolean = false,
     ): Boolean =
         compositeTrapezoids(
@@ -2058,6 +2183,7 @@ internal class XFramebuffer(
             maskFormat = maskFormat,
             clipRectangles = clipRectangles,
             clipMask = clipMask,
+            destinationFormat = destinationFormat,
             smoothEdges = smoothEdges,
         ) { _, _ -> pixel }
 
@@ -2067,6 +2193,7 @@ internal class XFramebuffer(
         maskFormat: Int = XRender.A8Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
+        destinationFormat: Int = XRender.Rgb24Format,
         smoothEdges: Boolean = false,
         sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
@@ -2085,7 +2212,7 @@ internal class XFramebuffer(
             val x = index % width
             val y = index / width
             val pixel = sourcePixelAt(x, y) ?: continue
-            pixels[index] = renderPixel(pixel, pixels[index], operation, maskAlpha)
+            setPixel(index, renderPixel(pixel, renderDestinationPixel(index, destinationFormat), operation, maskAlpha), rawDrawablePixel = false)
             painted = true
         }
         if (painted) markPainted()
@@ -2114,6 +2241,7 @@ internal class XFramebuffer(
         maskFormat: Int = XRender.A8Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
+        destinationFormat: Int = XRender.Rgb24Format,
         smoothEdges: Boolean = false,
     ): Boolean =
         compositeTriangles(
@@ -2122,6 +2250,7 @@ internal class XFramebuffer(
             maskFormat = maskFormat,
             clipRectangles = clipRectangles,
             clipMask = clipMask,
+            destinationFormat = destinationFormat,
             smoothEdges = smoothEdges,
         ) { _, _ -> pixel }
 
@@ -2131,12 +2260,13 @@ internal class XFramebuffer(
         maskFormat: Int = XRender.A8Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
+        destinationFormat: Int = XRender.Rgb24Format,
         smoothEdges: Boolean = false,
         sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         var painted = false
         for (triangle in triangles) {
-            painted = compositeTriangle(operation, triangle, maskFormat, clipRectangles, clipMask, smoothEdges, sourcePixelAt) || painted
+            painted = compositeTriangle(operation, triangle, maskFormat, clipRectangles, clipMask, destinationFormat, smoothEdges, sourcePixelAt) || painted
         }
         if (painted) markPainted()
         return painted
@@ -2147,11 +2277,12 @@ internal class XFramebuffer(
         trapezoids: List<XColorTrapCommand>,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
+        destinationFormat: Int = XRender.Rgb24Format,
         smoothEdges: Boolean = false,
     ): Boolean {
         var painted = false
         for (trapezoid in trapezoids) {
-            painted = compositeColoredTrapezoid(operation, trapezoid, clipRectangles, clipMask, smoothEdges) || painted
+            painted = compositeColoredTrapezoid(operation, trapezoid, clipRectangles, clipMask, destinationFormat, smoothEdges) || painted
         }
         if (painted) markPainted()
         return painted
@@ -2163,6 +2294,7 @@ internal class XFramebuffer(
         destinationQuad: XFixedQuad,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
+        destinationFormat: Int = XRender.Rgb24Format,
         sourcePixelAt: (x: Double, y: Double) -> Int?,
     ): Boolean {
         val destination = destinationQuad.toDoubleQuad()
@@ -2186,7 +2318,7 @@ internal class XFramebuffer(
                 val sourceY = bilinearCoordinate(source.p1.y, source.p2.y, source.p3.y, source.p4.y, clampedU, clampedV)
                 val pixel = sourcePixelAt(sourceX, sourceY) ?: continue
                 val index = y * width + x
-                pixels[index] = renderPixel(pixel, pixels[index], operation, maskAlpha = 255)
+                setPixel(index, renderPixel(pixel, renderDestinationPixel(index, destinationFormat), operation, maskAlpha = 255), rawDrawablePixel = false)
                 painted = true
             }
         }
@@ -2199,11 +2331,12 @@ internal class XFramebuffer(
         triangles: List<XColorTriangleCommand>,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
+        destinationFormat: Int = XRender.Rgb24Format,
         smoothEdges: Boolean = false,
     ): Boolean {
         var painted = false
         for (triangle in triangles) {
-            painted = compositeColoredTriangle(operation, triangle, clipRectangles, clipMask, smoothEdges) || painted
+            painted = compositeColoredTriangle(operation, triangle, clipRectangles, clipMask, destinationFormat, smoothEdges) || painted
         }
         if (painted) markPainted()
         return painted
@@ -2223,7 +2356,12 @@ internal class XFramebuffer(
             for (column in bounds.destinationX until bounds.destinationX + bounds.width) {
                 val sourceX = column.floorMod(this.width)
                 val sourceY = row.floorMod(this.height)
-                destination.pixels[row * destination.width + column] = pixels[sourceY * this.width + sourceX]
+                val sourceIndex = sourceY * this.width + sourceX
+                destination.setPixel(
+                    row * destination.width + column,
+                    pixels[sourceIndex],
+                    rawDrawablePixel = rawDrawablePixels[sourceIndex],
+                )
                 painted = true
             }
         }
@@ -2238,10 +2376,28 @@ internal class XFramebuffer(
             null
         }
 
+    fun rawDrawablePixelAt(x: Int, y: Int): Boolean =
+        if (x in 0 until width && y in 0 until height) {
+            rawDrawablePixels[y * width + x]
+        } else {
+            true
+        }
+
     fun alphaAt(x: Int, y: Int): Int =
         pixelAt(x, y)?.let { (it ushr 24) and 0xff } ?: 0
 
     fun hasPaintedContent(): Boolean = painted
+
+    fun readsAsRawDrawablePixels(): Boolean =
+        rawDrawablePixels.all { it }
+
+    fun markRawDrawablePixels() {
+        rawDrawablePixels.fill(true)
+    }
+
+    fun markCanonicalRgbPixels() {
+        rawDrawablePixels.fill(false)
+    }
 
     fun toDataUri(): String? {
         if (!painted || width <= 0 || height <= 0) return null
@@ -2318,6 +2474,18 @@ internal class XFramebuffer(
         invalidate()
     }
 
+    private fun setPixel(index: Int, pixel: Int, rawDrawablePixel: Boolean) {
+        pixels[index] = pixel
+        rawDrawablePixels[index] = rawDrawablePixel
+    }
+
+    private fun renderDestinationPixel(index: Int, destinationFormat: Int): Int =
+        when (destinationFormat) {
+            XRender.Bgr24Format, XRender.Bgr32Format ->
+                opaque(if (rawDrawablePixels[index]) XRender.bgrToRgb(pixels[index]) else pixels[index])
+            else -> pixels[index]
+        }
+
     private fun compositeBoundsOptional(
         bounds: CopyBounds,
         clipRectangles: List<XRectangleCommand>?,
@@ -2330,11 +2498,13 @@ internal class XFramebuffer(
             for (column in bounds.destinationX until bounds.destinationX + bounds.width) {
                 if (!insideClip(column, row, clipRectangles, clipMask)) continue
                 val pixel = compose(column, row) ?: continue
-                pixels[offset + column] = pixel
+                setPixel(offset + column, pixel, rawDrawablePixel = false)
                 painted = true
             }
         }
-        if (painted) markPainted()
+        if (painted) {
+            markPainted()
+        }
         return painted
     }
 
@@ -2362,13 +2532,17 @@ internal class XFramebuffer(
                 if (normalizedX * normalizedX + normalizedY * normalizedY > 1.0) continue
                 val index = row * width + column
                 val source = sourceAt(column, row) ?: continue
-                pixels[index] = corePixel(
+                setPixel(
+                    index,
+                    corePixel(
                     source = source,
                     destination = pixels[index],
                     function = function,
                     planeMask = planeMask,
                     preserveAlpha = preserveAlpha,
                     wireDepth = wireDepth,
+                    ),
+                    rawDrawablePixel = true,
                 )
                 painted = true
             }
@@ -2437,7 +2611,7 @@ internal class XFramebuffer(
                 val index = y * width + x
                 val alpha = ((pixels[index] ushr 24) and 0xff)
                 val newAlpha = (alpha + addedAlpha).coerceAtMost(255)
-                pixels[index] = (newAlpha shl 24) or 0x00ff_ffff
+                setPixel(index, (newAlpha shl 24) or 0x00ff_ffff, rawDrawablePixel = false)
                 painted = true
             }
         }
@@ -2515,6 +2689,7 @@ internal class XFramebuffer(
         colorTrap: XColorTrapCommand,
         clipRectangles: List<XRectangleCommand>?,
         clipMask: XClipMask?,
+        destinationFormat: Int,
         smoothEdges: Boolean,
     ): Boolean {
         val trapezoid = colorTrap.toTrapezoid()
@@ -2539,7 +2714,7 @@ internal class XFramebuffer(
                 if (maskAlpha == 0) continue
                 val source = interpolatedColorTrapPixel(colorTrap, left, right, top, bottom, x + 0.5, colorSampleY)
                 val index = y * width + x
-                pixels[index] = renderPixel(source, pixels[index], operation, maskAlpha)
+                setPixel(index, renderPixel(source, renderDestinationPixel(index, destinationFormat), operation, maskAlpha), rawDrawablePixel = false)
                 painted = true
             }
         }
@@ -2672,6 +2847,7 @@ internal class XFramebuffer(
         maskFormat: Int,
         clipRectangles: List<XRectangleCommand>?,
         clipMask: XClipMask?,
+        destinationFormat: Int,
         smoothEdges: Boolean,
         sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
@@ -2697,7 +2873,7 @@ internal class XFramebuffer(
                 if (maskAlpha == 0) continue
                 val index = y * width + x
                 val pixel = sourcePixelAt(x, y) ?: continue
-                pixels[index] = renderPixel(pixel, pixels[index], operation, maskAlpha)
+                setPixel(index, renderPixel(pixel, renderDestinationPixel(index, destinationFormat), operation, maskAlpha), rawDrawablePixel = false)
                 painted = true
             }
         }
@@ -2709,6 +2885,7 @@ internal class XFramebuffer(
         triangle: XColorTriangleCommand,
         clipRectangles: List<XRectangleCommand>?,
         clipMask: XClipMask?,
+        destinationFormat: Int,
         smoothEdges: Boolean,
     ): Boolean {
         val x1 = triangle.p1.point.x.fixedToDouble()
@@ -2735,7 +2912,7 @@ internal class XFramebuffer(
                 val sampleX = x + 0.5
                 val source = interpolatedColorTrianglePixel(triangle, x1, y1, x2, y2, x3, y3, area, sampleX, sampleY)
                 val index = y * width + x
-                pixels[index] = renderPixel(source, pixels[index], operation, maskAlpha)
+                setPixel(index, renderPixel(source, renderDestinationPixel(index, destinationFormat), operation, maskAlpha), rawDrawablePixel = false)
                 painted = true
             }
         }
@@ -5334,13 +5511,17 @@ internal class XFramebuffer(
             if (!insideClip(x, y, clipRectangles)) continue
             val index = y * width + x
             val source = sourceAt(x, y) ?: continue
-            pixels[index] = corePixel(
+            setPixel(
+                index,
+                corePixel(
                 source = source,
                 destination = pixels[index],
                 function = function,
                 planeMask = planeMask,
                 preserveAlpha = preserveAlpha,
                 wireDepth = wireDepth,
+                ),
+                rawDrawablePixel = true,
             )
             painted = true
         }

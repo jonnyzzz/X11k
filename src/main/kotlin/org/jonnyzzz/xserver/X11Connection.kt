@@ -3649,45 +3649,94 @@ internal class X11Connection(
 
     private fun renderQueryPictFormats(body: ByteArray) {
         if (body.isNotEmpty()) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 1, badValue = 0)
-        val formats = ByteArray(28 * 4)
-        putPictFormat(formats, 0, XRender.Argb32Format, depth = 32, redShift = 16, greenShift = 8, blueShift = 0, alphaShift = 24, alphaMask = 0xff)
-        putPictFormat(formats, 28, XRender.Rgb24Format, depth = 24, redShift = 16, greenShift = 8, blueShift = 0, alphaShift = 0, alphaMask = 0)
-        putPictFormat(formats, 56, XRender.A8Format, depth = 8, redShift = 0, redMask = 0, greenShift = 0, greenMask = 0, blueShift = 0, blueMask = 0, alphaShift = 0, alphaMask = 0xff)
-        putPictFormat(formats, 84, XRender.A1Format, depth = 1, redShift = 0, redMask = 0, greenShift = 0, greenMask = 0, blueShift = 0, blueMask = 0, alphaShift = 0, alphaMask = 0x1)
+        val pictFormats = listOf(
+            PictFormatSpec(XRender.A1Format, depth = 1, redShift = 0, redMask = 0, greenShift = 0, greenMask = 0, blueShift = 0, blueMask = 0, alphaShift = 0, alphaMask = 0x1),
+            PictFormatSpec(XRender.A8Format, depth = 8, redShift = 0, redMask = 0, greenShift = 0, greenMask = 0, blueShift = 0, blueMask = 0, alphaShift = 0, alphaMask = 0xff),
+            PictFormatSpec(XRender.Argb32Format, depth = 32, redShift = 16, greenShift = 8, blueShift = 0, alphaShift = 24, alphaMask = 0xff),
+            PictFormatSpec(XRender.Rgb24Format, depth = 24, redShift = 16, greenShift = 8, blueShift = 0, alphaShift = 0, alphaMask = 0),
+            PictFormatSpec(XRender.Bgr24Format, depth = 24, redShift = 0, greenShift = 8, blueShift = 16, alphaShift = 0, alphaMask = 0),
+            PictFormatSpec(XRender.Bgr32Format, depth = 32, redShift = 0, greenShift = 8, blueShift = 16, alphaShift = 0, alphaMask = 0),
+        )
+        val formats = ByteArray(28 * pictFormats.size)
+        pictFormats.forEachIndexed { index, spec ->
+            putPictFormat(
+                formats,
+                index * 28,
+                spec.id,
+                depth = spec.depth,
+                redShift = spec.redShift,
+                redMask = spec.redMask,
+                greenShift = spec.greenShift,
+                greenMask = spec.greenMask,
+                blueShift = spec.blueShift,
+                blueMask = spec.blueMask,
+                alphaShift = spec.alphaShift,
+                alphaMask = spec.alphaMask,
+            )
+        }
 
         val renderVisuals = listOf(
-            X11Ids.RootDepth to (X11Ids.RootVisualAliases to XRender.Rgb24Format),
-            X11Ids.RgbaDepth to (X11Ids.RgbaVisualAliases to XRender.Argb32Format),
+            XRenderDepthVisuals(
+                depth = X11Ids.RootDepth,
+                visuals = listOf(
+                    X11Ids.RootRgbVisualAliases to XRender.Rgb24Format,
+                    X11Ids.RootBgrVisualAliases to XRender.Bgr24Format,
+                ),
+            ),
+            XRenderDepthVisuals(
+                depth = X11Ids.RgbaDepth,
+                visuals = listOf(
+                    X11Ids.RgbaRgbVisualAliases to XRender.Argb32Format,
+                    X11Ids.RgbaBgrVisualAliases to XRender.Bgr32Format,
+                ),
+            ),
         )
-        val visualCount = renderVisuals.sumOf { (_, visualFormat) -> visualFormat.first.size }
-        val screen = ByteArray(8 + renderVisuals.sumOf { (_, visualFormat) -> 8 + visualFormat.first.size * 8 })
+        val visualCount = renderVisuals.sumOf { depth -> depth.visuals.sumOf { it.first.size } }
+        val screen = ByteArray(8 + renderVisuals.sumOf { depth -> 8 + depth.visuals.sumOf { it.first.size * 8 } })
         byteOrder.put32(screen, 0, renderVisuals.size)
-        byteOrder.put32(screen, 4, XRender.Rgb24Format)
+        byteOrder.put32(screen, 4, XRender.A1Format)
         var screenOffset = 8
-        for ((depth, visualFormat) in renderVisuals) {
-            val (visuals, format) = visualFormat
-            screen[screenOffset] = depth.toByte()
-            byteOrder.put16(screen, screenOffset + 2, visuals.size)
+        for (depthVisuals in renderVisuals) {
+            screen[screenOffset] = depthVisuals.depth.toByte()
+            byteOrder.put16(screen, screenOffset + 2, depthVisuals.visuals.sumOf { it.first.size })
             screenOffset += 8
-            for (visual in visuals) {
-                byteOrder.put32(screen, screenOffset, visual)
-                byteOrder.put32(screen, screenOffset + 4, format)
-                screenOffset += 8
+            for ((visuals, format) in depthVisuals.visuals) {
+                for (visual in visuals) {
+                    byteOrder.put32(screen, screenOffset, visual)
+                    byteOrder.put32(screen, screenOffset + 4, format)
+                    screenOffset += 8
+                }
             }
         }
 
-        val subpixels = ByteArray(4)
-        byteOrder.put32(subpixels, 0, 5)
-        val payload = formats + screen + subpixels
+        val payload = formats + screen
         val reply = reply(extra = 0, payloadUnits = payload.size / 4)
-        byteOrder.put32(reply, 8, 4)
+        byteOrder.put32(reply, 8, pictFormats.size)
         byteOrder.put32(reply, 12, 1)
         byteOrder.put32(reply, 16, 2)
         byteOrder.put32(reply, 20, visualCount)
-        byteOrder.put32(reply, 24, 1)
+        byteOrder.put32(reply, 24, 0)
         payload.copyInto(reply, 32)
         write(reply)
     }
+
+    private data class PictFormatSpec(
+        val id: Int,
+        val depth: Int,
+        val redShift: Int,
+        val redMask: Int = 0xff,
+        val greenShift: Int,
+        val greenMask: Int = 0xff,
+        val blueShift: Int,
+        val blueMask: Int = 0xff,
+        val alphaShift: Int,
+        val alphaMask: Int,
+    )
+
+    private data class XRenderDepthVisuals(
+        val depth: Int,
+        val visuals: List<Pair<List<Int>, Int>>,
+    )
 
     private fun putPictFormat(
         bytes: ByteArray,
@@ -4012,6 +4061,7 @@ internal class X11Connection(
                 sourceDrawableGeneration = execution.sourceDrawableGeneration,
                 framebufferBacked = true,
                 framebufferPainted = result.painted,
+                rawDrawablePixels = false,
             ),
         )
     }
@@ -4058,6 +4108,7 @@ internal class X11Connection(
                 sourceDrawableGeneration = source.retainedOrLiveDrawableGeneration(),
                 framebufferBacked = true,
                 framebufferPainted = result.painted,
+                rawDrawablePixels = false,
             ),
         )
     }
@@ -4120,6 +4171,7 @@ internal class X11Connection(
                     )
                 },
                 framebufferBacked = true,
+                rawDrawablePixels = false,
             ),
         )
     }
@@ -4159,6 +4211,7 @@ internal class X11Connection(
                     )
                 },
                 framebufferBacked = true,
+                rawDrawablePixels = false,
             ),
         )
     }
@@ -4214,6 +4267,7 @@ internal class X11Connection(
                     )
                 },
                 framebufferBacked = true,
+                rawDrawablePixels = false,
             ),
         )
     }
@@ -4282,6 +4336,7 @@ internal class X11Connection(
                     )
                 },
                 framebufferBacked = true,
+                rawDrawablePixels = false,
             ),
         )
     }
@@ -4320,6 +4375,7 @@ internal class X11Connection(
                     )
                 },
                 framebufferBacked = true,
+                rawDrawablePixels = false,
             ),
         )
     }
@@ -4368,6 +4424,7 @@ internal class X11Connection(
                     XPoint(point.x.fixedToInt(), point.y.fixedToInt())
                 },
                 framebufferBacked = true,
+                rawDrawablePixels = false,
             ),
         )
     }
@@ -4579,6 +4636,7 @@ internal class X11Connection(
                 points = listOf(XPoint(byteOrder.i16(body, 20), byteOrder.i16(body, 22))),
                 text = "RENDER.${XRender.operationName(minorOpcode)} glyphs=${body.size - 24}",
                 framebufferBacked = painted,
+                rawDrawablePixels = false,
             ),
         )
     }
@@ -4667,6 +4725,7 @@ internal class X11Connection(
                     foreground = targetPixel,
                     rectangles = rectangles,
                     framebufferBacked = true,
+                    rawDrawablePixels = false,
                 ),
             )
         }
@@ -13399,6 +13458,8 @@ internal class X11Connection(
             }
             XRender.Argb32Format,
             XRender.Rgb24Format,
+            XRender.Bgr24Format,
+            XRender.Bgr32Format,
             -> {
                 val stride = width * 4
                 if (offset + stride * height > data.size) return null
@@ -13408,6 +13469,7 @@ internal class X11Connection(
                         val pixel = byteOrder.u32(data, rowOffset + x * 4)
                         pixels[y * width + x] = when (format) {
                             XRender.Rgb24Format -> XFramebuffer.opaque(pixel)
+                            XRender.Bgr24Format, XRender.Bgr32Format -> XFramebuffer.opaque(XRender.bgrToRgb(pixel))
                             else -> XFramebuffer.argb(pixel)
                         }
                     }
@@ -13425,7 +13487,7 @@ internal class X11Connection(
         return when (format) {
             XRender.A8Format -> paddedLength(width) * height
             XRender.A1Format -> ((width + 31) / 32) * 4 * height
-            XRender.Argb32Format, XRender.Rgb24Format -> width * 4 * height
+            XRender.Argb32Format, XRender.Rgb24Format, XRender.Bgr24Format, XRender.Bgr32Format -> width * 4 * height
             else -> 0
         }
     }
@@ -13435,7 +13497,7 @@ internal class X11Connection(
         return when (format) {
             XRender.A8Format -> paddedLength(width.toLong()) * height.toLong()
             XRender.A1Format -> ((width.toLong() + 31L) / 32L) * 4L * height.toLong()
-            XRender.Argb32Format, XRender.Rgb24Format -> width.toLong() * 4L * height.toLong()
+            XRender.Argb32Format, XRender.Rgb24Format, XRender.Bgr24Format, XRender.Bgr32Format -> width.toLong() * 4L * height.toLong()
             else -> 0
         }
     }

@@ -1347,14 +1347,21 @@ class XCoreDrawingProtocolTest {
                 assertEquals(X11Ids.RootVisual, u32le(visualInfo, 36))
                 assertEquals(X11Ids.RootDepth, visualInfo[40].toInt() and 0xff)
                 val lastRootVisualOffset = 36 + (X11Ids.RootVisualAliases.size - 1) * 8
-                assertEquals(X11Ids.XvfbLikeRootVisualAlias, u32le(visualInfo, lastRootVisualOffset))
+                assertEquals(X11Ids.XvfbLikeBgrRootVisualAlias, u32le(visualInfo, lastRootVisualOffset))
                 assertEquals(X11Ids.RootDepth, visualInfo[lastRootVisualOffset + 4].toInt() and 0xff)
+                val lastRgbRootVisualOffset = 36 + X11Ids.RootVisualAliases.indexOf(X11Ids.XvfbLikeRootVisualAlias) * 8
+                assertEquals(X11Ids.XvfbLikeRootVisualAlias, u32le(visualInfo, lastRgbRootVisualOffset))
+                assertEquals(X11Ids.RootDepth, visualInfo[lastRgbRootVisualOffset + 4].toInt() and 0xff)
                 val firstRgbaVisualOffset = 36 + X11Ids.RootVisualAliases.size * 8
-                assertEquals(X11Ids.RgbaVisual, u32le(visualInfo, firstRgbaVisualOffset))
+                assertEquals(0x0000_0040, u32le(visualInfo, firstRgbaVisualOffset))
                 assertEquals(X11Ids.RgbaDepth, visualInfo[firstRgbaVisualOffset + 4].toInt() and 0xff)
+                val lastRgbRgbaVisualOffset = firstRgbaVisualOffset + X11Ids.RgbaVisualAliases.indexOf(X11Ids.XvfbLikeRgbaVisualAlias) * 8
+                assertEquals(X11Ids.XvfbLikeRgbaVisualAlias, u32le(visualInfo, lastRgbRgbaVisualOffset))
+                assertEquals(X11Ids.RgbaDepth, visualInfo[lastRgbRgbaVisualOffset + 4].toInt() and 0xff)
                 val lastRgbaVisualOffset = firstRgbaVisualOffset + (X11Ids.RgbaVisualAliases.size - 1) * 8
-                assertEquals(X11Ids.XvfbLikeRgbaVisualAlias, u32le(visualInfo, lastRgbaVisualOffset))
+                assertEquals(X11Ids.XvfbLikeBgrRgbaVisualAlias, u32le(visualInfo, lastRgbaVisualOffset))
                 assertEquals(X11Ids.RgbaDepth, visualInfo[lastRgbaVisualOffset + 4].toInt() and 0xff)
+                assertTrue(X11Ids.RgbaVisual !in X11Ids.RgbaVisualAliases, "legacy local RGBA visual must not be advertised")
 
                 val missingAttributes = readReply(socket.getInputStream())
                 assertEquals(4, u16le(missingAttributes, 2))
@@ -2566,7 +2573,7 @@ class XCoreDrawingProtocolTest {
                 val formats = readReply(socket.getInputStream())
                 assertEquals(1, formats[0].toInt())
                 assertEquals(4, u16le(formats, 2))
-                assertEquals(4, u32le(formats, 8))
+                assertEquals(6, u32le(formats, 8))
 
                 assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = 0, sequence = 5)
                 assertError(socket.getInputStream(), error = XRender.PictFormatError, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = 0x7fff_0001, sequence = 6)
