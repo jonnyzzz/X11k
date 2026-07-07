@@ -401,6 +401,7 @@ internal object TextScreenRenderer {
                     append(metadata.rawSampleHex.joinToString(",", prefix = "[", postfix = "]"))
                     append(" decoded=")
                     append(metadata.decodedPixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+                    appendPutImageSummary(metadata, includeFormat = false)
                     appendLine()
                 }
             }
@@ -744,6 +745,7 @@ internal object TextScreenRenderer {
                     last.putImage?.let { putImage ->
                         append(" putImageCrc32=")
                         append(putImage.crc32Hex)
+                        appendPutImageSummary(putImage)
                     }
                 }
             }
@@ -785,6 +787,7 @@ internal object TextScreenRenderer {
                         last.putImage?.let { putImage ->
                             append(" putImageCrc32=")
                             append(putImage.crc32Hex)
+                            appendPutImageSummary(putImage)
                         }
                     }
                 }
@@ -822,4 +825,42 @@ internal object TextScreenRenderer {
     }
 
     private fun pixelHex(pixel: Int): String = "0x${pixel.toUInt().toString(16).padStart(8, '0')}"
+
+    private fun StringBuilder.appendPutImageSummary(
+        putImage: XPutImageMetadata,
+        includeFormat: Boolean = true,
+    ) {
+        append(" putImage=")
+        if (includeFormat) {
+            append("format=")
+            append(putImage.format)
+            append(',')
+        }
+        append("depth=")
+        append(putImage.depth)
+        append(",leftPad=")
+        append(putImage.leftPad)
+        append(",size=")
+        append(putImage.width)
+        append('x')
+        append(putImage.height)
+        append(",dataBytes=")
+        append(putImage.dataBytes)
+        append(",rowStride=")
+        append(putImage.rowStrideBytes)
+        putImage.planeBytes?.let { planeBytes ->
+            append(",planeBytes=")
+            append(planeBytes)
+        }
+        append(",crc32=")
+        append(putImage.crc32Hex)
+        if (putImage.rawSampleHex.isNotEmpty()) {
+            append(",raw=")
+            append(putImage.rawSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+        }
+        if (putImage.decodedPixelSampleHex.isNotEmpty()) {
+            append(",decoded=")
+            append(putImage.decodedPixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+        }
+    }
 }

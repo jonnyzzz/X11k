@@ -2376,6 +2376,7 @@ class XRenderProtocolTest {
                 assertContains(text, "paints=0")
                 assertContains(text, "drawings=1")
                 assertContains(text, "lastDrawing=PutImage putImageCrc32=")
+                assertContains(text, "putImage=format=2,depth=32,leftPad=0,size=2x1,dataBytes=8,rowStride=8,crc32=")
                 assertContains(text, "framebuffer=2x1 crc32=")
             }
             server.close()
@@ -2737,6 +2738,9 @@ class XRenderProtocolTest {
                 assertContains(text, "/Composite")
                 assertContains(text, "producerSourcePopulation=$sourcePixmapId#")
                 assertContains(text, "drawings=1 lastDrawing=PutImage putImageCrc32=")
+                assertContains(text, "putImage=format=2,depth=32,leftPad=0,size=6x2,dataBytes=48,rowStride=24,crc32=")
+                assertContains(text, "raw=[0x00,0x00,0xff,0xff,0x00,0xff,0x00,0xff")
+                assertContains(text, "decoded=[0xffff0000,0xff00ff00,0xff0000ff")
                 assertContains(text, "producerFramebuffer=6x2 crc32=")
                 assertContains(text, "pointPixels=[0,0=0xff000000,1,0=0xff00ff00")
             }
