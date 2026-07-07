@@ -333,9 +333,16 @@ class IntellijCommunitySmokeTest {
             val mismatchTiles = File(directory, "intellij-kotlin-top-frame-band-render-mismatch-tiles.txt").readText()
             assertTrue(mismatchTiles.contains("RENDER mismatch tile buckets:"), mismatchTiles)
             assertTrue(mismatchTiles.contains("comparison=robotVsXvfb tile=0-31,10-11 root=10,30 32x2 mismatches=1"), mismatchTiles)
+            assertTrue(
+                mismatchTiles.contains(
+                    "pixelSamples=[local=10,10/root=20,30/expected=0xff101010/actual=0xff402020/delta=48,16,16,0]",
+                ),
+                mismatchTiles,
+            )
             assertTrue(mismatchTiles.contains("comparison=svgVsXvfb tile=1152-1183,20-21 root=1162,40 32x2 mismatches=1"), mismatchTiles)
             assertTrue(mismatchTiles.contains("comparison=robotVsSvg tile=0-31,10-11 root=10,30 32x2 mismatches=1"), mismatchTiles)
-            assertTrue(mismatchTiles.contains("operations=0 first=none last=none families=none"), mismatchTiles)
+            assertTrue(mismatchTiles.contains("operations=0 first=none last=none operationPoints=none families=none"), mismatchTiles)
+            assertTrue(mismatchTiles.contains("operationPoints=none"), mismatchTiles)
         } finally {
             directory.deleteRecursively()
         }
@@ -440,6 +447,44 @@ class IntellijCommunitySmokeTest {
             summary,
         )
         assertTrue(summary.contains("/sourcePixels=[0xff26282c,0xff3b3329]/resultPixels=[0xff26282c]|[0xff3b3329]"), summary)
+    }
+
+    @Test
+    fun `intellij render band mismatch tiles expose pixel and operation-local samples`() {
+        val section =
+            """
+            RENDER operations intersecting top mapped root-child band:
+            - region=10,20 100x8 window=0x200003
+            - #41 Composite minor=8 root=10,24 65x2 local=0,4 65x2 op=3 src=0x600240 mask=0x0 dst=0x60004a srcOrigin=0,0 maskOrigin=0,0 dst=0,4 65x2 source=0x600240/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60023f#124 paints=1 framebuffer=624x2 crc32=0xa3949057 pixels=[0xff26282c,0xff3b3329] result=65x2 crc32=0x11111111 pixels=[0xff26282c]
+            """.trimIndent()
+        val expected = solidImage(100, 8, 0xff10_1010.toInt())
+        val robot = solidImage(100, 8, 0xff10_1010.toInt()).also { image ->
+            image.setRGB(2, 4, 0xff30_2010.toInt())
+            image.setRGB(3, 4, 0xff31_2111.toInt())
+        }
+        val svg = solidImage(100, 8, 0xff10_1010.toInt())
+
+        val summary = intellijRenderBandMismatchTileSummary(
+            section = section,
+            region = Rectangle(10, 20, 100, 8),
+            expected = expected,
+            actualRobot = robot,
+            actualSvg = svg,
+            bucketWidth = 32,
+            bucketHeight = 2,
+            limit = 4,
+        )
+
+        assertTrue(summary.contains("comparison=robotVsXvfb tile=0-31,4-5 root=10,24 32x2 mismatches=2"), summary)
+        assertTrue(
+            summary.contains(
+                "pixelSamples=[local=2,4/root=12,24/expected=0xff101010/actual=0xff302010/delta=32,16,0,0]|[local=3,4/root=13,24/expected=0xff101010/actual=0xff312111/delta=33,17,1,0]",
+            ),
+            summary,
+        )
+        assertTrue(summary.contains("operationPoints=#41/root=12,24/dst=2,4/src=2,0"), summary)
+        assertFalse(summary.contains("comparison=svgVsXvfb"), summary)
+        assertTrue(summary.contains("comparison=robotVsSvg tile=0-31,4-5 root=10,24 32x2 mismatches=2"), summary)
     }
 
     @Test
@@ -2651,6 +2696,8 @@ class IntellijCommunitySmokeTest {
         val framebuffer = Regex("""\bframebuffer=(\d+x\d+)\s+crc32=(0x[0-9a-f]+)(?:\s+pixels=(\[[^]]*]))?""").find(line)
         val result = Regex("""\sresult=(\d+x\d+)\s+crc32=(0x[0-9a-f]+)(?:\s+pixels=(\[[^]]*]))?""").find(line)
         val root = Regex("""\broot=(-?\d+),(-?\d+)\s+(\d+)x(\d+)""").find(line)
+        val sourceOrigin = Regex("""\bsrcOrigin=(-?\d+),(-?\d+)""").find(line)
+        val destinationRegion = Regex("""\bdst=(-?\d+),(-?\d+)\s+(\d+)x(\d+)""").find(line)
         val key = IntellijRenderOperationFamilyKey(
             operation = header.groupValues[2],
             minorOpcode = header.groupValues[3].toInt(),
@@ -2670,6 +2717,20 @@ class IntellijCommunitySmokeTest {
             id = header.groupValues[1].toInt(),
             key = key,
             rootRectangle = root?.let { match ->
+                Rectangle(
+                    match.groupValues[1].toInt(),
+                    match.groupValues[2].toInt(),
+                    match.groupValues[3].toInt(),
+                    match.groupValues[4].toInt(),
+                )
+            },
+            sourceOrigin = sourceOrigin?.let { match ->
+                IntellijCoordinate(
+                    x = match.groupValues[1].toInt(),
+                    y = match.groupValues[2].toInt(),
+                )
+            },
+            destinationRegion = destinationRegion?.let { match ->
                 Rectangle(
                     match.groupValues[1].toInt(),
                     match.groupValues[2].toInt(),
@@ -2768,11 +2829,21 @@ class IntellijCommunitySmokeTest {
                     append(" root=").append(tileRoot.x).append(',').append(tileRoot.y)
                     append(' ').append(tileRoot.width).append('x').append(tileRoot.height)
                     append(" mismatches=").append(tile.count)
+                    append(" pixelSamples=").append(intellijMismatchTilePixelSummary(region, tile, reference, actual))
                     append(" operations=").append(tileOperations.size)
                     append(" first=")
                     append(tileOperations.minOfOrNull { it.id }?.let { "#$it" } ?: "none")
                     append(" last=")
                     append(tileOperations.maxOfOrNull { it.id }?.let { "#$it" } ?: "none")
+                    append(" operationPoints=").append(
+                        intellijRenderBandOperationPointSummary(
+                            operations = tileOperations,
+                            tileRoot = tileRoot,
+                            reference = reference,
+                            actual = actual,
+                            region = region,
+                        ),
+                    )
                     append(" families=").append(intellijRenderBandFamilySummary(tileOperations))
                     append(" samples=").append(intellijRenderBandSampleSummary(tileOperations))
                     append(" thinOperations=").append(thinOperations.size)
@@ -2794,6 +2865,86 @@ class IntellijCommunitySmokeTest {
                 lines.flatten().forEach { appendLine(it) }
             }
         }
+    }
+
+    private fun intellijMismatchTilePixelSummary(
+        region: Rectangle,
+        tile: IntellijMismatchTile,
+        reference: BufferedImage,
+        actual: BufferedImage,
+        limit: Int = 4,
+    ): String {
+        val samples = mutableListOf<String>()
+        val maxY = minOf(reference.height, actual.height, tile.y + tile.height)
+        val maxX = minOf(reference.width, actual.width, tile.x + tile.width)
+        for (y in tile.y until maxY) {
+            for (x in tile.x until maxX) {
+                val expectedRgb = reference.getRGB(x, y)
+                val actualRgb = actual.getRGB(x, y)
+                if (rgbDistance(expectedRgb, actualRgb) == 0) continue
+                samples += "[local=$x,$y/root=${region.x + x},${region.y + y}/expected=${argbHex(expectedRgb)}/actual=${argbHex(actualRgb)}/delta=${argbDelta(expectedRgb, actualRgb)}]"
+                if (samples.size >= limit) return samples.joinToString("|")
+            }
+        }
+        return samples.joinToString("|").ifBlank { "none" }
+    }
+
+    private fun intellijRenderBandOperationPointSummary(
+        operations: List<IntellijRenderBandOperation>,
+        tileRoot: Rectangle,
+        reference: BufferedImage,
+        actual: BufferedImage,
+        region: Rectangle,
+        limit: Int = 4,
+    ): String =
+        operations
+            .filter { operation -> operation.rootRectangle?.intersects(tileRoot) == true }
+            .sortedWith(
+                compareBy<IntellijRenderBandOperation> { operation ->
+                    if (operation.destinationRegion != null || operation.sourceOrigin != null) 0 else 1
+                }.thenBy { it.id },
+            )
+            .mapNotNull { operation ->
+                val root = operation.rootRectangle ?: return@mapNotNull null
+                val point = firstMismatchPointInIntersection(tileRoot, reference, actual, region, root) ?: return@mapNotNull null
+                val rootLocalX = point.x - root.x
+                val rootLocalY = point.y - root.y
+                val destination = operation.destinationRegion?.let { dst ->
+                    "dst=${dst.x + rootLocalX},${dst.y + rootLocalY}"
+                } ?: "dst=none"
+                val source = operation.sourceOrigin?.let { src ->
+                    "src=${src.x + rootLocalX},${src.y + rootLocalY}"
+                } ?: "src=none"
+                "#${operation.id}/root=${point.x},${point.y}/$destination/$source"
+            }
+            .distinct()
+            .take(limit)
+            .joinToString("|")
+            .ifBlank { "none" }
+
+    private fun firstMismatchPointInIntersection(
+        tileRoot: Rectangle,
+        reference: BufferedImage,
+        actual: BufferedImage,
+        region: Rectangle,
+        operationRoot: Rectangle,
+    ): IntellijCoordinate? {
+        val xStart = maxOf(tileRoot.x, operationRoot.x)
+        val yStart = maxOf(tileRoot.y, operationRoot.y)
+        val xEnd = minOf(tileRoot.x + tileRoot.width, operationRoot.x + operationRoot.width)
+        val yEnd = minOf(tileRoot.y + tileRoot.height, operationRoot.y + operationRoot.height)
+        for (rootY in yStart until yEnd) {
+            val y = rootY - region.y
+            if (y !in 0 until minOf(reference.height, actual.height)) continue
+            for (rootX in xStart until xEnd) {
+                val x = rootX - region.x
+                if (x !in 0 until minOf(reference.width, actual.width)) continue
+                if (rgbDistance(reference.getRGB(x, y), actual.getRGB(x, y)) != 0) {
+                    return IntellijCoordinate(rootX, rootY)
+                }
+            }
+        }
+        return null
     }
 
     private fun intellijRenderBandRegion(section: String): Rectangle? {
@@ -2902,6 +3053,8 @@ class IntellijCommunitySmokeTest {
         val id: Int,
         val key: IntellijRenderOperationFamilyKey,
         val rootRectangle: Rectangle?,
+        val sourceOrigin: IntellijCoordinate?,
+        val destinationRegion: Rectangle?,
         val sourcePopulationDetail: String?,
         val sourceFramebufferPixels: String?,
         val resultSize: String?,
@@ -2923,6 +3076,11 @@ class IntellijCommunitySmokeTest {
         val sourcePopulation: String?,
         val sourceFramebufferSize: String?,
         val sourceFramebufferCrc32: String?,
+    )
+
+    private data class IntellijCoordinate(
+        val x: Int,
+        val y: Int,
     )
 
     private fun intellijSmokeArtifactsDirectory(): File =
@@ -3845,6 +4003,17 @@ class IntellijCommunitySmokeTest {
         abs(((left ushr 16) and 0xff) - ((right ushr 16) and 0xff)) +
             abs(((left ushr 8) and 0xff) - ((right ushr 8) and 0xff)) +
             abs((left and 0xff) - (right and 0xff))
+
+    private fun argbHex(pixel: Int): String =
+        "0x${pixel.toUInt().toString(16).padStart(8, '0')}"
+
+    private fun argbDelta(expected: Int, actual: Int): String =
+        listOf(
+            ((actual ushr 16) and 0xff) - ((expected ushr 16) and 0xff),
+            ((actual ushr 8) and 0xff) - ((expected ushr 8) and 0xff),
+            (actual and 0xff) - (expected and 0xff),
+            ((actual ushr 24) and 0xff) - ((expected ushr 24) and 0xff),
+        ).joinToString(",")
 
     private data class EmbeddedPng(
         val id: String,
