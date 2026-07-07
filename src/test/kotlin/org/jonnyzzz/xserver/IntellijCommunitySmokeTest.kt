@@ -308,6 +308,7 @@ class IntellijCommunitySmokeTest {
             assertTrue(File(directory, "intellij-top-frame-band-svg-vs-xvfb-diff.png").isFile)
             assertTrue(File(directory, "intellij-top-frame-band-robot-vs-svg-diff.png").isFile)
             assertTrue(File(directory, "intellij-right-frame-band-metrics.txt").isFile)
+            assertTrue(File(directory, "intellij-kotlin-top-frame-band-render-mismatch-tiles.txt").isFile)
 
             val metrics = File(directory, "intellij-top-frame-band-metrics.txt").readText()
             assertTrue(metrics.contains("region=10,20 1260x120"), metrics)
@@ -328,6 +329,13 @@ class IntellijCommunitySmokeTest {
             assertTrue(metrics.contains("svgVsXvfbMismatchDeltaHistogram=16,48,16,0:1"), metrics)
             assertTrue(metrics.contains("robotVsSvgMismatchDeltaHistogram=-48,-16,-16,0:1 16,48,16,0:1"), metrics)
             assertTrue(metrics.contains("robotVsXvfbGrayMismatchDeltaHistogram=none"), metrics)
+
+            val mismatchTiles = File(directory, "intellij-kotlin-top-frame-band-render-mismatch-tiles.txt").readText()
+            assertTrue(mismatchTiles.contains("RENDER mismatch tile buckets:"), mismatchTiles)
+            assertTrue(mismatchTiles.contains("comparison=robotVsXvfb tile=0-31,10-11 root=10,30 32x2 mismatches=1"), mismatchTiles)
+            assertTrue(mismatchTiles.contains("comparison=svgVsXvfb tile=1152-1183,20-21 root=1162,40 32x2 mismatches=1"), mismatchTiles)
+            assertTrue(mismatchTiles.contains("comparison=robotVsSvg tile=0-31,10-11 root=10,30 32x2 mismatches=1"), mismatchTiles)
+            assertTrue(mismatchTiles.contains("operations=0 first=none last=none families=none"), mismatchTiles)
         } finally {
             directory.deleteRecursively()
         }
@@ -2355,7 +2363,7 @@ class IntellijCommunitySmokeTest {
             File(directory, "intellij-frame-band-artifacts.txt").writeText("ideaFrame=none\n")
             return
         }
-        for ((fileLabel, metricLabel, region) in intellijFrameBands(frame)) {
+        for ((fileLabel, metricLabel, reportBand, region) in intellijFrameBands(frame)) {
             val expectedRegion = visualCapture(regionImage(expected.image, region))
             val robotRegion = visualCapture(regionImage(actualRobot.image, region))
             val svgRegion = visualCapture(regionImage(actualSvg.image, region))
@@ -2372,6 +2380,15 @@ class IntellijCommunitySmokeTest {
                     expected = expectedRegion,
                     actualRobot = robotRegion,
                     actualSvg = svgRegion,
+                ),
+            )
+            File(directory, "intellij-kotlin-$fileLabel-render-mismatch-tiles.txt").writeText(
+                intellijRenderBandMismatchTileSummary(
+                    section = intellijRenderBandSection(text, reportBand),
+                    region = region,
+                    expected = expectedRegion.image,
+                    actualRobot = robotRegion.image,
+                    actualSvg = svgRegion.image,
                 ),
             )
         }
@@ -2702,6 +2719,63 @@ class IntellijCommunitySmokeTest {
         }
     }
 
+    private fun intellijRenderBandMismatchTileSummary(
+        section: String,
+        region: Rectangle,
+        expected: BufferedImage,
+        actualRobot: BufferedImage,
+        actualSvg: BufferedImage,
+        bucketWidth: Int = 32,
+        bucketHeight: Int = 2,
+        limit: Int = 16,
+    ): String {
+        require(bucketWidth > 0) { "bucketWidth must be positive" }
+        require(bucketHeight > 0) { "bucketHeight must be positive" }
+        val operations = section.lineSequence()
+            .mapNotNull(::parseIntellijRenderBandOperation)
+            .toList()
+
+        fun appendComparison(name: String, reference: BufferedImage, actual: BufferedImage): List<String> =
+            mismatchTiles(reference, actual, bucketWidth, bucketHeight, limit).map { tile ->
+                val tileRoot = Rectangle(region.x + tile.x, region.y + tile.y, tile.width, tile.height)
+                val tileOperations = operations.filter { operation ->
+                    operation.rootRectangle?.intersects(tileRoot) == true
+                }
+                val thinOperations = tileOperations.filter { it.usesThinSourceOrRegion(bucketHeight) }
+                buildString {
+                    append("- comparison=").append(name)
+                    append(" tile=").append(tile.toLocalMetricString())
+                    append(" root=").append(tileRoot.x).append(',').append(tileRoot.y)
+                    append(' ').append(tileRoot.width).append('x').append(tileRoot.height)
+                    append(" mismatches=").append(tile.count)
+                    append(" operations=").append(tileOperations.size)
+                    append(" first=")
+                    append(tileOperations.minOfOrNull { it.id }?.let { "#$it" } ?: "none")
+                    append(" last=")
+                    append(tileOperations.maxOfOrNull { it.id }?.let { "#$it" } ?: "none")
+                    append(" families=").append(intellijRenderBandFamilySummary(tileOperations))
+                    append(" samples=").append(intellijRenderBandSampleSummary(tileOperations))
+                    append(" thinOperations=").append(thinOperations.size)
+                    append(" thinFamilies=").append(intellijRenderBandFamilySummary(thinOperations))
+                    append(" thinSamples=").append(intellijRenderBandSampleSummary(thinOperations))
+                }
+            }
+
+        return buildString {
+            appendLine("RENDER mismatch tile buckets:")
+            val lines = listOf(
+                appendComparison("robotVsXvfb", expected, actualRobot),
+                appendComparison("svgVsXvfb", expected, actualSvg),
+                appendComparison("robotVsSvg", actualRobot, actualSvg),
+            )
+            if (lines.all { it.isEmpty() }) {
+                appendLine("- None.")
+            } else {
+                lines.flatten().forEach { appendLine(it) }
+            }
+        }
+    }
+
     private fun intellijRenderBandRegion(section: String): Rectangle? {
         val match = Regex("""(?m)^-\s+region=(-?\d+),(-?\d+)\s+(\d+)x(\d+)""").find(section) ?: return null
         return Rectangle(
@@ -2764,6 +2838,12 @@ class IntellijCommunitySmokeTest {
         val sourceHeight = sourceSize.substringAfter('x', "").toIntOrNull() ?: return false
         return sourceHeight <= bucketHeight
     }
+
+    private fun Rectangle.intersects(other: Rectangle): Boolean =
+        x < other.x + other.width &&
+            x + width > other.x &&
+            y < other.y + other.height &&
+            y + height > other.y
 
     private fun intellijRenderBandFamilyLabel(key: IntellijRenderOperationFamilyKey): String =
         buildString {
@@ -3283,7 +3363,7 @@ class IntellijCommunitySmokeTest {
             appendLine("robotInsideFrameMismatchBounds=${mismatchBounds(regionImage(expected.image, frame), regionImage(actualRobot.image, frame)).toMetricString()}")
             appendLine("svgInsideFrameMismatchBounds=${mismatchBounds(regionImage(expected.image, frame), regionImage(actualSvg.image, frame)).toMetricString()}")
             appendLine("robotVsSvgInsideFrameMismatchBounds=${mismatchBounds(regionImage(actualRobot.image, frame), regionImage(actualSvg.image, frame)).toMetricString()}")
-            intellijFrameBands(frame).forEach { (_, metricLabel, region) ->
+            intellijFrameBands(frame).forEach { (_, metricLabel, _, region) ->
                 appendIntellijRegionComparison(metricLabel, region, expected, actualRobot, actualSvg)
             }
         }
@@ -3291,9 +3371,9 @@ class IntellijCommunitySmokeTest {
 
     private fun intellijFrameBands(frame: Rectangle): List<IntellijFrameBand> =
         listOf(
-            IntellijFrameBand(fileLabel = "top-frame-band", metricLabel = "topFrameBand", region = frame.topBand(120)),
-            IntellijFrameBand(fileLabel = "right-frame-band", metricLabel = "rightFrameBand", region = frame.rightBand(96)),
-            IntellijFrameBand(fileLabel = "bottom-frame-band", metricLabel = "bottomFrameBand", region = frame.bottomBand(96)),
+            IntellijFrameBand(fileLabel = "top-frame-band", metricLabel = "topFrameBand", reportBand = "top", region = frame.topBand(120)),
+            IntellijFrameBand(fileLabel = "right-frame-band", metricLabel = "rightFrameBand", reportBand = "right", region = frame.rightBand(96)),
+            IntellijFrameBand(fileLabel = "bottom-frame-band", metricLabel = "bottomFrameBand", reportBand = "bottom", region = frame.bottomBand(96)),
         )
 
     private fun StringBuilder.appendIntellijRegionComparison(
@@ -3467,7 +3547,18 @@ class IntellijCommunitySmokeTest {
         bucketWidth: Int,
         bucketHeight: Int,
         limit: Int = 16,
-    ): String {
+    ): String =
+        mismatchTiles(expected, actual, bucketWidth, bucketHeight, limit)
+            .joinToString(" ") { tile -> "${tile.toLocalMetricString()}:${tile.count}" }
+            .ifBlank { "none" }
+
+    private fun mismatchTiles(
+        expected: BufferedImage,
+        actual: BufferedImage,
+        bucketWidth: Int,
+        bucketHeight: Int,
+        limit: Int = 16,
+    ): List<IntellijMismatchTile> {
         require(bucketWidth > 0) { "bucketWidth must be positive" }
         require(bucketHeight > 0) { "bucketHeight must be positive" }
         val width = minOf(expected.width, actual.width)
@@ -3491,17 +3582,25 @@ class IntellijCommunitySmokeTest {
                     .thenBy { it.index % xBuckets },
             )
             .take(limit)
-            .joinToString(" ") { (index, count) ->
+            .map { (index, count) ->
                 val xIndex = index % xBuckets
                 val yIndex = index / xBuckets
                 val xStart = xIndex * bucketWidth
                 val xEnd = minOf(width - 1, xStart + bucketWidth - 1)
                 val yStart = yIndex * bucketHeight
                 val yEnd = minOf(height - 1, yStart + bucketHeight - 1)
-                "$xStart-$xEnd,$yStart-$yEnd:$count"
+                IntellijMismatchTile(
+                    x = xStart,
+                    y = yStart,
+                    width = xEnd - xStart + 1,
+                    height = yEnd - yStart + 1,
+                    count = count,
+                )
             }
-            .ifBlank { "none" }
     }
+
+    private fun IntellijMismatchTile.toLocalMetricString(): String =
+        "${x}-${x + width - 1},${y}-${y + height - 1}"
 
     private fun mismatchDeltaHistogram(expected: BufferedImage, actual: BufferedImage, limit: Int = 12): String {
         val counts = linkedMapOf<String, Int>()
@@ -3761,7 +3860,16 @@ class IntellijCommunitySmokeTest {
     private data class IntellijFrameBand(
         val fileLabel: String,
         val metricLabel: String,
+        val reportBand: String,
         val region: Rectangle,
+    )
+
+    private data class IntellijMismatchTile(
+        val x: Int,
+        val y: Int,
+        val width: Int,
+        val height: Int,
+        val count: Int,
     )
 
     private data class IntellijParityReadiness(
