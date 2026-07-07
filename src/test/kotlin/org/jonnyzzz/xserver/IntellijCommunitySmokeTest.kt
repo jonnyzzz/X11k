@@ -18,7 +18,9 @@ import java.nio.file.LinkOption
 import java.nio.file.StandardCopyOption
 import java.net.ServerSocket
 import java.util.Base64
+import java.net.URLClassLoader
 import javax.imageio.ImageIO
+import javax.tools.ToolProvider
 import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.test.assertEquals
@@ -931,8 +933,81 @@ class IntellijCommunitySmokeTest {
         assertTrue(xvfbBody.contains("XVFB_EXTRA_ARGS='\${xvfbExtraArgs}'"), xvfbBody)
         assertTrue(xvfbBody.contains(">/tmp/xvfb-extra-args.log"), xvfbBody)
         assertTrue(xvfbBody.contains("Xvfb :99 -screen 0"), xvfbBody)
+        assertTrue(xvfbBody.contains("TRACE_XVFB_PUTIMAGE='\${traceXvfbPutImage}'"), xvfbBody)
+        assertTrue(xvfbBody.contains("XVFB_LISTEN_ARGS='-ac -listen tcp'"), xvfbBody)
         assertTrue(xvfbBody.contains("XVFB_EXTRA_ARGS >/tmp/xvfb.log"), xvfbBody)
+        assertTrue(xvfbBody.contains("X11PutImageTraceProxy 6100 127.0.0.1 6099"), xvfbBody)
+        assertTrue(xvfbBody.contains("DISPLAY=127.0.0.1:100"), xvfbBody)
+        assertTrue(xvfbBody.contains("intellij-xvfb-putimage-trace.log"), xvfbBody)
         assertTrue(xvfbBody.contains("intellij-xvfb-extra-args.log"), xvfbBody)
+        assertTrue(source.contains("private fun x11PutImageTraceProxySource()"), source)
+        assertTrue(source.contains("MAX_LOGGED_PUTIMAGE_LINES"), source)
+        assertTrue(source.contains("private static int bigRequestPayloadOffset(byte[] request, boolean little)"), source)
+    }
+
+    @Test
+    fun `intellij xvfb putimage trace summary groups thin strips`() {
+        val logs = listOf(
+            IntellijLogArtifact(
+                fileName = "intellij-xvfb-putimage-trace.log",
+                text =
+                    """
+                    X11 PutImage trace proxy listening port=6100 target=127.0.0.1:6099
+                    connection=2 request=901 PutImage format=2 depth=32 drawable=0x200076 gc=0x200079 dst=0,0 size=150x2 leftPad=0 dataBytes=1200 crc32=0x2a817acd raw=[0x2c,0x28,0x26,0xff] decoded=[0xff26282c]
+                    connection=2 request=923 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=600x2 leftPad=0 dataBytes=4800 crc32=0xaccaae6a raw=[0x6b,0x43,0x37,0xff] decoded=[0xff37436b]
+                    connection=2 request=950 PutImage format=2 depth=8 drawable=0x20002e gc=0x200030 dst=0,0 size=600x2 leftPad=0 dataBytes=1200 crc32=0x11111111 raw=[0xff] decoded=[]
+                    connection=2 request=960 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=600x2 leftPad=0 dataBytes=4800 crc32=0xaccaae6a raw=[0x6b,0x43,0x37,0xff] decoded=[0xff37436b]
+                    """.trimIndent(),
+            ),
+        )
+
+        val summary = intellijXvfbPutImageStripProfiles(logs)
+
+        assertTrue(summary.startsWith("Xvfb PutImage thin strip profiles:"), summary)
+        assertTrue(summary.contains("count=2 first=2#923 last=2#960 size=600x2"), summary)
+        assertTrue(summary.contains("crc32=0xaccaae6a"), summary)
+        assertTrue(summary.contains("decoded=[0xff37436b]"), summary)
+        assertFalse(summary.contains("depth=8"), summary)
+    }
+
+    @Test
+    fun `intellij xvfb putimage trace proxy decodes big requests at extended offsets`() {
+        val tempDir = Files.createTempDirectory("x11-putimage-trace-proxy")
+        val sourceFile = tempDir.resolve("X11PutImageTraceProxy.java")
+        val logFile = tempDir.resolve("trace.log")
+        Files.writeString(sourceFile, x11PutImageTraceProxySource())
+        val compiler = ToolProvider.getSystemJavaCompiler()
+            ?: error("A JDK compiler is required for this focused proxy-source test")
+        assertEquals(0, compiler.run(null, null, null, "-d", tempDir.toString(), sourceFile.toString()))
+
+        URLClassLoader(arrayOf(tempDir.toUri().toURL()), null).use { loader ->
+            val clazz = Class.forName("X11PutImageTraceProxy", true, loader)
+            val constructor = clazz.getDeclaredConstructor(
+                Int::class.javaPrimitiveType,
+                String::class.java,
+                Int::class.javaPrimitiveType,
+                String::class.java,
+            )
+            constructor.isAccessible = true
+            val proxy = constructor.newInstance(0, "127.0.0.1", 0, logFile.toString())
+            val logPutImage = clazz.getDeclaredMethod(
+                "logPutImage",
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                ByteArray::class.java,
+                Boolean::class.javaPrimitiveType,
+            )
+            logPutImage.isAccessible = true
+            logPutImage.invoke(proxy, 7, 12, bigRequestPutImageTraceBytes(), true)
+        }
+
+        val log = Files.readString(logFile)
+        assertTrue(log.contains("connection=7 request=12 PutImage format=2 depth=32"), log)
+        assertTrue(log.contains("drawable=0x1020304 gc=0x5060708"), log)
+        assertTrue(log.contains("dst=-3,4 size=2x1"), log)
+        assertTrue(log.contains("dataBytes=8"), log)
+        assertTrue(log.contains("raw=[0x11,0x22,0x33,0xff,0x22,0x33,0x44,0x80]"), log)
+        assertTrue(log.contains("decoded=[0xff332211,0x80443322]"), log)
     }
 
     @Test
@@ -1239,6 +1314,9 @@ class IntellijCommunitySmokeTest {
         assertTrue(actual.text.contains("Unsupported requests:\n- None."), actual.text)
         assertFalse(actual.text.contains("Download SDK") || actual.text.contains("Download JDK"), actual.text)
         assertIntellijRuntimeUiDiagnosticsPresent(reference.logs + actual.logs)
+        if (intellijTraceXvfbPutImageEnabled()) {
+            assertIntellijXvfbPutImageTracePresent(reference.logs)
+        }
 
         assertIntellijVisualClose(reference.robot, actual.robot, "Kotlin Robot IntelliJ capture")
         assertIntellijVisualClose(reference.robot, composedSvgCapture, "Kotlin SVG-composed IntelliJ framebuffer")
@@ -1344,6 +1422,10 @@ class IntellijCommunitySmokeTest {
 
     private fun intellijDebugValue(): String =
         if (intellijDebugEnabled()) "true" else "false"
+
+    private fun intellijTraceXvfbPutImageEnabled(): Boolean =
+        System.getProperty("x.intellijTraceXvfbPutImage") == "true" ||
+            System.getenv("X_INTELLIJ_TRACE_XVFB_PUTIMAGE") == "true"
 
     private fun intellijXvfbExtraArgs(): String =
         (System.getProperty("x.intellijXvfbExtraArgs") ?: System.getenv("X_INTELLIJ_XVFB_EXTRA_ARGS")).orEmpty()
@@ -1517,6 +1599,10 @@ class IntellijCommunitySmokeTest {
                 container.start()
                 compileRobotCapture(container)
                 compileIntellijUiDiagnosticsAgent(container)
+                val traceXvfbPutImage = intellijTraceXvfbPutImageEnabled()
+                if (traceXvfbPutImage) {
+                    compileX11PutImageTraceProxy(container)
+                }
                 val xvfbExtraArgs = intellijXvfbExtraArgs()
                 val result = execIntellijShell(
                     container,
@@ -1532,18 +1618,36 @@ class IntellijCommunitySmokeTest {
                       export IDEA_URL="${url.orEmpty()}"
                     fi
                     XVFB_EXTRA_ARGS='${xvfbExtraArgs}'
+                    TRACE_XVFB_PUTIMAGE='${traceXvfbPutImage}'
+                    XVFB_LISTEN_ARGS=
+                    if [ "${'$'}TRACE_XVFB_PUTIMAGE" = "true" ]; then
+                      XVFB_LISTEN_ARGS='-ac -listen tcp'
+                    fi
+                    xvfb_display=:99
                     printf '%s\n' "${'$'}XVFB_EXTRA_ARGS" >/tmp/xvfb-extra-args.log
-                    Xvfb :99 -screen 0 ${IntellijCaptureWidth}x${IntellijCaptureHeight}x24 ${'$'}XVFB_EXTRA_ARGS >/tmp/xvfb.log 2>&1 &
+                    Xvfb :99 -screen 0 ${IntellijCaptureWidth}x${IntellijCaptureHeight}x24 ${'$'}XVFB_LISTEN_ARGS ${'$'}XVFB_EXTRA_ARGS >/tmp/xvfb.log 2>&1 &
                     xvfb=${'$'}!
                     echo "${'$'}xvfb" >/tmp/xvfb.pid
                     for _ in ${'$'}(seq 1 80); do
                       DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && break
                       sleep 0.25
                     done
+                    if [ "${'$'}TRACE_XVFB_PUTIMAGE" = "true" ]; then
+                      java -cp /tmp X11PutImageTraceProxy 6100 127.0.0.1 6099 /tmp/xvfb-putimage-trace.log \
+                        >/tmp/xvfb-putimage-trace-proxy.log 2>&1 &
+                      trace_proxy=${'$'}!
+                      echo "${'$'}trace_proxy" >/tmp/xvfb-putimage-trace-proxy.pid
+                      for _ in ${'$'}(seq 1 80); do
+                        grep -q "listening" /tmp/xvfb-putimage-trace.log 2>/dev/null && break
+                        sleep 0.25
+                      done
+                      DISPLAY=127.0.0.1:100 xdpyinfo >/dev/null 2>&1
+                      xvfb_display=127.0.0.1:100
+                    fi
                     DISPLAY=:99 xdpyinfo -queryExtensions >/tmp/xdpyinfo-extensions-xvfb.log 2>&1 || true
                     DISPLAY=:99 xdpyinfo -ext GLX >/tmp/xdpyinfo-glx-xvfb.log 2>&1 || true
                     DISPLAY=:99 xsetroot -solid white >/tmp/xsetroot.log 2>&1 || true
-                    DISPLAY=:99 \
+                    DISPLAY="${'$'}xvfb_display" \
                     IDEA_X11_DEBUG=${intellijDebugValue()} \
                     IDEA_PROJECT=/workspace/jonnyzzz-x \
                     IDEA_TRUST_PROJECT=true \
@@ -1586,6 +1690,8 @@ class IntellijCommunitySmokeTest {
                     "/tmp/idea-config-options-inventory.log" to "intellij-xvfb-config-options-inventory.log",
                     "/tmp/run-intellij-env.log" to "intellij-xvfb-run-intellij-env.log",
                     "/tmp/idea-ui-runtime-diagnostics.log" to "intellij-xvfb-ui-runtime-diagnostics.log",
+                    "/tmp/xvfb-putimage-trace.log" to "intellij-xvfb-putimage-trace.log",
+                    "/tmp/xvfb-putimage-trace-proxy.log" to "intellij-xvfb-putimage-trace-proxy.log",
                     "/tmp/run-intellij-cksum.log" to "intellij-xvfb-run-intellij-cksum.log",
                     "/tmp/xvfb-extra-args.log" to "intellij-xvfb-extra-args.log",
                 )
@@ -1610,7 +1716,12 @@ class IntellijCommunitySmokeTest {
                         kill -0 "${'$'}xvfb"
                         DISPLAY=:99 xwininfo -root -tree >/tmp/xwininfo-xvfb-root-tree.log 2>&1 || true
                         DISPLAY=:99 xprop -root >/tmp/xprop-xvfb-root.log 2>&1 || true
-                        DISPLAY=:99 java -cp /tmp XIntellijRobotCapture
+                        TRACE_XVFB_PUTIMAGE='${traceXvfbPutImage}'
+                        xvfb_display=:99
+                        if [ "${'$'}TRACE_XVFB_PUTIMAGE" = "true" ]; then
+                          xvfb_display=127.0.0.1:100
+                        fi
+                        DISPLAY="${'$'}xvfb_display" java -cp /tmp XIntellijRobotCapture
                         """.trimIndent(),
                     )
                     assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
@@ -1628,7 +1739,7 @@ class IntellijCommunitySmokeTest {
                     execContainerShell(
                         container,
                         30,
-                        "kill $(cat /tmp/idea-xvfb.pid 2>/dev/null) $(cat /tmp/xvfb.pid 2>/dev/null) 2>/dev/null || true",
+                        "kill $(cat /tmp/idea-xvfb.pid 2>/dev/null) $(cat /tmp/xvfb.pid 2>/dev/null) $(cat /tmp/xvfb-putimage-trace-proxy.pid 2>/dev/null) 2>/dev/null || true",
                     )
                 }
             }
@@ -2092,6 +2203,15 @@ class IntellijCommunitySmokeTest {
         assertEquals(0, result.exitCode, result.stderr + result.stdout)
     }
 
+    private fun compileX11PutImageTraceProxy(container: GenericContainer<*>) {
+        val result = execContainerShell(
+            container,
+            120,
+            "cat > /tmp/X11PutImageTraceProxy.java <<'JAVA'\n${x11PutImageTraceProxySource()}\nJAVA\njavac -d /tmp /tmp/X11PutImageTraceProxy.java",
+        )
+        assertEquals(0, result.exitCode, result.stderr + result.stdout)
+    }
+
     private fun captureIntellijRuntimeUiDiagnostics(container: GenericContainer<*>, pidPath: String) {
         val result = execContainerShell(
             container,
@@ -2164,6 +2284,270 @@ class IntellijCommunitySmokeTest {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             ImageIO.write(image, "png", output);
             System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
+          }
+        }
+        """.trimIndent()
+
+    private fun x11PutImageTraceProxySource(): String =
+        """
+        import java.io.ByteArrayOutputStream;
+        import java.io.FileWriter;
+        import java.io.InputStream;
+        import java.io.OutputStream;
+        import java.io.PrintWriter;
+        import java.net.ServerSocket;
+        import java.net.Socket;
+        import java.util.Arrays;
+        import java.util.concurrent.atomic.AtomicInteger;
+        import java.util.zip.CRC32;
+
+        public class X11PutImageTraceProxy {
+          private static final int MAX_LOGGED_PUTIMAGE_LINES = 4096;
+          private final int listenPort;
+          private final String targetHost;
+          private final int targetPort;
+          private final PrintWriter log;
+          private final AtomicInteger nextConnection = new AtomicInteger(1);
+          private int putImageLines;
+
+          private X11PutImageTraceProxy(int listenPort, String targetHost, int targetPort, String logPath) throws Exception {
+            this.listenPort = listenPort;
+            this.targetHost = targetHost;
+            this.targetPort = targetPort;
+            this.log = new PrintWriter(new FileWriter(logPath, true), true);
+          }
+
+          public static void main(String[] args) throws Exception {
+            if (args.length != 4) {
+              throw new IllegalArgumentException("usage: X11PutImageTraceProxy <listenPort> <targetHost> <targetPort> <logPath>");
+            }
+            new X11PutImageTraceProxy(
+                Integer.parseInt(args[0]),
+                args[1],
+                Integer.parseInt(args[2]),
+                args[3]).run();
+          }
+
+          private void run() throws Exception {
+            try (ServerSocket server = new ServerSocket(listenPort)) {
+              line("X11 PutImage trace proxy listening port=" + listenPort + " target=" + targetHost + ":" + targetPort);
+              while (true) {
+                Socket client = server.accept();
+                int connection = nextConnection.getAndIncrement();
+                Thread thread = new Thread(() -> handle(connection, client), "x11-putimage-trace-" + connection);
+                thread.setDaemon(true);
+                thread.start();
+              }
+            }
+          }
+
+          private void handle(int connection, Socket client) {
+            try (Socket clientSocket = client; Socket serverSocket = new Socket(targetHost, targetPort)) {
+              clientSocket.setTcpNoDelay(true);
+              serverSocket.setTcpNoDelay(true);
+              Thread serverToClient = new Thread(
+                  () -> pumpRaw(serverSocket, clientSocket),
+                  "x11-putimage-trace-reply-" + connection);
+              serverToClient.setDaemon(true);
+              serverToClient.start();
+              pumpClient(connection, clientSocket.getInputStream(), serverSocket.getOutputStream());
+            } catch (Throwable t) {
+              line("connection=" + connection + " error=" + t.getClass().getName() + ":" + String.valueOf(t.getMessage()));
+            }
+          }
+
+          private static void pumpRaw(Socket from, Socket to) {
+            byte[] buffer = new byte[32768];
+            try {
+              InputStream input = from.getInputStream();
+              OutputStream output = to.getOutputStream();
+              int read;
+              while ((read = input.read(buffer)) >= 0) {
+                output.write(buffer, 0, read);
+                output.flush();
+              }
+            } catch (Throwable ignored) {
+            }
+          }
+
+          private void pumpClient(int connection, InputStream input, OutputStream output) throws Exception {
+            int order = input.read();
+            if (order < 0) return;
+            boolean little = order == 'l';
+            ByteArrayOutputStream handshake = new ByteArrayOutputStream();
+            handshake.write(order);
+            byte[] rest = readFully(input, 11);
+            if (rest == null) return;
+            handshake.write(rest);
+            int authNameLength = u16(rest, 5, little);
+            int authDataLength = u16(rest, 7, little);
+            int authBytes = padded(authNameLength) + padded(authDataLength);
+            byte[] auth = readFully(input, authBytes);
+            if (auth == null) return;
+            handshake.write(auth);
+            byte[] handshakeBytes = handshake.toByteArray();
+            output.write(handshakeBytes);
+            output.flush();
+            line("connection=" + connection + " byteOrder=" + (little ? "LSB" : "MSB") + " handshakeBytes=" + handshakeBytes.length);
+
+            int requestIndex = 0;
+            while (true) {
+              byte[] header = readFully(input, 4);
+              if (header == null) return;
+              int opcode = header[0] & 0xff;
+              int lengthWords = u16(header, 2, little);
+              ByteArrayOutputStream request = new ByteArrayOutputStream();
+              request.write(header);
+              int remaining;
+              if (lengthWords == 0) {
+                byte[] bigHeader = readFully(input, 4);
+                if (bigHeader == null) return;
+                request.write(bigHeader);
+                long bigWords = u32(bigHeader, 0, little);
+                remaining = checkedRequestRemaining(bigWords * 4L, 8);
+              } else {
+                remaining = checkedRequestRemaining(lengthWords * 4L, 4);
+              }
+              byte[] body = readFully(input, remaining);
+              if (body == null) return;
+              request.write(body);
+              byte[] bytes = request.toByteArray();
+              output.write(bytes);
+              output.flush();
+              requestIndex++;
+              if (opcode == 72) {
+                logPutImage(connection, requestIndex, bytes, little);
+              }
+            }
+          }
+
+          private void logPutImage(int connection, int requestIndex, byte[] request, boolean little) {
+            int payloadOffset = bigRequestPayloadOffset(request, little);
+            if (request.length < payloadOffset + 24) {
+              line("connection=" + connection + " request=" + requestIndex + " PutImage malformedBytes=" + request.length);
+              return;
+            }
+            int format = request[1] & 0xff;
+            long drawable = u32(request, payloadOffset + 4, little);
+            long gc = u32(request, payloadOffset + 8, little);
+            int width = u16(request, payloadOffset + 12, little);
+            int height = u16(request, payloadOffset + 14, little);
+            int dstX = i16(request, payloadOffset + 16, little);
+            int dstY = i16(request, payloadOffset + 18, little);
+            int leftPad = request[payloadOffset + 20] & 0xff;
+            int depth = request[payloadOffset + 21] & 0xff;
+            byte[] data = Arrays.copyOfRange(request, payloadOffset + 24, request.length);
+            CRC32 crc = new CRC32();
+            crc.update(data);
+            putImageLine(
+                "connection=" + connection +
+                    " request=" + requestIndex +
+                    " PutImage format=" + format +
+                    " depth=" + depth +
+                    " drawable=0x" + Long.toHexString(drawable) +
+                    " gc=0x" + Long.toHexString(gc) +
+                    " dst=" + dstX + "," + dstY +
+                    " size=" + width + "x" + height +
+                    " leftPad=" + leftPad +
+                    " dataBytes=" + data.length +
+                    " crc32=0x" + Long.toHexString(crc.getValue()) +
+                    " raw=" + rawSample(data, 16) +
+                    " decoded=" + decodedArgbSample(format, depth, data, 8));
+          }
+
+          private static int bigRequestPayloadOffset(byte[] request, boolean little) {
+            return request.length >= 8 && u16(request, 2, little) == 0 ? 4 : 0;
+          }
+
+          private static byte[] readFully(InputStream input, int count) throws Exception {
+            byte[] bytes = new byte[count];
+            int offset = 0;
+            while (offset < count) {
+              int read = input.read(bytes, offset, count - offset);
+              if (read < 0) return null;
+              offset += read;
+            }
+            return bytes;
+          }
+
+          private static int checkedRequestRemaining(long totalBytes, int headerBytes) {
+            if (totalBytes < headerBytes || totalBytes > 128L * 1024L * 1024L) {
+              throw new IllegalArgumentException("unsupported X11 request length bytes=" + totalBytes);
+            }
+            return (int) totalBytes - headerBytes;
+          }
+
+          private static int padded(int value) {
+            return (value + 3) & ~3;
+          }
+
+          private static int u16(byte[] bytes, int offset, boolean little) {
+            int a = bytes[offset] & 0xff;
+            int b = bytes[offset + 1] & 0xff;
+            return little ? (a | (b << 8)) : ((a << 8) | b);
+          }
+
+          private static int i16(byte[] bytes, int offset, boolean little) {
+            int value = u16(bytes, offset, little);
+            return value >= 0x8000 ? value - 0x10000 : value;
+          }
+
+          private static long u32(byte[] bytes, int offset, boolean little) {
+            long a = bytes[offset] & 0xffL;
+            long b = bytes[offset + 1] & 0xffL;
+            long c = bytes[offset + 2] & 0xffL;
+            long d = bytes[offset + 3] & 0xffL;
+            return little ? (a | (b << 8) | (c << 16) | (d << 24)) : ((a << 24) | (b << 16) | (c << 8) | d);
+          }
+
+          private static String rawSample(byte[] bytes, int limit) {
+            StringBuilder out = new StringBuilder("[");
+            int count = Math.min(bytes.length, limit);
+            for (int i = 0; i < count; i++) {
+              if (i > 0) out.append(',');
+              out.append("0x").append(Integer.toHexString(bytes[i] & 0xff));
+            }
+            return out.append(']').toString();
+          }
+
+          private static String decodedArgbSample(int format, int depth, byte[] data, int limit) {
+            if (format != 2 || depth != 32) return "[]";
+            StringBuilder out = new StringBuilder("[");
+            int pixels = Math.min(data.length / 4, limit);
+            for (int i = 0; i < pixels; i++) {
+              int offset = i * 4;
+              int blue = data[offset] & 0xff;
+              int green = data[offset + 1] & 0xff;
+              int red = data[offset + 2] & 0xff;
+              int alpha = data[offset + 3] & 0xff;
+              int argb = (alpha << 24) | (red << 16) | (green << 8) | blue;
+              if (i > 0) out.append(',');
+              out.append("0x").append(String.format("%08x", argb));
+            }
+            return out.append(']').toString();
+          }
+
+          private void line(String text) {
+            synchronized (log) {
+              lineLocked(text);
+            }
+          }
+
+          private void putImageLine(String text) {
+            synchronized (log) {
+              if (putImageLines < MAX_LOGGED_PUTIMAGE_LINES) {
+                lineLocked(text);
+                putImageLines++;
+              } else if (putImageLines == MAX_LOGGED_PUTIMAGE_LINES) {
+                lineLocked("PutImage trace line limit reached; further PutImage summaries suppressed");
+                putImageLines++;
+              }
+            }
+          }
+
+          private void lineLocked(String text) {
+            log.println(text);
+            log.flush();
           }
         }
         """.trimIndent()
@@ -2428,6 +2812,7 @@ class IntellijCommunitySmokeTest {
         File(directory, "intellij-kotlin-html-previews.txt").writeText(htmlPreviewInventory(htmlWindowPreviewSurfaces(actual.html)))
         val logs = reference.logs + actual.logs
         dumpIntellijLogArtifacts(logs)
+        File(directory, "intellij-xvfb-putimage-strip-profiles.txt").writeText(intellijXvfbPutImageStripProfiles(reference.logs))
         File(directory, "intellij-glx-jcef-diagnostics.txt").writeText(
             intellijGlxJcefDiagnosticsSummary(
                 logs,
@@ -2653,6 +3038,100 @@ class IntellijCommunitySmokeTest {
             .firstOrNull { it.startsWith("$name=") }
             ?.substringAfter('=')
             ?: "<missing>"
+
+    private fun assertIntellijXvfbPutImageTracePresent(logs: List<IntellijLogArtifact>) {
+        val trace = logs.firstOrNull { it.fileName == "intellij-xvfb-putimage-trace.log" }?.text.orEmpty()
+        assertTrue(trace.contains("X11 PutImage trace proxy listening"), trace)
+        assertTrue(
+            Regex("""\bPutImage\b[^\n]*\bsize=\d+x\d+""").containsMatchIn(trace),
+            "Xvfb reference run must retain at least one client PutImage summary\n$trace",
+        )
+    }
+
+    private fun intellijXvfbPutImageStripProfiles(logs: List<IntellijLogArtifact>): String {
+        val trace = logs.firstOrNull { it.fileName == "intellij-xvfb-putimage-trace.log" }?.text.orEmpty()
+        val entries = trace
+            .lineSequence()
+            .mapNotNull { intellijXvfbPutImageTraceEntry(it) }
+            .filter { it.format == 2 && it.depth == 32 && it.height <= 2 && it.width >= 100 }
+            .toList()
+        if (entries.isEmpty()) return "Xvfb PutImage thin strip profiles:\n- None.\n"
+
+        val groups = entries
+            .groupBy { listOf(it.width, it.height, it.dataBytes, it.crc32, it.raw, it.decoded) }
+            .values
+            .sortedWith(
+                compareByDescending<List<IntellijXvfbPutImageTraceEntry>> { it.size }
+                    .thenBy { it.first().request },
+            )
+            .take(16)
+        return buildString {
+            appendLine("Xvfb PutImage thin strip profiles:")
+            groups.forEach { group ->
+                val first = group.first()
+                val last = group.last()
+                append("- count=").append(group.size)
+                append(" first=").append(first.connection).append('#').append(first.request)
+                append(" last=").append(last.connection).append('#').append(last.request)
+                append(" size=").append(first.width).append('x').append(first.height)
+                append(" dataBytes=").append(first.dataBytes)
+                append(" crc32=").append(first.crc32)
+                append(" raw=").append(first.raw)
+                append(" decoded=").append(first.decoded)
+                appendLine()
+            }
+        }
+    }
+
+    private fun intellijXvfbPutImageTraceEntry(line: String): IntellijXvfbPutImageTraceEntry? {
+        val match = Regex(
+            """connection=(\d+) request=(\d+) PutImage format=(\d+) depth=(\d+) drawable=0x[0-9a-f]+ gc=0x[0-9a-f]+ dst=-?\d+,-?\d+ size=(\d+)x(\d+) leftPad=\d+ dataBytes=(\d+) crc32=(0x[0-9a-f]+) raw=(\[[^]]*]) decoded=(\[[^]]*])""",
+        ).find(line) ?: return null
+        return IntellijXvfbPutImageTraceEntry(
+            connection = match.groupValues[1].toInt(),
+            request = match.groupValues[2].toInt(),
+            format = match.groupValues[3].toInt(),
+            depth = match.groupValues[4].toInt(),
+            width = match.groupValues[5].toInt(),
+            height = match.groupValues[6].toInt(),
+            dataBytes = match.groupValues[7].toInt(),
+            crc32 = match.groupValues[8],
+            raw = match.groupValues[9],
+            decoded = match.groupValues[10],
+        )
+    }
+
+    private fun bigRequestPutImageTraceBytes(): ByteArray {
+        val out = ByteArrayOutputStream()
+        fun u16(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+        }
+        fun u32(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+            out.write((value ushr 16) and 0xff)
+            out.write((value ushr 24) and 0xff)
+        }
+
+        out.write(72)
+        out.write(2)
+        u16(0)
+        u32(9)
+        u32(0x01020304)
+        u32(0x05060708)
+        u16(2)
+        u16(1)
+        u16(-3)
+        u16(4)
+        out.write(0)
+        out.write(32)
+        u16(0)
+        out.write(byteArrayOf(0x11, 0x22, 0x33, 0xff.toByte(), 0x22, 0x33, 0x44, 0x80.toByte()))
+        return out.toByteArray().also { bytes ->
+            assertEquals(36, bytes.size)
+        }
+    }
 
     private fun dumpIntellijRenderBandArtifacts(directory: File, text: String) {
         mapOf(
@@ -4205,6 +4684,19 @@ class IntellijCommunitySmokeTest {
     private data class IntellijLogArtifact(
         val fileName: String,
         val text: String,
+    )
+
+    private data class IntellijXvfbPutImageTraceEntry(
+        val connection: Int,
+        val request: Int,
+        val format: Int,
+        val depth: Int,
+        val width: Int,
+        val height: Int,
+        val dataBytes: Int,
+        val crc32: String,
+        val raw: String,
+        val decoded: String,
     )
 
     private data class IntellijFrameBand(

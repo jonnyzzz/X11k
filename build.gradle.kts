@@ -35,6 +35,7 @@ tasks.test {
         "x.intellijSmoke",
         "x.intellijParity",
         "x.intellijDebug",
+        "x.intellijTraceXvfbPutImage",
         "x.intellijUrl",
         "x.intellijImage",
         "x.intellijReferenceImage",
