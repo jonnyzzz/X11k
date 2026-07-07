@@ -5148,7 +5148,7 @@ internal class X11Connection(
         state.putGlxContext(
             XGlxContext(
                 id = context,
-                fbConfigId = visual,
+                fbConfigId = XGlx.fbConfigIdForVisualConfig(visual),
                 screen = screen,
                 renderType = XGlx.RgbaType,
                 direct = body[16].toInt() != 0,
@@ -5239,7 +5239,7 @@ internal class X11Connection(
             pixmap = pixmap,
             glxPixmap = glxPixmap,
             visual = visual,
-            fbConfig = visual,
+            fbConfig = XGlx.fbConfigIdForVisualConfig(visual),
             screen = screen,
         )
     }

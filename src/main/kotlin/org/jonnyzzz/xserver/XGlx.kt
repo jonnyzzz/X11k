@@ -313,26 +313,26 @@ internal object XGlx {
         }
 
     fun visualConfigs(): List<IntArray> =
-        X11Ids.RootVisualAliases.map { visual -> visualConfig(visual) }
+        VisualConfigs.map { spec -> visualConfig(spec) }
 
-    private fun visualConfig(visual: Int): IntArray =
+    private fun visualConfig(spec: FbConfigSpec): IntArray =
         intArrayOf(
-            visual,
+            spec.visualId,
             XVisualClassTrueColor,
             1,
             8,
             8,
             8,
-            8,
+            spec.alphaSize,
             0,
             0,
             0,
             0,
-            1,
+            spec.doubleBuffer,
             0,
-            32,
-            24,
-            8,
+            spec.bufferSize,
+            spec.depthSize,
+            spec.stencilSize,
             0,
             0,
             0x20,
@@ -354,7 +354,7 @@ internal object XGlx {
             100000,
             0,
             0x8028,
-            0,
+            spec.visualSelectGroup,
             0,
             0,
         )
@@ -365,7 +365,7 @@ internal object XGlx {
         FbConfigs.map { spec -> fbConfig(spec) }
 
     fun isKnownVisualConfig(visual: Int): Boolean =
-        visual in X11Ids.RootVisualAliases
+        VisualConfigs.any { spec -> spec.visualId == visual }
 
     fun isKnownFbConfig(id: Int): Boolean =
         FbConfigs.any { it.id == id }
@@ -375,6 +375,9 @@ internal object XGlx {
 
     fun visualIdForFbConfig(id: Int): Int =
         FbConfigs.firstOrNull { it.id == id }?.visualId ?: 0
+
+    fun fbConfigIdForVisualConfig(visual: Int): Int =
+        VisualConfigs.firstOrNull { it.visualId == visual }?.id ?: 0
 
     private fun fbConfig(spec: FbConfigSpec): IntArray {
         val pairs = listOf(
@@ -409,7 +412,7 @@ internal object XGlx {
             SwapMethodOml to SwapUndefinedOml,
             100001 to 0,
             100000 to 0,
-            VisualSelectGroupSgix to 0,
+            VisualSelectGroupSgix to spec.visualSelectGroup,
             DrawableType to spec.drawableType,
             BindToTextureRgbExt to 1,
             BindToTextureRgbaExt to if (spec.alphaSize > 0) 1 else 0,
@@ -438,18 +441,54 @@ internal object XGlx {
     const val VisualConfigValues = 40
     const val FbConfigAttributePairs = 44
 
-    private val VisualFbConfigs: List<FbConfigSpec> =
-        X11Ids.RootVisualAliases.map { visual ->
-            FbConfigSpec(
-                id = visual,
-                visualId = visual,
-                doubleBuffer = 1,
-                depthSize = 24,
-                stencilSize = 8,
-            )
-        }
+    private val RootAliasFbConfigs: List<FbConfigSpec> = listOf(
+        FbConfigSpec(id = 0x41, visualId = 0x0000_01bd, doubleBuffer = 0, bufferSize = 32, alphaSize = 8, depthSize = 0, stencilSize = 8),
+        FbConfigSpec(id = 0x42, visualId = 0x0000_01be, doubleBuffer = 1, bufferSize = 32, alphaSize = 8, depthSize = 0, stencilSize = 8),
+        FbConfigSpec(id = 0x43, visualId = 0x0000_01bf, doubleBuffer = 0, bufferSize = 32, alphaSize = 8, depthSize = 24, stencilSize = 8),
+        FbConfigSpec(id = 0x45, visualId = 0x0000_01c0, doubleBuffer = 0, bufferSize = 32, alphaSize = 8, depthSize = 24, stencilSize = 0),
+        FbConfigSpec(id = 0x46, visualId = 0x0000_01c1, doubleBuffer = 1, bufferSize = 32, alphaSize = 8, depthSize = 24, stencilSize = 0),
+        FbConfigSpec(id = 0x47, visualId = 0x0000_01c2, doubleBuffer = 0, bufferSize = 32, alphaSize = 8, depthSize = 16, stencilSize = 0),
+        FbConfigSpec(id = 0x48, visualId = 0x0000_01c3, doubleBuffer = 1, bufferSize = 32, alphaSize = 8, depthSize = 16, stencilSize = 0),
+        FbConfigSpec(id = 0x49, visualId = 0x0000_01c4, doubleBuffer = 0, bufferSize = 32, alphaSize = 8, depthSize = 0, stencilSize = 0),
+        FbConfigSpec(id = 0x4a, visualId = 0x0000_01c5, doubleBuffer = 1, bufferSize = 32, alphaSize = 8, depthSize = 0, stencilSize = 0),
+        FbConfigSpec(id = 0x4b, visualId = 0x0000_01c6, doubleBuffer = 0, bufferSize = 24, alphaSize = 0, depthSize = 0, stencilSize = 8),
+        FbConfigSpec(id = 0x4c, visualId = 0x0000_01c7, doubleBuffer = 1, bufferSize = 24, alphaSize = 0, depthSize = 0, stencilSize = 8),
+        FbConfigSpec(id = 0x4d, visualId = 0x0000_01c8, doubleBuffer = 0, bufferSize = 24, alphaSize = 0, depthSize = 24, stencilSize = 8),
+        FbConfigSpec(id = 0x4e, visualId = 0x0000_01c9, doubleBuffer = 1, bufferSize = 24, alphaSize = 0, depthSize = 24, stencilSize = 8),
+        FbConfigSpec(id = 0x4f, visualId = 0x0000_01ca, doubleBuffer = 0, bufferSize = 24, alphaSize = 0, depthSize = 24, stencilSize = 0),
+        FbConfigSpec(id = 0x50, visualId = 0x0000_01cb, doubleBuffer = 1, bufferSize = 24, alphaSize = 0, depthSize = 24, stencilSize = 0),
+        FbConfigSpec(id = 0x51, visualId = 0x0000_01cc, doubleBuffer = 0, bufferSize = 24, alphaSize = 0, depthSize = 16, stencilSize = 0),
+        FbConfigSpec(id = 0x52, visualId = 0x0000_01cd, doubleBuffer = 1, bufferSize = 24, alphaSize = 0, depthSize = 16, stencilSize = 0),
+        FbConfigSpec(id = 0x53, visualId = 0x0000_01ce, doubleBuffer = 0, bufferSize = 24, alphaSize = 0, depthSize = 0, stencilSize = 0),
+        FbConfigSpec(id = 0x54, visualId = 0x0000_01cf, doubleBuffer = 1, bufferSize = 24, alphaSize = 0, depthSize = 0, stencilSize = 0),
+    )
 
-    private val FbConfigs = VisualFbConfigs + listOf(
+    // Xvfb exposes these RGBA GLX aliases; the local 0x29 setup visual is not a GLX visual config.
+    private val RgbaAliasFbConfigs: List<FbConfigSpec> = listOf(
+        FbConfigSpec(id = 0x1a9, visualId = 0x0000_020b, doubleBuffer = 0, bufferSize = 32, alphaSize = 8, depthSize = 0, stencilSize = 8, visualSelectGroup = 1),
+        FbConfigSpec(id = 0x1aa, visualId = 0x0000_020c, doubleBuffer = 1, bufferSize = 32, alphaSize = 8, depthSize = 0, stencilSize = 8, visualSelectGroup = 1),
+        FbConfigSpec(id = 0x1ab, visualId = 0x0000_020d, doubleBuffer = 0, bufferSize = 32, alphaSize = 8, depthSize = 24, stencilSize = 8, visualSelectGroup = 1),
+        FbConfigSpec(id = 0x1ac, visualId = 0x0000_0040, doubleBuffer = 1, bufferSize = 32, alphaSize = 8, depthSize = 24, stencilSize = 8, visualSelectGroup = 1),
+        FbConfigSpec(id = 0x1ad, visualId = 0x0000_020e, doubleBuffer = 0, bufferSize = 32, alphaSize = 8, depthSize = 24, stencilSize = 0, visualSelectGroup = 1),
+        FbConfigSpec(id = 0x1ae, visualId = 0x0000_020f, doubleBuffer = 1, bufferSize = 32, alphaSize = 8, depthSize = 24, stencilSize = 0, visualSelectGroup = 1),
+        FbConfigSpec(id = 0x1af, visualId = 0x0000_0210, doubleBuffer = 0, bufferSize = 32, alphaSize = 8, depthSize = 16, stencilSize = 0, visualSelectGroup = 1),
+        FbConfigSpec(id = 0x1b0, visualId = 0x0000_0211, doubleBuffer = 1, bufferSize = 32, alphaSize = 8, depthSize = 16, stencilSize = 0, visualSelectGroup = 1),
+        FbConfigSpec(id = 0x1b1, visualId = 0x0000_0212, doubleBuffer = 0, bufferSize = 32, alphaSize = 8, depthSize = 0, stencilSize = 0, visualSelectGroup = 1),
+        FbConfigSpec(id = 0x1b2, visualId = 0x0000_0213, doubleBuffer = 1, bufferSize = 32, alphaSize = 8, depthSize = 0, stencilSize = 0, visualSelectGroup = 1),
+    )
+
+    private val RootVisualFbConfig = FbConfigSpec(
+        id = RootFbConfigId,
+        visualId = X11Ids.RootVisual,
+        doubleBuffer = 1,
+        depthSize = 24,
+        stencilSize = 8,
+    )
+
+    private val VisualConfigs: List<FbConfigSpec> =
+        listOf(RootVisualFbConfig) + RootAliasFbConfigs + RgbaAliasFbConfigs
+
+    private val FbConfigs = VisualConfigs + listOf(
         FbConfigSpec(
             id = RootFbConfigId + 5,
             visualId = X11Ids.RootVisual,
@@ -500,6 +539,7 @@ internal object XGlx {
         val alphaSize: Int = 8,
         val bufferSize: Int = 32,
         val drawableType: Int = WindowBit or PixmapBit or PbufferBit,
+        val visualSelectGroup: Int = 0,
     )
 
     private const val XVisualClassTrueColor = 4
