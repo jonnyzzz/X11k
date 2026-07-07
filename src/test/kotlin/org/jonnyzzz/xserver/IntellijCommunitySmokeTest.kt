@@ -946,17 +946,19 @@ class IntellijCommunitySmokeTest {
         assertTrue(xvfbBody.contains("val xvfbExtraArgs = intellijXvfbExtraArgs()"), xvfbBody)
         assertTrue(xvfbBody.contains("XVFB_EXTRA_ARGS='\${xvfbExtraArgs}'"), xvfbBody)
         assertTrue(xvfbBody.contains(">/tmp/xvfb-extra-args.log"), xvfbBody)
-        assertTrue(xvfbBody.contains("Xvfb :99 -screen 0"), xvfbBody)
+        assertTrue(xvfbBody.contains("xvfb_server_display=:99"), xvfbBody)
+        assertTrue(xvfbBody.contains("xvfb_server_display=:98"), xvfbBody)
+        assertTrue(xvfbBody.contains("Xvfb \"") && xvfbBody.contains("xvfb_server_display\" -screen 0"), xvfbBody)
         assertTrue(xvfbBody.contains("TRACE_XVFB_PUTIMAGE='\${traceXvfbPutImage}'"), xvfbBody)
-        assertTrue(xvfbBody.contains("XVFB_LISTEN_ARGS='-ac -listen tcp'"), xvfbBody)
         assertTrue(xvfbBody.contains("XVFB_EXTRA_ARGS >/tmp/xvfb.log"), xvfbBody)
-        assertTrue(xvfbBody.contains("X11PutImageTraceProxy 6100 127.0.0.1 6099"), xvfbBody)
-        assertTrue(xvfbBody.contains("DISPLAY=127.0.0.1:100"), xvfbBody)
+        assertTrue(xvfbBody.contains("X11PutImageTraceProxy unix /tmp/.X11-unix/X99 unix /tmp/.X11-unix/X98"), xvfbBody)
+        assertTrue(xvfbBody.contains("DISPLAY=:99"), xvfbBody)
         assertTrue(xvfbBody.contains("intellij-xvfb-putimage-trace.log"), xvfbBody)
         assertTrue(xvfbBody.contains("intellij-xvfb-extra-args.log"), xvfbBody)
         assertTrue(source.contains("private fun x11PutImageTraceProxySource()"), source)
         assertTrue(source.contains("MAX_LOGGED_PUTIMAGE_LINES"), source)
         assertTrue(source.contains("private static int bigRequestPayloadOffset(byte[] request, boolean little)"), source)
+        assertTrue(source.contains("StandardProtocolFamily.UNIX"), source)
     }
 
     @Test
@@ -1665,21 +1667,22 @@ class IntellijCommunitySmokeTest {
                     fi
                     XVFB_EXTRA_ARGS='${xvfbExtraArgs}'
                     TRACE_XVFB_PUTIMAGE='${traceXvfbPutImage}'
-                    XVFB_LISTEN_ARGS=
-                    if [ "${'$'}TRACE_XVFB_PUTIMAGE" = "true" ]; then
-                      XVFB_LISTEN_ARGS='-ac -listen tcp'
-                    fi
+                    xvfb_server_display=:99
                     xvfb_display=:99
+                    if [ "${'$'}TRACE_XVFB_PUTIMAGE" = "true" ]; then
+                      xvfb_server_display=:98
+                      rm -f /tmp/.X11-unix/X99
+                    fi
                     printf '%s\n' "${'$'}XVFB_EXTRA_ARGS" >/tmp/xvfb-extra-args.log
-                    Xvfb :99 -screen 0 ${IntellijCaptureWidth}x${IntellijCaptureHeight}x24 ${'$'}XVFB_LISTEN_ARGS ${'$'}XVFB_EXTRA_ARGS >/tmp/xvfb.log 2>&1 &
+                    Xvfb "${'$'}xvfb_server_display" -screen 0 ${IntellijCaptureWidth}x${IntellijCaptureHeight}x24 ${'$'}XVFB_EXTRA_ARGS >/tmp/xvfb.log 2>&1 &
                     xvfb=${'$'}!
                     echo "${'$'}xvfb" >/tmp/xvfb.pid
                     for _ in ${'$'}(seq 1 80); do
-                      DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && break
+                      DISPLAY="${'$'}xvfb_server_display" xdpyinfo >/dev/null 2>&1 && break
                       sleep 0.25
                     done
                     if [ "${'$'}TRACE_XVFB_PUTIMAGE" = "true" ]; then
-                      java -cp /tmp X11PutImageTraceProxy 6100 127.0.0.1 6099 /tmp/xvfb-putimage-trace.log \
+                      java -cp /tmp X11PutImageTraceProxy unix /tmp/.X11-unix/X99 unix /tmp/.X11-unix/X98 /tmp/xvfb-putimage-trace.log \
                         >/tmp/xvfb-putimage-trace-proxy.log 2>&1 &
                       trace_proxy=${'$'}!
                       echo "${'$'}trace_proxy" >/tmp/xvfb-putimage-trace-proxy.pid
@@ -1687,12 +1690,11 @@ class IntellijCommunitySmokeTest {
                         grep -q "listening" /tmp/xvfb-putimage-trace.log 2>/dev/null && break
                         sleep 0.25
                       done
-                      DISPLAY=127.0.0.1:100 xdpyinfo >/dev/null 2>&1
-                      xvfb_display=127.0.0.1:100
+                      DISPLAY=:99 xdpyinfo >/dev/null 2>&1
                     fi
-                    DISPLAY=:99 xdpyinfo -queryExtensions >/tmp/xdpyinfo-extensions-xvfb.log 2>&1 || true
-                    DISPLAY=:99 xdpyinfo -ext GLX >/tmp/xdpyinfo-glx-xvfb.log 2>&1 || true
-                    DISPLAY=:99 xsetroot -solid white >/tmp/xsetroot.log 2>&1 || true
+                    DISPLAY="${'$'}xvfb_display" xdpyinfo -queryExtensions >/tmp/xdpyinfo-extensions-xvfb.log 2>&1 || true
+                    DISPLAY="${'$'}xvfb_display" xdpyinfo -ext GLX >/tmp/xdpyinfo-glx-xvfb.log 2>&1 || true
+                    DISPLAY="${'$'}xvfb_display" xsetroot -solid white >/tmp/xsetroot.log 2>&1 || true
                     DISPLAY="${'$'}xvfb_display" \
                     IDEA_X11_DEBUG=${intellijDebugValue()} \
                     IDEA_PROJECT=/workspace/jonnyzzz-x \
@@ -1764,9 +1766,6 @@ class IntellijCommunitySmokeTest {
                         DISPLAY=:99 xprop -root >/tmp/xprop-xvfb-root.log 2>&1 || true
                         TRACE_XVFB_PUTIMAGE='${traceXvfbPutImage}'
                         xvfb_display=:99
-                        if [ "${'$'}TRACE_XVFB_PUTIMAGE" = "true" ]; then
-                          xvfb_display=127.0.0.1:100
-                        fi
                         DISPLAY="${'$'}xvfb_display" java -cp /tmp XIntellijRobotCapture
                         """.trimIndent(),
                     )
@@ -2341,72 +2340,161 @@ class IntellijCommunitySmokeTest {
         import java.io.InputStream;
         import java.io.OutputStream;
         import java.io.PrintWriter;
+        import java.nio.channels.Channels;
+        import java.nio.channels.ServerSocketChannel;
+        import java.nio.channels.SocketChannel;
+        import java.nio.file.Files;
+        import java.nio.file.Path;
         import java.net.ServerSocket;
         import java.net.Socket;
+        import java.net.StandardProtocolFamily;
+        import java.net.UnixDomainSocketAddress;
         import java.util.Arrays;
         import java.util.concurrent.atomic.AtomicInteger;
         import java.util.zip.CRC32;
 
         public class X11PutImageTraceProxy {
           private static final int MAX_LOGGED_PUTIMAGE_LINES = 4096;
-          private final int listenPort;
-          private final String targetHost;
-          private final int targetPort;
+          private final String listenMode;
+          private final String listenAddress;
+          private final String targetMode;
+          private final String targetAddress;
           private final PrintWriter log;
           private final AtomicInteger nextConnection = new AtomicInteger(1);
           private int putImageLines;
 
           private X11PutImageTraceProxy(int listenPort, String targetHost, int targetPort, String logPath) throws Exception {
-            this.listenPort = listenPort;
-            this.targetHost = targetHost;
-            this.targetPort = targetPort;
+            this("tcp", String.valueOf(listenPort), "tcp", targetHost + ":" + targetPort, logPath);
+          }
+
+          private X11PutImageTraceProxy(String listenMode, String listenAddress, String targetMode, String targetAddress, String logPath) throws Exception {
+            this.listenMode = listenMode;
+            this.listenAddress = listenAddress;
+            this.targetMode = targetMode;
+            this.targetAddress = targetAddress;
             this.log = new PrintWriter(new FileWriter(logPath, true), true);
           }
 
           public static void main(String[] args) throws Exception {
-            if (args.length != 4) {
-              throw new IllegalArgumentException("usage: X11PutImageTraceProxy <listenPort> <targetHost> <targetPort> <logPath>");
+            if (args.length == 4) {
+              new X11PutImageTraceProxy(
+                  Integer.parseInt(args[0]),
+                  args[1],
+                  Integer.parseInt(args[2]),
+                  args[3]).run();
+              return;
+            }
+            if (args.length != 5) {
+              throw new IllegalArgumentException("usage: X11PutImageTraceProxy <listenMode> <listenAddress> <targetMode> <targetAddress> <logPath>");
             }
             new X11PutImageTraceProxy(
-                Integer.parseInt(args[0]),
+                args[0],
                 args[1],
-                Integer.parseInt(args[2]),
-                args[3]).run();
+                args[2],
+                args[3],
+                args[4]).run();
           }
 
           private void run() throws Exception {
-            try (ServerSocket server = new ServerSocket(listenPort)) {
-              line("X11 PutImage trace proxy listening port=" + listenPort + " target=" + targetHost + ":" + targetPort);
-              while (true) {
-                Socket client = server.accept();
-                int connection = nextConnection.getAndIncrement();
-                Thread thread = new Thread(() -> handle(connection, client), "x11-putimage-trace-" + connection);
-                thread.setDaemon(true);
-                thread.start();
-              }
+            if ("tcp".equals(listenMode)) {
+              runTcp();
+            } else if ("unix".equals(listenMode)) {
+              runUnix();
+            } else {
+              throw new IllegalArgumentException("unsupported listen mode " + listenMode);
             }
           }
 
-          private void handle(int connection, Socket client) {
-            try (Socket clientSocket = client; Socket serverSocket = new Socket(targetHost, targetPort)) {
+          private void runTcp() throws Exception {
+            int listenPort = Integer.parseInt(listenAddress);
+            try (ServerSocket server = new ServerSocket(listenPort)) {
+              line("X11 PutImage trace proxy listening tcp=" + listenPort + " target=" + targetMode + ":" + targetAddress);
+              acceptTcp(server);
+            }
+          }
+
+          private void acceptTcp(ServerSocket server) throws Exception {
+            while (true) {
+              Socket client = server.accept();
+              int connection = nextConnection.getAndIncrement();
+              Thread thread = new Thread(() -> handleTcp(connection, client), "x11-putimage-trace-" + connection);
+              thread.setDaemon(true);
+              thread.start();
+            }
+          }
+
+          private void runUnix() throws Exception {
+            Path socketPath = Path.of(listenAddress);
+            Files.deleteIfExists(socketPath);
+            try (ServerSocketChannel server = ServerSocketChannel.open(StandardProtocolFamily.UNIX)) {
+              server.bind(UnixDomainSocketAddress.of(socketPath));
+              line("X11 PutImage trace proxy listening unix=" + listenAddress + " target=" + targetMode + ":" + targetAddress);
+              while (true) {
+                SocketChannel client = server.accept();
+                int connection = nextConnection.getAndIncrement();
+                Thread thread = new Thread(() -> handleUnix(connection, client), "x11-putimage-trace-" + connection);
+                thread.setDaemon(true);
+                thread.start();
+              }
+            } finally {
+              Files.deleteIfExists(socketPath);
+            }
+          }
+
+          private void handleTcp(int connection, Socket client) {
+            String[] hostPort = targetAddress.split(":", 2);
+            if (!"tcp".equals(targetMode) || hostPort.length != 2) {
+              throw new IllegalArgumentException("tcp listener requires tcp target host:port");
+            }
+            try (Socket clientSocket = client; Socket serverSocket = new Socket(hostPort[0], Integer.parseInt(hostPort[1]))) {
               clientSocket.setTcpNoDelay(true);
               serverSocket.setTcpNoDelay(true);
-              Thread serverToClient = new Thread(
-                  () -> pumpRaw(serverSocket, clientSocket),
-                  "x11-putimage-trace-reply-" + connection);
-              serverToClient.setDaemon(true);
-              serverToClient.start();
-              pumpClient(connection, clientSocket.getInputStream(), serverSocket.getOutputStream());
+              handleStreams(
+                  connection,
+                  clientSocket.getInputStream(),
+                  clientSocket.getOutputStream(),
+                  serverSocket.getInputStream(),
+                  serverSocket.getOutputStream());
             } catch (Throwable t) {
               line("connection=" + connection + " error=" + t.getClass().getName() + ":" + String.valueOf(t.getMessage()));
             }
           }
 
-          private static void pumpRaw(Socket from, Socket to) {
+          private void handleUnix(int connection, SocketChannel client) {
+            if (!"unix".equals(targetMode)) {
+              throw new IllegalArgumentException("unix listener requires unix target");
+            }
+            try (SocketChannel clientChannel = client;
+                 SocketChannel serverChannel = SocketChannel.open(StandardProtocolFamily.UNIX)) {
+              serverChannel.connect(UnixDomainSocketAddress.of(Path.of(targetAddress)));
+              handleStreams(
+                  connection,
+                  Channels.newInputStream(clientChannel),
+                  Channels.newOutputStream(clientChannel),
+                  Channels.newInputStream(serverChannel),
+                  Channels.newOutputStream(serverChannel));
+            } catch (Throwable t) {
+              line("connection=" + connection + " error=" + t.getClass().getName() + ":" + String.valueOf(t.getMessage()));
+            }
+          }
+
+          private void handleStreams(
+              int connection,
+              InputStream clientInput,
+              OutputStream clientOutput,
+              InputStream serverInput,
+              OutputStream serverOutput) throws Exception {
+            Thread serverToClient = new Thread(
+                () -> pumpRaw(serverInput, clientOutput),
+                "x11-putimage-trace-reply-" + connection);
+            serverToClient.setDaemon(true);
+            serverToClient.start();
+            pumpClient(connection, clientInput, serverOutput);
+          }
+
+          private static void pumpRaw(InputStream input, OutputStream output) {
             byte[] buffer = new byte[32768];
             try {
-              InputStream input = from.getInputStream();
-              OutputStream output = to.getOutputStream();
               int read;
               while ((read = input.read(buffer)) >= 0) {
                 output.write(buffer, 0, read);
