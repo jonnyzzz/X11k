@@ -232,7 +232,7 @@ internal object X11Ids {
     const val ResourceIdStride = ResourceIdMask + 1
     const val RootWindow = 0x0000_0026
     const val DefaultColormap = 0x0000_0027
-    const val RootVisual = 0x0000_0028
+    const val RootVisual = 0x0000_0021
     const val RgbaVisual = 0x0000_0029
     const val XvfbLikeRootVisualAlias = 0x0000_01cf
     const val XvfbLikeBgrRootVisualAlias = 0x0000_01e3

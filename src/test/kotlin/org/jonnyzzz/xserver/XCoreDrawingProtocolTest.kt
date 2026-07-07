@@ -32,6 +32,7 @@ class XCoreDrawingProtocolTest {
                 assertEquals(229, u16le(setupReply, screenOffset + 26))
                 assertEquals(XBackingStore.WhenMapped, setupReply[screenOffset + 36].toInt() and 0xff)
                 assertEquals(0, setupReply[screenOffset + 37].toInt() and 0xff)
+                assertEquals(0x21, u32le(setupReply, screenOffset + 32))
                 assertEquals(X11Ids.RootVisualAliases, visuals.getValue(X11Ids.RootDepth))
                 assertEquals(X11Ids.RgbaVisualAliases, visuals.getValue(X11Ids.RgbaDepth))
             }
@@ -12958,7 +12959,7 @@ class XCoreDrawingProtocolTest {
                 }
                 val json = httpGet(server.localPort, "/state.json")
                 assertContains(json, """"id":"0x200001","parent":"0x26","x":5,"y":7""")
-                assertContains(json, """"class":"InputOnly","depth":0,"visual":"0x28"""")
+                assertContains(json, """"class":"InputOnly","depth":0,"visual":"0x21"""")
                 val svg = httpGet(server.localPort, "/screen.svg")
                 assertFalse(svg.contains("""data-window-id="0x200001""""))
                 assertFalse(svg.contains("""data-drawable-id="0x200001""""))

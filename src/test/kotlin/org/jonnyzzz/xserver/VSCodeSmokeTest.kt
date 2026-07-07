@@ -36,7 +36,7 @@ class VSCodeSmokeTest {
     fun `vscode diagnostics summary extracts extension and glx evidence`() {
         val text = """
             Window hierarchy and geometry:
-            - 0x200003 parent=0x26 label="code" geometry=0,0 1279x899 class=InputOutput depth=24 visual=0x28 backgroundPixel=-592396 backgroundPixmap=none borderPixel=0 borderPixmap=none bitGravity=1 winGravity=1 backingStore=0 backingPlanes=-1 backingPixel=0 saveUnder=false overrideRedirect=false colormap=0x27 cursor=0x20000d mapped=true focused=true stack=4
+            - 0x200003 parent=0x26 label="code" geometry=0,0 1279x899 class=InputOutput depth=24 visual=0x21 backgroundPixel=-592396 backgroundPixmap=none borderPixel=0 borderPixmap=none bitGravity=1 winGravity=1 backingStore=0 backingPlanes=-1 backingPixel=0 saveUnder=false overrideRedirect=false colormap=0x27 cursor=0x20000d mapped=true focused=true stack=4
 
             Extension queries:
             - #57 XInputExtension supported=true
@@ -181,8 +181,8 @@ class VSCodeSmokeTest {
     fun `vscode visual region metrics identify code window and mismatch bounds`() {
         val text = """
             Window hierarchy and geometry:
-            - 0x26 parent=none label="root" geometry=0,0 20x10 class=InputOutput depth=24 visual=0x28 backgroundPixel=0 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=0
-            - 0x200003 parent=0x26 label="code" geometry=2,1 10x6 class=InputOutput depth=24 visual=0x28 backgroundPixel=0 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=true stack=1
+            - 0x26 parent=none label="root" geometry=0,0 20x10 class=InputOutput depth=24 visual=0x21 backgroundPixel=0 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=0
+            - 0x200003 parent=0x26 label="code" geometry=2,1 10x6 class=InputOutput depth=24 visual=0x21 backgroundPixel=0 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=true stack=1
         """.trimIndent()
         val expected = solidImage(20, 10, 0xffff_ffff.toInt()).also {
             fillRect(it, Rectangle(2, 1, 10, 6), 0xff12_3456.toInt())

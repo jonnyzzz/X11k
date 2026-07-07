@@ -155,6 +155,7 @@ class IntellijCommunitySmokeTest {
         )
 
         assertEquals(0.0, selected.distance)
+        assertEquals(1, selected.index)
         assertEquals(closeSvg, selected.svg)
         assertTrue(
             offSampleScore.distance > 0.0,
@@ -175,6 +176,7 @@ class IntellijCommunitySmokeTest {
         }
 
         assertEquals(validSvg, selected.svg)
+        assertEquals(1, selected.index)
         assertEquals(null, distances[0].second)
         assertEquals(0.0, distances[1].second)
     }
@@ -215,9 +217,9 @@ class IntellijCommunitySmokeTest {
             - size=1280x900
 
             Window hierarchy and geometry:
-            - 0x26 parent=0x0 label="root" geometry=0,0 1280x900 class=InputOutput depth=24 visual=0x28 backgroundPixel=16777215 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=0
-            - 0x200003 parent=0x26 label="Idea frame" geometry=10,20 1260x860 class=InputOutput depth=24 visual=0x28 backgroundPixel=0 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=1
-            - 0x200004 parent=0x200003 label="content" geometry=0,0 1260x860 class=InputOutput depth=24 visual=0x28 backgroundPixel=0 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=true stack=2
+            - 0x26 parent=0x0 label="root" geometry=0,0 1280x900 class=InputOutput depth=24 visual=0x21 backgroundPixel=16777215 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=0
+            - 0x200003 parent=0x26 label="Idea frame" geometry=10,20 1260x860 class=InputOutput depth=24 visual=0x21 backgroundPixel=0 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=1
+            - 0x200004 parent=0x200003 label="content" geometry=0,0 1260x860 class=InputOutput depth=24 visual=0x21 backgroundPixel=0 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=true stack=2
             """.trimIndent()
         val expected = BufferedImage(1280, 900, BufferedImage.TYPE_INT_RGB).also { image ->
             val graphics = image.createGraphics()
@@ -283,8 +285,8 @@ class IntellijCommunitySmokeTest {
             - size=1280x900
 
             Window hierarchy and geometry:
-            - 0x26 parent=0x0 label="root" geometry=0,0 1280x900 class=InputOutput depth=24 visual=0x28 backgroundPixel=16777215 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=0
-            - 0x200003 parent=0x26 label="Idea frame" geometry=10,20 1260x860 class=InputOutput depth=24 visual=0x28 backgroundPixel=0 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=1
+            - 0x26 parent=0x0 label="root" geometry=0,0 1280x900 class=InputOutput depth=24 visual=0x21 backgroundPixel=16777215 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=0
+            - 0x200003 parent=0x26 label="Idea frame" geometry=10,20 1260x860 class=InputOutput depth=24 visual=0x21 backgroundPixel=0 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=1
             """.trimIndent()
         val expected = solidImage(1280, 900, 0xff10_1010.toInt())
         val robot = solidImage(1280, 900, 0xff10_1010.toInt()).also { image ->
@@ -362,10 +364,12 @@ class IntellijCommunitySmokeTest {
                 IntellijSvgCandidateDistance(index = 0, full = 0.25, top = 0.0, right = 0.1, bottom = 0.7),
                 IntellijSvgCandidateDistance(index = 1, full = null, top = null, right = null, bottom = null),
             ),
+            selectedIndex = 0,
         )
 
         assertTrue(inventory.contains("count=2"), inventory)
-        assertTrue(inventory.contains("0: full=0.25 top=0.0 right=0.1 bottom=0.7"), inventory)
+        assertTrue(inventory.contains("selected=0"), inventory)
+        assertTrue(inventory.contains("0: selected bestFull bestTop bestRight bestBottom full=0.25 top=0.0 right=0.1 bottom=0.7"), inventory)
         assertTrue(inventory.contains("1: full=unavailable top=unavailable right=unavailable bottom=unavailable"), inventory)
     }
 
@@ -543,6 +547,7 @@ class IntellijCommunitySmokeTest {
             summary,
         )
         assertTrue(summary.contains("operationPoints=#41/root=12,24/dst=2,4/resultPixel=0xff302010/src=2,0/srcPixel=0xff3b3329"), summary)
+        assertTrue(summary.contains("/matches=result:actual,source:neither"), summary)
         assertFalse(summary.contains("comparison=svgVsXvfb"), summary)
         assertTrue(summary.contains("comparison=robotVsSvg tile=0-31,4-5 root=10,24 32x2 mismatches=2"), summary)
     }
@@ -1028,12 +1033,13 @@ class IntellijCommunitySmokeTest {
 
     @Test
     fun `intellij glx jcef diagnostics summary extracts preflight and angle failures`() {
+        val pbufferFbConfig = "0x${(XGlx.RootFbConfigId + 5).toString(16)}"
         val kotlinText =
             """
             - #8 QueryServerString minor=19 screen=0 name=3 value=GLX_ARB_create_context GLX_ARB_create_context_profile GLX_EXT_create_context_es_profile GLX_EXT_create_context_es2_profile
             - #7 SetClientInfo2ARB minor=35 layout=spec client=1.4 versions=1 glBytes=14 glxBytes=67 glExtensions=GL_EXT_texture glxExtensions=GLX_ARB_create_context GLX_EXT_create_context_es_profile
-            - #6 CreatePbuffer minor=27 screen=0 fbconfig=0x28 pbuffer=0x1800001 attribs=2 attrs=[0x8041=1, 0x8040=1]
-            - #5 CreateContextAttribsARB minor=34 context=0x1800002 fbconfig=0x28 screen=0 share=0x0 direct=true attribs=3 attrs=[0x2091=4, 0x2092=5, 0x9126=1]
+            - #6 CreatePbuffer minor=27 screen=0 fbconfig=$pbufferFbConfig pbuffer=0x1800001 attribs=2 attrs=[0x8041=1, 0x8040=1]
+            - #5 CreateContextAttribsARB minor=34 context=0x1800002 fbconfig=$pbufferFbConfig screen=0 share=0x0 direct=true attribs=3 attrs=[0x2091=4, 0x2092=5, 0x9126=1]
             - #4 Error minor=34 request=CreateContextAttribsARB error=167 badValue=0x1800002 sequence=4
             """.trimIndent()
         val logs = listOf(
@@ -1114,7 +1120,7 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("kotlinGlxLifecycleOperations=CreateContextAttribsARB CreatePbuffer"), summary)
         assertTrue(
             summary.contains(
-                "kotlinGlxLifecycleTrace=- #6 CreatePbuffer minor=27 screen=0 fbconfig=0x28 pbuffer=0x1800001 attribs=2 attrs=[0x8041=1, 0x8040=1] | - #5 CreateContextAttribsARB minor=34 context=0x1800002 fbconfig=0x28 screen=0 share=0x0 direct=true attribs=3 attrs=[0x2091=4, 0x2092=5, 0x9126=1]",
+                "kotlinGlxLifecycleTrace=- #6 CreatePbuffer minor=27 screen=0 fbconfig=$pbufferFbConfig pbuffer=0x1800001 attribs=2 attrs=[0x8041=1, 0x8040=1] | - #5 CreateContextAttribsARB minor=34 context=0x1800002 fbconfig=$pbufferFbConfig screen=0 share=0x0 direct=true attribs=3 attrs=[0x2091=4, 0x2092=5, 0x9126=1]",
             ),
             summary,
         )
@@ -1540,9 +1546,9 @@ class IntellijCommunitySmokeTest {
         width: Int = IntellijCaptureWidth,
         height: Int = IntellijCaptureHeight,
     ): IntellijSvgScore {
-        val scored = candidates.mapNotNull { svg ->
-            val distance = intellijSvgDistanceToRobot(robot, svg, width, height) ?: return@mapNotNull null
-            IntellijSvgScore(svg, distance)
+        val scored = candidates.mapIndexedNotNull { index, svg ->
+            val distance = intellijSvgDistanceToRobot(robot, svg, width, height) ?: return@mapIndexedNotNull null
+            IntellijSvgScore(index, svg, distance)
         }
         return scored.minByOrNull { it.distance }
             ?: error("IntelliJ screen SVG did not expose composable layers near Robot capture")
@@ -1631,6 +1637,7 @@ class IntellijCommunitySmokeTest {
                 stateJson = httpGet(port, "/state.json"),
                 html = httpGet(port, "/"),
                 robotSvgDistance = selected.distance,
+                selectedSvgCandidateIndex = selected.index,
                 svgCandidateDistances = intellijSvgCandidateDistances(robot, svgCandidates, text),
             )
             if (frame.robotSvgDistance <= IntellijRobotSvgCaptureDistanceThreshold) return frame
@@ -1898,6 +1905,7 @@ class IntellijCommunitySmokeTest {
                             svg = robotAndSvg.svg,
                             html = robotAndSvg.html,
                             svgLayers = svgCompositionLayers(robotAndSvg.svg),
+                            selectedSvgCandidateIndex = robotAndSvg.selectedSvgCandidateIndex,
                             robotSvgCandidateDistances = robotAndSvg.svgCandidateDistances,
                             logs = logs,
                         )
@@ -2942,7 +2950,12 @@ class IntellijCommunitySmokeTest {
         dumpIntellijRenderBandArtifacts(directory, actual.text)
         File(directory, "intellij-kotlin-state.json").writeText(actual.stateJson)
         File(directory, "intellij-kotlin-svg-layers.txt").writeText(svgLayerInventory(actual.svgLayers))
-        File(directory, "intellij-kotlin-robot-svg-candidates.txt").writeText(intellijRobotSvgCandidateInventory(actual.robotSvgCandidateDistances))
+        File(directory, "intellij-kotlin-robot-svg-candidates.txt").writeText(
+            intellijRobotSvgCandidateInventory(
+                actual.robotSvgCandidateDistances,
+                selectedIndex = actual.selectedSvgCandidateIndex,
+            ),
+        )
         File(directory, "intellij-kotlin-html-previews.txt").writeText(htmlPreviewInventory(htmlWindowPreviewSurfaces(actual.html)))
         val logs = reference.logs + actual.logs
         dumpIntellijLogArtifacts(logs)
@@ -3643,27 +3656,50 @@ class IntellijCommunitySmokeTest {
             .mapNotNull { operation ->
                 val root = operation.rootRectangle ?: return@mapNotNull null
                 val point = firstMismatchPointInIntersection(tileRoot, reference, actual, region, root) ?: return@mapNotNull null
+                val expectedHex = argbHex(reference.getRGB(point.x - region.x, point.y - region.y))
+                val actualHex = argbHex(actual.getRGB(point.x - region.x, point.y - region.y))
                 val rootLocalX = point.x - root.x
                 val rootLocalY = point.y - root.y
                 val destination = operation.destinationRegion?.let { dst ->
                     "dst=${dst.x + rootLocalX},${dst.y + rootLocalY}"
                 } ?: "dst=none"
-                val resultPixel = operation.resultPointPixels[IntellijCoordinate(rootLocalX, rootLocalY)]
-                    ?.let { "/resultPixel=$it" }
-                    ?: ""
+                val resultPixelValue = operation.resultPointPixels[IntellijCoordinate(rootLocalX, rootLocalY)]
+                val resultPixel = resultPixelValue?.let { "/resultPixel=$it" } ?: ""
+                var sourcePixelValue: String? = null
                 val source = operation.sourceOrigin?.let { src ->
                     val sourcePoint = IntellijCoordinate(src.x + rootLocalX, src.y + rootLocalY)
-                    val sourcePixel = operation.sourceFramebufferPointPixels[sourcePoint]
-                        ?.let { "/srcPixel=$it" }
-                        ?: ""
+                    sourcePixelValue = operation.sourceFramebufferPointPixels[sourcePoint]
+                    val sourcePixel = sourcePixelValue?.let { "/srcPixel=$it" } ?: ""
                     "src=${sourcePoint.x},${sourcePoint.y}$sourcePixel"
                 } ?: "src=none"
-                "#${operation.id}/root=${point.x},${point.y}/$destination$resultPixel/$source"
+                val matches = intellijRenderBandOperationPixelMatches(resultPixelValue, sourcePixelValue, expectedHex, actualHex)
+                "#${operation.id}/root=${point.x},${point.y}/$destination$resultPixel/$source$matches"
             }
             .distinct()
             .take(limit)
             .joinToString("|")
             .ifBlank { "none" }
+
+    private fun intellijRenderBandOperationPixelMatches(
+        resultPixel: String?,
+        sourcePixel: String?,
+        expected: String,
+        actual: String,
+    ): String {
+        val labels = listOfNotNull(
+            resultPixel?.let { "result:${intellijRenderBandPixelMatchLabel(it, expected, actual)}" },
+            sourcePixel?.let { "source:${intellijRenderBandPixelMatchLabel(it, expected, actual)}" },
+        )
+        return if (labels.isEmpty()) "" else labels.joinToString(prefix = "/matches=", separator = ",")
+    }
+
+    private fun intellijRenderBandPixelMatchLabel(pixel: String, expected: String, actual: String): String =
+        when {
+            pixel == expected && pixel == actual -> "both"
+            pixel == expected -> "expected"
+            pixel == actual -> "actual"
+            else -> "neither"
+        }
 
     private fun firstMismatchPointInIntersection(
         tileRoot: Rectangle,
@@ -4235,18 +4271,45 @@ class IntellijCommunitySmokeTest {
             }
         }
 
-    private fun intellijRobotSvgCandidateInventory(candidateDistances: List<IntellijSvgCandidateDistance>): String =
-        buildString {
+    private fun intellijRobotSvgCandidateInventory(
+        candidateDistances: List<IntellijSvgCandidateDistance>,
+        selectedIndex: Int? = null,
+    ): String {
+        fun bestIndex(selector: (IntellijSvgCandidateDistance) -> Double?): Int? =
+            candidateDistances
+                .mapNotNull { distance -> selector(distance)?.let { value -> distance.index to value } }
+                .minByOrNull { it.second }
+                ?.first
+        val bestFull = bestIndex { it.full }
+        val bestTop = bestIndex { it.top }
+        val bestRight = bestIndex { it.right }
+        val bestBottom = bestIndex { it.bottom }
+        return buildString {
             appendLine("count=${candidateDistances.size}")
+            appendLine("selected=${selectedIndex ?: "none"}")
+            appendLine("bestFull=${bestFull ?: "unavailable"}")
+            appendLine("bestTop=${bestTop ?: "unavailable"}")
+            appendLine("bestRight=${bestRight ?: "unavailable"}")
+            appendLine("bestBottom=${bestBottom ?: "unavailable"}")
             candidateDistances.forEach { distance ->
                 append(distance.index)
-                append(": full=").append(distance.full ?: "unavailable")
+                append(":")
+                val markers = listOfNotNull(
+                    "selected".takeIf { distance.index == selectedIndex },
+                    "bestFull".takeIf { distance.index == bestFull },
+                    "bestTop".takeIf { distance.index == bestTop },
+                    "bestRight".takeIf { distance.index == bestRight },
+                    "bestBottom".takeIf { distance.index == bestBottom },
+                )
+                if (markers.isNotEmpty()) append(' ').append(markers.joinToString(" "))
+                append(" full=").append(distance.full ?: "unavailable")
                 append(" top=").append(distance.top ?: "unavailable")
                 append(" right=").append(distance.right ?: "unavailable")
                 append(" bottom=").append(distance.bottom ?: "unavailable")
                 appendLine()
             }
         }
+    }
 
     private fun dumpIntellijVisualDiff(
         directory: File,
@@ -4801,6 +4864,7 @@ class IntellijCommunitySmokeTest {
         val svg: String,
         val html: String,
         val svgLayers: List<SvgLayer>,
+        val selectedSvgCandidateIndex: Int,
         val robotSvgCandidateDistances: List<IntellijSvgCandidateDistance>,
         val logs: List<IntellijLogArtifact>,
     )
@@ -4812,10 +4876,12 @@ class IntellijCommunitySmokeTest {
         val stateJson: String,
         val html: String,
         val robotSvgDistance: Double,
+        val selectedSvgCandidateIndex: Int,
         val svgCandidateDistances: List<IntellijSvgCandidateDistance>,
     )
 
     private data class IntellijSvgScore(
+        val index: Int,
         val svg: String,
         val distance: Double,
     )
