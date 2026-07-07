@@ -161,7 +161,7 @@ internal object SetupReply {
             offset += 8
             for (visual in formatVisuals) {
                 byteOrder.put32(reply, offset, visual.id)
-                reply[offset + 4] = 4
+                reply[offset + 4] = visual.visualClass.toByte()
                 reply[offset + 5] = 8
                 byteOrder.put16(reply, offset + 6, 256)
                 byteOrder.put32(reply, offset + 8, visual.redMask)
@@ -199,11 +199,17 @@ internal object SetupReply {
 
 internal data class XVisualDescription(
     val id: Int,
+    val visualClass: Int,
     val depth: Int,
     val redMask: Int,
     val greenMask: Int,
     val blueMask: Int,
-)
+) {
+    companion object {
+        const val TrueColor = 4
+        const val DirectColor = 5
+    }
+}
 
 internal data class XPixmapFormatEntry(
     val depth: Int,
@@ -247,6 +253,12 @@ internal object X11Ids {
         (0x0000_01d0..XvfbLikeBgrRootVisualAlias).toList()
     val RootVisualAliases: List<Int> =
         RootRgbVisualAliases + RootBgrVisualAliases
+    val RootRgbDirectColorAliases: List<Int> =
+        listOf(0x0000_0022) + (0x0000_01e4..0x0000_01f6).toList()
+    val RootBgrDirectColorAliases: List<Int> =
+        (0x0000_01f7..0x0000_020a).toList()
+    val RootDirectColorVisualAliases: List<Int> =
+        RootRgbDirectColorAliases + RootBgrDirectColorAliases
     val RgbaRgbVisualAliases: List<Int> =
         listOf(0x0000_0040) + (0x0000_020b..XvfbLikeRgbaVisualAlias).toList()
     val RgbaBgrVisualAliases: List<Int> =
@@ -259,6 +271,7 @@ internal object X11Ids {
         RootRgbVisualAliases.map { visual ->
             XVisualDescription(
                 id = visual,
+                visualClass = XVisualDescription.TrueColor,
                 depth = RootDepth,
                 redMask = 0x00ff_0000,
                 greenMask = 0x0000_ff00,
@@ -267,6 +280,25 @@ internal object X11Ids {
         } + RootBgrVisualAliases.map { visual ->
             XVisualDescription(
                 id = visual,
+                visualClass = XVisualDescription.TrueColor,
+                depth = RootDepth,
+                redMask = 0x0000_00ff,
+                greenMask = 0x0000_ff00,
+                blueMask = 0x00ff_0000,
+            )
+        } + RootRgbDirectColorAliases.map { visual ->
+            XVisualDescription(
+                id = visual,
+                visualClass = XVisualDescription.DirectColor,
+                depth = RootDepth,
+                redMask = 0x00ff_0000,
+                greenMask = 0x0000_ff00,
+                blueMask = 0x0000_00ff,
+            )
+        } + RootBgrDirectColorAliases.map { visual ->
+            XVisualDescription(
+                id = visual,
+                visualClass = XVisualDescription.DirectColor,
                 depth = RootDepth,
                 redMask = 0x0000_00ff,
                 greenMask = 0x0000_ff00,
@@ -275,6 +307,7 @@ internal object X11Ids {
         } + RgbaRgbVisualAliases.map { visual ->
             XVisualDescription(
                 id = visual,
+                visualClass = XVisualDescription.TrueColor,
                 depth = RgbaDepth,
                 redMask = 0x00ff_0000,
                 greenMask = 0x0000_ff00,
@@ -283,6 +316,7 @@ internal object X11Ids {
         } + RgbaBgrVisualAliases.map { visual ->
             XVisualDescription(
                 id = visual,
+                visualClass = XVisualDescription.TrueColor,
                 depth = RgbaDepth,
                 redMask = 0x0000_00ff,
                 greenMask = 0x0000_ff00,
@@ -293,6 +327,7 @@ internal object X11Ids {
     fun visualDepth(visual: Int): Int? =
         when (visual) {
             in RootVisualAliases -> RootDepth
+            in RootDirectColorVisualAliases -> RootDepth
             in RgbaVisualAliases -> RgbaDepth
             in LegacyRgbaVisualAliases -> RgbaDepth
             else -> null

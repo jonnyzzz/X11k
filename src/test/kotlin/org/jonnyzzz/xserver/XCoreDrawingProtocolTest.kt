@@ -24,6 +24,7 @@ class XCoreDrawingProtocolTest {
                 socket.soTimeout = 2_000
                 val setupReply = setupReply(socket)
                 val visuals = setupVisualIdsByDepth(setupReply)
+                val visualClasses = setupVisualClassesById(setupReply)
                 val screenOffset = setupScreenOffset(setupReply)
 
                 assertEquals(1280, u16le(setupReply, screenOffset + 20))
@@ -33,8 +34,18 @@ class XCoreDrawingProtocolTest {
                 assertEquals(XBackingStore.WhenMapped, setupReply[screenOffset + 36].toInt() and 0xff)
                 assertEquals(0, setupReply[screenOffset + 37].toInt() and 0xff)
                 assertEquals(0x21, u32le(setupReply, screenOffset + 32))
-                assertEquals(X11Ids.RootVisualAliases, visuals.getValue(X11Ids.RootDepth))
+                assertEquals(
+                    X11Ids.RootVisualAliases + X11Ids.RootDirectColorVisualAliases,
+                    visuals.getValue(X11Ids.RootDepth),
+                )
                 assertEquals(X11Ids.RgbaVisualAliases, visuals.getValue(X11Ids.RgbaDepth))
+                assertEquals(
+                    X11Ids.RootDirectColorVisualAliases.toSet(),
+                    visualClasses.filterValues { it == XVisualDescription.DirectColor }.keys,
+                )
+                assertEquals(XVisualDescription.TrueColor, visualClasses.getValue(X11Ids.RootVisual))
+                assertEquals(XVisualDescription.TrueColor, visualClasses.getValue(X11Ids.XvfbLikeRootVisualAlias))
+                assertEquals(XVisualDescription.TrueColor, visualClasses.getValue(X11Ids.XvfbLikeRgbaVisualAlias))
             }
             server.close()
             serverThread.join(1_000)
@@ -12881,6 +12892,7 @@ class XCoreDrawingProtocolTest {
                 setup(socket)
                 val out = socket.getOutputStream()
                 out.write(createColormapRequest(ColormapId, window = X11Ids.RootWindow, visual = X11Ids.XvfbLikeRgbaVisualAlias))
+                out.write(createColormapRequest(ColormapId + 1, window = X11Ids.RootWindow, visual = X11Ids.RootRgbDirectColorAliases.last()))
                 out.write(
                     createWindowRequest(
                         WindowId,
@@ -12888,6 +12900,14 @@ class XCoreDrawingProtocolTest {
                         visual = X11Ids.XvfbLikeRgbaVisualAlias,
                         colormap = ColormapId,
                         backgroundPixel = 0x1122_3344,
+                    ),
+                )
+                out.write(
+                    createWindowRequest(
+                        WindowId + 1,
+                        depth = X11Ids.RootDepth,
+                        visual = X11Ids.RootRgbDirectColorAliases.last(),
+                        colormap = ColormapId + 1,
                     ),
                 )
                 out.write(mapWindowRequest(WindowId))
@@ -12898,6 +12918,9 @@ class XCoreDrawingProtocolTest {
                 val image = readReply(socket.getInputStream())
                 assertEquals(X11Ids.XvfbLikeRgbaVisualAlias, u32le(image, 8))
                 assertEquals(0xff22_3344.toInt(), pixelAt(image, 1, 0, 0))
+                val stateJson = httpGet(server.localPort, "/state.json")
+                assertContains(stateJson, """"id":"0x${(WindowId + 1).toUInt().toString(16)}"""")
+                assertContains(stateJson, """"visual":"0x${X11Ids.RootRgbDirectColorAliases.last().toUInt().toString(16)}"""")
             }
             server.close()
             serverThread.join(1_000)
@@ -21129,6 +21152,22 @@ class XCoreDrawingProtocolTest {
             offset += 8
             result[depth] = (0 until visualCount).map { index ->
                 u32le(reply, offset + index * 24)
+            }
+            offset += visualCount * 24
+        }
+        return result
+    }
+
+    private fun setupVisualClassesById(reply: ByteArray): Map<Int, Int> {
+        var offset = setupScreenOffset(reply)
+        val depthCount = reply[offset + 39].toInt() and 0xff
+        offset += 40
+        val result = linkedMapOf<Int, Int>()
+        repeat(depthCount) {
+            val visualCount = u16le(reply, offset + 2)
+            offset += 8
+            repeat(visualCount) { index ->
+                result[u32le(reply, offset + index * 24)] = reply[offset + index * 24 + 4].toInt() and 0xff
             }
             offset += visualCount * 24
         }
