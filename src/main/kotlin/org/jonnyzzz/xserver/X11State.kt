@@ -425,6 +425,7 @@ internal class X11State(
                 height = height,
                 borderWidth = 0,
                 mapped = true,
+                backingStore = XBackingStore.WhenMapped,
                 backgroundPixel = rootBackgroundPixel,
             ),
         )

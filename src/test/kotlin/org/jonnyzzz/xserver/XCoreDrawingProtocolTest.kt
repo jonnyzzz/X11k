@@ -30,6 +30,8 @@ class XCoreDrawingProtocolTest {
                 assertEquals(900, u16le(setupReply, screenOffset + 22))
                 assertEquals(325, u16le(setupReply, screenOffset + 24))
                 assertEquals(229, u16le(setupReply, screenOffset + 26))
+                assertEquals(XBackingStore.WhenMapped, setupReply[screenOffset + 36].toInt() and 0xff)
+                assertEquals(0, setupReply[screenOffset + 37].toInt() and 0xff)
                 assertEquals(X11Ids.RootVisualAliases, visuals.getValue(X11Ids.RootDepth))
                 assertEquals(X11Ids.RgbaVisualAliases, visuals.getValue(X11Ids.RgbaDepth))
             }
@@ -14717,6 +14719,29 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `GetWindowAttributes reports Xvfb-like root backing-store support`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(getWindowAttributesRequest(X11Ids.RootWindow))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val rootAttributes = readReply(socket.getInputStream())
+                assertEquals(XBackingStore.WhenMapped, rootAttributes[1].toInt() and 0xff)
+                assertEquals(X11Ids.RootVisual, u32le(rootAttributes, 8))
+                assertEquals(2, rootAttributes[26].toInt() and 0xff)
+                assertEquals(2, u16le(readReply(socket.getInputStream()), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `GetWindowAttributes reports map state and selected event masks`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -14756,6 +14781,8 @@ class XCoreDrawingProtocolTest {
                     assertMapAndExpose(ownerSocket.getInputStream(), child)
                     val parentAttributes = readReply(ownerSocket.getInputStream())
                     val childAttributes = readReply(ownerSocket.getInputStream())
+                    assertEquals(XBackingStore.NotUseful, parentAttributes[1].toInt() and 0xff)
+                    assertEquals(XBackingStore.NotUseful, childAttributes[1].toInt() and 0xff)
                     assertEquals(0, parentAttributes[26].toInt() and 0xff)
                     assertEquals(0, u32le(parentAttributes, 32))
                     assertEquals(0, u32le(parentAttributes, 36))

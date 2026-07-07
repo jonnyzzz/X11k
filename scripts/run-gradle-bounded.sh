@@ -20,6 +20,7 @@ NATIVE_CRASH_SCAN_FIND_TIMEOUT_SECONDS="${GRADLE_NATIVE_CRASH_SCAN_FIND_TIMEOUT_
 NATIVE_CRASH_SCAN_GREP_TIMEOUT_SECONDS="${GRADLE_NATIVE_CRASH_SCAN_GREP_TIMEOUT_SECONDS:-2}"
 NATIVE_CRASH_SCAN_MAX_FILES="${GRADLE_NATIVE_CRASH_SCAN_MAX_FILES:-200}"
 NATIVE_CRASH_SCAN_MAX_BYTES="${GRADLE_NATIVE_CRASH_SCAN_MAX_BYTES:-1048576}"
+KOTLIN_COMPILER_EXECUTION_STRATEGY="${GRADLE_KOTLIN_COMPILER_EXECUTION_STRATEGY:-in-process}"
 
 usage() {
   cat <<USAGE
@@ -28,6 +29,7 @@ Usage:
 
 Runs ./gradlew with repository-safe defaults:
   --no-daemon --max-workers=1 -Dkotlin.incremental=false
+  -Dkotlin.compiler.execution.strategy=${KOTLIN_COMPILER_EXECUTION_STRATEGY:-<caller-provided>}
 
 Environment:
   GRADLE_TIMEOUT_SECONDS=$TIMEOUT_SECONDS
@@ -42,6 +44,7 @@ Environment:
   GRADLE_NATIVE_CRASH_SCAN_GREP_TIMEOUT_SECONDS=$NATIVE_CRASH_SCAN_GREP_TIMEOUT_SECONDS
   GRADLE_NATIVE_CRASH_SCAN_MAX_FILES=$NATIVE_CRASH_SCAN_MAX_FILES
   GRADLE_NATIVE_CRASH_SCAN_MAX_BYTES=$NATIVE_CRASH_SCAN_MAX_BYTES
+  GRADLE_KOTLIN_COMPILER_EXECUTION_STRATEGY=${KOTLIN_COMPILER_EXECUTION_STRATEGY:-<empty means caller-provided/default>}
 
 On wall-clock or output-idle timeout the script writes jps, jcmd/jstack thread
 dumps, Docker/Testcontainers diagnostics, and output tails before terminating the
@@ -294,7 +297,7 @@ diagnose_gradle() {
     echo "ROOT=$ROOT"
     echo "PID=$gradle_pid"
     echo "UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    echo "CMD=$ROOT/gradlew --no-daemon --max-workers=1 -Dkotlin.incremental=false $*"
+    echo "CMD=$ROOT/gradlew ${GRADLE_ARGS[*]}"
     echo
     echo "== gradle process =="
     ps -p "$gradle_pid" -o pid=,ppid=,stat=,etime=,command= 2>/dev/null || true
@@ -490,7 +493,18 @@ STDERR_FILE="$THIS_RUN_DIR/stderr.txt"
 RUN_INFO_FILE="$THIS_RUN_DIR/run-info.txt"
 PID_FILE="$THIS_RUN_DIR/pid.txt"
 
-GRADLE_ARGS=(--no-daemon --max-workers=1 -Dkotlin.incremental=false "$@")
+GRADLE_ARGS=(--no-daemon --max-workers=1 -Dkotlin.incremental=false)
+has_kotlin_execution_strategy=0
+for arg in "$@"; do
+  if [[ "$arg" == -Dkotlin.compiler.execution.strategy=* ]]; then
+    has_kotlin_execution_strategy=1
+    break
+  fi
+done
+if [[ "$has_kotlin_execution_strategy" == "0" && -n "$KOTLIN_COMPILER_EXECUTION_STRATEGY" ]]; then
+  GRADLE_ARGS+=("-Dkotlin.compiler.execution.strategy=$KOTLIN_COMPILER_EXECUTION_STRATEGY")
+fi
+GRADLE_ARGS+=("$@")
 echo "Running: $ROOT/gradlew ${GRADLE_ARGS[*]}" >&2
 {
   echo "RUN_ID=$RUN_ID"

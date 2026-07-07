@@ -147,7 +147,7 @@ internal object SetupReply {
         byteOrder.put16(reply, offset + 28, 1)
         byteOrder.put16(reply, offset + 30, 1)
         byteOrder.put32(reply, offset + 32, RootVisualId)
-        reply[offset + 36] = 0
+        reply[offset + 36] = XBackingStore.WhenMapped.toByte()
         reply[offset + 37] = 0
         reply[offset + 38] = 24
         reply[offset + 39] = depthsLength.toByte()

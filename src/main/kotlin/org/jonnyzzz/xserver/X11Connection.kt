@@ -14687,6 +14687,7 @@ internal object XWindowGravity {
 
 internal object XBackingStore {
     const val NotUseful = 0
+    const val WhenMapped = 1
     const val Always = 2
 }
 
