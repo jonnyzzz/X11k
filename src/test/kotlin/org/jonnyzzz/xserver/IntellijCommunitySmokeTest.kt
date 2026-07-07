@@ -321,6 +321,9 @@ class IntellijCommunitySmokeTest {
             assertTrue(metrics.contains("svgVsXvfbMismatchRows=20:1"), metrics)
             assertTrue(metrics.contains("robotVsSvgMismatchRows=10:1 20:1"), metrics)
             assertTrue(metrics.contains("robotVsXvfbMismatchTwoPixelRows=10-11:1"), metrics)
+            assertTrue(metrics.contains("robotVsXvfbMismatchColumns32=0-31:1"), metrics)
+            assertTrue(metrics.contains("svgVsXvfbMismatchColumns32=1152-1183:1"), metrics)
+            assertTrue(metrics.contains("robotVsSvgMismatchTiles32x2=0-31,10-11:1 1152-1183,20-21:1"), metrics)
             assertTrue(metrics.contains("robotVsXvfbMismatchDeltaHistogram=48,16,16,0:1"), metrics)
             assertTrue(metrics.contains("svgVsXvfbMismatchDeltaHistogram=16,48,16,0:1"), metrics)
             assertTrue(metrics.contains("robotVsSvgMismatchDeltaHistogram=-48,-16,-16,0:1 16,48,16,0:1"), metrics)
@@ -2406,6 +2409,12 @@ class IntellijCommunitySmokeTest {
             appendLine("robotVsXvfbMismatchTwoPixelRows=${mismatchRowBuckets(expected.image, actualRobot.image, bucketHeight = 2)}")
             appendLine("svgVsXvfbMismatchTwoPixelRows=${mismatchRowBuckets(expected.image, actualSvg.image, bucketHeight = 2)}")
             appendLine("robotVsSvgMismatchTwoPixelRows=${mismatchRowBuckets(actualRobot.image, actualSvg.image, bucketHeight = 2)}")
+            appendLine("robotVsXvfbMismatchColumns32=${mismatchColumnBuckets(expected.image, actualRobot.image, bucketWidth = 32)}")
+            appendLine("svgVsXvfbMismatchColumns32=${mismatchColumnBuckets(expected.image, actualSvg.image, bucketWidth = 32)}")
+            appendLine("robotVsSvgMismatchColumns32=${mismatchColumnBuckets(actualRobot.image, actualSvg.image, bucketWidth = 32)}")
+            appendLine("robotVsXvfbMismatchTiles32x2=${mismatchTileBuckets(expected.image, actualRobot.image, bucketWidth = 32, bucketHeight = 2)}")
+            appendLine("svgVsXvfbMismatchTiles32x2=${mismatchTileBuckets(expected.image, actualSvg.image, bucketWidth = 32, bucketHeight = 2)}")
+            appendLine("robotVsSvgMismatchTiles32x2=${mismatchTileBuckets(actualRobot.image, actualSvg.image, bucketWidth = 32, bucketHeight = 2)}")
             appendLine("robotVsXvfbMismatchDeltaHistogram=${mismatchDeltaHistogram(expected.image, actualRobot.image)}")
             appendLine("svgVsXvfbMismatchDeltaHistogram=${mismatchDeltaHistogram(expected.image, actualSvg.image)}")
             appendLine("robotVsSvgMismatchDeltaHistogram=${mismatchDeltaHistogram(actualRobot.image, actualSvg.image)}")
@@ -3423,6 +3432,73 @@ class IntellijCommunitySmokeTest {
                 val end = minOf(height - 1, start + bucketHeight - 1)
                 val label = if (start == end) start.toString() else "$start-$end"
                 "$label:$count"
+            }
+            .ifBlank { "none" }
+    }
+
+    private fun mismatchColumnBuckets(expected: BufferedImage, actual: BufferedImage, bucketWidth: Int, limit: Int = 16): String {
+        require(bucketWidth > 0) { "bucketWidth must be positive" }
+        val width = minOf(expected.width, actual.width)
+        val height = minOf(expected.height, actual.height)
+        val buckets = IntArray((width + bucketWidth - 1) / bucketWidth)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                if (rgbDistance(expected.getRGB(x, y), actual.getRGB(x, y)) != 0) {
+                    buckets[x / bucketWidth]++
+                }
+            }
+        }
+        return buckets
+            .withIndex()
+            .filter { it.value > 0 }
+            .sortedWith(compareByDescending<IndexedValue<Int>> { it.value }.thenBy { it.index })
+            .take(limit)
+            .joinToString(" ") { (index, count) ->
+                val start = index * bucketWidth
+                val end = minOf(width - 1, start + bucketWidth - 1)
+                "$start-$end:$count"
+            }
+            .ifBlank { "none" }
+    }
+
+    private fun mismatchTileBuckets(
+        expected: BufferedImage,
+        actual: BufferedImage,
+        bucketWidth: Int,
+        bucketHeight: Int,
+        limit: Int = 16,
+    ): String {
+        require(bucketWidth > 0) { "bucketWidth must be positive" }
+        require(bucketHeight > 0) { "bucketHeight must be positive" }
+        val width = minOf(expected.width, actual.width)
+        val height = minOf(expected.height, actual.height)
+        val xBuckets = (width + bucketWidth - 1) / bucketWidth
+        val yBuckets = (height + bucketHeight - 1) / bucketHeight
+        val buckets = IntArray(xBuckets * yBuckets)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                if (rgbDistance(expected.getRGB(x, y), actual.getRGB(x, y)) != 0) {
+                    buckets[(y / bucketHeight) * xBuckets + (x / bucketWidth)]++
+                }
+            }
+        }
+        return buckets
+            .withIndex()
+            .filter { it.value > 0 }
+            .sortedWith(
+                compareByDescending<IndexedValue<Int>> { it.value }
+                    .thenBy { it.index / xBuckets }
+                    .thenBy { it.index % xBuckets },
+            )
+            .take(limit)
+            .joinToString(" ") { (index, count) ->
+                val xIndex = index % xBuckets
+                val yIndex = index / xBuckets
+                val xStart = xIndex * bucketWidth
+                val xEnd = minOf(width - 1, xStart + bucketWidth - 1)
+                val yStart = yIndex * bucketHeight
+                val yEnd = minOf(height - 1, yStart + bucketHeight - 1)
+                "$xStart-$xEnd,$yStart-$yEnd:$count"
             }
             .ifBlank { "none" }
     }
