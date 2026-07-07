@@ -265,6 +265,8 @@ class IntellijCommunitySmokeTest {
         assertTrue(metrics.contains("robotVsSvgInsideFrameMismatchBounds=5,5 2x3"), metrics)
         assertTrue(metrics.contains("topFrameBand=10,20 1260x120"), metrics)
         assertTrue(metrics.contains("robotTopFrameBandMismatchBounds=5,5 2x3"), metrics)
+        assertTrue(metrics.contains("robotTopFrameBandMismatchDeltaHistogram=0,255,0,0:6"), metrics)
+        assertTrue(metrics.contains("robotTopFrameBandGrayMismatchDeltaHistogram=none"), metrics)
         assertTrue(metrics.contains("rightFrameBand=1174,20 96x860"), metrics)
         assertTrue(metrics.contains("robotRightFrameBandMismatchBounds=none"), metrics)
         assertTrue(metrics.contains("bottomFrameBand=10,784 1260x96"), metrics)
@@ -319,6 +321,10 @@ class IntellijCommunitySmokeTest {
             assertTrue(metrics.contains("svgVsXvfbMismatchRows=20:1"), metrics)
             assertTrue(metrics.contains("robotVsSvgMismatchRows=10:1 20:1"), metrics)
             assertTrue(metrics.contains("robotVsXvfbMismatchTwoPixelRows=10-11:1"), metrics)
+            assertTrue(metrics.contains("robotVsXvfbMismatchDeltaHistogram=48,16,16,0:1"), metrics)
+            assertTrue(metrics.contains("svgVsXvfbMismatchDeltaHistogram=16,48,16,0:1"), metrics)
+            assertTrue(metrics.contains("robotVsSvgMismatchDeltaHistogram=-48,-16,-16,0:1 16,48,16,0:1"), metrics)
+            assertTrue(metrics.contains("robotVsXvfbGrayMismatchDeltaHistogram=none"), metrics)
         } finally {
             directory.deleteRecursively()
         }
@@ -2400,6 +2406,12 @@ class IntellijCommunitySmokeTest {
             appendLine("robotVsXvfbMismatchTwoPixelRows=${mismatchRowBuckets(expected.image, actualRobot.image, bucketHeight = 2)}")
             appendLine("svgVsXvfbMismatchTwoPixelRows=${mismatchRowBuckets(expected.image, actualSvg.image, bucketHeight = 2)}")
             appendLine("robotVsSvgMismatchTwoPixelRows=${mismatchRowBuckets(actualRobot.image, actualSvg.image, bucketHeight = 2)}")
+            appendLine("robotVsXvfbMismatchDeltaHistogram=${mismatchDeltaHistogram(expected.image, actualRobot.image)}")
+            appendLine("svgVsXvfbMismatchDeltaHistogram=${mismatchDeltaHistogram(expected.image, actualSvg.image)}")
+            appendLine("robotVsSvgMismatchDeltaHistogram=${mismatchDeltaHistogram(actualRobot.image, actualSvg.image)}")
+            appendLine("robotVsXvfbGrayMismatchDeltaHistogram=${grayMismatchDeltaHistogram(expected.image, actualRobot.image)}")
+            appendLine("svgVsXvfbGrayMismatchDeltaHistogram=${grayMismatchDeltaHistogram(expected.image, actualSvg.image)}")
+            appendLine("robotVsSvgGrayMismatchDeltaHistogram=${grayMismatchDeltaHistogram(actualRobot.image, actualSvg.image)}")
         }
 
     private fun dominantColors(image: BufferedImage, limit: Int): String {
@@ -3293,6 +3305,12 @@ class IntellijCommunitySmokeTest {
         appendLine("robot${metricPrefix}MismatchBounds=${mismatchBounds(expectedRegion, robotRegion).toMetricString()}")
         appendLine("svg${metricPrefix}MismatchBounds=${mismatchBounds(expectedRegion, svgRegion).toMetricString()}")
         appendLine("robotVsSvg${metricPrefix}MismatchBounds=${mismatchBounds(robotRegion, svgRegion).toMetricString()}")
+        appendLine("robot${metricPrefix}MismatchDeltaHistogram=${mismatchDeltaHistogram(expectedRegion, robotRegion)}")
+        appendLine("svg${metricPrefix}MismatchDeltaHistogram=${mismatchDeltaHistogram(expectedRegion, svgRegion)}")
+        appendLine("robotVsSvg${metricPrefix}MismatchDeltaHistogram=${mismatchDeltaHistogram(robotRegion, svgRegion)}")
+        appendLine("robot${metricPrefix}GrayMismatchDeltaHistogram=${grayMismatchDeltaHistogram(expectedRegion, robotRegion)}")
+        appendLine("svg${metricPrefix}GrayMismatchDeltaHistogram=${grayMismatchDeltaHistogram(expectedRegion, svgRegion)}")
+        appendLine("robotVsSvg${metricPrefix}GrayMismatchDeltaHistogram=${grayMismatchDeltaHistogram(robotRegion, svgRegion)}")
     }
 
     private fun Rectangle.topBand(maxHeight: Int): Rectangle =
@@ -3408,6 +3426,56 @@ class IntellijCommunitySmokeTest {
             }
             .ifBlank { "none" }
     }
+
+    private fun mismatchDeltaHistogram(expected: BufferedImage, actual: BufferedImage, limit: Int = 12): String {
+        val counts = linkedMapOf<String, Int>()
+        forEachSharedMismatch(expected, actual) { expectedRgb, actualRgb ->
+            val key = listOf(
+                ((actualRgb ushr 16) and 0xff) - ((expectedRgb ushr 16) and 0xff),
+                ((actualRgb ushr 8) and 0xff) - ((expectedRgb ushr 8) and 0xff),
+                (actualRgb and 0xff) - (expectedRgb and 0xff),
+                ((actualRgb ushr 24) and 0xff) - ((expectedRgb ushr 24) and 0xff),
+            ).joinToString(",")
+            counts[key] = (counts[key] ?: 0) + 1
+        }
+        return histogramString(counts, limit)
+    }
+
+    private fun grayMismatchDeltaHistogram(expected: BufferedImage, actual: BufferedImage, limit: Int = 12): String {
+        val counts = linkedMapOf<String, Int>()
+        forEachSharedMismatch(expected, actual) { expectedRgb, actualRgb ->
+            if (!isGray(expectedRgb) || !isGray(actualRgb)) return@forEachSharedMismatch
+            val key = ((actualRgb and 0xff) - (expectedRgb and 0xff)).toString()
+            counts[key] = (counts[key] ?: 0) + 1
+        }
+        return histogramString(counts, limit)
+    }
+
+    private fun forEachSharedMismatch(expected: BufferedImage, actual: BufferedImage, block: (expectedRgb: Int, actualRgb: Int) -> Unit) {
+        val width = minOf(expected.width, actual.width)
+        val height = minOf(expected.height, actual.height)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val expectedRgb = expected.getRGB(x, y)
+                val actualRgb = actual.getRGB(x, y)
+                if (expectedRgb != actualRgb) block(expectedRgb, actualRgb)
+            }
+        }
+    }
+
+    private fun isGray(argb: Int): Boolean {
+        val red = (argb ushr 16) and 0xff
+        val green = (argb ushr 8) and 0xff
+        val blue = argb and 0xff
+        return red == green && green == blue
+    }
+
+    private fun histogramString(counts: Map<String, Int>, limit: Int): String =
+        counts.entries
+            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+            .take(limit)
+            .joinToString(" ") { (key, count) -> "$key:$count" }
+            .ifEmpty { "none" }
 
     private fun Rectangle?.toMetricString(): String =
         this?.let { "${it.x},${it.y} ${it.width}x${it.height}" } ?: "none"
