@@ -3681,6 +3681,8 @@ internal class X11Connection(
                 visuals = listOf(
                     X11Ids.RootRgbVisualAliases to XRender.Rgb24Format,
                     X11Ids.RootBgrVisualAliases to XRender.Bgr24Format,
+                    X11Ids.RootRgbDirectColorAliases to XRender.Rgb24Format,
+                    X11Ids.RootBgrDirectColorAliases to XRender.Bgr24Format,
                 ),
             ),
             XRenderDepthVisuals(

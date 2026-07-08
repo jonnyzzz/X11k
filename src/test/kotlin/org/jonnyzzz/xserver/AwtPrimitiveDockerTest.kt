@@ -12,12 +12,17 @@ import java.io.File
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.Base64
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import javax.imageio.ImageIO
 import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+
+private const val DockerExecTimeoutSeconds = 45L
 
 class AwtPrimitiveDockerTest {
     @Test
@@ -47,6 +52,25 @@ class AwtPrimitiveDockerTest {
         assertEquals(96, images.single().width)
         assertEquals(80, images.single().height)
         assertEquals(listOf(Rectangle(10, 20, 64, 64)), images.single().clipRectangles)
+    }
+
+    @Test
+    fun `svg framebuffer parser preserves visible group override under hidden parent`() {
+        val png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+        val images = pngDataUris(
+            """
+            <svg>
+              <g visibility="hidden">
+                <image class="framebuffer-image" data-window-id="0xhidden" x="0" y="0" width="1" height="1" href="data:image/png;base64,$png"/>
+                <g visibility="visible">
+                  <image class="framebuffer-image" data-window-id="0xvisible" x="2" y="0" width="1" height="1" href="data:image/png;base64,$png"/>
+                </g>
+              </g>
+            </svg>
+            """.trimIndent(),
+        )
+
+        assertEquals(listOf("0xhidden" to true, "0xvisible" to false), images.map { it.id to it.hidden })
     }
 
     @Test
@@ -759,10 +783,10 @@ class AwtPrimitiveDockerTest {
                 .use { container ->
                     container.start()
                     val display = port - 6000
-                    val sourceResult = container.execInContainer("sh", "-lc", "cat > /tmp/$mainClass.java <<'JAVA'\n$source\nJAVA\njavac /tmp/$mainClass.java")
+                    val sourceResult = container.execInContainerBounded("sh", "-lc", "cat > /tmp/$mainClass.java <<'JAVA'\n$source\nJAVA\njavac /tmp/$mainClass.java")
                     assertEquals(0, sourceResult.exitCode, sourceResult.stderr + sourceResult.stdout)
 
-                    val startResult = container.execInContainer(
+                    val startResult = container.execInContainerBounded(
                         "sh",
                         "-lc",
                         """
@@ -782,7 +806,7 @@ class AwtPrimitiveDockerTest {
                             val text = runCatching { httpGet(port, "/text.txt") }.getOrElse { it.toString() }
                             val svg = runCatching { httpGet(port, "/screen.svg") }.getOrElse { it.toString() }
                             val html = runCatching { httpGet(port, "/") }.getOrElse { it.toString() }
-                            val log = container.execInContainer("sh", "-lc", "cat /tmp/awt-primitive.log 2>/dev/null || true").stdout
+                            val log = container.execInContainerBounded("sh", "-lc", "cat /tmp/awt-primitive.log 2>/dev/null || true").stdout
                             val artifactPrefix = dumpAwtProbeReadinessArtifacts(title, text, svg, html, log)
                             buildString {
                                 appendLine("AWT probe did not become SVG-ready before timeout")
@@ -813,7 +837,7 @@ class AwtPrimitiveDockerTest {
                     assertTrue(images.isNotEmpty(), "Expected an embedded framebuffer PNG in SVG")
                     val stats = images.map { imageStats(it.id, it.bytes) }
 
-                    val logResult = container.execInContainer("sh", "-lc", "kill $(cat /tmp/awt-primitive.pid) 2>/dev/null || true; cat /tmp/awt-primitive.log")
+                    val logResult = container.execInContainerBounded("sh", "-lc", "kill $(cat /tmp/awt-primitive.pid) 2>/dev/null || true; cat /tmp/awt-primitive.log")
                     val log = logResult.stdout + logResult.stderr
                     dumpAwtProbeArtifacts(title, text, svg, html, stats, log)
                     server.close()
@@ -832,7 +856,7 @@ class AwtPrimitiveDockerTest {
             .use { container ->
                 container.start()
                 compileProbe(container, mainClass, source)
-                val result = container.execInContainer(
+                val result = container.execInContainerBounded(
                     "sh",
                     "-lc",
                     """
@@ -869,7 +893,7 @@ class AwtPrimitiveDockerTest {
                     container.start()
                     compileProbe(container, mainClass, source)
                     val display = port - 6000
-                    val startResult = container.execInContainer(
+                    val startResult = container.execInContainerBounded(
                         "sh",
                         "-lc",
                         """
@@ -887,12 +911,12 @@ class AwtPrimitiveDockerTest {
 
                     waitUntil(
                         failureMessage = {
-                            val log = container.execInContainer("sh", "-lc", "cat /tmp/visual-parity.log 2>/dev/null || true").stdout
+                            val log = container.execInContainerBounded("sh", "-lc", "cat /tmp/visual-parity.log 2>/dev/null || true").stdout
                             val text = runCatching { httpGet(port, "/text.txt") }.getOrElse { it.toString() }
                             "Visual parity probe did not become SVG-ready before timeout\nlog:\n$log\ntext:\n$text"
                         },
                     ) {
-                        val log = container.execInContainer("sh", "-lc", "cat /tmp/visual-parity.log 2>/dev/null || true")
+                        val log = container.execInContainerBounded("sh", "-lc", "cat /tmp/visual-parity.log 2>/dev/null || true")
                         val currentText = httpGet(port, "/text.txt")
                         log.stdout.contains("PNG_BASE64=") &&
                             currentText.contains(title) &&
@@ -902,7 +926,7 @@ class AwtPrimitiveDockerTest {
 
                     val text = httpGet(port, "/text.txt")
                     val svg = httpGet(port, "/screen.svg")
-                    val log = container.execInContainer(
+                    val log = container.execInContainerBounded(
                         "sh",
                         "-lc",
                         """
@@ -935,54 +959,56 @@ class AwtPrimitiveDockerTest {
     }
 
     private fun compileProbe(container: GenericContainer<*>, mainClass: String, source: String) {
-        val sourceResult = container.execInContainer("sh", "-lc", "cat > /tmp/$mainClass.java <<'JAVA'\n$source\nJAVA\njavac /tmp/$mainClass.java")
+        val sourceResult = container.execInContainerBounded("sh", "-lc", "cat > /tmp/$mainClass.java <<'JAVA'\n$source\nJAVA\njavac /tmp/$mainClass.java")
         assertEquals(0, sourceResult.exitCode, sourceResult.stderr + sourceResult.stdout)
     }
 
-    private fun pngDataUris(svg: String): List<EmbeddedPng> =
-        Regex("""<image\b[^>]*>""")
+    private fun pngDataUris(svg: String): List<EmbeddedPng> {
+        val hiddenStack = mutableListOf<Boolean>()
+        val images = mutableListOf<EmbeddedPng>()
+        Regex("""<g\b[^>]*>|</g>|<image\b[^>]*>""")
             .findAll(svg)
-            .mapNotNull { match ->
+            .forEach { match ->
                 val tag = match.value
-                val id = Regex("""\bdata-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1) ?: return@mapNotNull null
-                val encoded = Regex("""\bhref="data:image/png;base64,([A-Za-z0-9+/=]+)"""").find(tag)?.groupValues?.get(1) ?: return@mapNotNull null
-                val x = svgImageAttribute(tag, "x") ?: return@mapNotNull null
-                val y = svgImageAttribute(tag, "y") ?: return@mapNotNull null
-                val width = svgImageAttribute(tag, "width") ?: return@mapNotNull null
-                val height = svgImageAttribute(tag, "height") ?: return@mapNotNull null
-                EmbeddedPng(
-                    id = id,
-                    bytes = Base64.getDecoder().decode(encoded),
-                    x = x,
-                    y = y,
-                    width = width,
-                    height = height,
-                    hidden = isInsideHiddenSvgGroup(svg, match.range.first),
-                    clipRectangles = svgVisibleRectangle(tag),
-                )
+                when {
+                    tag.startsWith("</") -> {
+                        if (hiddenStack.isNotEmpty()) hiddenStack.removeAt(hiddenStack.lastIndex)
+                    }
+                    tag.startsWith("<g") -> {
+                        hiddenStack += svgVisibilityHidden(tag) ?: (hiddenStack.lastOrNull() == true)
+                    }
+                    else -> {
+                        pngDataUri(tag, hidden = hiddenStack.lastOrNull() == true)?.let { images += it }
+                    }
+                }
             }
-            .toList()
+        return images
+    }
+
+    private fun pngDataUri(tag: String, hidden: Boolean): EmbeddedPng? {
+        val id = Regex("""\bdata-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1) ?: return null
+        val encoded = Regex("""\bhref="data:image/png;base64,([A-Za-z0-9+/=]+)"""").find(tag)?.groupValues?.get(1) ?: return null
+        val x = svgImageAttribute(tag, "x") ?: return null
+        val y = svgImageAttribute(tag, "y") ?: return null
+        val width = svgImageAttribute(tag, "width") ?: return null
+        val height = svgImageAttribute(tag, "height") ?: return null
+        return EmbeddedPng(
+            id = id,
+            bytes = Base64.getDecoder().decode(encoded),
+            x = x,
+            y = y,
+            width = width,
+            height = height,
+            hidden = hidden,
+            clipRectangles = svgVisibleRectangle(tag),
+        )
+    }
 
     private fun svgImageAttribute(tag: String, name: String): Int? =
         svgStringAttribute(tag, name)?.toInt()
 
     private fun svgStringAttribute(tag: String, name: String): String? =
         Regex("""(?:^|[<\s])${Regex.escape(name)}\s*=\s*(['"])(.*?)\1""").find(tag)?.groupValues?.get(2)
-
-    private fun isInsideHiddenSvgGroup(svg: String, offset: Int): Boolean {
-        val hiddenStack = mutableListOf<Boolean>()
-        Regex("""<g\b[^>]*>|</g>""")
-            .findAll(svg.substring(0, offset.coerceIn(0, svg.length)))
-            .forEach { match ->
-                val tag = match.value
-                if (tag.startsWith("</")) {
-                    if (hiddenStack.isNotEmpty()) hiddenStack.removeAt(hiddenStack.lastIndex)
-                } else {
-                    hiddenStack += svgVisibilityHidden(tag) ?: (hiddenStack.lastOrNull() == true)
-                }
-            }
-        return hiddenStack.lastOrNull() == true
-    }
 
     private fun svgVisibilityHidden(tag: String): Boolean? {
         val visibility = svgStringAttribute(tag, "visibility")
@@ -1281,6 +1307,29 @@ class AwtPrimitiveDockerTest {
             DockerClientFactory.instance().client().inspectImageCmd(image).exec()
         }.isSuccess
         assumeTrue(imageExists, "Build $image first with ./gradlew dockerBuildX11Client")
+    }
+
+    private fun GenericContainer<*>.execInContainerBounded(
+        vararg command: String,
+        timeoutSeconds: Long = DockerExecTimeoutSeconds,
+    ): org.testcontainers.containers.Container.ExecResult {
+        val commandText = command.joinToString(" ")
+        val executor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "bounded-docker-exec").apply { isDaemon = true }
+        }
+        val future = executor.submit<org.testcontainers.containers.Container.ExecResult> {
+            execInContainer(*command)
+        }
+        return try {
+            future.get(timeoutSeconds, TimeUnit.SECONDS)
+        } catch (e: TimeoutException) {
+            future.cancel(true)
+            val stopFailure = runCatching { stop() }.exceptionOrNull()
+            val stopMessage = stopFailure?.let { "\ncontainer.stop() failed: ${it::class.simpleName}: ${it.message}" }.orEmpty()
+            throw AssertionError("Docker exec timed out after ${timeoutSeconds}s: $commandText$stopMessage", e)
+        } finally {
+            executor.shutdownNow()
+        }
     }
 
     private companion object {

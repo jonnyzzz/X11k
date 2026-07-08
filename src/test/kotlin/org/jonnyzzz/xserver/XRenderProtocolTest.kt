@@ -36,7 +36,8 @@ class XRenderProtocolTest {
                 assertEquals(6, u32le(formats, 8))
                 assertEquals(1, u32le(formats, 12))
                 assertEquals(2, u32le(formats, 16))
-                assertEquals(X11Ids.RootVisualAliases.size + X11Ids.RgbaVisualAliases.size, u32le(formats, 20))
+                val rootRenderVisuals = X11Ids.RootVisualAliases + X11Ids.RootDirectColorVisualAliases
+                assertEquals(rootRenderVisuals.size + X11Ids.RgbaVisualAliases.size, u32le(formats, 20))
                 assertEquals(0, u32le(formats, 24))
                 assertEquals(XRender.A1Format, u32le(formats, 32))
                 assertEquals(1, formats[37].toInt() and 0xff)
@@ -54,17 +55,23 @@ class XRenderProtocolTest {
                 assertEquals(2, u32le(formats, screenOffset))
                 assertEquals(XRender.A1Format, u32le(formats, screenOffset + 4))
                 assertEquals(24, formats[screenOffset + 8].toInt() and 0xff)
-                assertEquals(X11Ids.RootVisualAliases.size, u16le(formats, screenOffset + 10))
+                assertEquals(rootRenderVisuals.size, u16le(formats, screenOffset + 10))
                 val rootVisualOffset = screenOffset + 16
                 assertEquals(X11Ids.RootVisual, u32le(formats, rootVisualOffset))
                 assertEquals(XRender.Rgb24Format, u32le(formats, rootVisualOffset + 4))
-                val rootAliasOffset = rootVisualOffset + X11Ids.RootVisualAliases.indexOf(X11Ids.XvfbLikeRootVisualAlias) * 8
+                val rootAliasOffset = rootVisualOffset + rootRenderVisuals.indexOf(X11Ids.XvfbLikeRootVisualAlias) * 8
                 assertEquals(X11Ids.XvfbLikeRootVisualAlias, u32le(formats, rootAliasOffset))
                 assertEquals(XRender.Rgb24Format, u32le(formats, rootAliasOffset + 4))
-                val bgrRootAliasOffset = rootVisualOffset + X11Ids.RootVisualAliases.indexOf(X11Ids.XvfbLikeBgrRootVisualAlias) * 8
+                val bgrRootAliasOffset = rootVisualOffset + rootRenderVisuals.indexOf(X11Ids.XvfbLikeBgrRootVisualAlias) * 8
                 assertEquals(X11Ids.XvfbLikeBgrRootVisualAlias, u32le(formats, bgrRootAliasOffset))
                 assertEquals(XRender.Bgr24Format, u32le(formats, bgrRootAliasOffset + 4))
-                val rgbaDepthOffset = rootVisualOffset + X11Ids.RootVisualAliases.size * 8
+                val directRgbAliasOffset = rootVisualOffset + rootRenderVisuals.indexOf(X11Ids.RootRgbDirectColorAliases.last()) * 8
+                assertEquals(X11Ids.RootRgbDirectColorAliases.last(), u32le(formats, directRgbAliasOffset))
+                assertEquals(XRender.Rgb24Format, u32le(formats, directRgbAliasOffset + 4))
+                val directBgrAliasOffset = rootVisualOffset + rootRenderVisuals.indexOf(X11Ids.RootBgrDirectColorAliases.last()) * 8
+                assertEquals(X11Ids.RootBgrDirectColorAliases.last(), u32le(formats, directBgrAliasOffset))
+                assertEquals(XRender.Bgr24Format, u32le(formats, directBgrAliasOffset + 4))
+                val rgbaDepthOffset = rootVisualOffset + rootRenderVisuals.size * 8
                 assertEquals(32, formats[rgbaDepthOffset].toInt() and 0xff)
                 assertEquals(X11Ids.RgbaVisualAliases.size, u16le(formats, rgbaDepthOffset + 2))
                 val rgbaVisualOffset = rgbaDepthOffset + 8
@@ -79,6 +86,66 @@ class XRenderProtocolTest {
                 assertEquals(XRender.Bgr32Format, u32le(formats, bgrRgbaXvfbLikeOffset + 4))
 
                 assertContains(httpGet(server.localPort, "/text.txt"), "RENDER supported=true")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER CreatePicture accepts DirectColor visual windows advertised by Xvfb`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val rgbWindow = WindowId
+                val bgrWindow = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createColormapRequest(ColormapId, window = X11Ids.RootWindow, visual = X11Ids.RootRgbDirectColorAliases.last()))
+                out.write(createColormapRequest(ColormapId + 1, window = X11Ids.RootWindow, visual = X11Ids.RootBgrDirectColorAliases.last()))
+                out.write(
+                    createWindowRequest(
+                        rgbWindow,
+                        x = 0,
+                        y = 0,
+                        width = 4,
+                        height = 2,
+                        borderWidth = 0,
+                        visual = X11Ids.RootRgbDirectColorAliases.last(),
+                        colormap = ColormapId,
+                    ),
+                )
+                out.write(
+                    createWindowRequest(
+                        bgrWindow,
+                        x = 0,
+                        y = 4,
+                        width = 4,
+                        height = 2,
+                        borderWidth = 0,
+                        visual = X11Ids.RootBgrDirectColorAliases.last(),
+                        colormap = ColormapId + 1,
+                    ),
+                )
+                out.write(renderCreatePicture(PictureId, rgbWindow, XRender.Rgb24Format))
+                out.write(renderCreatePicture(PictureId + 1, bgrWindow, XRender.Bgr24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 4, height = 2, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PictureId + 1, x = 0, y = 0, width = 4, height = 2, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(getImageRequest(rgbWindow, x = 0, y = 0, width = 1, height = 1))
+                out.write(getImageRequest(bgrWindow, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val rgbImage = readReply(socket.getInputStream())
+                assertEquals(24, rgbImage[1].toInt() and 0xff)
+                assertEquals(0xffff_0000.toInt(), u32le(rgbImage, 32))
+                val bgrImage = readReply(socket.getInputStream())
+                assertEquals(24, bgrImage[1].toInt() and 0xff)
+                assertEquals(0xff00_00ff.toInt(), u32le(bgrImage, 32))
+
+                val stateJson = httpGet(server.localPort, "/state.json")
+                assertContains(stateJson, """"visual":"0x${X11Ids.RootRgbDirectColorAliases.last().toUInt().toString(16)}"""")
+                assertContains(stateJson, """"visual":"0x${X11Ids.RootBgrDirectColorAliases.last().toUInt().toString(16)}"""")
             }
             server.close()
             serverThread.join(1_000)
@@ -15208,8 +15275,11 @@ class XRenderProtocolTest {
         width: Int = 100,
         height: Int = 80,
         borderWidth: Int = 1,
+        depth: Int = X11Ids.RootDepth,
+        visual: Int = X11Ids.RootVisual,
+        colormap: Int? = null,
     ): ByteArray {
-        val body = ByteArray(28)
+        val body = ByteArray(28 + if (colormap == null) 0 else 4)
         put32le(body, 0, id)
         put32le(body, 4, parent)
         put16le(body, 8, x)
@@ -15218,8 +15288,25 @@ class XRenderProtocolTest {
         put16le(body, 14, height)
         put16le(body, 16, borderWidth)
         put16le(body, 18, 1)
-        put32le(body, 20, X11Ids.RootVisual)
-        return request(1, 24, body)
+        put32le(body, 20, visual)
+        if (colormap != null) {
+            put32le(body, 24, 1 shl 13)
+            put32le(body, 28, colormap)
+        }
+        return request(1, depth, body)
+    }
+
+    private fun createColormapRequest(
+        colormap: Int,
+        window: Int,
+        visual: Int = X11Ids.RootVisual,
+        alloc: Int = 0,
+    ): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, colormap)
+        put32le(body, 4, window)
+        put32le(body, 8, visual)
+        return request(78, alloc, body)
     }
 
     private fun createInputOnlyWindowRequest(
@@ -16805,6 +16892,7 @@ class XRenderProtocolTest {
         const val RegionExtentsId = 0x0020_5006
         const val OverlapRegionId = 0x0020_5007
         const val VerticalRegionId = 0x0020_5008
+        const val ColormapId = 0x0020_6001
         const val GlyphSetId = 0x0020_3001
         const val GlyphId = 0x0000_0041
         const val PutImageGcId = 0x0020_4001

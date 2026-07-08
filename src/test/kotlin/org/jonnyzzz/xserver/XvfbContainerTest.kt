@@ -12,11 +12,16 @@ import java.io.File
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.Base64
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import javax.imageio.ImageIO
 import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+
+private const val DockerExecTimeoutSeconds = 45L
 
 class XvfbContainerTest {
     @Test
@@ -35,6 +40,26 @@ class XvfbContainerTest {
     }
 
     @Test
+    fun `svg composition parser preserves visible group override under hidden parent`() {
+        val png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+        val layers = svgCompositionLayers(
+            """
+            <svg>
+              <g visibility="hidden">
+                <image class="framebuffer-image" data-window-id="0xhidden" x="0" y="0" width="1" height="1" href="data:image/png;base64,$png"/>
+                <g visibility="visible">
+                  <image class="framebuffer-image" data-window-id="0xvisible" x="2" y="0" width="1" height="1" href="data:image/png;base64,$png"/>
+                </g>
+              </g>
+            </svg>
+            """.trimIndent(),
+        )
+
+        assertEquals(listOf("0xvisible"), layers.map { it.id })
+        assertEquals(2, layers.single().x)
+    }
+
+    @Test
     fun `docker baseline can run xdpyinfo against xvfb`() {
         assumeDockerAndImage(REFERENCE_IMAGE)
 
@@ -42,7 +67,7 @@ class XvfbContainerTest {
             .withCommand("sleep", "300")
             .use { container ->
                 container.start()
-                val result = container.execInContainer(
+                val result = container.execInContainerBounded(
                     "sh",
                     "-lc",
                     "Xvfb :99 -screen 0 640x480x24 >/tmp/xvfb.log 2>&1 & " +
@@ -284,7 +309,7 @@ class XvfbContainerTest {
                     captureWidth = WindowManagerCaptureWidth,
                     captureHeight = WindowManagerCaptureHeight,
                 )
-                val result = container.execInContainer(
+                val result = container.execInContainerBounded(
                     "sh",
                     "-lc",
                     """
@@ -345,7 +370,7 @@ class XvfbContainerTest {
                     )
 
                     val display = port - 6000
-                    val result = container.execInContainer(
+                    val result = container.execInContainerBounded(
                         "sh",
                         "-lc",
                         """
@@ -375,7 +400,7 @@ class XvfbContainerTest {
                         File(directory, "window-manager-actual.txt").writeText(text)
                         File(directory, "window-manager-actual.svg").writeText(svg)
                     }
-                    container.execInContainer(
+                    container.execInContainerBounded(
                         "sh",
                         "-lc",
                         "kill $(cat /tmp/xclock.pid /tmp/xlogo.pid /tmp/twm.pid 2>/dev/null) 2>/dev/null || true",
@@ -453,7 +478,7 @@ class XvfbContainerTest {
         command: String,
     ) {
         val display = port - 6000
-        val result = container.execInContainer(
+        val result = container.execInContainerBounded(
             "sh",
             "-lc",
             "DISPLAY=host.docker.internal:$display $command",
@@ -467,7 +492,7 @@ class XvfbContainerTest {
         command: String,
     ) {
         val display = port - 6000
-        val result = container.execInContainer(
+        val result = container.execInContainerBounded(
             "sh",
             "-lc",
             "DISPLAY=host.docker.internal:$display timeout 2s $command",
@@ -481,7 +506,7 @@ class XvfbContainerTest {
             .use { container ->
                 container.start()
                 compileRobotCapture(container)
-                val result = container.execInContainer(
+                val result = container.execInContainerBounded(
                     "sh",
                     "-lc",
                     """
@@ -513,7 +538,7 @@ class XvfbContainerTest {
                     container.start()
                     compileRobotCapture(container)
                     val display = port - 6000
-                    val startResult = container.execInContainer(
+                    val startResult = container.execInContainerBounded(
                         "sh",
                         "-lc",
                         """
@@ -527,7 +552,7 @@ class XvfbContainerTest {
 
                     waitUntil(
                         failureMessage = {
-                            val log = container.execInContainer("sh", "-lc", "cat /tmp/xlogo.log 2>/dev/null || true").stdout
+                            val log = container.execInContainerBounded("sh", "-lc", "cat /tmp/xlogo.log 2>/dev/null || true").stdout
                             val text = runCatching { httpGet(port, "/text.txt") }.getOrElse { it.toString() }
                             "xlogo did not become SVG-ready before timeout\nlog:\n$log\ntext:\n$text"
                         },
@@ -537,7 +562,7 @@ class XvfbContainerTest {
                             httpGet(port, "/screen.svg").hasSvgClass("framebuffer-image")
                     }
 
-                    val capture = container.execInContainer(
+                    val capture = container.execInContainerBounded(
                         "sh",
                         "-lc",
                         """
@@ -549,7 +574,7 @@ class XvfbContainerTest {
                     )
                     val text = httpGet(port, "/text.txt")
                     val svg = httpGet(port, "/screen.svg")
-                    container.execInContainer("sh", "-lc", "kill $(cat /tmp/xlogo.pid) 2>/dev/null || true")
+                    container.execInContainerBounded("sh", "-lc", "kill $(cat /tmp/xlogo.pid) 2>/dev/null || true")
                     server.close()
                     serverThread.join(1_000)
                     assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
@@ -569,7 +594,7 @@ class XvfbContainerTest {
             .use { container ->
                 container.start()
                 compileRobotCapture(container)
-                val result = container.execInContainer(
+                val result = container.execInContainerBounded(
                     "sh",
                     "-lc",
                     """
@@ -601,7 +626,7 @@ class XvfbContainerTest {
                     container.start()
                     compileRobotCapture(container)
                     val display = port - 6000
-                    val startResult = container.execInContainer(
+                    val startResult = container.execInContainerBounded(
                         "sh",
                         "-lc",
                         """
@@ -615,7 +640,7 @@ class XvfbContainerTest {
 
                     waitUntil(
                         failureMessage = {
-                            val log = container.execInContainer("sh", "-lc", "cat /tmp/xclock.log 2>/dev/null || true").stdout
+                            val log = container.execInContainerBounded("sh", "-lc", "cat /tmp/xclock.log 2>/dev/null || true").stdout
                             val text = runCatching { httpGet(port, "/text.txt") }.getOrElse { it.toString() }
                             "xclock did not become SVG-ready before timeout\nlog:\n$log\ntext:\n$text"
                         },
@@ -625,7 +650,7 @@ class XvfbContainerTest {
                             httpGet(port, "/screen.svg").hasSvgClass("framebuffer-image")
                     }
 
-                    val capture = container.execInContainer(
+                    val capture = container.execInContainerBounded(
                         "sh",
                         "-lc",
                         """
@@ -637,7 +662,7 @@ class XvfbContainerTest {
                     )
                     val text = httpGet(port, "/text.txt")
                     val svg = httpGet(port, "/screen.svg")
-                    container.execInContainer("sh", "-lc", "kill $(cat /tmp/xclock.pid) 2>/dev/null || true")
+                    container.execInContainerBounded("sh", "-lc", "kill $(cat /tmp/xclock.pid) 2>/dev/null || true")
                     server.close()
                     serverThread.join(1_000)
                     assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
@@ -657,7 +682,7 @@ class XvfbContainerTest {
             .use { container ->
                 container.start()
                 compileRobotCapture(container)
-                val result = container.execInContainer(
+                val result = container.execInContainerBounded(
                     "sh",
                     "-lc",
                     """
@@ -689,7 +714,7 @@ class XvfbContainerTest {
                     container.start()
                     compileRobotCapture(container)
                     val display = port - 6000
-                    val startResult = container.execInContainer(
+                    val startResult = container.execInContainerBounded(
                         "sh",
                         "-lc",
                         """
@@ -703,7 +728,7 @@ class XvfbContainerTest {
 
                     waitUntil(
                         failureMessage = {
-                            val log = container.execInContainer("sh", "-lc", "cat /tmp/xcalc.log 2>/dev/null || true").stdout
+                            val log = container.execInContainerBounded("sh", "-lc", "cat /tmp/xcalc.log 2>/dev/null || true").stdout
                             val text = runCatching { httpGet(port, "/text.txt") }.getOrElse { it.toString() }
                             "xcalc did not become SVG-ready before timeout\nlog:\n$log\ntext:\n$text"
                         },
@@ -713,7 +738,7 @@ class XvfbContainerTest {
                             text.contains("- PolyText8:")
                     }
 
-                    val capture = container.execInContainer(
+                    val capture = container.execInContainerBounded(
                         "sh",
                         "-lc",
                         """
@@ -725,7 +750,7 @@ class XvfbContainerTest {
                     )
                     val text = httpGet(port, "/text.txt")
                     val svg = httpGet(port, "/screen.svg")
-                    container.execInContainer("sh", "-lc", "kill $(cat /tmp/xcalc.pid) 2>/dev/null || true")
+                    container.execInContainerBounded("sh", "-lc", "kill $(cat /tmp/xcalc.pid) 2>/dev/null || true")
                     server.close()
                     serverThread.join(1_000)
                     assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
@@ -745,7 +770,7 @@ class XvfbContainerTest {
             .use { container ->
                 container.start()
                 compileRobotCapture(container, movePointer = true)
-                val result = container.execInContainer(
+                val result = container.execInContainerBounded(
                     "sh",
                     "-lc",
                     """
@@ -790,7 +815,7 @@ class XvfbContainerTest {
                     container.start()
                     compileRobotCapture(container, movePointer = true)
                     val display = port - 6000
-                    val startResult = container.execInContainer(
+                    val startResult = container.execInContainerBounded(
                         "sh",
                         "-lc",
                         """
@@ -804,7 +829,7 @@ class XvfbContainerTest {
 
                     waitUntil(
                         failureMessage = {
-                            val log = container.execInContainer("sh", "-lc", "cat /tmp/xeyes.log 2>/dev/null || true").stdout
+                            val log = container.execInContainerBounded("sh", "-lc", "cat /tmp/xeyes.log 2>/dev/null || true").stdout
                             val text = runCatching { httpGet(port, "/text.txt") }.getOrElse { it.toString() }
                             "xeyes did not become SVG-ready before timeout\nlog:\n$log\ntext:\n$text"
                         },
@@ -814,7 +839,7 @@ class XvfbContainerTest {
                             httpGet(port, "/screen.svg").hasSvgClass("framebuffer-image")
                     }
 
-                    val capture = container.execInContainer(
+                    val capture = container.execInContainerBounded(
                         "sh",
                         "-lc",
                         """
@@ -830,7 +855,7 @@ class XvfbContainerTest {
                         File(directory, "xeyes-actual.txt").writeText(text)
                         File(directory, "xeyes-actual.svg").writeText(svg)
                     }
-                    container.execInContainer("sh", "-lc", "kill $(cat /tmp/xeyes.pid) 2>/dev/null || true")
+                    container.execInContainerBounded("sh", "-lc", "kill $(cat /tmp/xeyes.pid) 2>/dev/null || true")
                     server.close()
                     serverThread.join(1_000)
                     assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
@@ -850,7 +875,7 @@ class XvfbContainerTest {
             .use { container ->
                 container.start()
                 compileRobotCapture(container)
-                val result = container.execInContainer(
+                val result = container.execInContainerBounded(
                     "sh",
                     "-lc",
                     """
@@ -895,7 +920,7 @@ class XvfbContainerTest {
                     container.start()
                     compileRobotCapture(container)
                     val display = port - 6000
-                    val startResult = container.execInContainer(
+                    val startResult = container.execInContainerBounded(
                         "sh",
                         "-lc",
                         """
@@ -909,7 +934,7 @@ class XvfbContainerTest {
 
                     waitUntil(
                         failureMessage = {
-                            val log = container.execInContainer("sh", "-lc", "cat /tmp/xterm.log 2>/dev/null || true").stdout
+                            val log = container.execInContainerBounded("sh", "-lc", "cat /tmp/xterm.log 2>/dev/null || true").stdout
                             val text = runCatching { httpGet(port, "/text.txt") }.getOrElse { it.toString() }
                             "xterm did not become SVG-ready before timeout\nlog:\n$log\ntext:\n$text"
                         },
@@ -919,7 +944,7 @@ class XvfbContainerTest {
                             httpGet(port, "/screen.svg").hasSvgClass("framebuffer-image")
                     }
 
-                    val capture = container.execInContainer(
+                    val capture = container.execInContainerBounded(
                         "sh",
                         "-lc",
                         """
@@ -935,7 +960,7 @@ class XvfbContainerTest {
                         File(directory, "xterm-actual.txt").writeText(text)
                         File(directory, "xterm-actual.svg").writeText(svg)
                     }
-                    container.execInContainer("sh", "-lc", "kill $(cat /tmp/xterm.pid) 2>/dev/null || true")
+                    container.execInContainerBounded("sh", "-lc", "kill $(cat /tmp/xterm.pid) 2>/dev/null || true")
                     server.close()
                     serverThread.join(1_000)
                     assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
@@ -957,7 +982,7 @@ class XvfbContainerTest {
         captureWidth: Int = RealClientCaptureWidth,
         captureHeight: Int = RealClientCaptureHeight,
     ) {
-        val result = container.execInContainer(
+        val result = container.execInContainerBounded(
             "sh",
             "-lc",
             "cat > /tmp/XRobotCapture.java <<'JAVA'\n${robotCaptureSource(movePointer, captureX, captureY, captureWidth, captureHeight)}\nJAVA\njavac /tmp/XRobotCapture.java",
@@ -1188,62 +1213,63 @@ class XvfbContainerTest {
 
     private fun svgCompositionLayers(svg: String): List<EmbeddedPng> {
         val clipRectangles = svgClipRectangles(svg)
-        return Regex("""<(?:image|rect)\b[^>]*>""")
-            .findAll(svg)
-            .mapNotNull { match ->
-                if (isInsideHiddenSvgGroup(svg, match.range.first)) return@mapNotNull null
-                val tag = match.value
-                val id = Regex("""\bdata-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1)
-                val x = svgImageAttribute(tag, "x") ?: return@mapNotNull null
-                val y = svgImageAttribute(tag, "y") ?: return@mapNotNull null
-                val width = svgImageAttribute(tag, "width") ?: return@mapNotNull null
-                val height = svgImageAttribute(tag, "height") ?: return@mapNotNull null
-                val encoded = Regex("""\bhref="data:image/png;base64,([A-Za-z0-9+/=]+)"""").find(tag)?.groupValues?.get(1)
-                if (encoded == null) {
-                    if (!tag.hasSvgClass("window-border")) return@mapNotNull null
-                    val borderId = Regex("""\bdata-border-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1)
-                    val fill = Regex("""\bfill="#([0-9a-fA-F]{6})"""").find(tag)?.groupValues?.get(1)?.toInt(16)
-                        ?: return@mapNotNull null
-                    return@mapNotNull EmbeddedPng(
-                        id = borderId ?: id ?: "window-border",
-                        bytes = null,
-                        fill = 0xff00_0000.toInt() or fill,
-                        x = x,
-                        y = y,
-                        width = width,
-                        height = height,
-                        clipRectangles = svgClipPathId(tag)?.let { clipRectangles[it] }.orEmpty(),
-                    )
-                }
-                EmbeddedPng(
-                    id = id ?: "framebuffer",
-                    bytes = Base64.getDecoder().decode(encoded),
-                    fill = null,
-                    x = x,
-                    y = y,
-                    width = width,
-                    height = height,
-                    clipRectangles = svgClipPathId(tag)
-                        ?.let { clipRectangles[it] }
-                        ?: id?.let { clipRectangles["clip-screen-${it.removePrefix("0x")}"] }.orEmpty(),
-                )
-            }
-            .toList()
-    }
-
-    private fun isInsideHiddenSvgGroup(svg: String, offset: Int): Boolean {
         val hiddenStack = mutableListOf<Boolean>()
-        Regex("""<g\b[^>]*>|</g>""")
-            .findAll(svg.substring(0, offset.coerceIn(0, svg.length)))
+        val layers = mutableListOf<EmbeddedPng>()
+        Regex("""<g\b[^>]*>|</g>|<(?:image|rect)\b[^>]*>""")
+            .findAll(svg)
             .forEach { match ->
                 val tag = match.value
-                if (tag.startsWith("</")) {
-                    if (hiddenStack.isNotEmpty()) hiddenStack.removeAt(hiddenStack.lastIndex)
-                } else {
-                    hiddenStack += svgVisibilityHidden(tag) ?: (hiddenStack.lastOrNull() == true)
+                when {
+                    tag.startsWith("</") -> {
+                        if (hiddenStack.isNotEmpty()) hiddenStack.removeAt(hiddenStack.lastIndex)
+                    }
+                    tag.startsWith("<g") -> {
+                        hiddenStack += svgVisibilityHidden(tag) ?: (hiddenStack.lastOrNull() == true)
+                    }
+                    hiddenStack.lastOrNull() == true -> Unit
+                    else -> {
+                        svgCompositionLayer(tag, clipRectangles)?.let { layers += it }
+                    }
                 }
             }
-        return hiddenStack.lastOrNull() == true
+        return layers
+    }
+
+    private fun svgCompositionLayer(tag: String, clipRectangles: Map<String, List<Rectangle>>): EmbeddedPng? {
+        val id = Regex("""\bdata-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1)
+        val x = svgImageAttribute(tag, "x") ?: return null
+        val y = svgImageAttribute(tag, "y") ?: return null
+        val width = svgImageAttribute(tag, "width") ?: return null
+        val height = svgImageAttribute(tag, "height") ?: return null
+        val encoded = Regex("""\bhref="data:image/png;base64,([A-Za-z0-9+/=]+)"""").find(tag)?.groupValues?.get(1)
+        if (encoded == null) {
+            if (!tag.hasSvgClass("window-border")) return null
+            val borderId = Regex("""\bdata-border-window-id="([^"]+)"""").find(tag)?.groupValues?.get(1)
+            val fill = Regex("""\bfill="#([0-9a-fA-F]{6})"""").find(tag)?.groupValues?.get(1)?.toInt(16)
+                ?: return null
+            return EmbeddedPng(
+                id = borderId ?: id ?: "window-border",
+                bytes = null,
+                fill = 0xff00_0000.toInt() or fill,
+                x = x,
+                y = y,
+                width = width,
+                height = height,
+                clipRectangles = svgClipPathId(tag)?.let { clipRectangles[it] }.orEmpty(),
+            )
+        }
+        return EmbeddedPng(
+            id = id ?: "framebuffer",
+            bytes = Base64.getDecoder().decode(encoded),
+            fill = null,
+            x = x,
+            y = y,
+            width = width,
+            height = height,
+            clipRectangles = svgClipPathId(tag)
+                ?.let { clipRectangles[it] }
+                ?: id?.let { clipRectangles["clip-screen-${it.removePrefix("0x")}"] }.orEmpty(),
+        )
     }
 
     private fun svgVisibilityHidden(tag: String): Boolean? {
@@ -1569,6 +1595,29 @@ class XvfbContainerTest {
             DockerClientFactory.instance().client().inspectImageCmd(image).exec()
         }.isSuccess
         assumeTrue(imageExists, "Build $image first with ./gradlew dockerBuildX11Images")
+    }
+
+    private fun GenericContainer<*>.execInContainerBounded(
+        vararg command: String,
+        timeoutSeconds: Long = DockerExecTimeoutSeconds,
+    ): org.testcontainers.containers.Container.ExecResult {
+        val commandText = command.joinToString(" ")
+        val executor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "bounded-docker-exec").apply { isDaemon = true }
+        }
+        val future = executor.submit<org.testcontainers.containers.Container.ExecResult> {
+            execInContainer(*command)
+        }
+        return try {
+            future.get(timeoutSeconds, TimeUnit.SECONDS)
+        } catch (e: TimeoutException) {
+            future.cancel(true)
+            val stopFailure = runCatching { stop() }.exceptionOrNull()
+            val stopMessage = stopFailure?.let { "\ncontainer.stop() failed: ${it::class.simpleName}: ${it.message}" }.orEmpty()
+            throw AssertionError("Docker exec timed out after ${timeoutSeconds}s: $commandText$stopMessage", e)
+        } finally {
+            executor.shutdownNow()
+        }
     }
 
     private companion object {

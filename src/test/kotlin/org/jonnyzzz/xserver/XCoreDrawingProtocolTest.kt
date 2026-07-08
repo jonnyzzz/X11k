@@ -13393,6 +13393,36 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `MapWindow VisibilityNotify includes selected window area outside clip shape`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val lower = WindowId + 582
+                val upper = WindowId + 583
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(lower, x = 10, y = 10, width = 20, height = 20, borderWidth = 5, eventMask = XEventMasks.VisibilityChange))
+                out.write(shapeRectanglesRequest(lower, XFixes.ShapeClip, XShape.OpSet, listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(createWindowRequest(upper, x = 10, y = 10, width = 1, height = 1))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(upper))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertVisibilityNotify(input.readExactly(32), sequence = 4, window = lower, state = XVisibilityState.Unobscured)
+                assertExpose(input.readExactly(32), lower, sequence = 4, width = 20, height = 20)
+                assertVisibilityNotify(input.readExactly(32), sequence = 5, window = lower, state = XVisibilityState.PartiallyObscured)
+                assertExpose(input.readExactly(32), upper, sequence = 5, width = 1, height = 1)
+                assertEquals(6, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SHAPE bounding mutation emits VisibilityNotify when revealing sibling`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
