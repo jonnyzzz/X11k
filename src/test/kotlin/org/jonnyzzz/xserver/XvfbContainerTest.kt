@@ -209,7 +209,7 @@ class XvfbContainerTest {
             actual = actual.robot,
             label = "Kotlin xeyes Robot screenshot",
             coverageTolerance = 0.25,
-            distanceThreshold = 120.0,
+            distanceThreshold = 0.055,
         )
         assertComposedSvgClose(
             expected = reference,
@@ -218,7 +218,7 @@ class XvfbContainerTest {
             ownerHeight = RealClientCaptureHeight,
             label = "Kotlin xeyes composed SVG framebuffer",
             coverageTolerance = 0.25,
-            distanceThreshold = 120.0,
+            distanceThreshold = 0.055,
         )
     }
 

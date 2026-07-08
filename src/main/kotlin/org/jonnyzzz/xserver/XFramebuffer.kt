@@ -5701,7 +5701,7 @@ internal class XFramebuffer(
         private const val ArcChord = 0
         private const val CorePixelMask = 0x00ff_ffff
         private const val FixedOne = 65_536.0
-        private const val TrapezoidSampleGrid = 16
+        private const val TrapezoidSampleGrid = 64
         private const val TrapezoidSamples = TrapezoidSampleGrid * TrapezoidSampleGrid
         private const val TriangleSampleGrid = 4
         private const val TriangleSamples = TriangleSampleGrid * TriangleSampleGrid
