@@ -490,7 +490,7 @@ class IntellijCommunitySmokeTest {
                     X11 PutImage trace proxy listening unix=/tmp/.X11-unix/X99 target=unix:/tmp/.X11-unix/X98
                     connection=5 request=12000 QueryExtension name=RENDER
                     connection=5 request=12000 QueryExtensionReply name=RENDER present=true majorOpcode=139
-                    connection=5 request=12218 RENDER.CreatePicture picture=0x200090 drawable=0x20007d format=0x25 valueMask=0x1 repeat=1
+                    connection=5 request=12218 RENDER.CreatePicture picture=0x200090 drawable=0x20007d format=0x25 valueMask=0x1 repeat=1 attrs=[repeat=normal(1)]
                     connection=5 request=12219 RENDER.SetPictureFilter picture=0x200090 filter=good
                     connection=5 request=12219 RENDER.SetPictureTransform picture=0x200090 transform=[0x10000,0x0,0x0,0x0,0x10000,0x0,0x0,0x0,0x10000]
                     connection=5 request=12220 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=624x2 leftPad=0 dataBytes=4992 crc32=0x1793d6e5 raw=[0x2c,0x28,0x26,0xff] decoded=[0xff26282c]
@@ -526,7 +526,8 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("size=624x2 dataBytes=4992 crc32=0x13572468"), summary)
         assertTrue(summary.contains("xvfbSameSize=1 xvfbSameCrc=0 status=crc-mismatch"), summary)
         assertTrue(summary.contains("xvfbClosest=5#12220..5#12220 count=1 drawable=0x20007d gc=0x200080 crc32=0x1793d6e5"), summary)
-        assertTrue(summary.contains("render=picture=0x200090 format=0x25 valueMask=0x1 repeat=1 filter=good"), summary)
+        assertTrue(summary.contains("render=picture=0x200090 format=0x25 valueMask=0x1 repeat=1 attrs=[repeat=normal(1)] filter=good"), summary)
+        assertTrue(summary.contains("attrs=[repeat=normal(1)]"), summary)
         assertTrue(summary.contains("transform=[0x10000,0x0,0x0,0x0,0x10000,0x0,0x0,0x0,0x10000]"), summary)
         assertTrue(summary.contains("raw=[0x2c,0x28,0x26,0xff] decoded=[0xff26282c]"), summary)
         assertTrue(summary.contains("producerFramebuffer=624x2 crc32=0x2468ace0"), summary)
@@ -1194,6 +1195,53 @@ class IntellijCommunitySmokeTest {
         assertTrue(
             log.contains(
                 "connection=3 request=2 RENDER.CreatePicture picture=0x200090 drawable=0x20007d format=0x25 valueMask=0x1 repeat=1",
+            ),
+            log,
+        )
+    }
+
+    @Test
+    fun `intellij xvfb putimage trace proxy decodes create picture attributes`() {
+        val tempDir = Files.createTempDirectory("x11-render-create-picture-trace-proxy")
+        val sourceFile = tempDir.resolve("X11PutImageTraceProxy.java")
+        val logFile = tempDir.resolve("trace.log")
+        Files.writeString(sourceFile, x11PutImageTraceProxySource())
+        val compiler = ToolProvider.getSystemJavaCompiler()
+            ?: error("A JDK compiler is required for this focused proxy-source test")
+        assertEquals(0, compiler.run(null, null, null, "-d", tempDir.toString(), sourceFile.toString()))
+
+        URLClassLoader(arrayOf(tempDir.toUri().toURL()), null).use { loader ->
+            val clazz = Class.forName("X11PutImageTraceProxy", true, loader)
+            val constructor = clazz.getDeclaredConstructor(
+                Int::class.javaPrimitiveType,
+                String::class.java,
+                Int::class.javaPrimitiveType,
+                String::class.java,
+            )
+            constructor.isAccessible = true
+            val proxy = constructor.newInstance(0, "127.0.0.1", 0, logFile.toString())
+            val logRenderCreatePicture = clazz.getDeclaredMethod(
+                "logRenderCreatePicture",
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                ByteArray::class.java,
+                Int::class.javaPrimitiveType,
+                Boolean::class.javaPrimitiveType,
+            )
+            logRenderCreatePicture.isAccessible = true
+            logRenderCreatePicture.invoke(proxy, 8, 23, renderCreatePictureTraceBytesWithAttributes(), 4, true)
+        }
+
+        val log = Files.readString(logFile)
+        assertTrue(
+            log.contains(
+                "connection=8 request=23 RENDER.CreatePicture picture=0x200090 drawable=0x20007d format=0x25 valueMask=0x12b1 repeat=2",
+            ),
+            log,
+        )
+        assertTrue(
+            log.contains(
+                "attrs=[repeat=pad(2),clip-x-origin=-2,clip-y-origin=3,graphics-exposure=false(0),poly-edge=sharp(0),component-alpha=true(1)]",
             ),
             log,
         )
@@ -3060,13 +3108,118 @@ class IntellijCommunitySmokeTest {
             if ((valueMask & 0x1L) != 0 && request.length >= body + 20) {
               repeat = String.valueOf(u32(request, body + 16, little));
             }
+            String attrs = renderPictureAttributeSummary(request, body + 16, valueMask, little);
             renderLine("connection=" + connection +
                 " request=" + requestIndex +
                 " RENDER.CreatePicture picture=0x" + Long.toHexString(picture) +
                 " drawable=0x" + Long.toHexString(drawable) +
                 " format=0x" + Long.toHexString(format) +
                 " valueMask=0x" + Long.toHexString(valueMask) +
-                " repeat=" + repeat);
+                " repeat=" + repeat +
+                " attrs=" + attrs);
+          }
+
+          private static String renderPictureAttributeSummary(byte[] request, int offset, long valueMask, boolean little) {
+            StringBuilder attrs = new StringBuilder("[");
+            boolean first = true;
+            for (int bit = 0; bit <= 12; bit++) {
+              long mask = 1L << bit;
+              if ((valueMask & mask) == 0) continue;
+              if (!first) attrs.append(',');
+              first = false;
+              if (offset + 4 > request.length) {
+                attrs.append(pictureAttributeName(bit)).append("=truncated");
+                break;
+              }
+              long value = u32(request, offset, little);
+              attrs.append(pictureAttributeValue(bit, value));
+              offset += 4;
+            }
+            long unknownMask = valueMask & ~0x1fffL;
+            if (unknownMask != 0) {
+              if (!first) attrs.append(',');
+              attrs.append("unknownMask=0x").append(Long.toHexString(unknownMask));
+            }
+            return attrs.append(']').toString();
+          }
+
+          private static String pictureAttributeName(int bit) {
+            switch (bit) {
+              case 0: return "repeat";
+              case 1: return "alpha-map";
+              case 2: return "alpha-x-origin";
+              case 3: return "alpha-y-origin";
+              case 4: return "clip-x-origin";
+              case 5: return "clip-y-origin";
+              case 6: return "clip-mask";
+              case 7: return "graphics-exposure";
+              case 8: return "subwindow-mode";
+              case 9: return "poly-edge";
+              case 10: return "poly-mode";
+              case 11: return "dither";
+              case 12: return "component-alpha";
+              default: return "bit" + bit;
+            }
+          }
+
+          private static String pictureAttributeValue(int bit, long value) {
+            String name = pictureAttributeName(bit);
+            switch (bit) {
+              case 0: return name + "=" + repeatName(value) + "(" + value + ")";
+              case 1:
+              case 6:
+              case 11:
+                return name + "=0x" + Long.toHexString(value);
+              case 2:
+              case 3:
+              case 4:
+              case 5:
+                return name + "=" + signedLow16(value);
+              case 7:
+              case 12:
+                return name + "=" + boolName(value) + "(" + value + ")";
+              case 8: return name + "=" + subwindowModeName(value) + "(" + value + ")";
+              case 9: return name + "=" + polyEdgeName(value) + "(" + value + ")";
+              case 10: return name + "=" + polyModeName(value) + "(" + value + ")";
+              default: return name + "=" + value;
+            }
+          }
+
+          private static int signedLow16(long value) {
+            int low = (int) (value & 0xffffL);
+            return low >= 0x8000 ? low - 0x10000 : low;
+          }
+
+          private static String repeatName(long value) {
+            if (value == 0) return "none";
+            if (value == 1) return "normal";
+            if (value == 2) return "pad";
+            if (value == 3) return "reflect";
+            return "unknown";
+          }
+
+          private static String boolName(long value) {
+            if (value == 0) return "false";
+            if (value == 1) return "true";
+            return "unknown";
+          }
+
+          private static String subwindowModeName(long value) {
+            if (value == 0) return "clip-by-children";
+            if (value == 1) return "include-inferiors";
+            return "unknown";
+          }
+
+          private static String polyEdgeName(long value) {
+            if (value == 0) return "sharp";
+            if (value == 1) return "smooth";
+            return "unknown";
+          }
+
+          private static String polyModeName(long value) {
+            if (value == 0) return "precise";
+            if (value == 1) return "imprecise";
+            return "unknown";
           }
 
           private void logRenderComposite(int connection, int requestIndex, byte[] request, int body, boolean little) {
@@ -3855,12 +4008,14 @@ class IntellijCommunitySmokeTest {
     private fun intellijXvfbRenderPictureContexts(trace: String): Map<String, String> {
         val contexts = linkedMapOf<String, MutableMap<String, String>>()
         trace.lineSequence().forEach { line ->
-            val create = Regex("""\bRENDER\.CreatePicture picture=(0x[0-9a-f]+) drawable=(0x[0-9a-f]+) format=(0x[0-9a-f]+) valueMask=(0x[0-9a-f]+) repeat=([^\s]+)""")
+            val create = Regex("""\bRENDER\.CreatePicture picture=(0x[0-9a-f]+) drawable=(0x[0-9a-f]+) format=(0x[0-9a-f]+) valueMask=(0x[0-9a-f]+) repeat=([^\s]+)(?: attrs=(\[[^]]*]))?""")
                 .find(line)
             if (create != null) {
                 val picture = create.groupValues[1]
+                val attrs = create.groupValues[6].ifBlank { null }
                 contexts.getOrPut(create.groupValues[2]) { linkedMapOf() }[picture] =
-                    "picture=$picture format=${create.groupValues[3]} valueMask=${create.groupValues[4]} repeat=${create.groupValues[5]}"
+                    "picture=$picture format=${create.groupValues[3]} valueMask=${create.groupValues[4]} repeat=${create.groupValues[5]}" +
+                    (attrs?.let { " attrs=$it" } ?: "")
                 return@forEach
             }
             val filter = Regex("""\bRENDER\.SetPictureFilter picture=(0x[0-9a-f]+) filter=([^\s]+)""").find(line)
@@ -3942,6 +4097,31 @@ class IntellijCommunitySmokeTest {
 
         return out.toByteArray().also { bytes ->
             assertEquals(52, bytes.size)
+        }
+    }
+
+    private fun renderCreatePictureTraceBytesWithAttributes(): ByteArray {
+        val out = ByteArrayOutputStream()
+        fun u32(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+            out.write((value ushr 16) and 0xff)
+            out.write((value ushr 24) and 0xff)
+        }
+
+        out.write(ByteArray(4))
+        u32(0x00200090)
+        u32(0x0020007d)
+        u32(0x25)
+        u32(0x12b1)
+        u32(2)
+        u32(-2)
+        u32(3)
+        u32(0)
+        u32(0)
+        u32(1)
+        return out.toByteArray().also { bytes ->
+            assertEquals(44, bytes.size)
         }
     }
 
