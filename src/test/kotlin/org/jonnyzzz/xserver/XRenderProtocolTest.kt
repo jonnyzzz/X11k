@@ -36,7 +36,7 @@ class XRenderProtocolTest {
                 assertEquals(6, u32le(formats, 8))
                 assertEquals(1, u32le(formats, 12))
                 assertEquals(2, u32le(formats, 16))
-                val rootRenderVisuals = X11Ids.RootVisualAliases + X11Ids.RootDirectColorVisualAliases
+                val rootRenderVisuals = X11Ids.RootDepthVisualAliases
                 assertEquals(rootRenderVisuals.size + X11Ids.RgbaVisualAliases.size, u32le(formats, 20))
                 assertEquals(0, u32le(formats, 24))
                 assertEquals(XRender.A1Format, u32le(formats, 32))
@@ -59,6 +59,8 @@ class XRenderProtocolTest {
                 val rootVisualOffset = screenOffset + 16
                 assertEquals(X11Ids.RootVisual, u32le(formats, rootVisualOffset))
                 assertEquals(XRender.Rgb24Format, u32le(formats, rootVisualOffset + 4))
+                assertEquals(X11Ids.RootDirectColorVisual, u32le(formats, rootVisualOffset + 8))
+                assertEquals(XRender.Rgb24Format, u32le(formats, rootVisualOffset + 12))
                 val rootAliasOffset = rootVisualOffset + rootRenderVisuals.indexOf(X11Ids.XvfbLikeRootVisualAlias) * 8
                 assertEquals(X11Ids.XvfbLikeRootVisualAlias, u32le(formats, rootAliasOffset))
                 assertEquals(XRender.Rgb24Format, u32le(formats, rootAliasOffset + 4))

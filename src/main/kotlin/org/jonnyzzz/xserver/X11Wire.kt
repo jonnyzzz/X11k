@@ -239,6 +239,7 @@ internal object X11Ids {
     const val RootWindow = 0x0000_0026
     const val DefaultColormap = 0x0000_0027
     const val RootVisual = 0x0000_0021
+    const val RootDirectColorVisual = 0x0000_0022
     const val RgbaVisual = 0x0000_0029
     const val XvfbLikeRootVisualAlias = 0x0000_01cf
     const val XvfbLikeBgrRootVisualAlias = 0x0000_01e3
@@ -254,11 +255,17 @@ internal object X11Ids {
     val RootVisualAliases: List<Int> =
         RootRgbVisualAliases + RootBgrVisualAliases
     val RootRgbDirectColorAliases: List<Int> =
-        listOf(0x0000_0022) + (0x0000_01e4..0x0000_01f6).toList()
+        listOf(RootDirectColorVisual) + (0x0000_01e4..0x0000_01f6).toList()
     val RootBgrDirectColorAliases: List<Int> =
         (0x0000_01f7..0x0000_020a).toList()
     val RootDirectColorVisualAliases: List<Int> =
         RootRgbDirectColorAliases + RootBgrDirectColorAliases
+    val RootDepthVisualAliases: List<Int> =
+        listOf(RootVisual, RootDirectColorVisual) +
+            RootRgbVisualAliases.drop(1) +
+            RootBgrVisualAliases +
+            RootRgbDirectColorAliases.drop(1) +
+            RootBgrDirectColorAliases
     val RgbaRgbVisualAliases: List<Int> =
         listOf(0x0000_0040) + (0x0000_020b..XvfbLikeRgbaVisualAlias).toList()
     val RgbaBgrVisualAliases: List<Int> =
@@ -268,7 +275,24 @@ internal object X11Ids {
     val LegacyRgbaVisualAliases: List<Int> =
         listOf(RgbaVisual)
     val VisualDescriptions: List<XVisualDescription> =
-        RootRgbVisualAliases.map { visual ->
+        listOf(
+            XVisualDescription(
+                id = RootVisual,
+                visualClass = XVisualDescription.TrueColor,
+                depth = RootDepth,
+                redMask = 0x00ff_0000,
+                greenMask = 0x0000_ff00,
+                blueMask = 0x0000_00ff,
+            ),
+            XVisualDescription(
+                id = RootDirectColorVisual,
+                visualClass = XVisualDescription.DirectColor,
+                depth = RootDepth,
+                redMask = 0x00ff_0000,
+                greenMask = 0x0000_ff00,
+                blueMask = 0x0000_00ff,
+            ),
+        ) + RootRgbVisualAliases.drop(1).map { visual ->
             XVisualDescription(
                 id = visual,
                 visualClass = XVisualDescription.TrueColor,
@@ -286,7 +310,7 @@ internal object X11Ids {
                 greenMask = 0x0000_ff00,
                 blueMask = 0x00ff_0000,
             )
-        } + RootRgbDirectColorAliases.map { visual ->
+        } + RootRgbDirectColorAliases.drop(1).map { visual ->
             XVisualDescription(
                 id = visual,
                 visualClass = XVisualDescription.DirectColor,

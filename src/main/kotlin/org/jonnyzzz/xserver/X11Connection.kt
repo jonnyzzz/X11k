@@ -3679,9 +3679,11 @@ internal class X11Connection(
             XRenderDepthVisuals(
                 depth = X11Ids.RootDepth,
                 visuals = listOf(
-                    X11Ids.RootRgbVisualAliases to XRender.Rgb24Format,
+                    listOf(X11Ids.RootVisual) to XRender.Rgb24Format,
+                    listOf(X11Ids.RootDirectColorVisual) to XRender.Rgb24Format,
+                    X11Ids.RootRgbVisualAliases.drop(1) to XRender.Rgb24Format,
                     X11Ids.RootBgrVisualAliases to XRender.Bgr24Format,
-                    X11Ids.RootRgbDirectColorAliases to XRender.Rgb24Format,
+                    X11Ids.RootRgbDirectColorAliases.drop(1) to XRender.Rgb24Format,
                     X11Ids.RootBgrDirectColorAliases to XRender.Bgr24Format,
                 ),
             ),
@@ -9434,7 +9436,7 @@ internal class X11Connection(
                 return writeError(error = 9, opcode = majorOpcode, minorOpcode = XDoubleBuffer.GetVisualInfo, badValue = drawable)
             }
         }
-        val visuals = (X11Ids.RootVisualAliases + X11Ids.RootDirectColorVisualAliases).map { it to X11Ids.RootDepth } +
+        val visuals = X11Ids.RootDepthVisualAliases.map { it to X11Ids.RootDepth } +
             X11Ids.RgbaVisualAliases.map { it to X11Ids.RgbaDepth }
         val payloadBytes = drawables.size * (4 + visuals.size * 8)
         val reply = reply(extra = 0, payloadUnits = payloadBytes / 4)

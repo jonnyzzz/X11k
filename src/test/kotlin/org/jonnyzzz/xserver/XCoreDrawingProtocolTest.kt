@@ -35,9 +35,10 @@ class XCoreDrawingProtocolTest {
                 assertEquals(0, setupReply[screenOffset + 37].toInt() and 0xff)
                 assertEquals(0x21, u32le(setupReply, screenOffset + 32))
                 assertEquals(
-                    X11Ids.RootVisualAliases + X11Ids.RootDirectColorVisualAliases,
+                    X11Ids.RootDepthVisualAliases,
                     visuals.getValue(X11Ids.RootDepth),
                 )
+                assertEquals(listOf(X11Ids.RootVisual, X11Ids.RootDirectColorVisual), visuals.getValue(X11Ids.RootDepth).take(2))
                 assertEquals(X11Ids.RgbaVisualAliases, visuals.getValue(X11Ids.RgbaDepth))
                 assertEquals(
                     X11Ids.RootDirectColorVisualAliases.toSet(),
@@ -1406,7 +1407,7 @@ class XCoreDrawingProtocolTest {
                 val visualInfo = readReply(socket.getInputStream())
                 assertEquals(3, u16le(visualInfo, 2))
                 val expectedDbeVisuals =
-                    (X11Ids.RootVisualAliases + X11Ids.RootDirectColorVisualAliases).map { it to X11Ids.RootDepth } +
+                    X11Ids.RootDepthVisualAliases.map { it to X11Ids.RootDepth } +
                         X11Ids.RgbaVisualAliases.map { it to X11Ids.RgbaDepth }
                 assertEquals((4 + expectedDbeVisuals.size * 8) / 4, u32le(visualInfo, 4))
                 assertEquals(1, u32le(visualInfo, 8))
@@ -1416,19 +1417,19 @@ class XCoreDrawingProtocolTest {
                     u32le(visualInfo, offset) to (visualInfo[offset + 4].toInt() and 0xff)
                 }
                 assertEquals(expectedDbeVisuals, advertisedDbeVisuals)
-                val lastRootVisualOffset = 36 + (X11Ids.RootVisualAliases.size - 1) * 8
+                val lastRootVisualOffset = 36 + X11Ids.RootDepthVisualAliases.indexOf(X11Ids.XvfbLikeBgrRootVisualAlias) * 8
                 assertEquals(X11Ids.XvfbLikeBgrRootVisualAlias, u32le(visualInfo, lastRootVisualOffset))
                 assertEquals(X11Ids.RootDepth, visualInfo[lastRootVisualOffset + 4].toInt() and 0xff)
-                val lastRgbRootVisualOffset = 36 + X11Ids.RootVisualAliases.indexOf(X11Ids.XvfbLikeRootVisualAlias) * 8
+                val lastRgbRootVisualOffset = 36 + X11Ids.RootDepthVisualAliases.indexOf(X11Ids.XvfbLikeRootVisualAlias) * 8
                 assertEquals(X11Ids.XvfbLikeRootVisualAlias, u32le(visualInfo, lastRgbRootVisualOffset))
                 assertEquals(X11Ids.RootDepth, visualInfo[lastRgbRootVisualOffset + 4].toInt() and 0xff)
-                val firstDirectColorVisualOffset = 36 + X11Ids.RootVisualAliases.size * 8
-                assertEquals(X11Ids.RootRgbDirectColorAliases.first(), u32le(visualInfo, firstDirectColorVisualOffset))
+                val firstDirectColorVisualOffset = 36 + X11Ids.RootDepthVisualAliases.indexOf(X11Ids.RootDirectColorVisual) * 8
+                assertEquals(X11Ids.RootDirectColorVisual, u32le(visualInfo, firstDirectColorVisualOffset))
                 assertEquals(X11Ids.RootDepth, visualInfo[firstDirectColorVisualOffset + 4].toInt() and 0xff)
-                val lastDirectColorVisualOffset = firstDirectColorVisualOffset + (X11Ids.RootDirectColorVisualAliases.size - 1) * 8
+                val lastDirectColorVisualOffset = 36 + X11Ids.RootDepthVisualAliases.indexOf(X11Ids.RootBgrDirectColorAliases.last()) * 8
                 assertEquals(X11Ids.RootBgrDirectColorAliases.last(), u32le(visualInfo, lastDirectColorVisualOffset))
                 assertEquals(X11Ids.RootDepth, visualInfo[lastDirectColorVisualOffset + 4].toInt() and 0xff)
-                val firstRgbaVisualOffset = 36 + (X11Ids.RootVisualAliases.size + X11Ids.RootDirectColorVisualAliases.size) * 8
+                val firstRgbaVisualOffset = 36 + X11Ids.RootDepthVisualAliases.size * 8
                 assertEquals(0x0000_0040, u32le(visualInfo, firstRgbaVisualOffset))
                 assertEquals(X11Ids.RgbaDepth, visualInfo[firstRgbaVisualOffset + 4].toInt() and 0xff)
                 val lastRgbRgbaVisualOffset = firstRgbaVisualOffset + X11Ids.RgbaVisualAliases.indexOf(X11Ids.XvfbLikeRgbaVisualAlias) * 8
