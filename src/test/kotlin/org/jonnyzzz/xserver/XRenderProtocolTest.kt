@@ -3516,14 +3516,13 @@ class XRenderProtocolTest {
                 out.flush()
 
                 val reply = readReply(socket.getInputStream())
-                assertEquals(11, u32le(reply, 4))
-                assertEquals(76, reply.size)
-                assertEquals(5, u32le(reply, 8))
-                assertEquals(5, u32le(reply, 12))
-                val aliases = (0 until 5).map { index -> u16le(reply, 32 + index * 2) }
-                assertEquals(listOf(0xffff, 0xffff, 0, 1, 1), aliases)
-                assertEquals(0, u16le(reply, 42))
-                assertEquals(listOf("nearest", "bilinear", "fast", "good", "best"), filterNames(reply))
+                assertEquals(14, u32le(reply, 4))
+                assertEquals(88, reply.size)
+                assertEquals(6, u32le(reply, 8))
+                assertEquals(6, u32le(reply, 12))
+                val aliases = (0 until 6).map { index -> u16le(reply, 32 + index * 2) }
+                assertEquals(listOf(0xffff, 0xffff, 0xffff, 0, 1, 1), aliases)
+                assertEquals(listOf("nearest", "bilinear", "convolution", "fast", "good", "best"), filterNames(reply))
 
                 waitUntil {
                     httpGet(server.localPort, "/text.txt").contains("QueryFilters")
@@ -3573,6 +3572,31 @@ class XRenderProtocolTest {
                 assertEquals(missingDrawable, u32le(error, 4))
                 assertEquals(29, u16le(error, 8))
                 assertEquals(XRender.MajorOpcode, error[10].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER SetPictureFilter accepts Xvfb advertised convolution filter`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderSetPictureFilter(PictureId, "convolution", values = listOf(0x0001_0000, 0x0002_0000)))
+                out.flush()
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""filter":"convolution"""")
+                }
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"filter":"convolution"""")
+                assertContains(json, """"filterValues":["0x10000","0x20000"]""")
             }
             server.close()
             serverThread.join(1_000)

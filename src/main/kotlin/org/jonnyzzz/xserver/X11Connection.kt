@@ -14015,8 +14015,8 @@ internal class X11Connection(
         const val D65_V_PRIME = 0.4683363029324097
         val SyntheticFontNames = listOf("fixed")
         val SupportedPixmapDepths = XPixmapFormats.SupportedDepths
-        val RenderFilterNames = listOf("nearest", "bilinear", "fast", "good", "best")
-        val RenderFilterAliases = listOf(0xffff, 0xffff, 0, 1, 1)
+        val RenderFilterNames = listOf("nearest", "bilinear", "convolution", "fast", "good", "best")
+        val RenderFilterAliases = listOf(0xffff, 0xffff, 0xffff, 0, 1, 1)
         val XNamedColors = mapOf(
             "aliceblue" to 0x00f0f8ff,
             "antiquewhite" to 0x00faebd7,
