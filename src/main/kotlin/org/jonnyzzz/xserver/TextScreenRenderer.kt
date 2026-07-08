@@ -4,6 +4,8 @@ internal object TextScreenRenderer {
     private const val MaxGlxOperationsInTextReport = 200
     private const val MaxRenderOperationsInTextReport = 30
     private const val MaxRegionalRenderOperationsInTextReport = 200
+    private const val MaxCoreCopyCommandsInTextReport = 40
+    private const val MaxCoreCopyClipRectanglesInTextReport = 24
     private const val TopMappedRootChildBandHeight = 120
     private const val RightMappedRootChildBandWidth = 96
     private const val BottomMappedRootChildBandHeight = 96
@@ -117,6 +119,35 @@ internal object TextScreenRenderer {
                     if (pixmap.matchingWindowIdHexes.isNotEmpty()) {
                         append(" candidate-for=")
                         append(pixmap.matchingWindowIdHexes.joinToString(","))
+                    }
+                    if (pixmap.pixelRows.isNotEmpty()) {
+                        append(" rows=")
+                        append(pixmap.pixelRows.joinToString("/"))
+                    }
+                    if (pixmap.coreDrawingPaintCount > 0) {
+                        append(" corePaints=")
+                        append(pixmap.coreDrawingPaintCount)
+                        pixmap.firstCoreDrawingPaint?.let { first ->
+                            append(" firstCore=")
+                            appendCoreDrawingPaintSummary(first)
+                            if (first.rectangles.isNotEmpty()) {
+                                append('@')
+                                append(first.rectangles.joinToString(",", prefix = "[", postfix = "]") { it.toRegionString() })
+                            }
+                        }
+                        pixmap.lastCoreDrawingPaint?.let { last ->
+                            append(" lastCore=")
+                            appendCoreDrawingPaintSummary(last)
+                            if (last.rectangles.isNotEmpty()) {
+                                append('@')
+                                append(last.rectangles.joinToString(",", prefix = "[", postfix = "]") { it.toRegionString() })
+                            }
+                            last.putImage?.let { putImage ->
+                                append(" putImageCrc32=")
+                                append(putImage.crc32Hex)
+                                appendPutImageSummary(putImage)
+                            }
+                        }
                     }
                     if (pixmap.renderOperations.isNotEmpty()) {
                         val lastRender = pixmap.renderOperations.last()
@@ -406,6 +437,73 @@ internal object TextScreenRenderer {
                 }
             }
             appendLine()
+            appendLine("Recent core copy commands:")
+            val coreCopies = snapshot.drawings
+                .filter { it.kind == XDrawingKind.CopyArea || it.kind == XDrawingKind.CopyPlane }
+                .takeLast(MaxCoreCopyCommandsInTextReport)
+                .asReversed()
+            if (coreCopies.isEmpty()) {
+                appendLine("- None.")
+            } else {
+                for (drawing in coreCopies) {
+                    append("- ")
+                    append(drawing.kind.name)
+                    append(" drawable=0x")
+                    append(drawing.drawableId.toUInt().toString(16))
+                    append(" source=")
+                    append(drawing.sourceDrawableId?.let { "0x${it.toUInt().toString(16)}" } ?: "none")
+                    append(" foreground=")
+                    append(pixelHex(drawing.foreground))
+                    if (drawing.kind == XDrawingKind.CopyPlane) {
+                        append(" background=")
+                        append(pixelHex(drawing.background))
+                    }
+                    if (
+                        drawing.clipXOrigin != 0 ||
+                        drawing.clipYOrigin != 0 ||
+                        drawing.clipMaskPixmapId != null ||
+                        drawing.gcClipRectangles != null ||
+                        drawing.drawableClipRectangles != null
+                    ) {
+                        append(" clipOrigin=")
+                        append(drawing.clipXOrigin)
+                        append(',')
+                        append(drawing.clipYOrigin)
+                    }
+                    if (drawing.clipMaskPixmapId != null) {
+                        append(" clipMask=0x")
+                        append(drawing.clipMaskPixmapId.toUInt().toString(16))
+                    }
+                    if (drawing.clipMaskRows.isNotEmpty()) {
+                        append(" clipRows=")
+                        append(drawing.clipMaskRows.joinToString("/"))
+                    }
+                    if (drawing.gcClipRectangles != null) {
+                        append(" gcClip=")
+                        append(drawing.gcClipRectangles.toRegionSummary())
+                    }
+                    if (drawing.drawableClipRectangles != null) {
+                        append(" drawableClip=")
+                        append(drawing.drawableClipRectangles.toRegionSummary())
+                    }
+                    append(" painted=")
+                    append(drawing.framebufferPainted)
+                    if (drawing.drawableGeneration != null) {
+                        append(" generation=")
+                        append(drawing.drawableGeneration)
+                    }
+                    if (drawing.sourceDrawableGeneration != null) {
+                        append(" sourceGeneration=")
+                        append(drawing.sourceDrawableGeneration)
+                    }
+                    if (drawing.rectangles.isNotEmpty()) {
+                        append(" rects=")
+                        append(drawing.rectangles.joinToString(",") { it.toRegionString() })
+                    }
+                    appendLine()
+                }
+            }
+            appendLine()
             appendLine("RENDER pictures:")
             if (snapshot.renderPictures.isEmpty()) {
                 appendLine("- None.")
@@ -641,6 +739,10 @@ internal object TextScreenRenderer {
     private fun XRectangleCommand.toRegionString(): String =
         "$x,$y ${width}x$height"
 
+    private fun List<XRectangleCommand>.toRegionSummary(): String =
+        take(MaxCoreCopyClipRectanglesInTextReport).joinToString(",") { it.toRegionString() } +
+            if (size > MaxCoreCopyClipRectanglesInTextReport) ",...(+${size - MaxCoreCopyClipRectanglesInTextReport})" else ""
+
     private fun textCss(): String =
         """
         body { margin: 0; padding: 24px; background: #111318; color: #e7e9ee; font-family: system-ui, sans-serif; }
@@ -825,6 +927,25 @@ internal object TextScreenRenderer {
     }
 
     private fun pixelHex(pixel: Int): String = "0x${pixel.toUInt().toString(16).padStart(8, '0')}"
+
+    private fun StringBuilder.appendCoreDrawingPaintSummary(paint: XCoreDrawablePaintSnapshot) {
+        append(paint.kind.name)
+        append("(fg=")
+        append(paint.foregroundHex)
+        append(",bg=")
+        append(paint.backgroundHex)
+        append(",lw=")
+        append(paint.lineWidth)
+        append(",ls=")
+        append(paint.lineStyle)
+        append(",cap=")
+        append(paint.capStyle)
+        if (paint.points.isNotEmpty()) {
+            append(",points=")
+            append(paint.points.joinToString(";", prefix = "[", postfix = "]") { "${it.x},${it.y}" })
+        }
+        append(')')
+    }
 
     private fun StringBuilder.appendPutImageSummary(
         putImage: XPutImageMetadata,

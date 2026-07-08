@@ -3924,6 +3924,8 @@ internal class X11State(
 
         val livePixmapSnapshots = pixmaps.values.map { pixmap ->
             val matchingWindows = matchingWindowIds(pixmap.id, pixmap.generation, pixmap.width, pixmap.height, pixmap.depth)
+            val image = pixmap.framebuffer.snapshot()
+            val coreDrawingPaints = drawingPopulationForDrawable(pixmap.id, pixmap.generation)
             XPixmapSnapshot(
                 id = pixmap.id,
                 generation = pixmap.generation,
@@ -3932,6 +3934,7 @@ internal class X11State(
                 depth = pixmap.depth,
                 painted = pixmap.framebuffer.hasPaintedContent(),
                 framebufferDataUri = pixmap.framebuffer.toDataUri(),
+                pixelRows = diagnosticPixmapRows(pixmap.depth, image),
                 pictureIds = pictures.values
                     .filter { picture ->
                         picture.drawableId == pixmap.id &&
@@ -3941,6 +3944,9 @@ internal class X11State(
                 matchingWindowIds = matchingWindows.ids,
                 provenanceMatchingWindowIds = matchingWindows.provenanceIds,
                 renderOperations = pixmap.renderPaints.toList(),
+                coreDrawingPaintCount = coreDrawingPaints.count,
+                firstCoreDrawingPaint = coreDrawingPaints.first,
+                lastCoreDrawingPaint = coreDrawingPaints.last,
             )
         }
         val retainedPictureSurfaceSnapshots = pictures.values.mapNotNull { picture ->
@@ -3949,19 +3955,25 @@ internal class X11State(
             if (pixmaps[drawableId]?.framebuffer === framebuffer) return@mapNotNull null
             val depth = picture.retainedDrawableDepth ?: (XRender.formatDepth(picture.format) ?: 0)
             val matchingWindows = matchingWindowIds(drawableId, picture.retainedDrawableGeneration, framebuffer.width, framebuffer.height, depth)
+            val generation = picture.retainedDrawableGeneration ?: 0L
+            val coreDrawingPaints = drawingPopulationForDrawable(drawableId, generation)
             XPixmapSnapshot(
                 id = drawableId,
-                generation = picture.retainedDrawableGeneration ?: 0L,
+                generation = generation,
                 width = framebuffer.width,
                 height = framebuffer.height,
                 depth = depth,
                 painted = framebuffer.hasPaintedContent(),
                 framebufferDataUri = framebuffer.toDataUri(),
+                pixelRows = diagnosticPixmapRows(depth, framebuffer.snapshot()),
                 pictureIds = listOf(picture.id),
                 matchingWindowIds = matchingWindows.ids,
                 provenanceMatchingWindowIds = matchingWindows.provenanceIds,
                 retainedPictureId = picture.id,
                 renderOperations = picture.retainedRenderPaints.toList(),
+                coreDrawingPaintCount = coreDrawingPaints.count,
+                firstCoreDrawingPaint = coreDrawingPaints.first,
+                lastCoreDrawingPaint = coreDrawingPaints.last,
             )
         }
         val pixmapSnapshots = livePixmapSnapshots + retainedPictureSurfaceSnapshots
@@ -4071,6 +4083,18 @@ internal class X11State(
             extensionQueries = extensionQueries.toList(),
             unsupportedRequests = unsupportedRequests.toList(),
         )
+    }
+
+    private fun diagnosticPixmapRows(depth: Int, image: XImagePixels): List<String> {
+        if (depth != 1 || image.width > 16 || image.height > 16) return emptyList()
+        return (0 until image.height).map { y ->
+            buildString {
+                for (x in 0 until image.width) {
+                    val pixel = image.pixels[y * image.width + x]
+                    append(if ((pixel and 1) != 0) '1' else '0')
+                }
+            }
+        }
     }
 
     private fun renderPictureSnapshot(picture: XPicture): XRenderPictureSnapshot =
@@ -5149,6 +5173,10 @@ internal class X11State(
             kind = kind,
             foreground = foreground,
             background = background,
+            lineWidth = lineWidth,
+            lineStyle = lineStyle,
+            capStyle = capStyle,
+            points = points.map { it.copy() },
             rectangles = rectangles.map { it.copy() },
             sourceDrawableId = sourceDrawableId,
             sourceDrawableGeneration = sourceDrawableGeneration,
@@ -8130,22 +8158,44 @@ internal class X11State(
                 val start = points[index]
                 val end = points[index + 1]
                 val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = sourcePixel, background = sourceBackground)
-                painted = drawLine(
-                    start.x,
-                    start.y,
-                    end.x,
-                    end.y,
-                    sourcePixel,
-                    lineWidth,
-                    effectiveClip,
-                    function,
-                    planeMask,
-                    dashPattern,
-                    includeLastPoint = !omitLastForCap,
-                    strokeSource = strokeSource,
-                    preserveAlpha = preserveSourcePixel,
-                    wireDepth = drawableDepth.wireDepth(),
-                ) || painted
+                painted = if (
+                    start == end &&
+                    lineWidth > 0 &&
+                    capStyle == XGraphicsContext.CapRound &&
+                    !omitLastForCap
+                ) {
+                    val dashPixel = if (dashPattern == null) sourcePixel else dashPattern.pixel()
+                    dashPixel?.let { if (strokeSource == null) it else strokeSource.invoke(start.x, start.y, it) }?.let { roundPixel ->
+                        drawRoundPoint(
+                            start.x,
+                            start.y,
+                            roundPixel,
+                            lineWidth,
+                            effectiveClip,
+                            function,
+                            planeMask,
+                            preserveAlpha = preserveSourcePixel,
+                            wireDepth = drawableDepth.wireDepth(),
+                        )
+                    } ?: false
+                } else {
+                    drawLine(
+                        start.x,
+                        start.y,
+                        end.x,
+                        end.y,
+                        sourcePixel,
+                        lineWidth,
+                        effectiveClip,
+                        function,
+                        planeMask,
+                        dashPattern,
+                        includeLastPoint = !omitLastForCap,
+                        strokeSource = strokeSource,
+                        preserveAlpha = preserveSourcePixel,
+                        wireDepth = drawableDepth.wireDepth(),
+                    )
+                } || painted
                 index += 2
             }
             painted
@@ -11492,6 +11542,18 @@ internal data class XGraphicsContext(
         }
     }
 
+    fun diagnosticClipMaskRows(): List<String> {
+        val mask = clipMaskPixmap ?: return emptyList()
+        if (mask.width > 16 || mask.height > 16) return emptyList()
+        return (0 until mask.height).map { y ->
+            buildString {
+                for (x in 0 until mask.width) {
+                    append(if (mask.pixels[y * mask.width + x].isMaskPixelSet()) '1' else '0')
+                }
+            }
+        }
+    }
+
     private fun XImagePixels.toClipRectangles(xOrigin: Int, yOrigin: Int): List<XRectangleCommand> {
         val rectangles = mutableListOf<XRectangleCommand>()
         for (y in 0 until height) {
@@ -11761,6 +11823,12 @@ internal data class XDrawingCommand(
     val framebufferPainted: Boolean = framebufferBacked,
     val rawDrawablePixels: Boolean = true,
     val putImage: XPutImageMetadata? = null,
+    val clipXOrigin: Int = 0,
+    val clipYOrigin: Int = 0,
+    val clipMaskPixmapId: Int? = null,
+    val clipMaskRows: List<String> = emptyList(),
+    val gcClipRectangles: List<XRectangleCommand>? = null,
+    val drawableClipRectangles: List<XRectangleCommand>? = null,
 )
 
 internal data class XPutImageMetadata(
@@ -12478,6 +12546,10 @@ internal data class XCoreDrawablePaintSnapshot(
     val kind: XDrawingKind,
     val foreground: Int,
     val background: Int,
+    val lineWidth: Int,
+    val lineStyle: Int,
+    val capStyle: Int,
+    val points: List<XPoint>,
     val rectangles: List<XRectangleCommand>,
     val sourceDrawableId: Int?,
     val sourceDrawableGeneration: Long?,
@@ -12593,11 +12665,15 @@ internal data class XPixmapSnapshot(
     val depth: Int,
     val painted: Boolean,
     val framebufferDataUri: String?,
+    val pixelRows: List<String> = emptyList(),
     val pictureIds: List<Int>,
     val matchingWindowIds: List<Int>,
     val provenanceMatchingWindowIds: List<Int> = emptyList(),
     val retainedPictureId: Int? = null,
     val renderOperations: List<XRenderDrawablePaintSnapshot> = emptyList(),
+    val coreDrawingPaintCount: Int = 0,
+    val firstCoreDrawingPaint: XCoreDrawablePaintSnapshot? = null,
+    val lastCoreDrawingPaint: XCoreDrawablePaintSnapshot? = null,
 ) {
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val pictureIdHexes: List<String> get() = pictureIds.map { "0x${it.toUInt().toString(16)}" }

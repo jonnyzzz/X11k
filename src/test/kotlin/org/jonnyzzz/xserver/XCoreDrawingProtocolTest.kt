@@ -4576,6 +4576,35 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CapRound zero length wide PolySegment paints a round depth one mask`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 5, height = 5, depth = 1))
+                out.write(createGcRequest(GcId, foreground = 0, drawable = PixmapId))
+                out.write(polyFillRectangleRequest(PixmapId, GcId, rectangles = listOf(XRectangleCommand(0, 0, 5, 5))))
+                out.write(changeGcRawRequest(GcId, mask = 0x0000_0054, values = listOf(1, 5, 2)))
+                out.write(polySegmentRequest(PixmapId, GcId, segments = listOf((2 to 2) to (2 to 2))))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 5, height = 5))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0x0e, image[32].toInt() and 0xff)
+                assertEquals(0x1f, image[36].toInt() and 0xff)
+                assertEquals(0x1f, image[40].toInt() and 0xff)
+                assertEquals(0x1f, image[44].toInt() and 0xff)
+                assertEquals(0x0e, image[48].toInt() and 0xff)
+                assertContains(httpGet(server.localPort, "/text.txt"), "rows=01110/11111/11111/11111/01110")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `PolyFillRectangle honors GC tiled fill style and tile origin`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -5874,6 +5903,7 @@ class XCoreDrawingProtocolTest {
                 assertEquals(0x01, image[33].toInt() and 0xff)
                 assertEquals(0, image[34].toInt() and 0xff)
                 assertEquals(0, image[35].toInt() and 0xff)
+                assertContains(httpGet(server.localPort, "/text.txt"), "rows=101000011")
             }
             server.close()
             serverThread.join(1_000)
@@ -6191,6 +6221,72 @@ class XCoreDrawingProtocolTest {
                 assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 3, 0))
                 assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 1, 1))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, 4, 2, 1))
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "Recent core copy commands:")
+                assertContains(text, "CopyPlane drawable=0x${WindowId.toUInt().toString(16)} source=0x${PixmapId.toUInt().toString(16)}")
+                assertContains(text, "foreground=0x00ff0000 background=0x000000ff")
+                assertContains(text, "rects=1,0 2x2")
+                assertContains(text, "gcClip=1,0 2x2")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CopyPlane honors GC clip mask pixmaps`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val sourcePixmap = PixmapId
+                val maskPixmap = PixmapId + 1
+                val bitmapGc = GcId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 5, height = 5))
+                out.write(createPixmapRequest(sourcePixmap, width = 5, height = 5, depth = 1))
+                out.write(createPixmapRequest(maskPixmap, width = 5, height = 5, depth = 1))
+                out.write(createGcRequest(bitmapGc, foreground = 1, background = 0, drawable = sourcePixmap))
+                out.write(putImageBitmapRequest(sourcePixmap, bitmapGc, width = 5, height = 5, bits = List(25) { true }))
+                out.write(
+                    putImageBitmapRequest(
+                        maskPixmap,
+                        bitmapGc,
+                        width = 5,
+                        height = 5,
+                        bits = listOf(
+                            false, true, true, true, false,
+                            true, true, true, true, true,
+                            true, true, true, true, true,
+                            true, true, true, true, true,
+                            false, true, true, true, false,
+                        ),
+                    ),
+                )
+                out.write(createGcRequest(GcId, foreground = Red, background = Blue))
+                out.write(changeGcClipMaskRequest(GcId, maskPixmap))
+                out.write(copyPlaneRequest(sourcePixmap, WindowId, GcId, sourceX = 0, sourceY = 0, destinationX = 0, destinationY = 0, width = 5, height = 5, bitPlane = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 5))
+                out.flush()
+
+                assertNoExposure(socket.getInputStream().readExactly(32), sequence = 9, drawable = WindowId, majorOpcode = 63)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 0, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 1, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 3, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 4, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 0, 1))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 4, 3))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 0, 4))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 3, 4))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 4, 4))
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "CopyPlane drawable=0x${WindowId.toUInt().toString(16)} source=0x${sourcePixmap.toUInt().toString(16)}")
+                assertContains(text, "clipOrigin=0,0 clipMask=0x${maskPixmap.toUInt().toString(16)}")
+                assertContains(text, "clipRows=01110/11111/11111/11111/01110")
+                assertContains(text, "gcClip=1,0 3x1,0,1 5x1")
             }
             server.close()
             serverThread.join(1_000)

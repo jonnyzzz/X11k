@@ -7662,6 +7662,12 @@ internal class X11Connection(
                     sourceDrawableGeneration = state.drawableGeneration(sourceDrawable),
                     framebufferBacked = true,
                     framebufferPainted = result.painted,
+                    clipXOrigin = gc.clipXOrigin,
+                    clipYOrigin = gc.clipYOrigin,
+                    clipMaskPixmapId = gc.clipMaskPixmapId,
+                    clipMaskRows = gc.diagnosticClipMaskRows(),
+                    gcClipRectangles = clipRectangles,
+                    drawableClipRectangles = destinationClipRectangles,
                 ),
             )
         }
@@ -7745,6 +7751,7 @@ internal class X11Connection(
                     drawableId = destinationDrawable,
                     kind = XDrawingKind.CopyPlane,
                     foreground = gc.foreground,
+                    background = gc.background,
                     lineWidth = gc.lineWidth,
                     rectangles = listOf(
                         XRectangleCommand(
@@ -7760,6 +7767,12 @@ internal class X11Connection(
                     sourceDrawableGeneration = state.drawableGeneration(sourceDrawable),
                     framebufferBacked = true,
                     framebufferPainted = result.painted,
+                    clipXOrigin = gc.clipXOrigin,
+                    clipYOrigin = gc.clipYOrigin,
+                    clipMaskPixmapId = gc.clipMaskPixmapId,
+                    clipMaskRows = gc.diagnosticClipMaskRows(),
+                    gcClipRectangles = clipRectangles,
+                    drawableClipRectangles = destinationClipRectangles,
                 ),
             )
         }

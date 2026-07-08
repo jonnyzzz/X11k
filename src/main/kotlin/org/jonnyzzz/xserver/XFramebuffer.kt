@@ -301,6 +301,40 @@ internal class XFramebuffer(
         )
     }
 
+    fun drawRoundPoint(
+        x: Int,
+        y: Int,
+        pixel: Int,
+        lineWidth: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
+        preserveAlpha: Boolean = false,
+        wireDepth: Int? = null,
+    ): Boolean {
+        val size = lineWidth.coerceAtLeast(1)
+        if (size <= 1) {
+            return drawPoint(x, y, pixel, 1, clipRectangles, function, planeMask, preserveAlpha, wireDepth)
+        }
+        val radiusBefore = (size - 1) / 2
+        val left = x - radiusBefore
+        val top = y - radiusBefore
+        val limit = size.toLong() * size.toLong()
+        var painted = false
+        for (dy in 0 until size) {
+            val py = top + dy
+            val centeredY = py - y
+            for (dx in 0 until size) {
+                val px = left + dx
+                val centeredX = px - x
+                val distance = 4L * (centeredX.toLong() * centeredX.toLong() + centeredY.toLong() * centeredY.toLong())
+                if (distance > limit) continue
+                painted = drawPoint(px, py, pixel, 1, clipRectangles, function, planeMask, preserveAlpha, wireDepth) || painted
+            }
+        }
+        return painted
+    }
+
     fun drawLine(
         x1: Int,
         y1: Int,
