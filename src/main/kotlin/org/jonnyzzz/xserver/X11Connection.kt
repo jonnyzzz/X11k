@@ -9421,7 +9421,7 @@ internal class X11Connection(
                 return writeError(error = 9, opcode = majorOpcode, minorOpcode = XDoubleBuffer.GetVisualInfo, badValue = drawable)
             }
         }
-        val visuals = X11Ids.RootVisualAliases.map { it to X11Ids.RootDepth } +
+        val visuals = (X11Ids.RootVisualAliases + X11Ids.RootDirectColorVisualAliases).map { it to X11Ids.RootDepth } +
             X11Ids.RgbaVisualAliases.map { it to X11Ids.RgbaDepth }
         val payloadBytes = drawables.size * (4 + visuals.size * 8)
         val reply = reply(extra = 0, payloadUnits = payloadBytes / 4)
