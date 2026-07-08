@@ -488,6 +488,11 @@ class IntellijCommunitySmokeTest {
                 text =
                     """
                     X11 PutImage trace proxy listening unix=/tmp/.X11-unix/X99 target=unix:/tmp/.X11-unix/X98
+                    connection=5 request=12000 QueryExtension name=RENDER
+                    connection=5 request=12000 QueryExtensionReply name=RENDER present=true majorOpcode=139
+                    connection=5 request=12218 RENDER.CreatePicture picture=0x200090 drawable=0x20007d format=0x25 valueMask=0x1 repeat=1
+                    connection=5 request=12219 RENDER.SetPictureFilter picture=0x200090 filter=good
+                    connection=5 request=12219 RENDER.SetPictureTransform picture=0x200090 transform=[0x10000,0x0,0x0,0x0,0x10000,0x0,0x0,0x0,0x10000]
                     connection=5 request=12220 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=624x2 leftPad=0 dataBytes=4992 crc32=0x1793d6e5 raw=[0x2c,0x28,0x26,0xff] decoded=[0xff26282c]
                     connection=5 request=12236 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=600x2 leftPad=0 dataBytes=4800 crc32=0xcda50bae raw=[0x37,0x4f,0x34,0xff] decoded=[0xff344f37]
                     """.trimIndent(),
@@ -520,10 +525,13 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("band=top count=2 first=#41 last=#42"), summary)
         assertTrue(summary.contains("size=624x2 dataBytes=4992 crc32=0x13572468"), summary)
         assertTrue(summary.contains("xvfbSameSize=1 xvfbSameCrc=0 status=crc-mismatch"), summary)
-        assertTrue(summary.contains("xvfbClosest=5#12220..5#12220 count=1 crc32=0x1793d6e5"), summary)
+        assertTrue(summary.contains("xvfbClosest=5#12220..5#12220 count=1 drawable=0x20007d gc=0x200080 crc32=0x1793d6e5"), summary)
+        assertTrue(summary.contains("render=picture=0x200090 format=0x25 valueMask=0x1 repeat=1 filter=good"), summary)
+        assertTrue(summary.contains("transform=[0x10000,0x0,0x0,0x0,0x10000,0x0,0x0,0x0,0x10000]"), summary)
         assertTrue(summary.contains("raw=[0x2c,0x28,0x26,0xff] decoded=[0xff26282c]"), summary)
         assertTrue(summary.contains("producerFramebuffer=624x2 crc32=0x2468ace0"), summary)
         assertTrue(summary.contains("xvfbOnly size=600x2 dataBytes=4800 crc32=0xcda50bae count=1"), summary)
+        assertTrue(summary.contains("drawable=0x20007d gc=0x200080"), summary)
         assertFalse(summary.contains("size=128x2"), summary)
     }
 
@@ -1009,6 +1017,7 @@ class IntellijCommunitySmokeTest {
         assertTrue(xvfbBody.contains("intellij-xvfb-extra-args.log"), xvfbBody)
         assertTrue(source.contains("private fun x11PutImageTraceProxySource()"), source)
         assertTrue(source.contains("MAX_LOGGED_PUTIMAGE_LINES"), source)
+        assertTrue(source.contains("MAX_LOGGED_RENDER_LINES"), source)
         assertTrue(source.contains("private static int bigRequestPayloadOffset(byte[] request, boolean little)"), source)
         assertTrue(source.contains("StandardProtocolFamily.UNIX"), source)
     }
@@ -1025,6 +1034,8 @@ class IntellijCommunitySmokeTest {
                     connection=2 request=923 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=600x2 leftPad=0 dataBytes=4800 crc32=0xaccaae6a raw=[0x6b,0x43,0x37,0xff] decoded=[0xff37436b]
                     connection=2 request=950 PutImage format=2 depth=8 drawable=0x20002e gc=0x200030 dst=0,0 size=600x2 leftPad=0 dataBytes=1200 crc32=0x11111111 raw=[0xff] decoded=[]
                     connection=2 request=960 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=600x2 leftPad=0 dataBytes=4800 crc32=0xaccaae6a raw=[0x6b,0x43,0x37,0xff] decoded=[0xff37436b]
+                    connection=2 request=970 PutImage format=2 depth=32 drawable=0x200081 gc=0x200084 dst=0,0 size=624x2 leftPad=0 dataBytes=4992 crc32=0x8493d0 raw=[0x2c,0x28,0x26,0xff] decoded=[0xff26282c]
+                    connection=2 request=980 PutImage format=2 depth=32 drawable=0x200085 gc=0x200088 dst=0,0 size=624x2 leftPad=0 dataBytes=4992 crc32=0x1008493d0 raw=[0x2c,0x28,0x26,0xff] decoded=[0xff26282c]
                     """.trimIndent(),
             ),
         )
@@ -1032,8 +1043,10 @@ class IntellijCommunitySmokeTest {
         val summary = intellijXvfbPutImageStripProfiles(logs)
 
         assertTrue(summary.startsWith("Xvfb PutImage thin strip profiles:"), summary)
-        assertTrue(summary.contains("count=2 first=2#923 last=2#960 size=600x2"), summary)
+        assertTrue(summary.contains("count=2 first=2#923 last=2#960 drawable=0x20007d gc=0x200080 size=600x2"), summary)
         assertTrue(summary.contains("crc32=0xaccaae6a"), summary)
+        assertTrue(summary.contains("crc32=0x008493d0"), summary)
+        assertTrue(summary.contains("crc32=0x1008493d0"), summary)
         assertTrue(summary.contains("decoded=[0xff37436b]"), summary)
         assertFalse(summary.contains("depth=8"), summary)
     }
@@ -1103,6 +1116,294 @@ class IntellijCommunitySmokeTest {
         assertTrue(log.contains("dataBytes=8"), log)
         assertTrue(log.contains("raw=[0x11,0x22,0x33,0xff,0x22,0x33,0x44,0x80]"), log)
         assertTrue(log.contains("decoded=[0xff332211,0x80443322]"), log)
+    }
+
+    @Test
+    fun `intellij xvfb putimage trace proxy learns render opcode before fast replies`() {
+        val tempDir = Files.createTempDirectory("x11-render-trace-proxy")
+        val sourceFile = tempDir.resolve("X11PutImageTraceProxy.java")
+        val logFile = tempDir.resolve("trace.log")
+        Files.writeString(sourceFile, x11PutImageTraceProxySource())
+        val compiler = ToolProvider.getSystemJavaCompiler()
+            ?: error("A JDK compiler is required for this focused proxy-source test")
+        assertEquals(0, compiler.run(null, null, null, "-d", tempDir.toString(), sourceFile.toString()))
+
+        URLClassLoader(arrayOf(tempDir.toUri().toURL()), null).use { loader ->
+            val clazz = Class.forName("X11PutImageTraceProxy", true, loader)
+            val stateClazz = Class.forName("X11PutImageTraceProxy\$ConnectionTraceState", true, loader)
+            val constructor = clazz.getDeclaredConstructor(
+                Int::class.javaPrimitiveType,
+                String::class.java,
+                Int::class.javaPrimitiveType,
+                String::class.java,
+            )
+            constructor.isAccessible = true
+            val proxy = constructor.newInstance(0, "127.0.0.1", 0, logFile.toString())
+            val stateConstructor = stateClazz.getDeclaredConstructor()
+            stateConstructor.isAccessible = true
+            val state = stateConstructor.newInstance()
+            stateClazz.getDeclaredField("setupComplete").also {
+                it.isAccessible = true
+                it.setBoolean(state, true)
+            }
+            val serverBuffer = stateClazz.getDeclaredField("serverBuffer")
+            serverBuffer.isAccessible = true
+            val parseServerMessages = clazz.getDeclaredMethod(
+                "parseServerMessages",
+                Int::class.javaPrimitiveType,
+                stateClazz,
+            )
+            parseServerMessages.isAccessible = true
+            val pumpClient = clazz.getDeclaredMethod(
+                "pumpClient",
+                Int::class.javaPrimitiveType,
+                stateClazz,
+                java.io.InputStream::class.java,
+                java.io.OutputStream::class.java,
+            )
+            pumpClient.isAccessible = true
+            val renderQueryReply = queryExtensionReplyBytes(sequence = 1, majorOpcode = 139)
+            val forwarded = ByteArrayOutputStream()
+            val output = object : java.io.OutputStream() {
+                override fun write(value: Int) {
+                    forwarded.write(value)
+                }
+
+                override fun write(bytes: ByteArray, offset: Int, length: Int) {
+                    forwarded.write(bytes, offset, length)
+                    if (length > 0 && (bytes[offset].toInt() and 0xff) == 98) {
+                        val buffer = serverBuffer.get(state) as ByteArrayOutputStream
+                        buffer.write(renderQueryReply)
+                        parseServerMessages.invoke(proxy, 3, state)
+                    }
+                }
+            }
+
+            pumpClient.invoke(
+                proxy,
+                3,
+                state,
+                ByteArrayInputStream(x11TraceProxyClientBytes()),
+                output,
+            )
+        }
+
+        val log = Files.readString(logFile)
+        assertTrue(log.contains("connection=3 request=1 QueryExtension name=RENDER"), log)
+        assertTrue(log.contains("connection=3 request=1 QueryExtensionReply name=RENDER present=true majorOpcode=139"), log)
+        assertTrue(
+            log.contains(
+                "connection=3 request=2 RENDER.CreatePicture picture=0x200090 drawable=0x20007d format=0x25 valueMask=0x1 repeat=1",
+            ),
+            log,
+        )
+    }
+
+    @Test
+    fun `intellij xvfb putimage trace proxy learns render opcode before forwarding replies`() {
+        val tempDir = Files.createTempDirectory("x11-render-reply-trace-proxy")
+        val sourceFile = tempDir.resolve("X11PutImageTraceProxy.java")
+        val logFile = tempDir.resolve("trace.log")
+        Files.writeString(sourceFile, x11PutImageTraceProxySource())
+        val compiler = ToolProvider.getSystemJavaCompiler()
+            ?: error("A JDK compiler is required for this focused proxy-source test")
+        assertEquals(0, compiler.run(null, null, null, "-d", tempDir.toString(), sourceFile.toString()))
+
+        URLClassLoader(arrayOf(tempDir.toUri().toURL()), null).use { loader ->
+            val clazz = Class.forName("X11PutImageTraceProxy", true, loader)
+            val stateClazz = Class.forName("X11PutImageTraceProxy\$ConnectionTraceState", true, loader)
+            val constructor = clazz.getDeclaredConstructor(
+                Int::class.javaPrimitiveType,
+                String::class.java,
+                Int::class.javaPrimitiveType,
+                String::class.java,
+            )
+            constructor.isAccessible = true
+            val proxy = constructor.newInstance(0, "127.0.0.1", 0, logFile.toString())
+            val stateConstructor = stateClazz.getDeclaredConstructor()
+            stateConstructor.isAccessible = true
+            val state = stateConstructor.newInstance()
+            stateClazz.getDeclaredField("byteOrderKnown").also {
+                it.isAccessible = true
+                it.setBoolean(state, true)
+            }
+            stateClazz.getDeclaredField("little").also {
+                it.isAccessible = true
+                it.setBoolean(state, true)
+            }
+            stateClazz.getDeclaredField("setupComplete").also {
+                it.isAccessible = true
+                it.setBoolean(state, true)
+            }
+            @Suppress("UNCHECKED_CAST")
+            val pending = stateClazz.getDeclaredField("pendingQueryExtensions").also { it.isAccessible = true }
+                .get(state) as MutableMap<Int, String>
+            pending[1] = "RENDER"
+            val renderMajorOpcode = stateClazz.getDeclaredField("renderMajorOpcode").also { it.isAccessible = true }
+            val pumpServer = clazz.getDeclaredMethod(
+                "pumpServer",
+                Int::class.javaPrimitiveType,
+                stateClazz,
+                java.io.InputStream::class.java,
+                java.io.OutputStream::class.java,
+            )
+            pumpServer.isAccessible = true
+            var opcodeAtForward = -2
+            val forwarded = ByteArrayOutputStream()
+            val output = object : java.io.OutputStream() {
+                override fun write(value: Int) {
+                    forwarded.write(value)
+                }
+
+                override fun write(bytes: ByteArray, offset: Int, length: Int) {
+                    opcodeAtForward = renderMajorOpcode.getInt(state)
+                    forwarded.write(bytes, offset, length)
+                }
+            }
+
+            pumpServer.invoke(
+                proxy,
+                4,
+                state,
+                ByteArrayInputStream(queryExtensionReplyBytes(sequence = 1, majorOpcode = 139)),
+                output,
+            )
+
+            assertEquals(139, opcodeAtForward)
+            assertEquals(139, renderMajorOpcode.getInt(state))
+            assertEquals(32, forwarded.size())
+        }
+
+        val log = Files.readString(logFile)
+        assertTrue(log.contains("connection=4 request=1 QueryExtensionReply name=RENDER present=true majorOpcode=139"), log)
+    }
+
+    @Test
+    fun `intellij xvfb putimage trace proxy skips fragmented setup before render replies`() {
+        val tempDir = Files.createTempDirectory("x11-render-setup-trace-proxy")
+        val sourceFile = tempDir.resolve("X11PutImageTraceProxy.java")
+        val logFile = tempDir.resolve("trace.log")
+        Files.writeString(sourceFile, x11PutImageTraceProxySource())
+        val compiler = ToolProvider.getSystemJavaCompiler()
+            ?: error("A JDK compiler is required for this focused proxy-source test")
+        assertEquals(0, compiler.run(null, null, null, "-d", tempDir.toString(), sourceFile.toString()))
+
+        URLClassLoader(arrayOf(tempDir.toUri().toURL()), null).use { loader ->
+            val clazz = Class.forName("X11PutImageTraceProxy", true, loader)
+            val stateClazz = Class.forName("X11PutImageTraceProxy\$ConnectionTraceState", true, loader)
+            val constructor = clazz.getDeclaredConstructor(
+                Int::class.javaPrimitiveType,
+                String::class.java,
+                Int::class.javaPrimitiveType,
+                String::class.java,
+            )
+            constructor.isAccessible = true
+            val proxy = constructor.newInstance(0, "127.0.0.1", 0, logFile.toString())
+            val stateConstructor = stateClazz.getDeclaredConstructor()
+            stateConstructor.isAccessible = true
+            val state = stateConstructor.newInstance()
+            stateClazz.getDeclaredField("byteOrderKnown").also {
+                it.isAccessible = true
+                it.setBoolean(state, true)
+            }
+            stateClazz.getDeclaredField("little").also {
+                it.isAccessible = true
+                it.setBoolean(state, true)
+            }
+            @Suppress("UNCHECKED_CAST")
+            val pending = stateClazz.getDeclaredField("pendingQueryExtensions").also { it.isAccessible = true }
+                .get(state) as MutableMap<Int, String>
+            pending[1] = "RENDER"
+            val renderMajorOpcode = stateClazz.getDeclaredField("renderMajorOpcode").also { it.isAccessible = true }
+            val pumpServer = clazz.getDeclaredMethod(
+                "pumpServer",
+                Int::class.javaPrimitiveType,
+                stateClazz,
+                java.io.InputStream::class.java,
+                java.io.OutputStream::class.java,
+            )
+            pumpServer.isAccessible = true
+            val setup = setupSuccessReplyBytes(extraWords = 1)
+            val reply = queryExtensionReplyBytes(sequence = 1, majorOpcode = 139)
+            val input = chunkedInputStream(
+                setup.copyOfRange(0, 4),
+                setup.copyOfRange(4, setup.size) + reply,
+            )
+
+            pumpServer.invoke(proxy, 5, state, input, ByteArrayOutputStream())
+
+            assertEquals(139, renderMajorOpcode.getInt(state))
+        }
+
+        val log = Files.readString(logFile)
+        assertTrue(log.contains("connection=5 request=1 QueryExtensionReply name=RENDER present=true majorOpcode=139"), log)
+    }
+
+    @Test
+    fun `intellij xvfb putimage trace proxy matches query extension replies after sequence wrap`() {
+        val tempDir = Files.createTempDirectory("x11-render-wrap-trace-proxy")
+        val sourceFile = tempDir.resolve("X11PutImageTraceProxy.java")
+        val logFile = tempDir.resolve("trace.log")
+        Files.writeString(sourceFile, x11PutImageTraceProxySource())
+        val compiler = ToolProvider.getSystemJavaCompiler()
+            ?: error("A JDK compiler is required for this focused proxy-source test")
+        assertEquals(0, compiler.run(null, null, null, "-d", tempDir.toString(), sourceFile.toString()))
+
+        URLClassLoader(arrayOf(tempDir.toUri().toURL()), null).use { loader ->
+            val clazz = Class.forName("X11PutImageTraceProxy", true, loader)
+            val stateClazz = Class.forName("X11PutImageTraceProxy\$ConnectionTraceState", true, loader)
+            val constructor = clazz.getDeclaredConstructor(
+                Int::class.javaPrimitiveType,
+                String::class.java,
+                Int::class.javaPrimitiveType,
+                String::class.java,
+            )
+            constructor.isAccessible = true
+            val proxy = constructor.newInstance(0, "127.0.0.1", 0, logFile.toString())
+            val stateConstructor = stateClazz.getDeclaredConstructor()
+            stateConstructor.isAccessible = true
+            val state = stateConstructor.newInstance()
+            stateClazz.getDeclaredField("byteOrderKnown").also {
+                it.isAccessible = true
+                it.setBoolean(state, true)
+            }
+            stateClazz.getDeclaredField("little").also {
+                it.isAccessible = true
+                it.setBoolean(state, true)
+            }
+            stateClazz.getDeclaredField("setupComplete").also {
+                it.isAccessible = true
+                it.setBoolean(state, true)
+            }
+            val serverBuffer = stateClazz.getDeclaredField("serverBuffer").also { it.isAccessible = true }
+            val renderMajorOpcode = stateClazz.getDeclaredField("renderMajorOpcode").also { it.isAccessible = true }
+            val logQueryExtension = clazz.getDeclaredMethod(
+                "logQueryExtension",
+                Int::class.javaPrimitiveType,
+                stateClazz,
+                Int::class.javaPrimitiveType,
+                ByteArray::class.java,
+                Boolean::class.javaPrimitiveType,
+            )
+            logQueryExtension.isAccessible = true
+            val parseServerMessages = clazz.getDeclaredMethod(
+                "parseServerMessages",
+                Int::class.javaPrimitiveType,
+                stateClazz,
+            )
+            parseServerMessages.isAccessible = true
+
+            logQueryExtension.invoke(proxy, 6, state, 65_537, queryExtensionRequestBytes(), true)
+            (serverBuffer.get(state) as ByteArrayOutputStream)
+                .write(queryExtensionReplyBytes(sequence = 1, majorOpcode = 139))
+            parseServerMessages.invoke(proxy, 6, state)
+
+            assertEquals(139, renderMajorOpcode.getInt(state))
+        }
+
+        val log = Files.readString(logFile)
+        assertTrue(log.contains("connection=6 request=65537 QueryExtension name=RENDER"), log)
+        assertTrue(log.contains("connection=6 request=1 QueryExtensionReply name=RENDER present=true majorOpcode=139"), log)
     }
 
     @Test
@@ -2431,12 +2732,16 @@ class IntellijCommunitySmokeTest {
         import java.net.Socket;
         import java.net.StandardProtocolFamily;
         import java.net.UnixDomainSocketAddress;
+        import java.nio.charset.StandardCharsets;
         import java.util.Arrays;
+        import java.util.Map;
+        import java.util.concurrent.ConcurrentHashMap;
         import java.util.concurrent.atomic.AtomicInteger;
         import java.util.zip.CRC32;
 
         public class X11PutImageTraceProxy {
           private static final int MAX_LOGGED_PUTIMAGE_LINES = 4096;
+          private static final int MAX_LOGGED_RENDER_LINES = 16384;
           private final String listenMode;
           private final String listenAddress;
           private final String targetMode;
@@ -2444,6 +2749,16 @@ class IntellijCommunitySmokeTest {
           private final PrintWriter log;
           private final AtomicInteger nextConnection = new AtomicInteger(1);
           private int putImageLines;
+          private int renderLines;
+
+          private static final class ConnectionTraceState {
+            volatile boolean byteOrderKnown;
+            volatile boolean little;
+            volatile boolean setupComplete;
+            volatile int renderMajorOpcode = -1;
+            final Map<Integer, String> pendingQueryExtensions = new ConcurrentHashMap<>();
+            final ByteArrayOutputStream serverBuffer = new ByteArrayOutputStream();
+          }
 
           private X11PutImageTraceProxy(int listenPort, String targetHost, int targetPort, String logPath) throws Exception {
             this("tcp", String.valueOf(listenPort), "tcp", targetHost + ":" + targetPort, logPath);
@@ -2566,19 +2881,24 @@ class IntellijCommunitySmokeTest {
               OutputStream clientOutput,
               InputStream serverInput,
               OutputStream serverOutput) throws Exception {
+            ConnectionTraceState state = new ConnectionTraceState();
             Thread serverToClient = new Thread(
-                () -> pumpRaw(serverInput, clientOutput),
+                () -> pumpServer(connection, state, serverInput, clientOutput),
                 "x11-putimage-trace-reply-" + connection);
             serverToClient.setDaemon(true);
             serverToClient.start();
-            pumpClient(connection, clientInput, serverOutput);
+            pumpClient(connection, state, clientInput, serverOutput);
           }
 
-          private static void pumpRaw(InputStream input, OutputStream output) {
+          private void pumpServer(int connection, ConnectionTraceState state, InputStream input, OutputStream output) {
             byte[] buffer = new byte[32768];
             try {
               int read;
               while ((read = input.read(buffer)) >= 0) {
+                synchronized (state) {
+                  state.serverBuffer.write(buffer, 0, read);
+                  parseServerMessages(connection, state);
+                }
                 output.write(buffer, 0, read);
                 output.flush();
               }
@@ -2586,10 +2906,12 @@ class IntellijCommunitySmokeTest {
             }
           }
 
-          private void pumpClient(int connection, InputStream input, OutputStream output) throws Exception {
+          private void pumpClient(int connection, ConnectionTraceState state, InputStream input, OutputStream output) throws Exception {
             int order = input.read();
             if (order < 0) return;
             boolean little = order == 'l';
+            state.little = little;
+            state.byteOrderKnown = true;
             ByteArrayOutputStream handshake = new ByteArrayOutputStream();
             handshake.write(order);
             byte[] rest = readFully(input, 11);
@@ -2628,13 +2950,189 @@ class IntellijCommunitySmokeTest {
               if (body == null) return;
               request.write(body);
               byte[] bytes = request.toByteArray();
+              requestIndex++;
+              if (opcode == 98) {
+                logQueryExtension(connection, state, requestIndex, bytes, little);
+              }
               output.write(bytes);
               output.flush();
-              requestIndex++;
               if (opcode == 72) {
                 logPutImage(connection, requestIndex, bytes, little);
               }
+              if (opcode == state.renderMajorOpcode) {
+                logRenderRequest(connection, requestIndex, bytes, little);
+              }
             }
+          }
+
+          private void parseServerMessages(int connection, ConnectionTraceState state) {
+            if (!state.byteOrderKnown) return;
+            byte[] bytes = state.serverBuffer.toByteArray();
+            int offset = 0;
+            if (!state.setupComplete) {
+              if (bytes.length < 8) return;
+              long setupExtraWords = u16(bytes, 6, state.little);
+              long setupBytes = 8L + setupExtraWords * 4L;
+              if (setupBytes > 16L * 1024L * 1024L) {
+                state.serverBuffer.reset();
+                state.setupComplete = true;
+                return;
+              }
+              if (bytes.length < setupBytes) return;
+              offset = (int) setupBytes;
+              state.setupComplete = true;
+            }
+            while (offset + 32 <= bytes.length) {
+              int type = bytes[offset] & 0xff;
+              int messageBytes = 32;
+              if (type == 1 || type == 35) {
+                long extraWords = u32(bytes, offset + 4, state.little);
+                long total = 32L + extraWords * 4L;
+                if (total > 16L * 1024L * 1024L) {
+                  state.serverBuffer.reset();
+                  return;
+                }
+                messageBytes = (int) total;
+              }
+              if (offset + messageBytes > bytes.length) break;
+              if (type == 1) {
+                int sequence = u16(bytes, offset + 2, state.little);
+                String queryName = state.pendingQueryExtensions.remove(sequence);
+                if ("RENDER".equals(queryName)) {
+                  boolean present = (bytes[offset + 8] & 0xff) != 0;
+                  int majorOpcode = bytes[offset + 9] & 0xff;
+                  if (present) state.renderMajorOpcode = majorOpcode;
+                  renderLine("connection=" + connection +
+                      " request=" + sequence +
+                      " QueryExtensionReply name=RENDER present=" + present +
+                      " majorOpcode=" + majorOpcode);
+                }
+              }
+              offset += messageBytes;
+            }
+            if (offset > 0) {
+              state.serverBuffer.reset();
+              if (offset < bytes.length) {
+                state.serverBuffer.write(bytes, offset, bytes.length - offset);
+              }
+            }
+          }
+
+          private void logQueryExtension(int connection, ConnectionTraceState state, int requestIndex, byte[] request, boolean little) {
+            int payloadOffset = bigRequestPayloadOffset(request, little);
+            if (request.length < payloadOffset + 8) return;
+            int nameLength = u16(request, payloadOffset + 4, little);
+            int nameOffset = payloadOffset + 8;
+            if (request.length < nameOffset + nameLength) return;
+            String name = new String(request, nameOffset, nameLength, StandardCharsets.ISO_8859_1);
+            state.pendingQueryExtensions.put(requestIndex & 0xffff, name);
+            if ("RENDER".equals(name)) {
+              renderLine("connection=" + connection + " request=" + requestIndex + " QueryExtension name=RENDER");
+            }
+          }
+
+          private void logRenderRequest(int connection, int requestIndex, byte[] request, boolean little) {
+            int payloadOffset = bigRequestPayloadOffset(request, little);
+            if (request.length < payloadOffset + 4) return;
+            int minor = request[1] & 0xff;
+            int body = payloadOffset + 4;
+            if (minor == 4) {
+              logRenderCreatePicture(connection, requestIndex, request, body, little);
+            } else if (minor == 8) {
+              logRenderComposite(connection, requestIndex, request, body, little);
+            } else if (minor == 28) {
+              logRenderSetPictureTransform(connection, requestIndex, request, body, little);
+            } else if (minor == 30) {
+              logRenderSetPictureFilter(connection, requestIndex, request, body, little);
+            }
+          }
+
+          private void logRenderCreatePicture(int connection, int requestIndex, byte[] request, int body, boolean little) {
+            if (request.length < body + 16) {
+              renderLine("connection=" + connection + " request=" + requestIndex + " RENDER.CreatePicture malformedBytes=" + request.length);
+              return;
+            }
+            long picture = u32(request, body, little);
+            long drawable = u32(request, body + 4, little);
+            long format = u32(request, body + 8, little);
+            long valueMask = u32(request, body + 12, little);
+            String repeat = "none";
+            if ((valueMask & 0x1L) != 0 && request.length >= body + 20) {
+              repeat = String.valueOf(u32(request, body + 16, little));
+            }
+            renderLine("connection=" + connection +
+                " request=" + requestIndex +
+                " RENDER.CreatePicture picture=0x" + Long.toHexString(picture) +
+                " drawable=0x" + Long.toHexString(drawable) +
+                " format=0x" + Long.toHexString(format) +
+                " valueMask=0x" + Long.toHexString(valueMask) +
+                " repeat=" + repeat);
+          }
+
+          private void logRenderComposite(int connection, int requestIndex, byte[] request, int body, boolean little) {
+            if (request.length < body + 32) {
+              renderLine("connection=" + connection + " request=" + requestIndex + " RENDER.Composite malformedBytes=" + request.length);
+              return;
+            }
+            int op = request[body] & 0xff;
+            long src = u32(request, body + 4, little);
+            long mask = u32(request, body + 8, little);
+            long dst = u32(request, body + 12, little);
+            int srcX = i16(request, body + 16, little);
+            int srcY = i16(request, body + 18, little);
+            int maskX = i16(request, body + 20, little);
+            int maskY = i16(request, body + 22, little);
+            int dstX = i16(request, body + 24, little);
+            int dstY = i16(request, body + 26, little);
+            int width = u16(request, body + 28, little);
+            int height = u16(request, body + 30, little);
+            renderLine("connection=" + connection +
+                " request=" + requestIndex +
+                " RENDER.Composite op=" + op +
+                " src=0x" + Long.toHexString(src) +
+                " mask=0x" + Long.toHexString(mask) +
+                " dst=0x" + Long.toHexString(dst) +
+                " srcOrigin=" + srcX + "," + srcY +
+                " maskOrigin=" + maskX + "," + maskY +
+                " dst=" + dstX + "," + dstY +
+                " size=" + width + "x" + height);
+          }
+
+          private void logRenderSetPictureTransform(int connection, int requestIndex, byte[] request, int body, boolean little) {
+            if (request.length < body + 40) {
+              renderLine("connection=" + connection + " request=" + requestIndex + " RENDER.SetPictureTransform malformedBytes=" + request.length);
+              return;
+            }
+            long picture = u32(request, body, little);
+            StringBuilder transform = new StringBuilder("[");
+            for (int i = 0; i < 9; i++) {
+              if (i > 0) transform.append(',');
+              transform.append("0x").append(Long.toHexString(u32(request, body + 4 + i * 4, little)));
+            }
+            transform.append(']');
+            renderLine("connection=" + connection +
+                " request=" + requestIndex +
+                " RENDER.SetPictureTransform picture=0x" + Long.toHexString(picture) +
+                " transform=" + transform);
+          }
+
+          private void logRenderSetPictureFilter(int connection, int requestIndex, byte[] request, int body, boolean little) {
+            if (request.length < body + 8) {
+              renderLine("connection=" + connection + " request=" + requestIndex + " RENDER.SetPictureFilter malformedBytes=" + request.length);
+              return;
+            }
+            long picture = u32(request, body, little);
+            int filterLength = u16(request, body + 4, little);
+            int nameOffset = body + 8;
+            if (request.length < nameOffset + filterLength) {
+              renderLine("connection=" + connection + " request=" + requestIndex + " RENDER.SetPictureFilter malformedBytes=" + request.length);
+              return;
+            }
+            String filter = new String(request, nameOffset, filterLength, StandardCharsets.ISO_8859_1);
+            renderLine("connection=" + connection +
+                " request=" + requestIndex +
+                " RENDER.SetPictureFilter picture=0x" + Long.toHexString(picture) +
+                " filter=" + filter);
           }
 
           private void logPutImage(int connection, int requestIndex, byte[] request, boolean little) {
@@ -2666,7 +3164,7 @@ class IntellijCommunitySmokeTest {
                     " size=" + width + "x" + height +
                     " leftPad=" + leftPad +
                     " dataBytes=" + data.length +
-                    " crc32=0x" + Long.toHexString(crc.getValue()) +
+                    " crc32=0x" + hex32(crc.getValue()) +
                     " raw=" + rawSample(data, 16) +
                     " decoded=" + decodedArgbSample(format, depth, data, 8));
           }
@@ -2726,6 +3224,10 @@ class IntellijCommunitySmokeTest {
             return out.append(']').toString();
           }
 
+          private static String hex32(long value) {
+            return String.format("%08x", value & 0xffffffffL);
+          }
+
           private static String decodedArgbSample(int format, int depth, byte[] data, int limit) {
             if (format != 2 || depth != 32) return "[]";
             StringBuilder out = new StringBuilder("[");
@@ -2757,6 +3259,18 @@ class IntellijCommunitySmokeTest {
               } else if (putImageLines == MAX_LOGGED_PUTIMAGE_LINES) {
                 lineLocked("PutImage trace line limit reached; further PutImage summaries suppressed");
                 putImageLines++;
+              }
+            }
+          }
+
+          private void renderLine(String text) {
+            synchronized (log) {
+              if (renderLines < MAX_LOGGED_RENDER_LINES) {
+                lineLocked(text);
+                renderLines++;
+              } else if (renderLines == MAX_LOGGED_RENDER_LINES) {
+                lineLocked("RENDER trace line limit reached; further RENDER summaries suppressed");
+                renderLines++;
               }
             }
           }
@@ -3276,6 +3790,7 @@ class IntellijCommunitySmokeTest {
         val traceArtifact = logs.firstOrNull { it.fileName == "intellij-xvfb-putimage-trace.log" }
             ?: return "Xvfb PutImage thin strip profiles:\n- traceArtifact=absent\n"
         val trace = traceArtifact.text
+        val renderContexts = intellijXvfbRenderPictureContexts(trace)
         val entries = trace
             .lineSequence()
             .mapNotNull { intellijXvfbPutImageTraceEntry(it) }
@@ -3299,11 +3814,14 @@ class IntellijCommunitySmokeTest {
                 append("- count=").append(group.size)
                 append(" first=").append(first.connection).append('#').append(first.request)
                 append(" last=").append(last.connection).append('#').append(last.request)
+                append(" drawable=").append(first.drawable)
+                append(" gc=").append(first.gc)
                 append(" size=").append(first.width).append('x').append(first.height)
                 append(" dataBytes=").append(first.dataBytes)
                 append(" crc32=").append(first.crc32)
                 append(" raw=").append(first.raw)
                 append(" decoded=").append(first.decoded)
+                renderContexts[first.drawable]?.let { append(" render=").append(it) }
                 appendLine()
             }
         }
@@ -3311,20 +3829,57 @@ class IntellijCommunitySmokeTest {
 
     private fun intellijXvfbPutImageTraceEntry(line: String): IntellijXvfbPutImageTraceEntry? {
         val match = Regex(
-            """connection=(\d+) request=(\d+) PutImage format=(\d+) depth=(\d+) drawable=0x[0-9a-f]+ gc=0x[0-9a-f]+ dst=-?\d+,-?\d+ size=(\d+)x(\d+) leftPad=\d+ dataBytes=(\d+) crc32=(0x[0-9a-f]+) raw=(\[[^]]*]) decoded=(\[[^]]*])""",
+            """connection=(\d+) request=(\d+) PutImage format=(\d+) depth=(\d+) drawable=(0x[0-9a-f]+) gc=(0x[0-9a-f]+) dst=-?\d+,-?\d+ size=(\d+)x(\d+) leftPad=\d+ dataBytes=(\d+) crc32=(0x[0-9a-f]+) raw=(\[[^]]*]) decoded=(\[[^]]*])""",
         ).find(line) ?: return null
         return IntellijXvfbPutImageTraceEntry(
             connection = match.groupValues[1].toInt(),
             request = match.groupValues[2].toInt(),
             format = match.groupValues[3].toInt(),
             depth = match.groupValues[4].toInt(),
-            width = match.groupValues[5].toInt(),
-            height = match.groupValues[6].toInt(),
-            dataBytes = match.groupValues[7].toInt(),
-            crc32 = match.groupValues[8],
-            raw = match.groupValues[9],
-            decoded = match.groupValues[10],
+            drawable = match.groupValues[5],
+            gc = match.groupValues[6],
+            width = match.groupValues[7].toInt(),
+            height = match.groupValues[8].toInt(),
+            dataBytes = match.groupValues[9].toInt(),
+            crc32 = normalizedCrc32(match.groupValues[10]),
+            raw = match.groupValues[11],
+            decoded = match.groupValues[12],
         )
+    }
+
+    private fun normalizedCrc32(value: String): String {
+        val digits = value.removePrefix("0x").lowercase()
+        return "0x" + if (digits.length <= 8) digits.padStart(8, '0') else digits
+    }
+
+    private fun intellijXvfbRenderPictureContexts(trace: String): Map<String, String> {
+        val contexts = linkedMapOf<String, MutableMap<String, String>>()
+        trace.lineSequence().forEach { line ->
+            val create = Regex("""\bRENDER\.CreatePicture picture=(0x[0-9a-f]+) drawable=(0x[0-9a-f]+) format=(0x[0-9a-f]+) valueMask=(0x[0-9a-f]+) repeat=([^\s]+)""")
+                .find(line)
+            if (create != null) {
+                val picture = create.groupValues[1]
+                contexts.getOrPut(create.groupValues[2]) { linkedMapOf() }[picture] =
+                    "picture=$picture format=${create.groupValues[3]} valueMask=${create.groupValues[4]} repeat=${create.groupValues[5]}"
+                return@forEach
+            }
+            val filter = Regex("""\bRENDER\.SetPictureFilter picture=(0x[0-9a-f]+) filter=([^\s]+)""").find(line)
+            if (filter != null) {
+                contexts.values.forEach { pictures ->
+                    val picture = filter.groupValues[1]
+                    pictures[picture]?.let { value -> pictures[picture] = "$value filter=${filter.groupValues[2]}" }
+                }
+                return@forEach
+            }
+            val transform = Regex("""\bRENDER\.SetPictureTransform picture=(0x[0-9a-f]+) transform=(\[[^]]*])""").find(line)
+            if (transform != null) {
+                contexts.values.forEach { pictures ->
+                    val picture = transform.groupValues[1]
+                    pictures[picture]?.let { value -> pictures[picture] = "$value transform=${transform.groupValues[2]}" }
+                }
+            }
+        }
+        return contexts.mapValues { (_, pictures) -> pictures.values.joinToString("|") }
     }
 
     private fun bigRequestPutImageTraceBytes(): ByteArray {
@@ -3358,6 +3913,137 @@ class IntellijCommunitySmokeTest {
             assertEquals(36, bytes.size)
         }
     }
+
+    private fun x11TraceProxyClientBytes(): ByteArray {
+        val out = ByteArrayOutputStream()
+        fun u16(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+        }
+        fun u32(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+            out.write((value ushr 16) and 0xff)
+            out.write((value ushr 24) and 0xff)
+        }
+
+        out.write('l'.code)
+        out.write(ByteArray(11))
+        out.write(queryExtensionRequestBytes())
+
+        out.write(139)
+        out.write(4)
+        u16(6)
+        u32(0x00200090)
+        u32(0x0020007d)
+        u32(0x25)
+        u32(0x1)
+        u32(1)
+
+        return out.toByteArray().also { bytes ->
+            assertEquals(52, bytes.size)
+        }
+    }
+
+    private fun queryExtensionRequestBytes(): ByteArray {
+        val out = ByteArrayOutputStream()
+        fun u16(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+        }
+
+        out.write(98)
+        out.write(0)
+        u16(4)
+        u16(6)
+        u16(0)
+        out.write("RENDER".encodeToByteArray())
+        out.write(byteArrayOf(0, 0))
+        return out.toByteArray().also { bytes ->
+            assertEquals(16, bytes.size)
+        }
+    }
+
+    private fun setupSuccessReplyBytes(extraWords: Int): ByteArray {
+        val out = ByteArrayOutputStream()
+        fun u16(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+        }
+
+        out.write(1)
+        out.write(0)
+        u16(11)
+        u16(0)
+        u16(extraWords)
+        out.write(ByteArray(extraWords * 4))
+        return out.toByteArray().also { bytes ->
+            assertEquals(8 + extraWords * 4, bytes.size)
+        }
+    }
+
+    private fun queryExtensionReplyBytes(sequence: Int, majorOpcode: Int): ByteArray {
+        val out = ByteArrayOutputStream()
+        fun u16(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+        }
+        fun u32(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+            out.write((value ushr 16) and 0xff)
+            out.write((value ushr 24) and 0xff)
+        }
+
+        out.write(1)
+        out.write(0)
+        u16(sequence)
+        u32(0)
+        out.write(1)
+        out.write(majorOpcode)
+        out.write(0)
+        out.write(0)
+        out.write(ByteArray(20))
+        return out.toByteArray().also { bytes ->
+            assertEquals(32, bytes.size)
+        }
+    }
+
+    private fun chunkedInputStream(vararg chunks: ByteArray): java.io.InputStream =
+        object : java.io.InputStream() {
+            private var chunkIndex = 0
+            private var offset = 0
+
+            override fun read(): Int {
+                while (chunkIndex < chunks.size) {
+                    val chunk = chunks[chunkIndex]
+                    if (offset < chunk.size) return chunk[offset++].toInt() and 0xff
+                    chunkIndex++
+                    offset = 0
+                }
+                return -1
+            }
+
+            override fun read(bytes: ByteArray, off: Int, len: Int): Int {
+                if (len == 0) return 0
+                while (chunkIndex < chunks.size) {
+                    val chunk = chunks[chunkIndex]
+                    if (offset < chunk.size) {
+                        val count = minOf(len, chunk.size - offset)
+                        chunk.copyInto(bytes, off, offset, offset + count)
+                        offset += count
+                        if (offset == chunk.size) {
+                            chunkIndex++
+                            offset = 0
+                        }
+                        return count
+                    }
+                    chunkIndex++
+                    offset = 0
+                }
+                return -1
+            }
+        }
 
     private fun dumpIntellijRenderBandArtifacts(directory: File, text: String) {
         mapOf(
@@ -3635,6 +4321,7 @@ class IntellijCommunitySmokeTest {
     ): String {
         require(limit > 0) { "limit must be positive" }
         val traceArtifact = logs.firstOrNull { it.fileName == "intellij-xvfb-putimage-trace.log" }
+        val renderContexts = traceArtifact?.text?.let(::intellijXvfbRenderPictureContexts).orEmpty()
         val xvfbGroups = traceArtifact?.text
             ?.lineSequence()
             ?.mapNotNull { intellijXvfbPutImageTraceEntry(it) }
@@ -3650,6 +4337,8 @@ class IntellijCommunitySmokeTest {
                     firstRequest = first.request,
                     lastConnection = last.connection,
                     lastRequest = last.request,
+                    drawable = first.drawable,
+                    gc = first.gc,
                     key = IntellijPutImageStripKey(
                         size = "${first.width}x${first.height}",
                         dataBytes = first.dataBytes,
@@ -3657,6 +4346,7 @@ class IntellijCommunitySmokeTest {
                         raw = first.raw,
                         decoded = first.decoded,
                     ),
+                    renderContext = renderContexts[first.drawable],
                 )
             }
             ?.sortedWith(compareByDescending<IntellijXvfbPutImageStripGroup> { it.count }.thenBy { it.firstRequest })
@@ -3720,8 +4410,11 @@ class IntellijCommunitySmokeTest {
                     append(" count=").append(group.count)
                     append(" first=").append(group.firstConnection).append('#').append(group.firstRequest)
                     append(" last=").append(group.lastConnection).append('#').append(group.lastRequest)
+                    append(" drawable=").append(group.drawable)
+                    append(" gc=").append(group.gc)
                     append(" raw=").append(group.key.raw)
                     append(" decoded=").append(group.key.decoded)
+                    group.renderContext?.let { append(" render=").append(it) }
                     appendLine()
                 }
         }
@@ -5158,6 +5851,8 @@ class IntellijCommunitySmokeTest {
         val request: Int,
         val format: Int,
         val depth: Int,
+        val drawable: String,
+        val gc: String,
         val width: Int,
         val height: Int,
         val dataBytes: Int,
@@ -5180,10 +5875,23 @@ class IntellijCommunitySmokeTest {
         val firstRequest: Int,
         val lastConnection: Int,
         val lastRequest: Int,
+        val drawable: String,
+        val gc: String,
         val key: IntellijPutImageStripKey,
+        val renderContext: String?,
     ) {
         fun referenceLabel(): String =
-            "$firstConnection#$firstRequest..$lastConnection#$lastRequest count=$count crc32=${key.crc32} raw=${key.raw} decoded=${key.decoded}"
+            buildString {
+                append(firstConnection).append('#').append(firstRequest)
+                append("..").append(lastConnection).append('#').append(lastRequest)
+                append(" count=").append(count)
+                append(" drawable=").append(drawable)
+                append(" gc=").append(gc)
+                append(" crc32=").append(key.crc32)
+                append(" raw=").append(key.raw)
+                append(" decoded=").append(key.decoded)
+                renderContext?.let { append(" render=").append(it) }
+            }
     }
 
     private data class IntellijKotlinPutImageStripGroupingKey(
