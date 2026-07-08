@@ -6,7 +6,7 @@ internal object XXInput {
     const val FirstError = 183
 
     const val MajorVersion = 2
-    const val MinorVersion = 0
+    const val MinorVersion = 4
 
     const val MasterPointerId = 2
     const val MasterKeyboardId = 3

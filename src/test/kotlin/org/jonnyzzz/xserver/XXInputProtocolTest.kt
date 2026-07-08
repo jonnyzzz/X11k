@@ -22,6 +22,7 @@ class XXInputProtocolTest {
                 out.write(xinputGetExtensionVersionRequest("XInputExtension"))
                 out.write(request(XXInput.MajorOpcode, XXInput.ListInputDevices, ByteArray(0)))
                 out.write(xinputXiQueryVersionRequest(2, 4))
+                out.write(xinputXiQueryVersionRequest(2, 2))
                 out.write(xinputXiQueryDeviceRequest(0))
                 out.write(xinputXiListPropertiesRequest(0))
                 out.write(xinputXiGetPropertyRequest(XXInput.MasterPointerId, property = 1))
@@ -57,20 +58,26 @@ class XXInputProtocolTest {
                 assertEquals(XXInput.MajorVersion, u16le(xiVersion, 8))
                 assertEquals(XXInput.MinorVersion, u16le(xiVersion, 10))
 
+                val xi22Version = readReply(socket.getInputStream())
+                assertEquals(XXInput.XIQueryVersion, xi22Version[1].toInt() and 0xff)
+                assertEquals(6, u16le(xi22Version, 2))
+                assertEquals(XXInput.MajorVersion, u16le(xi22Version, 8))
+                assertEquals(2, u16le(xi22Version, 10))
+
                 val xiDevices = readReply(socket.getInputStream())
                 assertEquals(XXInput.XIQueryDevice, xiDevices[1].toInt() and 0xff)
-                assertEquals(6, u16le(xiDevices, 2))
+                assertEquals(7, u16le(xiDevices, 2))
                 assertEquals(2, u16le(xiDevices, 8))
                 assertXi2DeviceList(xiDevices)
 
                 val properties = readReply(socket.getInputStream())
                 assertEquals(XXInput.XIListProperties, properties[1].toInt() and 0xff)
-                assertEquals(7, u16le(properties, 2))
+                assertEquals(8, u16le(properties, 2))
                 assertEquals(0, u16le(properties, 8))
 
                 val property = readReply(socket.getInputStream())
                 assertEquals(XXInput.XIGetProperty, property[1].toInt() and 0xff)
-                assertEquals(8, u16le(property, 2))
+                assertEquals(9, u16le(property, 2))
                 assertEquals(0, u32le(property, 4))
                 assertEquals(0, u32le(property, 8))
                 assertEquals(0, u32le(property, 12))
@@ -78,7 +85,7 @@ class XXInputProtocolTest {
                 assertEquals(0, property[20].toInt() and 0xff)
 
                 val pointer = readReply(socket.getInputStream())
-                assertEquals(9, u16le(pointer, 2))
+                assertEquals(10, u16le(pointer, 2))
 
                 val text = httpGet(server.localPort, "/text.txt")
                 assertContains(text, "XInputExtension supported=true")
