@@ -82,7 +82,7 @@ Recent `xeyes` SVG-composition parity sample:
 | --- | --- |
 | ![xeyes Xvfb reference](docs/images/xeyes-xvfb-reference.png) | ![xeyes Kotlin SVG-composed framebuffer](docs/images/xeyes-kotlin-svg.png) |
 
-Current `xeyes` sampled distance is `0.05930930930930931`; the retained delta is limited to small grayscale antialiasing differences along RENDER trapezoid edges.
+Current `xeyes` sampled distance is `0.04504504504504504`; the retained delta is limited to small grayscale antialiasing differences along RENDER trapezoid edges.
 
 Recent `xterm` SVG-composition parity sample:
 
