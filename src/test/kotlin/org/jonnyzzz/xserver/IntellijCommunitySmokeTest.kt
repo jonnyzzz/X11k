@@ -494,6 +494,11 @@ class IntellijCommunitySmokeTest {
                     connection=5 request=12219 RENDER.SetPictureFilter picture=0x200090 filter=good
                     connection=5 request=12219 RENDER.SetPictureTransform picture=0x200090 transform=[0x10000,0x0,0x0,0x0,0x10000,0x0,0x0,0x0,0x10000]
                     connection=5 request=12220 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=624x2 leftPad=0 dataBytes=4992 crc32=0x1793d6e5 raw=[0x2c,0x28,0x26,0xff] decoded=[0xff26282c]
+                    connection=5 request=12221 RENDER.CreatePicture picture=0x200091 drawable=0x20007e format=0x25 valueMask=0x1 repeat=0 attrs=[repeat=none(0)]
+                    connection=5 request=12222 RENDER.Composite op=1 src=0x200090 mask=0x0 dst=0x200091 srcOrigin=0,0 maskOrigin=0,0 dst=0,0 size=624x2
+                    connection=5 request=12223 RENDER.SetPictureFilter picture=0x200091 filter=best
+                    connection=5 request=12224 RENDER.SetPictureTransform picture=0x200091 transform=[0x10000,0x0,0xfd900000,0x0,0x10000,0x0,0x0,0x0,0x10000]
+                    connection=5 request=12225 RENDER.Composite op=3 src=0x200091 mask=0x0 dst=0x200046 srcOrigin=33,34 maskOrigin=0,0 dst=33,34 size=256x2
                     connection=5 request=12236 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=600x2 leftPad=0 dataBytes=4800 crc32=0xcda50bae raw=[0x37,0x4f,0x34,0xff] decoded=[0xff344f37]
                     """.trimIndent(),
             ),
@@ -527,6 +532,9 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("xvfbSameSize=1 xvfbSameCrc=0 status=crc-mismatch"), summary)
         assertTrue(summary.contains("xvfbClosest=5#12220..5#12220 count=1 drawable=0x20007d gc=0x200080 crc32=0x1793d6e5"), summary)
         assertTrue(summary.contains("render=picture=0x200090 format=0x25 valueMask=0x1 repeat=1 attrs=[repeat=normal(1)] filter=good"), summary)
+        assertTrue(summary.contains("composites=5#12222/op=1 src=0x200090 dst=0x200091 srcOrigin=0,0 dst=0,0 size=624x2"), summary)
+        assertTrue(summary.contains("5#12225/op=3 src=0x200091 dst=0x200046 srcOrigin=33,34 dst=33,34 size=256x2"), summary)
+        assertTrue(summary.contains("srcContext=picture=0x200091 format=0x25 valueMask=0x1 repeat=0 attrs=[repeat=none(0)] filter=best"), summary)
         assertTrue(summary.contains("attrs=[repeat=normal(1)]"), summary)
         assertTrue(summary.contains("transform=[0x10000,0x0,0x0,0x0,0x10000,0x0,0x0,0x0,0x10000]"), summary)
         assertTrue(summary.contains("raw=[0x2c,0x28,0x26,0xff] decoded=[0xff26282c]"), summary)
@@ -4022,7 +4030,7 @@ class IntellijCommunitySmokeTest {
             if (filter != null) {
                 contexts.values.forEach { pictures ->
                     val picture = filter.groupValues[1]
-                    pictures[picture]?.let { value -> pictures[picture] = "$value filter=${filter.groupValues[2]}" }
+                    pictures[picture]?.let { value -> pictures[picture] = contextWithLatestField(value, "filter", filter.groupValues[2]) }
                 }
                 return@forEach
             }
@@ -4030,11 +4038,70 @@ class IntellijCommunitySmokeTest {
             if (transform != null) {
                 contexts.values.forEach { pictures ->
                     val picture = transform.groupValues[1]
-                    pictures[picture]?.let { value -> pictures[picture] = "$value transform=${transform.groupValues[2]}" }
+                    pictures[picture]?.let { value -> pictures[picture] = contextWithLatestField(value, "transform", transform.groupValues[2]) }
                 }
             }
         }
         return contexts.mapValues { (_, pictures) -> pictures.values.joinToString("|") }
+    }
+
+    private fun contextWithLatestField(context: String, key: String, value: String): String {
+        val stripped = Regex("""\s${Regex.escape(key)}=[^\s]+""").replace(context, "")
+        return "$stripped $key=$value"
+    }
+
+    private fun intellijXvfbPutImageCompositeContexts(trace: String): Map<String, String> {
+        val pictureContexts = linkedMapOf<String, String>()
+        val sourceDrawableByPicture = linkedMapOf<String, String>()
+        val compositesBySourceDrawable = linkedMapOf<String, MutableList<String>>()
+        trace.lineSequence().forEach { line ->
+            val create = Regex("""\bconnection=(\d+) request=(\d+) RENDER\.CreatePicture picture=(0x[0-9a-f]+) drawable=(0x[0-9a-f]+) format=(0x[0-9a-f]+) valueMask=(0x[0-9a-f]+) repeat=([^\s]+)(?: attrs=(\[[^]]*]))?""")
+                .find(line)
+            if (create != null) {
+                val picture = create.groupValues[3]
+                val drawable = create.groupValues[4]
+                val attrs = create.groupValues[8].ifBlank { null }
+                sourceDrawableByPicture[picture] = drawable
+                pictureContexts[picture] =
+                    "picture=$picture format=${create.groupValues[5]} valueMask=${create.groupValues[6]} repeat=${create.groupValues[7]}" +
+                    (attrs?.let { " attrs=$it" } ?: "")
+                return@forEach
+            }
+            val filter = Regex("""\bRENDER\.SetPictureFilter picture=(0x[0-9a-f]+) filter=([^\s]+)""").find(line)
+            if (filter != null) {
+                val picture = filter.groupValues[1]
+                pictureContexts[picture]?.let { value -> pictureContexts[picture] = contextWithLatestField(value, "filter", filter.groupValues[2]) }
+                return@forEach
+            }
+            val transform = Regex("""\bRENDER\.SetPictureTransform picture=(0x[0-9a-f]+) transform=(\[[^]]*])""").find(line)
+            if (transform != null) {
+                val picture = transform.groupValues[1]
+                pictureContexts[picture]?.let { value -> pictureContexts[picture] = contextWithLatestField(value, "transform", transform.groupValues[2]) }
+                return@forEach
+            }
+            val composite = Regex("""\bconnection=(\d+) request=(\d+) RENDER\.Composite op=(\d+) src=(0x[0-9a-f]+) mask=(0x[0-9a-f]+) dst=(0x[0-9a-f]+) srcOrigin=(-?\d+,-?\d+) maskOrigin=(-?\d+,-?\d+) dst=(-?\d+,-?\d+) size=(\d+x\d+)""")
+                .find(line)
+            if (composite != null) {
+                val src = composite.groupValues[4]
+                val dst = composite.groupValues[6]
+                val sourceDrawable = sourceDrawableByPicture[src] ?: return@forEach
+                sourceDrawableByPicture[dst] = sourceDrawable
+                val summary = buildString {
+                    append(composite.groupValues[1]).append('#').append(composite.groupValues[2])
+                    append("/op=").append(composite.groupValues[3])
+                    append(" src=").append(src)
+                    append(" dst=").append(dst)
+                    append(" srcOrigin=").append(composite.groupValues[7])
+                    append(" dst=").append(composite.groupValues[9])
+                    append(" size=").append(composite.groupValues[10])
+                    pictureContexts[src]?.let { append(" srcContext=").append(it) }
+                }
+                compositesBySourceDrawable.getOrPut(sourceDrawable) { mutableListOf() }.add(summary)
+            }
+        }
+        return compositesBySourceDrawable.mapValues { (_, composites) ->
+            composites.take(8).joinToString(";")
+        }
     }
 
     private fun bigRequestPutImageTraceBytes(): ByteArray {
@@ -4502,6 +4569,7 @@ class IntellijCommunitySmokeTest {
         require(limit > 0) { "limit must be positive" }
         val traceArtifact = logs.firstOrNull { it.fileName == "intellij-xvfb-putimage-trace.log" }
         val renderContexts = traceArtifact?.text?.let(::intellijXvfbRenderPictureContexts).orEmpty()
+        val compositeContexts = traceArtifact?.text?.let(::intellijXvfbPutImageCompositeContexts).orEmpty()
         val xvfbGroups = traceArtifact?.text
             ?.lineSequence()
             ?.mapNotNull { intellijXvfbPutImageTraceEntry(it) }
@@ -4527,6 +4595,7 @@ class IntellijCommunitySmokeTest {
                         decoded = first.decoded,
                     ),
                     renderContext = renderContexts[first.drawable],
+                    compositeContext = compositeContexts[first.drawable],
                 )
             }
             ?.sortedWith(compareByDescending<IntellijXvfbPutImageStripGroup> { it.count }.thenBy { it.firstRequest })
@@ -4595,6 +4664,7 @@ class IntellijCommunitySmokeTest {
                     append(" raw=").append(group.key.raw)
                     append(" decoded=").append(group.key.decoded)
                     group.renderContext?.let { append(" render=").append(it) }
+                    group.compositeContext?.let { append(" composites=").append(it) }
                     appendLine()
                 }
         }
@@ -6059,6 +6129,7 @@ class IntellijCommunitySmokeTest {
         val gc: String,
         val key: IntellijPutImageStripKey,
         val renderContext: String?,
+        val compositeContext: String?,
     ) {
         fun referenceLabel(): String =
             buildString {
@@ -6071,6 +6142,7 @@ class IntellijCommunitySmokeTest {
                 append(" raw=").append(key.raw)
                 append(" decoded=").append(key.decoded)
                 renderContext?.let { append(" render=").append(it) }
+                compositeContext?.let { append(" composites=").append(it) }
             }
     }
 
