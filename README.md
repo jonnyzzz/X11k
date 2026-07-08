@@ -60,6 +60,14 @@ Recent `xcalc` SVG-composition parity sample:
 
 Current `xcalc` sampled distance is `0.0`; display frame, display text, angle-mode indicators, and keypad regions are pixel-exact against the Xvfb reference in the latest parity run.
 
+Recent `xlogo` SVG-composition parity sample:
+
+| Xvfb reference | Kotlin SVG-composed framebuffer |
+| --- | --- |
+| ![xlogo Xvfb reference](docs/images/xlogo-xvfb-reference.png) | ![xlogo Kotlin SVG-composed framebuffer](docs/images/xlogo-kotlin-svg.png) |
+
+Current `xlogo` sampled distance is `0.0`; the filled polygon output is pixel-exact against the Xvfb reference in the latest parity run.
+
 Recent `xclock` SVG-composition parity sample:
 
 | Xvfb reference | Kotlin SVG-composed framebuffer |
@@ -68,17 +76,29 @@ Recent `xclock` SVG-composition parity sample:
 
 Current `xclock` sampled distance is `0.0`; analog face, tick marks, and hands are pixel-exact against the Xvfb reference in the latest parity run.
 
+Recent `xeyes` SVG-composition parity sample:
+
+| Xvfb reference | Kotlin SVG-composed framebuffer |
+| --- | --- |
+| ![xeyes Xvfb reference](docs/images/xeyes-xvfb-reference.png) | ![xeyes Kotlin SVG-composed framebuffer](docs/images/xeyes-kotlin-svg.png) |
+
+Current `xeyes` sampled distance is `0.05930930930930931`; the retained delta is limited to small grayscale antialiasing differences along RENDER trapezoid edges.
+
 Recent `xterm` SVG-composition parity sample:
 
 | Xvfb reference | Kotlin SVG-composed framebuffer |
 | --- | --- |
 | ![xterm Xvfb reference](docs/images/xterm-xvfb-reference.png) | ![xterm Kotlin SVG-composed framebuffer](docs/images/xterm-kotlin-svg.png) |
 
+Current `xterm` sampled distance is `0.0`; fixed-font text and terminal chrome are pixel-exact against the Xvfb reference in the latest parity run.
+
 Recent `twm` window-manager SVG-composition parity sample:
 
 | Xvfb reference | Kotlin SVG-composed framebuffer |
 | --- | --- |
 | ![twm Xvfb reference](docs/images/twm-xvfb-reference.png) | ![twm Kotlin SVG-composed framebuffer](docs/images/twm-kotlin-svg.png) |
+
+Current `twm` sampled distance is `0.0`; the managed overlap probe is pixel-exact against the Xvfb reference in the latest parity run.
 
 Recent VSCode/Electron SVG-composition parity sample:
 
