@@ -3877,12 +3877,13 @@ internal class X11State(
                 renderShape = renderShape?.map { it.copy() },
             )
         }
-        fun sizeMatchingWindowIds(width: Int, height: Int): List<Int> =
+        fun sizeMatchingWindowIds(width: Int, height: Int, depth: Int): List<Int> =
             windowSnapshots
                 .filter {
                     it.id != X11Ids.RootWindow &&
                         it.mapped &&
                         it.windowClass == XWindowClass.InputOutput &&
+                        it.depth == depth &&
                         it.backingPixmapMatchWidth <= width &&
                         it.backingPixmapMatchHeight <= height
                 }
@@ -3908,8 +3909,8 @@ internal class X11State(
             val ids: List<Int>,
             val provenanceIds: List<Int>,
         )
-        fun matchingWindowIds(drawableId: Int, generation: Long?, width: Int, height: Int): MatchingWindowResult {
-            val sizeMatches = sizeMatchingWindowIds(width, height)
+        fun matchingWindowIds(drawableId: Int, generation: Long?, width: Int, height: Int, depth: Int): MatchingWindowResult {
+            val sizeMatches = sizeMatchingWindowIds(width, height, depth)
             val sourceIdentity = generation?.let { DrawableIdentity(drawableId, it) } ?: drawableIdentity(drawableId)
             if (sourceIdentity == null) return MatchingWindowResult(sizeMatches, emptyList())
             val consumers = framebufferWindowConsumersBySource[sourceIdentity]
@@ -3922,7 +3923,7 @@ internal class X11State(
         }
 
         val livePixmapSnapshots = pixmaps.values.map { pixmap ->
-            val matchingWindows = matchingWindowIds(pixmap.id, pixmap.generation, pixmap.width, pixmap.height)
+            val matchingWindows = matchingWindowIds(pixmap.id, pixmap.generation, pixmap.width, pixmap.height, pixmap.depth)
             XPixmapSnapshot(
                 id = pixmap.id,
                 generation = pixmap.generation,
@@ -3946,13 +3947,14 @@ internal class X11State(
             val drawableId = picture.drawableId ?: return@mapNotNull null
             val framebuffer = picture.retainedDrawableFramebuffer ?: return@mapNotNull null
             if (pixmaps[drawableId]?.framebuffer === framebuffer) return@mapNotNull null
-            val matchingWindows = matchingWindowIds(drawableId, picture.retainedDrawableGeneration, framebuffer.width, framebuffer.height)
+            val depth = picture.retainedDrawableDepth ?: (XRender.formatDepth(picture.format) ?: 0)
+            val matchingWindows = matchingWindowIds(drawableId, picture.retainedDrawableGeneration, framebuffer.width, framebuffer.height, depth)
             XPixmapSnapshot(
                 id = drawableId,
                 generation = picture.retainedDrawableGeneration ?: 0L,
                 width = framebuffer.width,
                 height = framebuffer.height,
-                depth = picture.retainedDrawableDepth ?: (XRender.formatDepth(picture.format) ?: 0),
+                depth = depth,
                 painted = framebuffer.hasPaintedContent(),
                 framebufferDataUri = framebuffer.toDataUri(),
                 pictureIds = listOf(picture.id),
@@ -7501,12 +7503,13 @@ internal class X11State(
             .filter { drawing -> windows[drawing.drawableId]?.generation == drawing.drawableGeneration }
             .groupBy { DrawableIdentity(it.sourceDrawableId!!, it.sourceDrawableGeneration!!) }
             .mapValues { (_, drawings) -> drawings.map { it.drawableId }.distinct().toSet() }
-        fun sizeMatchingWindowIds(width: Int, height: Int): Set<Int> =
+        fun sizeMatchingWindowIds(width: Int, height: Int, depth: Int): Set<Int> =
             windows.values
                 .filter { window ->
                     window.id != X11Ids.RootWindow &&
                         window.mapped &&
                         window.windowClass == XWindowClass.InputOutput &&
+                        window.depth == depth &&
                         windowBackingPixmapMatchWidth(window) <= width &&
                         windowBackingPixmapMatchHeight(window) <= height
                 }
@@ -7516,8 +7519,8 @@ internal class X11State(
             val ids: Set<Int>,
             val provenanceIds: Set<Int>,
         )
-        fun matchingWindowIds(drawableId: Int, generation: Long?, width: Int, height: Int): MatchingWindowResult {
-            val sizeMatches = sizeMatchingWindowIds(width, height)
+        fun matchingWindowIds(drawableId: Int, generation: Long?, width: Int, height: Int, depth: Int): MatchingWindowResult {
+            val sizeMatches = sizeMatchingWindowIds(width, height, depth)
             val sourceIdentity = generation?.let { DrawableIdentity(drawableId, it) } ?: drawableIdentity(drawableId)
             if (sourceIdentity == null) return MatchingWindowResult(sizeMatches, emptySet())
             val consumers = framebufferWindowConsumersBySource[sourceIdentity]
@@ -7530,12 +7533,13 @@ internal class X11State(
         }
 
         val livePixmapSurfaces = pixmaps.values.map { pixmap ->
-            val matchingWindows = matchingWindowIds(pixmap.id, pixmap.generation, pixmap.width, pixmap.height)
+            val matchingWindows = matchingWindowIds(pixmap.id, pixmap.generation, pixmap.width, pixmap.height, pixmap.depth)
             XRootPixmapSurface(
                 id = pixmap.id,
                 generation = pixmap.generation,
                 width = pixmap.width,
                 height = pixmap.height,
+                depth = pixmap.depth,
                 retained = false,
                 framebuffer = pixmap.framebuffer,
                 matchingWindowIds = matchingWindows.ids,
@@ -7546,12 +7550,14 @@ internal class X11State(
             val drawableId = picture.drawableId ?: return@mapNotNull null
             val framebuffer = picture.retainedDrawableFramebuffer ?: return@mapNotNull null
             if (pixmaps[drawableId]?.framebuffer === framebuffer) return@mapNotNull null
-            val matchingWindows = matchingWindowIds(drawableId, picture.retainedDrawableGeneration, framebuffer.width, framebuffer.height)
+            val depth = picture.retainedDrawableDepth ?: (XRender.formatDepth(picture.format) ?: 0)
+            val matchingWindows = matchingWindowIds(drawableId, picture.retainedDrawableGeneration, framebuffer.width, framebuffer.height, depth)
             XRootPixmapSurface(
                 id = drawableId,
                 generation = picture.retainedDrawableGeneration ?: 0L,
                 width = framebuffer.width,
                 height = framebuffer.height,
+                depth = depth,
                 retained = true,
                 framebuffer = framebuffer,
                 matchingWindowIds = matchingWindows.ids,
@@ -9306,7 +9312,11 @@ internal class X11State(
                 16 -> destination.graphicsExposures = source.graphicsExposures
                 17 -> destination.clipXOrigin = source.clipXOrigin
                 18 -> destination.clipYOrigin = source.clipYOrigin
-                19 -> destination.clipRectangles = source.clipRectangles?.toList()
+                19 -> {
+                    destination.clipRectangles = source.clipRectangles?.toList()
+                    destination.clipMaskPixmapId = source.clipMaskPixmapId
+                    destination.clipMaskPixmap = source.clipMaskPixmap
+                }
                 20 -> destination.dashOffset = source.dashOffset
                 21 -> destination.dashes = source.dashes.toList()
                 22 -> destination.arcMode = source.arcMode
@@ -9414,6 +9424,9 @@ internal class X11State(
         stipplePixmapId: Int? = null,
         tilePixmap: XImagePixels? = null,
         stipplePixmap: XImagePixels? = null,
+        clipMaskPixmapId: Int? = null,
+        clipMaskPixmap: XImagePixels? = null,
+        clipMaskChanged: Boolean = false,
         tileStippleXOrigin: Int? = null,
         tileStippleYOrigin: Int? = null,
         dashOffset: Int? = null,
@@ -9444,6 +9457,11 @@ internal class X11State(
             gc.stipplePixmapId = it
             gc.stipplePixmap = stipplePixmap
         }
+        if (clipMaskChanged) {
+            gc.clipMaskPixmapId = clipMaskPixmapId
+            gc.clipMaskPixmap = clipMaskPixmap
+            gc.clipRectangles = null
+        }
         tileStippleXOrigin?.let { gc.tileStippleXOrigin = it }
         tileStippleYOrigin?.let { gc.tileStippleYOrigin = it }
         dashOffset?.let { gc.dashOffset = it }
@@ -9464,6 +9482,8 @@ internal class X11State(
         clipXOrigin?.let { gc.clipXOrigin = it }
         clipYOrigin?.let { gc.clipYOrigin = it }
         gc.clipRectangles = clipRectangles
+        gc.clipMaskPixmapId = null
+        gc.clipMaskPixmap = null
     }
 
     @Synchronized
@@ -11439,6 +11459,8 @@ internal data class XGraphicsContext(
     var clipXOrigin: Int = 0
     var clipYOrigin: Int = 0
     var clipRectangles: List<XRectangleCommand>? = null
+    var clipMaskPixmapId: Int? = null
+    var clipMaskPixmap: XImagePixels? = null
     var fillStyle: Int = FillSolid
     var fillRule: Int = EvenOddRule
     var tilePixmapId: Int? = null
@@ -11453,8 +11475,8 @@ internal data class XGraphicsContext(
     var graphicsExposures: Boolean = true
     var subwindowMode: Int = SubwindowModeClipByChildren
 
-    fun effectiveClipRectangles(): List<XRectangleCommand>? =
-        clipRectangles?.map { rectangle ->
+    fun effectiveClipRectangles(): List<XRectangleCommand>? {
+        val rectangles = clipRectangles?.map { rectangle ->
             XRectangleCommand(
                 x = rectangle.x + clipXOrigin,
                 y = rectangle.y + clipYOrigin,
@@ -11462,6 +11484,46 @@ internal data class XGraphicsContext(
                 height = rectangle.height,
             )
         }
+        val mask = clipMaskPixmap?.toClipRectangles(clipXOrigin, clipYOrigin)
+        return when {
+            rectangles == null -> mask
+            mask == null -> rectangles
+            else -> rectangles.flatMap { left -> mask.mapNotNull { right -> left.intersect(right) } }
+        }
+    }
+
+    private fun XImagePixels.toClipRectangles(xOrigin: Int, yOrigin: Int): List<XRectangleCommand> {
+        val rectangles = mutableListOf<XRectangleCommand>()
+        for (y in 0 until height) {
+            var runStart = -1
+            for (x in 0 until width) {
+                val included = pixels[y * width + x].isMaskPixelSet()
+                if (included && runStart < 0) runStart = x
+                if ((!included || x == width - 1) && runStart >= 0) {
+                    val runEnd = if (included && x == width - 1) x + 1 else x
+                    rectangles += XRectangleCommand(
+                        x = xOrigin + runStart,
+                        y = yOrigin + y,
+                        width = runEnd - runStart,
+                        height = 1,
+                    )
+                    runStart = -1
+                }
+            }
+        }
+        return rectangles
+    }
+
+    private fun Int.isMaskPixelSet(): Boolean =
+        (this and 1) != 0 || ((this ushr 24) and 0xff) >= 0x80
+
+    private fun XRectangleCommand.intersect(other: XRectangleCommand): XRectangleCommand? {
+        val left = maxOf(x, other.x)
+        val top = maxOf(y, other.y)
+        val right = minOf(x + width, other.x + other.width)
+        val bottom = minOf(y + height, other.y + other.height)
+        return if (right > left && bottom > top) XRectangleCommand(left, top, right - left, bottom - top) else null
+    }
 
     companion object {
         const val GXclear = 0x0
@@ -12554,6 +12616,7 @@ private data class XRootPixmapSurface(
     val generation: Long,
     val width: Int,
     val height: Int,
+    val depth: Int,
     val retained: Boolean,
     val framebuffer: XFramebuffer,
     val matchingWindowIds: Set<Int>,

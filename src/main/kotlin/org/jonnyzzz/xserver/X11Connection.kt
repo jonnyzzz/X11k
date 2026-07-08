@@ -1233,7 +1233,7 @@ internal class X11Connection(
     }
 
     private fun bitmapMaskRectangles(image: XImagePixels): List<XRectangleCommand> =
-        maskRectangles(image, originX = 0, originY = 0) { pixel -> (pixel and 1) != 0 }
+        maskRectangles(image, originX = 0, originY = 0) { pixel -> imageMaskPixelSet(pixel) }
 
     private fun imageMaskRectangles(image: XImagePixels, originX: Int, originY: Int): List<XRectangleCommand> =
         maskRectangles(image, originX, originY) { pixel -> imageMaskPixelSet(pixel) }
@@ -12808,6 +12808,16 @@ internal class X11Connection(
                         return false
                     }
                 }
+                19 -> if (value != 0) {
+                    val pixmap = state.pixmap(value) ?: run {
+                        writeError(error = 4, opcode = opcode, badValue = value)
+                        return false
+                    }
+                    if (pixmap.rootId != drawableRootId || pixmap.depth != 1) {
+                        writeError(error = 8, opcode = opcode, badValue = value)
+                        return false
+                    }
+                }
                 14 -> if (value != 0 && !state.hasFont(value)) {
                     writeError(error = 7, opcode = opcode, badValue = value)
                     return false
@@ -12866,6 +12876,9 @@ internal class X11Connection(
         var stipplePixmapId: Int? = null
         var tilePixmap: XImagePixels? = null
         var stipplePixmap: XImagePixels? = null
+        var clipMaskPixmapId: Int? = null
+        var clipMaskPixmap: XImagePixels? = null
+        var clipMaskChanged = false
         var tileStippleXOrigin: Int? = null
         var tileStippleYOrigin: Int? = null
         var dashOffset: Int? = null
@@ -12938,7 +12951,15 @@ internal class X11Connection(
                 }
                 17 -> clipXOrigin = value.toShort().toInt()
                 18 -> clipYOrigin = value.toShort().toInt()
-                19 -> if (value == 0) clearClipRectangles = true
+                19 -> {
+                    clipMaskChanged = true
+                    if (value == 0) {
+                        clearClipRectangles = true
+                    } else {
+                        clipMaskPixmapId = value
+                        clipMaskPixmap = state.pixmapImage(value) ?: return writeError(error = 4, opcode = opcode, badValue = value)
+                    }
+                }
                 20 -> if (value in 0..0xffff) {
                     dashOffset = value
                 } else {
@@ -12975,6 +12996,9 @@ internal class X11Connection(
             stipplePixmapId = stipplePixmapId,
             tilePixmap = tilePixmap,
             stipplePixmap = stipplePixmap,
+            clipMaskPixmapId = clipMaskPixmapId,
+            clipMaskPixmap = clipMaskPixmap,
+            clipMaskChanged = clipMaskChanged && !clearClipRectangles,
             tileStippleXOrigin = tileStippleXOrigin,
             tileStippleYOrigin = tileStippleYOrigin,
             dashOffset = dashOffset,

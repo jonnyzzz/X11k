@@ -623,6 +623,56 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `GC clip mask pixmap clips filled rectangles`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val maskPixmap = PixmapId + 1
+                val maskGc = GcId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 5, height = 5))
+                out.write(createPixmapRequest(maskPixmap, width = 5, height = 5, depth = 1))
+                out.write(createGcRequest(maskGc, foreground = 1, background = 0, drawable = maskPixmap))
+                out.write(
+                    putImageBitmapRequest(
+                        maskPixmap,
+                        maskGc,
+                        width = 5,
+                        height = 5,
+                        bits = listOf(
+                            false, true, true, true, false,
+                            true, true, true, true, true,
+                            true, true, true, true, true,
+                            true, true, true, true, true,
+                            false, true, true, true, false,
+                        ),
+                    ),
+                )
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(changeGcClipMaskRequest(GcId, maskPixmap))
+                out.write(polyFillRectangleRequest(WindowId, GcId, rectangles = listOf(XRectangleCommand(0, 0, 5, 5))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 5))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 0, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 1, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 2, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 3, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 4, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 0, 1))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 4, 3))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 0, 4))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 3, 4))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 4, 4))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CopyGC reports errors for unknown GC and invalid mask`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -8275,6 +8325,68 @@ class XCoreDrawingProtocolTest {
                 assertEquals(18, u16le(pointer, 18))
                 assertEquals(7, u16le(pointer, 20))
                 assertEquals(8, u16le(pointer, 22))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SHAPE Mask from depth one pixmap clips root composition`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val parent = WindowId
+                val child = WindowId + 1
+                val mask = PixmapId
+                val maskGc = GcId + 1
+                out.write(createWindowRequest(parent, x = 10, y = 10, width = 20, height = 20, backgroundPixel = 0x00ff_ffff))
+                out.write(createWindowRequest(child, parent = parent, x = 5, y = 5, width = 5, height = 5, backgroundPixel = Red))
+                out.write(createPixmapRequest(mask, width = 5, height = 5, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createGcRequest(maskGc, foreground = 1, background = 0, drawable = mask))
+                out.write(
+                    putImageBitmapRequest(
+                        mask,
+                        maskGc,
+                        width = 5,
+                        height = 5,
+                        bits = listOf(
+                            false, true, true, true, false,
+                            true, true, true, true, true,
+                            true, true, true, true, true,
+                            true, true, true, true, true,
+                            false, true, true, true, false,
+                        ),
+                    ),
+                )
+                out.write(shapeMaskRequest(child, XFixes.ShapeBounding, XShape.OpSet, mask))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(getImageRequest(X11Ids.RootWindow, x = 15, y = 15, width = 5, height = 5))
+                out.write(shapeGetRectanglesRequest(child, XFixes.ShapeBounding))
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, child)
+                val image = readReply(input)
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 0, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 1, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 2, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 3, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 4, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 0, 1))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 4, 3))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 0, 4))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 3, 4))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 4, 4))
+
+                val rectangles = readReply(input)
+                assertEquals(3, u32le(rectangles, 8))
+                assertEquals(listOf(XRectangleCommand(1, 0, 3, 1), XRectangleCommand(0, 1, 5, 3), XRectangleCommand(1, 4, 3, 1)), rectanglePayload(rectangles, 3))
             }
             server.close()
             serverThread.join(1_000)
@@ -21546,6 +21658,24 @@ class XCoreDrawingProtocolTest {
         return request(XShape.MajorOpcode, XShape.Rectangles, body)
     }
 
+    private fun shapeMaskRequest(window: Int, kind: Int, operation: Int, bitmap: Int, xOffset: Int = 0, yOffset: Int = 0): ByteArray {
+        val body = ByteArray(16)
+        body[0] = operation.toByte()
+        body[1] = kind.toByte()
+        put32le(body, 4, window)
+        put16le(body, 8, xOffset)
+        put16le(body, 10, yOffset)
+        put32le(body, 12, bitmap)
+        return request(XShape.MajorOpcode, XShape.Mask, body)
+    }
+
+    private fun shapeGetRectanglesRequest(window: Int, kind: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, window)
+        body[4] = kind.toByte()
+        return request(XShape.MajorOpcode, XShape.GetRectangles, body)
+    }
+
     private fun shapeOffsetRequest(window: Int, kind: Int, dx: Int, dy: Int): ByteArray {
         val body = ByteArray(12)
         body[0] = kind.toByte()
@@ -22538,6 +22668,16 @@ class XCoreDrawingProtocolTest {
         put32le(body, 12, stipplePixmap)
         put32le(body, 16, xOrigin)
         put32le(body, 20, yOrigin)
+        return request(56, 0, body)
+    }
+
+    private fun changeGcClipMaskRequest(id: Int, clipMask: Int, xOrigin: Int = 0, yOrigin: Int = 0): ByteArray {
+        val body = ByteArray(20)
+        put32le(body, 0, id)
+        put32le(body, 4, 0x000e_0000)
+        put32le(body, 8, xOrigin)
+        put32le(body, 12, yOrigin)
+        put32le(body, 16, clipMask)
         return request(56, 0, body)
     }
 
@@ -23570,6 +23710,17 @@ class XCoreDrawingProtocolTest {
         val payloadUnits = if (byteOrderByte == 0x42) u32be(header, 4) else u32le(header, 4)
         return header + input.readExactly(payloadUnits * 4)
     }
+
+    private fun rectanglePayload(reply: ByteArray, count: Int, offset: Int = 32): List<XRectangleCommand> =
+        (0 until count).map { index ->
+            val rectangleOffset = offset + index * 8
+            XRectangleCommand(
+                x = i16le(reply, rectangleOffset),
+                y = i16le(reply, rectangleOffset + 2),
+                width = u16le(reply, rectangleOffset + 4),
+                height = u16le(reply, rectangleOffset + 6),
+            )
+        }
 
     private fun assertMapAndExpose(input: InputStream, windowId: Int) {
         val first = input.readExactly(32)
