@@ -11553,6 +11553,129 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER PutImage strip copied through intermediate picture repeats with latest filter and transform`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val sourcePixmap = PixmapId
+                val sourcePicture = PixmapPictureId
+                val intermediatePixmap = PixmapId + 0x10
+                val intermediatePicture = PixmapPictureId + 0x10
+                val width = 6
+                val height = 2
+                val topRow = listOf(
+                    0xff10_2030.toInt(),
+                    0xff30_4050.toInt(),
+                    0xff50_6070.toInt(),
+                    0xff70_8090.toInt(),
+                    0xff90_a0b0.toInt(),
+                    0xffb0_c0d0.toInt(),
+                )
+                val bottomRow = listOf(
+                    0xff20_3010.toInt(),
+                    0xff40_5030.toInt(),
+                    0xff60_7050.toInt(),
+                    0xff80_9070.toInt(),
+                    0xffa0_b090.toInt(),
+                    0xffc0_d0b0.toInt(),
+                )
+                val sourcePixels = (topRow + bottomRow).toIntArray()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(createPixmapRequest(sourcePixmap, depth = 32, width = width, height = height))
+                out.write(createPixmapRequest(intermediatePixmap, depth = 32, width = width, height = height))
+                out.write(createGcRequest(PutImageGcId, sourcePixmap))
+                out.write(putImage32OnlyRequest(sourcePixmap, width = width, height = height, pixels = sourcePixels))
+                out.write(renderCreatePicture(sourcePicture, sourcePixmap, XRender.Argb32Format))
+                out.write(renderCreatePicture(intermediatePicture, intermediatePixmap, XRender.Argb32Format))
+                out.write(
+                    renderComposite(
+                        sourcePicture,
+                        intermediatePicture,
+                        operation = XRender.OpSrc,
+                        width = width,
+                        height = height,
+                        destinationX = 0,
+                        destinationY = 0,
+                    ),
+                )
+                out.write(renderChangePicture(intermediatePicture, repeat = XRender.RepeatNormal))
+                out.write(renderSetPictureFilter(intermediatePicture, "good", values = emptyList()))
+                out.write(
+                    renderSetPictureTransform(
+                        intermediatePicture,
+                        listOf(
+                            0x0001_0000,
+                            0,
+                            -0x0004_8000,
+                            0,
+                            0x0001_0000,
+                            0,
+                            0,
+                            0,
+                            0x0001_0000,
+                        ),
+                    ),
+                )
+                out.write(
+                    renderComposite(
+                        intermediatePicture,
+                        PictureId,
+                        operation = XRender.OpOver,
+                        destinationX = 0,
+                        destinationY = 0,
+                        width = 8,
+                        height = 4,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 4))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                val expectedTop = listOf(
+                    0xff40_5060.toInt(),
+                    0xff60_7080.toInt(),
+                    0xff80_90a0.toInt(),
+                    0xffa0_b0c0.toInt(),
+                    0xff60_7080.toInt(),
+                    0xff20_3040.toInt(),
+                    0xff40_5060.toInt(),
+                    0xff60_7080.toInt(),
+                )
+                val expectedBottom = listOf(
+                    0xff50_6040.toInt(),
+                    0xff70_8060.toInt(),
+                    0xff90_a080.toInt(),
+                    0xffb0_c0a0.toInt(),
+                    0xff70_8060.toInt(),
+                    0xff30_4020.toInt(),
+                    0xff50_6040.toInt(),
+                    0xff70_8060.toInt(),
+                )
+                assertPixelRow(image, imageWidth = 8, y = 0, expected = expectedTop)
+                assertPixelRow(image, imageWidth = 8, y = 1, expected = expectedBottom)
+                assertPixelRow(image, imageWidth = 8, y = 2, expected = expectedTop)
+                assertPixelRow(image, imageWidth = 8, y = 3, expected = expectedBottom)
+
+                waitUntil {
+                    httpGet(server.localPort, "/text.txt").contains("producerSourcePopulation=0x${sourcePixmap.toUInt().toString(16)}#")
+                }
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "source=0x${intermediatePicture.toUInt().toString(16)}/pixmap repeat=normal filter=good")
+                assertContains(text, "transform=[0x10000,0x0,0xfffb8000,0x0,0x10000,0x0,0x0,0x0,0x10000]")
+                assertContains(text, "sourcePopulation=0x${intermediatePixmap.toUInt().toString(16)}#")
+                assertContains(text, "producerSourcePopulation=0x${sourcePixmap.toUInt().toString(16)}#")
+                assertContains(text, "putImage=format=2,depth=32,leftPad=0,size=6x2,dataBytes=48,rowStride=24,crc32=")
+                assertContains(text, "decoded=[0xff102030,0xff304050,0xff506070")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER OpOver good filter matches Xvfb transformed repeated ARGB32 pixmap strip`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
