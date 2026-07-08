@@ -103,14 +103,14 @@ class X11HandshakeTest {
                 assertEquals(expected, rest.pixmapFormats())
                 assertEquals(
                     listOf(
-                        SetupDepth(depth = 1, visualCount = 0),
-                        SetupDepth(depth = 4, visualCount = 0),
-                        SetupDepth(depth = 8, visualCount = 0),
-                        SetupDepth(depth = 16, visualCount = 0),
                         SetupDepth(
                             depth = 24,
                             visualCount = X11Ids.RootVisualAliases.size + X11Ids.RootDirectColorVisualAliases.size,
                         ),
+                        SetupDepth(depth = 1, visualCount = 0),
+                        SetupDepth(depth = 4, visualCount = 0),
+                        SetupDepth(depth = 8, visualCount = 0),
+                        SetupDepth(depth = 16, visualCount = 0),
                         SetupDepth(depth = 32, visualCount = X11Ids.RgbaVisualAliases.size),
                     ),
                     rest.screenDepths(),

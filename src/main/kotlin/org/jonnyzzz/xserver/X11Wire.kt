@@ -100,9 +100,10 @@ internal object SetupReply {
         val vendorPaddedLength = paddedLength(vendor.size)
         val pixmapFormatsLength = XPixmapFormats.All.size
         val screensLength = 1
-        val depthsLength = XPixmapFormats.All.size
+        val screenDepths = XPixmapFormats.ScreenDepths
+        val depthsLength = screenDepths.size
         val visuals = X11Ids.VisualDescriptions
-        val depthBytes = XPixmapFormats.All.sumOf { format -> 8 + visuals.count { it.depth == format.depth } * 24 }
+        val depthBytes = screenDepths.sumOf { format -> 8 + visuals.count { it.depth == format.depth } * 24 }
         val screenBytes = 40 + depthBytes
         val additionalLength = 32 + vendorPaddedLength + pixmapFormatsLength * 8 + screenBytes
         val reply = ByteArray(8 + additionalLength)
@@ -153,7 +154,7 @@ internal object SetupReply {
         reply[offset + 39] = depthsLength.toByte()
         offset += 40
 
-        for (format in XPixmapFormats.All) {
+        for (format in screenDepths) {
             reply[offset] = format.depth.toByte()
             val formatVisuals = visuals.filter { it.depth == format.depth }
             val formatVisualsLength = formatVisuals.size
@@ -226,6 +227,9 @@ internal object XPixmapFormats {
         XPixmapFormatEntry(depth = 24, bitsPerPixel = 32, scanlinePad = 32),
         XPixmapFormatEntry(depth = 32, bitsPerPixel = 32, scanlinePad = 32),
     )
+    val ScreenDepths = listOfNotNull(
+        All.firstOrNull { it.depth == X11Ids.RootDepth },
+    ) + All.filterNot { it.depth == X11Ids.RootDepth }
     val SupportedDepths = All.map { it.depth }.toSet()
 
     fun bitsPerPixel(depth: Int): Int? =
