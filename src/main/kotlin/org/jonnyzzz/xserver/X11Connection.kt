@@ -13432,7 +13432,43 @@ internal class X11Connection(
             decodedPixelSampleHex = image?.pixels?.take(8)?.map { "0x${it.toUInt().toString(16).padStart(8, '0')}" } ?: emptyList(),
             rawTileSampleHex = data.take(256).map { "0x${(it.toInt() and 0xff).toString(16).padStart(2, '0')}" },
             decodedTilePixelSampleHex = image?.pixels?.take(64)?.map { "0x${it.toUInt().toString(16).padStart(8, '0')}" } ?: emptyList(),
+            rawRowSampleHex = putImageRawRowSamples(data, rowStrideBytes, height),
+            decodedRowPixelSampleHex = putImageDecodedRowSamples(image),
         )
+    }
+
+    private fun putImageRawRowSamples(
+        data: ByteArray,
+        rowStrideBytes: Int,
+        height: Int,
+        maxRows: Int = 2,
+        maxBytesPerRow: Int = 128,
+    ): List<List<String>> {
+        if (rowStrideBytes <= 0 || height <= 0) return emptyList()
+        return (0 until minOf(height, maxRows)).mapNotNull { row ->
+            val offset = row.toLong() * rowStrideBytes
+            if (offset >= data.size) return@mapNotNull null
+            val count = minOf(rowStrideBytes, maxBytesPerRow, data.size - offset.toInt())
+            data.asList()
+                .subList(offset.toInt(), offset.toInt() + count)
+                .map { "0x${(it.toInt() and 0xff).toString(16).padStart(2, '0')}" }
+        }
+    }
+
+    private fun putImageDecodedRowSamples(
+        image: XImagePixels?,
+        maxRows: Int = 2,
+        maxPixelsPerRow: Int = 32,
+    ): List<List<String>> {
+        image ?: return emptyList()
+        if (image.width <= 0 || image.height <= 0) return emptyList()
+        return (0 until minOf(image.height, maxRows)).map { row ->
+            val offset = row * image.width
+            image.pixels
+                .asList()
+                .subList(offset, offset + minOf(image.width, maxPixelsPerRow))
+                .map { "0x${it.toUInt().toString(16).padStart(8, '0')}" }
+        }
     }
 
     private fun putImageRowStrideBytes(format: Int, width: Int, depth: Int, leftPad: Int): Int? =

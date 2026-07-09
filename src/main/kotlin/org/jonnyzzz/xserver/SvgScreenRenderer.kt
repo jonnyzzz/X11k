@@ -2147,7 +2147,25 @@ internal object SvgScreenRenderer {
             if (index > 0) append(',')
             append('"').append(value).append('"')
         }
-        append("""]}""")
+        append("""],"rawRows":""")
+        appendPutImageMetadataRows(metadata.rawRowSampleHex)
+        append(""","decodedRows":""")
+        appendPutImageMetadataRows(metadata.decodedRowPixelSampleHex)
+        append('}')
+    }
+
+    private fun StringBuilder.appendPutImageMetadataRows(rows: List<List<String>>) {
+        append('[')
+        rows.forEachIndexed { rowIndex, row ->
+            if (rowIndex > 0) append(',')
+            append('[')
+            row.forEachIndexed { valueIndex, value ->
+                if (valueIndex > 0) append(',')
+                append('"').append(value).append('"')
+            }
+            append(']')
+        }
+        append(']')
     }
 
     private fun escapeJson(value: String): String =

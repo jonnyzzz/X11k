@@ -436,6 +436,10 @@ internal object TextScreenRenderer {
                     append(metadata.rawTileSampleHex.joinToString(",", prefix = "[", postfix = "]"))
                     append(" tileDecoded=")
                     append(metadata.decodedTilePixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+                    append(" rowRaw=")
+                    appendPutImageRows(metadata.rawRowSampleHex)
+                    append(" rowDecoded=")
+                    appendPutImageRows(metadata.decodedRowPixelSampleHex)
                     appendPutImageSummary(metadata, includeFormat = false)
                     appendLine()
                 }
@@ -994,6 +998,20 @@ internal object TextScreenRenderer {
         if (putImage.decodedTilePixelSampleHex.isNotEmpty()) {
             append(",tileDecoded=")
             append(putImage.decodedTilePixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+        }
+        if (putImage.rawRowSampleHex.isNotEmpty()) {
+            append(",rowRaw=")
+            appendPutImageRows(putImage.rawRowSampleHex)
+        }
+        if (putImage.decodedRowPixelSampleHex.isNotEmpty()) {
+            append(",rowDecoded=")
+            appendPutImageRows(putImage.decodedRowPixelSampleHex)
+        }
+    }
+
+    private fun StringBuilder.appendPutImageRows(rows: List<List<String>>) {
+        rows.joinTo(this, separator = ",", prefix = "[", postfix = "]") { row ->
+            row.joinToString(",", prefix = "[", postfix = "]")
         }
     }
 }

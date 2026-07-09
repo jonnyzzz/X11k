@@ -589,6 +589,26 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij putimage row samples parse from new traces and old summaries`() {
+        val newTrace = intellijXvfbPutImageTraceEntry(
+            "connection=5 request=12220 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=624x2 leftPad=0 dataBytes=4992 crc32=0x1793d6e5 raw=[0x2c,0x28,0x26,0xff] decoded=[0xff26282c] tileRaw=[0x2c,0x28,0x26,0xff] tileDecoded=[0xff26282c] rowRaw=[[0x2c,0x28,0x26,0xff],[0x2d,0x28,0x26,0xff]] rowDecoded=[[0xff26282c],[0xff26282d]]",
+        )
+        val oldTrace = intellijXvfbPutImageTraceEntry(
+            "connection=5 request=12217 PutImage format=2 depth=32 drawable=0x20007f gc=0x200082 dst=0,0 size=624x2 leftPad=0 dataBytes=4992 crc32=0x42c0ffee raw=[0x2d,0x28,0x26,0xff] decoded=[0xff26282d] tileRaw=[0x2d,0x28,0x26,0xff] tileDecoded=[0xff26282d]",
+        )
+        val producer = intellijPutImageStripKeyFromProducerDetail(
+            "producerSourcePopulation=0x600120#12 putImage=format=2,depth=32,leftPad=0,size=624x2,dataBytes=4992,rowStride=2496,crc32=0x1793d6e5,raw=[0x2c,0x28,0x26,0xff],decoded=[0xff26282c],tileRaw=[0x2c,0x28,0x26,0xff],tileDecoded=[0xff26282c],rowRaw=[[0x2c,0x28,0x26,0xff],[0x2d,0x28,0x26,0xff]],rowDecoded=[[0xff26282c],[0xff26282d]] producerFramebuffer=624x2 crc32=0x2468ace0",
+        )
+
+        assertEquals("[[0x2c,0x28,0x26,0xff],[0x2d,0x28,0x26,0xff]]", newTrace?.rowRaw)
+        assertEquals("[[0xff26282c],[0xff26282d]]", newTrace?.rowDecoded)
+        assertEquals("[]", oldTrace?.rowRaw)
+        assertEquals("[]", oldTrace?.rowDecoded)
+        assertEquals("[[0x2c,0x28,0x26,0xff],[0x2d,0x28,0x26,0xff]]", producer?.rowRaw)
+        assertEquals("[[0xff26282c],[0xff26282d]]", producer?.rowDecoded)
+    }
+
+    @Test
     fun `intellij render band diagnostics summarize two row operation buckets`() {
         val section =
             """
@@ -1202,6 +1222,8 @@ class IntellijCommunitySmokeTest {
         assertTrue(log.contains("dataBytes=8"), log)
         assertTrue(log.contains("raw=[0x11,0x22,0x33,0xff,0x22,0x33,0x44,0x80]"), log)
         assertTrue(log.contains("decoded=[0xff332211,0x80443322]"), log)
+        assertTrue(log.contains("rowRaw=[[0x11,0x22,0x33,0xff,0x22,0x33,0x44,0x80]]"), log)
+        assertTrue(log.contains("rowDecoded=[[0xff332211,0x80443322]]"), log)
     }
 
     @Test
@@ -3625,7 +3647,9 @@ class IntellijCommunitySmokeTest {
                     " raw=" + rawSample(data, 16) +
                     " decoded=" + decodedArgbSample(format, depth, data, 8) +
                     " tileRaw=" + rawSample(data, 256) +
-                    " tileDecoded=" + decodedArgbSample(format, depth, data, 64));
+                    " tileDecoded=" + decodedArgbSample(format, depth, data, 64) +
+                    " rowRaw=" + rawRowSample(format, width, height, depth, leftPad, data, 2, 128) +
+                    " rowDecoded=" + decodedArgbRowSample(format, width, height, depth, data, 2, 32));
           }
 
           private static int bigRequestPayloadOffset(byte[] request, boolean little) {
@@ -3683,6 +3707,75 @@ class IntellijCommunitySmokeTest {
             return out.append(']').toString();
           }
 
+          private static String rawRowSample(
+              int format,
+              int width,
+              int height,
+              int depth,
+              int leftPad,
+              byte[] data,
+              int maxRows,
+              int maxBytesPerRow
+          ) {
+            int stride = putImageRowStrideBytes(format, width, depth, leftPad);
+            if (stride <= 0 || height <= 0) return "[]";
+            StringBuilder out = new StringBuilder("[");
+            int rows = Math.min(height, maxRows);
+            boolean wroteRow = false;
+            for (int row = 0; row < rows; row++) {
+              int offset = row * stride;
+              if (offset >= data.length) break;
+              if (wroteRow) out.append(',');
+              out.append('[');
+              int count = Math.min(Math.min(stride, maxBytesPerRow), data.length - offset);
+              for (int i = 0; i < count; i++) {
+                if (i > 0) out.append(',');
+                out.append("0x").append(Integer.toHexString(data[offset + i] & 0xff));
+              }
+              out.append(']');
+              wroteRow = true;
+            }
+            return out.append(']').toString();
+          }
+
+          private static String decodedArgbRowSample(
+              int format,
+              int width,
+              int height,
+              int depth,
+              byte[] data,
+              int maxRows,
+              int maxPixelsPerRow
+          ) {
+            if (format != 2 || depth != 32 || width <= 0 || height <= 0) return "[]";
+            int stride = putImageRowStrideBytes(format, width, depth, 0);
+            if (stride <= 0) return "[]";
+            StringBuilder out = new StringBuilder("[");
+            int rows = Math.min(height, maxRows);
+            boolean wroteRow = false;
+            for (int row = 0; row < rows; row++) {
+              int rowOffset = row * stride;
+              if (rowOffset >= data.length) break;
+              if (wroteRow) out.append(',');
+              out.append('[');
+              int pixels = Math.min(maxPixelsPerRow, width);
+              for (int x = 0; x < pixels; x++) {
+                int offset = rowOffset + x * 4;
+                if (offset + 3 >= data.length) break;
+                int blue = data[offset] & 0xff;
+                int green = data[offset + 1] & 0xff;
+                int red = data[offset + 2] & 0xff;
+                int alpha = data[offset + 3] & 0xff;
+                int argb = (alpha << 24) | (red << 16) | (green << 8) | blue;
+                if (x > 0) out.append(',');
+                out.append("0x").append(String.format("%08x", argb));
+              }
+              out.append(']');
+              wroteRow = true;
+            }
+            return out.append(']').toString();
+          }
+
           private static String hex32(long value) {
             return String.format("%08x", value & 0xffffffffL);
           }
@@ -3706,6 +3799,40 @@ class IntellijCommunitySmokeTest {
               out.append("0x").append(String.format("%08x", argb));
             }
             return out.append(']').toString();
+          }
+
+          private static int putImageRowStrideBytes(int format, int width, int depth, int leftPad) {
+            if (width < 0 || width > Integer.MAX_VALUE - 32) return 0;
+            if (format == 0 || format == 1) {
+              if (leftPad >= 32) return 0;
+              return padded((leftPad + width + 7) / 8);
+            }
+            if (format == 2) {
+              int bitsPerPixel = bitsPerPixel(depth);
+              if (bitsPerPixel <= 0) return 0;
+              long bits = (long) width * (long) bitsPerPixel;
+              long bytes = (bits + 7L) / 8L;
+              if (bytes > Integer.MAX_VALUE - 3L) return 0;
+              return padded((int) bytes);
+            }
+            return 0;
+          }
+
+          private static int bitsPerPixel(int depth) {
+            switch (depth) {
+              case 1:
+                return 1;
+              case 4:
+              case 8:
+                return 8;
+              case 16:
+                return 16;
+              case 24:
+              case 32:
+                return 32;
+              default:
+                return 0;
+            }
           }
 
           private void line(String text) {
@@ -4290,7 +4417,7 @@ class IntellijCommunitySmokeTest {
         if (entries.isEmpty()) return "Xvfb PutImage thin strip profiles:\n- None.\n"
 
         val groups = entries
-            .groupBy { listOf(it.width, it.height, it.dataBytes, it.crc32, it.raw, it.decoded) }
+            .groupBy { listOf(it.width, it.height, it.dataBytes, it.crc32, it.raw, it.decoded, it.rowRaw, it.rowDecoded) }
             .values
             .sortedWith(
                 compareByDescending<List<IntellijXvfbPutImageTraceEntry>> { it.size }
@@ -4312,6 +4439,8 @@ class IntellijCommunitySmokeTest {
                 append(" crc32=").append(first.crc32)
                 append(" raw=").append(first.raw)
                 append(" decoded=").append(first.decoded)
+                append(" rowRaw=").append(first.rowRaw)
+                append(" rowDecoded=").append(first.rowDecoded)
                 renderContexts[first.drawable]?.let { append(" render=").append(it) }
                 appendLine()
             }
@@ -4320,7 +4449,7 @@ class IntellijCommunitySmokeTest {
 
     private fun intellijXvfbPutImageTraceEntry(line: String): IntellijXvfbPutImageTraceEntry? {
         val match = Regex(
-            """connection=(\d+) request=(\d+) PutImage format=(\d+) depth=(\d+) drawable=(0x[0-9a-f]+) gc=(0x[0-9a-f]+) dst=-?\d+,-?\d+ size=(\d+)x(\d+) leftPad=\d+ dataBytes=(\d+) crc32=(0x[0-9a-f]+) raw=(\[[^]]*]) decoded=(\[[^]]*])(?: tileRaw=(\[[^]]*]) tileDecoded=(\[[^]]*]))?""",
+            """connection=(\d+) request=(\d+) PutImage format=(\d+) depth=(\d+) drawable=(0x[0-9a-f]+) gc=(0x[0-9a-f]+) dst=-?\d+,-?\d+ size=(\d+)x(\d+) leftPad=\d+ dataBytes=(\d+) crc32=(0x[0-9a-f]+) raw=(\[[^]]*]) decoded=(\[[^]]*])(?: tileRaw=(\[[^]]*]) tileDecoded=(\[[^]]*]))?(?: rowRaw=([^ ]+) rowDecoded=([^ ]+))?""",
         ).find(line) ?: return null
         return IntellijXvfbPutImageTraceEntry(
             connection = match.groupValues[1].toInt(),
@@ -4337,6 +4466,8 @@ class IntellijCommunitySmokeTest {
             decoded = match.groupValues[12],
             tileRaw = match.groupValues.getOrNull(13)?.takeIf { it.isNotBlank() } ?: "[]",
             tileDecoded = match.groupValues.getOrNull(14)?.takeIf { it.isNotBlank() } ?: "[]",
+            rowRaw = match.groupValues.getOrNull(15)?.takeIf { it.isNotBlank() } ?: "[]",
+            rowDecoded = match.groupValues.getOrNull(16)?.takeIf { it.isNotBlank() } ?: "[]",
         )
     }
 
@@ -4960,6 +5091,8 @@ class IntellijCommunitySmokeTest {
         val decoded = Regex("""\bdecoded=\[[^]]*]""").find(detail)?.value
         val tileRaw = Regex("""\btileRaw=\[[^]]*]""").find(detail)?.value
         val tileDecoded = Regex("""\btileDecoded=\[[^]]*]""").find(detail)?.value
+        val rowRaw = Regex("""\browRaw=(\[(?:\[[^]]*],?)*])""").find(detail)?.value
+        val rowDecoded = Regex("""\browDecoded=(\[(?:\[[^]]*],?)*])""").find(detail)?.value
         val producerFramebuffer = Regex("""\bproducerFramebuffer=\d+x\d+\s+crc32=0x[0-9a-f]+""").find(detail)?.value
         return listOfNotNull(
             producer?.let { "producerSourcePopulation=$it" },
@@ -4968,6 +5101,8 @@ class IntellijCommunitySmokeTest {
             decoded,
             tileRaw,
             tileDecoded,
+            rowRaw,
+            rowDecoded,
             producerFramebuffer,
         ).joinToString(" ").ifBlank { "producer=none" }
     }
@@ -4985,7 +5120,7 @@ class IntellijCommunitySmokeTest {
             ?.lineSequence()
             ?.mapNotNull { intellijXvfbPutImageTraceEntry(it) }
             ?.filter { it.format == 2 && it.depth == 32 && it.height <= 2 && it.width >= 100 }
-            ?.groupBy { IntellijPutImageStripKey("${it.width}x${it.height}", it.dataBytes, it.crc32, it.raw, it.decoded, it.tileRaw, it.tileDecoded) }
+            ?.groupBy { IntellijPutImageStripKey("${it.width}x${it.height}", it.dataBytes, it.crc32, it.raw, it.decoded, it.tileRaw, it.tileDecoded, it.rowRaw, it.rowDecoded) }
             ?.values
             ?.map { group ->
                 val first = group.first()
@@ -5006,6 +5141,8 @@ class IntellijCommunitySmokeTest {
                         decoded = first.decoded,
                         tileRaw = first.tileRaw,
                         tileDecoded = first.tileDecoded,
+                        rowRaw = first.rowRaw,
+                        rowDecoded = first.rowDecoded,
                     ),
                     renderContext = renderContexts[first.drawable],
                     compositeContext = compositeContexts[first.drawable],
@@ -5065,6 +5202,8 @@ class IntellijCommunitySmokeTest {
                 append(" crc32=").append(group.key.crc32)
                 append(" raw=").append(group.key.raw)
                 append(" decoded=").append(group.key.decoded)
+                append(" rowRaw=").append(group.key.rowRaw)
+                append(" rowDecoded=").append(group.key.rowDecoded)
                 group.sourceFramebuffer?.let { append(" sourceFramebuffer=").append(it) }
                 group.producerFramebuffer?.let { append(" ").append(it) }
                 append(" sourcePixels=").append(group.sourcePixels)
@@ -5101,6 +5240,8 @@ class IntellijCommunitySmokeTest {
                     append(" gc=").append(group.gc)
                     append(" raw=").append(group.key.raw)
                     append(" decoded=").append(group.key.decoded)
+                    append(" rowRaw=").append(group.key.rowRaw)
+                    append(" rowDecoded=").append(group.key.rowDecoded)
                     group.renderContext?.let { append(" render=").append(it) }
                     group.compositeContext?.let { append(" composites=").append(it) }
                     appendLine()
@@ -5179,6 +5320,8 @@ class IntellijCommunitySmokeTest {
             append(",putImageCrc32=").append(group.key.crc32)
             append(",tileRaw=").append(group.key.tileRaw)
             append(",tileDecoded=").append(group.key.tileDecoded)
+            append(",rowRaw=").append(group.key.rowRaw)
+            append(",rowDecoded=").append(group.key.rowDecoded)
             append(",ops=").append(group.operationSamples)
             append(",sourcePixels=").append(group.sourcePixels)
             append(",resultPixels=").append(group.resultPixels)
@@ -5187,6 +5330,8 @@ class IntellijCommunitySmokeTest {
             append(",putImageCrc32=").append(closest.key.crc32)
             append(",tileRaw=").append(closest.key.tileRaw)
             append(",tileDecoded=").append(closest.key.tileDecoded)
+            append(",rowRaw=").append(closest.key.rowRaw)
+            append(",rowDecoded=").append(closest.key.rowDecoded)
             closest.renderContext?.let { append(",render=").append(it) }
             closest.compositeContext?.let { append(",composites=").append(it) }
             append(",raw=").append(closest.key.raw)
@@ -5227,7 +5372,7 @@ class IntellijCommunitySmokeTest {
             }
 
     private fun intellijPutImageStripKeyFromProducerDetail(detail: String): IntellijPutImageStripKey? {
-        val match = Regex("""\bputImage=format=2,depth=32,leftPad=\d+,size=(\d+x\d+),dataBytes=(\d+),rowStride=\d+,crc32=(0x[0-9a-f]+),raw=(\[[^]]*]),decoded=(\[[^]]*])(?:,tileRaw=(\[[^]]*]),tileDecoded=(\[[^]]*]))?""")
+        val match = Regex("""\bputImage=format=2,depth=32,leftPad=\d+,size=(\d+x\d+),dataBytes=(\d+),rowStride=\d+,crc32=(0x[0-9a-f]+),raw=(\[[^]]*]),decoded=(\[[^]]*])(?:,tileRaw=(\[[^]]*]),tileDecoded=(\[[^]]*]))?(?:,rowRaw=([^\s]+),rowDecoded=([^\s]+))?""")
             .find(detail)
             ?: return null
         val size = match.groupValues[1]
@@ -5240,6 +5385,8 @@ class IntellijCommunitySmokeTest {
             decoded = match.groupValues[5],
             tileRaw = match.groupValues.getOrNull(6)?.takeIf { it.isNotBlank() } ?: "[]",
             tileDecoded = match.groupValues.getOrNull(7)?.takeIf { it.isNotBlank() } ?: "[]",
+            rowRaw = match.groupValues.getOrNull(8)?.takeIf { it.isNotBlank() } ?: "[]",
+            rowDecoded = match.groupValues.getOrNull(9)?.takeIf { it.isNotBlank() } ?: "[]",
         )
     }
 
@@ -6714,6 +6861,8 @@ class IntellijCommunitySmokeTest {
         val decoded: String,
         val tileRaw: String,
         val tileDecoded: String,
+        val rowRaw: String,
+        val rowDecoded: String,
     )
 
     private data class IntellijPutImageStripKey(
@@ -6724,6 +6873,8 @@ class IntellijCommunitySmokeTest {
         val decoded: String,
         val tileRaw: String,
         val tileDecoded: String,
+        val rowRaw: String,
+        val rowDecoded: String,
     )
 
     private data class IntellijXvfbPutImageStripGroup(
@@ -6743,6 +6894,8 @@ class IntellijCommunitySmokeTest {
                 append(compactReferenceLabel())
                 append(" raw=").append(key.raw)
                 append(" decoded=").append(key.decoded)
+                append(" rowRaw=").append(key.rowRaw)
+                append(" rowDecoded=").append(key.rowDecoded)
                 renderContext?.let { append(" render=").append(it) }
                 compositeContext?.let { append(" composites=").append(it) }
             }
