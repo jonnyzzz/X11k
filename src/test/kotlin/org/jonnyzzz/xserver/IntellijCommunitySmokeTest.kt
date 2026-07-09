@@ -520,14 +520,14 @@ class IntellijCommunitySmokeTest {
                     connection=5 request=12218 RENDER.CreatePicture picture=0x200090 drawable=0x20007d format=0x25 valueMask=0x1 repeat=1 attrs=[repeat=normal(1)]
                     connection=5 request=12219 RENDER.SetPictureFilter picture=0x200090 filter=good
                     connection=5 request=12219 RENDER.SetPictureTransform picture=0x200090 transform=[0x10000,0x0,0x0,0x0,0x10000,0x0,0x0,0x0,0x10000]
-                    connection=5 request=12220 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=624x2 leftPad=0 dataBytes=4992 crc32=0x1793d6e5 raw=[0x2c,0x28,0x26,0xff] decoded=[0xff26282c]
+                    connection=5 request=12220 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=624x2 leftPad=0 dataBytes=4992 crc32=0x1793d6e5 raw=[0x2c,0x28,0x26,0xff] decoded=[0xff26282c] tileRaw=[0x2c,0x28,0x26,0xff,0x2d,0x28,0x26,0xff] tileDecoded=[0xff26282c,0xff26282d]
                     connection=5 request=12221 RENDER.CreatePicture picture=0x200091 drawable=0x20007e format=0x25 valueMask=0x1 repeat=0 attrs=[repeat=none(0)]
                     connection=5 request=12222 RENDER.Composite op=1 src=0x200090 mask=0x0 dst=0x200091 srcOrigin=0,0 maskOrigin=0,0 dst=0,0 size=624x2
                     connection=5 request=12223 RENDER.SetPictureFilter picture=0x200091 filter=best
                     connection=5 request=12224 RENDER.SetPictureTransform picture=0x200091 transform=[0x10000,0x0,0xfd900000,0x0,0x10000,0x0,0x0,0x0,0x10000]
                     connection=5 request=12225 RENDER.Composite op=3 src=0x200091 mask=0x0 dst=0x200046 srcOrigin=33,34 maskOrigin=0,0 dst=33,34 size=256x2
-                    connection=5 request=12236 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=600x2 leftPad=0 dataBytes=4800 crc32=0xcda50bae raw=[0x37,0x4f,0x34,0xff] decoded=[0xff344f37]
-                    connection=5 request=12237 PutImage format=2 depth=32 drawable=0x20007f gc=0x200082 dst=0,0 size=624x2 leftPad=0 dataBytes=4992 crc32=0x42c0ffee raw=[0x2d,0x28,0x26,0xff] decoded=[0xff26282d]
+                    connection=5 request=12236 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=600x2 leftPad=0 dataBytes=4800 crc32=0xcda50bae raw=[0x37,0x4f,0x34,0xff] decoded=[0xff344f37] tileRaw=[0x37,0x4f,0x34,0xff] tileDecoded=[0xff344f37]
+                    connection=5 request=12237 PutImage format=2 depth=32 drawable=0x20007f gc=0x200082 dst=0,0 size=624x2 leftPad=0 dataBytes=4992 crc32=0x42c0ffee raw=[0x2d,0x28,0x26,0xff] decoded=[0xff26282d] tileRaw=[0x2d,0x28,0x26,0xff] tileDecoded=[0xff26282d]
                     """.trimIndent(),
             ),
         )
@@ -535,8 +535,8 @@ class IntellijCommunitySmokeTest {
             """
             RENDER operations intersecting top mapped root-child band:
             - region=10,20 1260x120 window=0x200003
-            - #41 Composite minor=8 root=10,20 256x256 local=0,0 256x256 op=3 src=0x600280 mask=0x0 dst=0x60004a srcOrigin=0,0 maskOrigin=0,0 dst=0,0 256x256 source=0x600280/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60027f#131 paints=1 first=#40/Composite last=#40/Composite drawings=1 firstDrawing=CopyArea@[0,0 624x2] lastDrawing=CopyArea lastResult=624x2 crc32=0x3eb827c6 framebuffer=624x2 crc32=0x3eb827c6 pixels=[0xff26282c,0xff3b3329] producerSourcePopulation=0x600120#12 paints=0 drawings=1 lastDrawing=PutImage putImageCrc32=0x13572468 putImage=format=2,depth=32,leftPad=0,size=624x2,dataBytes=4992,rowStride=2496,crc32=0x13572468,raw=[0x2c,0x28,0x26,0xff],decoded=[0xff26282c] producerFramebuffer=624x2 crc32=0x2468ace0 pixels=[0xff26282c,0xff3b3329] result=256x256 crc32=0x812ddd86 pixels=[0xff26282c]
-            - #42 Composite minor=8 root=266,20 256x256 local=256,0 256x256 op=3 src=0x600280 mask=0x0 dst=0x60004a srcOrigin=256,0 maskOrigin=0,0 dst=256,0 256x256 source=0x600280/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60027f#131 paints=1 first=#40/Composite last=#40/Composite drawings=1 firstDrawing=CopyArea@[0,0 624x2] lastDrawing=CopyArea lastResult=624x2 crc32=0x3eb827c6 framebuffer=624x2 crc32=0x3eb827c6 pixels=[0xff26282c,0xff3b3329] producerSourcePopulation=0x600120#12 paints=0 drawings=1 lastDrawing=PutImage putImageCrc32=0x13572468 putImage=format=2,depth=32,leftPad=0,size=624x2,dataBytes=4992,rowStride=2496,crc32=0x13572468,raw=[0x2c,0x28,0x26,0xff],decoded=[0xff26282c] producerFramebuffer=624x2 crc32=0x2468ace0 pixels=[0xff26282c,0xff3b3329] result=256x256 crc32=0x70487e06 pixels=[0xff3b3329]
+            - #41 Composite minor=8 root=10,20 256x256 local=0,0 256x256 op=3 src=0x600280 mask=0x0 dst=0x60004a srcOrigin=0,0 maskOrigin=0,0 dst=0,0 256x256 source=0x600280/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60027f#131 paints=1 first=#40/Composite last=#40/Composite drawings=1 firstDrawing=CopyArea@[0,0 624x2] lastDrawing=CopyArea lastResult=624x2 crc32=0x3eb827c6 framebuffer=624x2 crc32=0x3eb827c6 pixels=[0xff26282c,0xff3b3329] producerSourcePopulation=0x600120#12 paints=0 drawings=1 lastDrawing=PutImage putImageCrc32=0x13572468 putImage=format=2,depth=32,leftPad=0,size=624x2,dataBytes=4992,rowStride=2496,crc32=0x13572468,raw=[0x2c,0x28,0x26,0xff],decoded=[0xff26282c],tileRaw=[0x2c,0x28,0x26,0xff,0x29,0x33,0x3b,0xff],tileDecoded=[0xff26282c,0xff3b3329] producerFramebuffer=624x2 crc32=0x2468ace0 pixels=[0xff26282c,0xff3b3329] result=256x256 crc32=0x812ddd86 pixels=[0xff26282c]
+            - #42 Composite minor=8 root=266,20 256x256 local=256,0 256x256 op=3 src=0x600280 mask=0x0 dst=0x60004a srcOrigin=256,0 maskOrigin=0,0 dst=256,0 256x256 source=0x600280/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60027f#131 paints=1 first=#40/Composite last=#40/Composite drawings=1 firstDrawing=CopyArea@[0,0 624x2] lastDrawing=CopyArea lastResult=624x2 crc32=0x3eb827c6 framebuffer=624x2 crc32=0x3eb827c6 pixels=[0xff26282c,0xff3b3329] producerSourcePopulation=0x600120#12 paints=0 drawings=1 lastDrawing=PutImage putImageCrc32=0x13572468 putImage=format=2,depth=32,leftPad=0,size=624x2,dataBytes=4992,rowStride=2496,crc32=0x13572468,raw=[0x2c,0x28,0x26,0xff],decoded=[0xff26282c],tileRaw=[0x2c,0x28,0x26,0xff,0x29,0x33,0x3b,0xff],tileDecoded=[0xff26282c,0xff3b3329] producerFramebuffer=624x2 crc32=0x2468ace0 pixels=[0xff26282c,0xff3b3329] result=256x256 crc32=0x70487e06 pixels=[0xff3b3329]
             - #43 Composite minor=8 root=10,54 128x2 local=0,34 128x2 op=3 src=0x600281 mask=0x0 dst=0x60004a srcOrigin=0,0 maskOrigin=0,0 dst=0,34 128x2 source=0x600281/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x600281#1 paints=1 framebuffer=128x2 crc32=0x11111111 pixels=[0xff111111] producerSourcePopulation=0x600121#1 putImage=format=2,depth=32,leftPad=0,size=128x2,dataBytes=1024,rowStride=512,crc32=0x11111111,raw=[0x11],decoded=[0xff111111] producerFramebuffer=128x2 crc32=0x11111111 result=128x2 crc32=0x11111112 pixels=[0xff111111]
 
             RENDER operations intersecting right mapped root-child band:
@@ -565,9 +565,12 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("5#12225/op=3 src=0x200091 dst=0x200046 srcOrigin=33,34 dst=33,34 size=256x2"), summary)
         assertTrue(summary.contains("srcContext=picture=0x200091 format=0x25 valueMask=0x1 repeat=0 attrs=[repeat=none(0)] filter=best"), summary)
         assertTrue(summary.contains("replay=kotlin[first=#41..#42,band=top,src=0x600280,dst=0x60004a,repeat=normal,filter=good,transform=none,sourceFramebuffer=624x2/0x3eb827c6,producerFramebuffer=624x2 crc32=0x2468ace0,putImageCrc32=0x13572468"), summary)
+        assertTrue(summary.contains("tileRaw=[0x2c,0x28,0x26,0xff,0x29,0x33,0x3b,0xff],tileDecoded=[0xff26282c,0xff3b3329]"), summary)
         assertTrue(summary.contains("ops=[#41 root=10,20 256x256 srcOrigin=0,0 dst=0,0 256x256|#42 root=266,20 256x256 srcOrigin=256,0 dst=256,0 256x256]"), summary)
         assertTrue(summary.contains("sourcePixels=[0xff26282c,0xff3b3329],resultPixels=[0xff26282c]|[0xff3b3329]"), summary)
-        assertTrue(summary.contains("xvfb[ref=5#12220..5#12220 count=1 drawable=0x20007d gc=0x200080 crc32=0x1793d6e5,putImageCrc32=0x1793d6e5,render=picture=0x200090 format=0x25 valueMask=0x1 repeat=1 attrs=[repeat=normal(1)] filter=good"), summary)
+        assertTrue(summary.contains("xvfb[ref=5#12220..5#12220 count=1 drawable=0x20007d gc=0x200080 crc32=0x1793d6e5,putImageCrc32=0x1793d6e5"), summary)
+        assertTrue(summary.contains("render=picture=0x200090 format=0x25 valueMask=0x1 repeat=1 attrs=[repeat=normal(1)] filter=good"), summary)
+        assertTrue(summary.contains("putImageCrc32=0x1793d6e5,tileRaw=[0x2c,0x28,0x26,0xff,0x2d,0x28,0x26,0xff],tileDecoded=[0xff26282c,0xff26282d]"), summary)
         assertTrue(summary.contains("],composites=5#12222/op=1 src=0x200090 dst=0x200091 srcOrigin=0,0 dst=0,0 size=624x2"), summary)
         assertTrue(summary.contains(";5#12225/op=3 src=0x200091 dst=0x200046 srcOrigin=33,34 dst=33,34 size=256x2"), summary)
         assertTrue(summary.contains("attrs=[repeat=normal(1)]"), summary)
@@ -3411,7 +3414,9 @@ class IntellijCommunitySmokeTest {
                     " dataBytes=" + data.length +
                     " crc32=0x" + hex32(crc.getValue()) +
                     " raw=" + rawSample(data, 16) +
-                    " decoded=" + decodedArgbSample(format, depth, data, 8));
+                    " decoded=" + decodedArgbSample(format, depth, data, 8) +
+                    " tileRaw=" + rawSample(data, 256) +
+                    " tileDecoded=" + decodedArgbSample(format, depth, data, 64));
           }
 
           private static int bigRequestPayloadOffset(byte[] request, boolean little) {
@@ -4074,7 +4079,7 @@ class IntellijCommunitySmokeTest {
 
     private fun intellijXvfbPutImageTraceEntry(line: String): IntellijXvfbPutImageTraceEntry? {
         val match = Regex(
-            """connection=(\d+) request=(\d+) PutImage format=(\d+) depth=(\d+) drawable=(0x[0-9a-f]+) gc=(0x[0-9a-f]+) dst=-?\d+,-?\d+ size=(\d+)x(\d+) leftPad=\d+ dataBytes=(\d+) crc32=(0x[0-9a-f]+) raw=(\[[^]]*]) decoded=(\[[^]]*])""",
+            """connection=(\d+) request=(\d+) PutImage format=(\d+) depth=(\d+) drawable=(0x[0-9a-f]+) gc=(0x[0-9a-f]+) dst=-?\d+,-?\d+ size=(\d+)x(\d+) leftPad=\d+ dataBytes=(\d+) crc32=(0x[0-9a-f]+) raw=(\[[^]]*]) decoded=(\[[^]]*])(?: tileRaw=(\[[^]]*]) tileDecoded=(\[[^]]*]))?""",
         ).find(line) ?: return null
         return IntellijXvfbPutImageTraceEntry(
             connection = match.groupValues[1].toInt(),
@@ -4089,6 +4094,8 @@ class IntellijCommunitySmokeTest {
             crc32 = normalizedCrc32(match.groupValues[10]),
             raw = match.groupValues[11],
             decoded = match.groupValues[12],
+            tileRaw = match.groupValues.getOrNull(13)?.takeIf { it.isNotBlank() } ?: "[]",
+            tileDecoded = match.groupValues.getOrNull(14)?.takeIf { it.isNotBlank() } ?: "[]",
         )
     }
 
@@ -4666,7 +4673,7 @@ class IntellijCommunitySmokeTest {
             ?.lineSequence()
             ?.mapNotNull { intellijXvfbPutImageTraceEntry(it) }
             ?.filter { it.format == 2 && it.depth == 32 && it.height <= 2 && it.width >= 100 }
-            ?.groupBy { IntellijPutImageStripKey("${it.width}x${it.height}", it.dataBytes, it.crc32, it.raw, it.decoded) }
+            ?.groupBy { IntellijPutImageStripKey("${it.width}x${it.height}", it.dataBytes, it.crc32, it.raw, it.decoded, it.tileRaw, it.tileDecoded) }
             ?.values
             ?.map { group ->
                 val first = group.first()
@@ -4685,6 +4692,8 @@ class IntellijCommunitySmokeTest {
                         crc32 = first.crc32,
                         raw = first.raw,
                         decoded = first.decoded,
+                        tileRaw = first.tileRaw,
+                        tileDecoded = first.tileDecoded,
                     ),
                     renderContext = renderContexts[first.drawable],
                     compositeContext = compositeContexts[first.drawable],
@@ -4848,12 +4857,16 @@ class IntellijCommunitySmokeTest {
             group.sourceFramebuffer?.let { append(",sourceFramebuffer=").append(it) }
             group.producerFramebuffer?.let { append(",").append(it) }
             append(",putImageCrc32=").append(group.key.crc32)
+            append(",tileRaw=").append(group.key.tileRaw)
+            append(",tileDecoded=").append(group.key.tileDecoded)
             append(",ops=").append(group.operationSamples)
             append(",sourcePixels=").append(group.sourcePixels)
             append(",resultPixels=").append(group.resultPixels)
             append("] xvfb[")
             append("ref=").append(closest.compactReferenceLabel())
             append(",putImageCrc32=").append(closest.key.crc32)
+            append(",tileRaw=").append(closest.key.tileRaw)
+            append(",tileDecoded=").append(closest.key.tileDecoded)
             closest.renderContext?.let { append(",render=").append(it) }
             closest.compositeContext?.let { append(",composites=").append(it) }
             append(",raw=").append(closest.key.raw)
@@ -4878,7 +4891,7 @@ class IntellijCommunitySmokeTest {
             }
 
     private fun intellijPutImageStripKeyFromProducerDetail(detail: String): IntellijPutImageStripKey? {
-        val match = Regex("""\bputImage=format=2,depth=32,leftPad=\d+,size=(\d+x\d+),dataBytes=(\d+),rowStride=\d+,crc32=(0x[0-9a-f]+),raw=(\[[^]]*]),decoded=(\[[^]]*])""")
+        val match = Regex("""\bputImage=format=2,depth=32,leftPad=\d+,size=(\d+x\d+),dataBytes=(\d+),rowStride=\d+,crc32=(0x[0-9a-f]+),raw=(\[[^]]*]),decoded=(\[[^]]*])(?:,tileRaw=(\[[^]]*]),tileDecoded=(\[[^]]*]))?""")
             .find(detail)
             ?: return null
         val size = match.groupValues[1]
@@ -4889,6 +4902,8 @@ class IntellijCommunitySmokeTest {
             crc32 = match.groupValues[3],
             raw = match.groupValues[4],
             decoded = match.groupValues[5],
+            tileRaw = match.groupValues.getOrNull(6)?.takeIf { it.isNotBlank() } ?: "[]",
+            tileDecoded = match.groupValues.getOrNull(7)?.takeIf { it.isNotBlank() } ?: "[]",
         )
     }
 
@@ -6317,6 +6332,8 @@ class IntellijCommunitySmokeTest {
         val crc32: String,
         val raw: String,
         val decoded: String,
+        val tileRaw: String,
+        val tileDecoded: String,
     )
 
     private data class IntellijPutImageStripKey(
@@ -6325,6 +6342,8 @@ class IntellijCommunitySmokeTest {
         val crc32: String,
         val raw: String,
         val decoded: String,
+        val tileRaw: String,
+        val tileDecoded: String,
     )
 
     private data class IntellijXvfbPutImageStripGroup(

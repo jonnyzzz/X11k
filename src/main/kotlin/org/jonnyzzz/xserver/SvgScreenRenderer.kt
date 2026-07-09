@@ -2137,6 +2137,16 @@ internal object SvgScreenRenderer {
             if (index > 0) append(',')
             append('"').append(value).append('"')
         }
+        append("""],"rawTileSample":[""")
+        metadata.rawTileSampleHex.forEachIndexed { index, value ->
+            if (index > 0) append(',')
+            append('"').append(value).append('"')
+        }
+        append("""],"decodedTilePixels":[""")
+        metadata.decodedTilePixelSampleHex.forEachIndexed { index, value ->
+            if (index > 0) append(',')
+            append('"').append(value).append('"')
+        }
         append("""]}""")
     }
 

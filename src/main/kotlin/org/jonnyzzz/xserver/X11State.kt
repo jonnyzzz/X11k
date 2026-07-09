@@ -11844,6 +11844,8 @@ internal data class XPutImageMetadata(
     val crc32Hex: String,
     val rawSampleHex: List<String>,
     val decodedPixelSampleHex: List<String>,
+    val rawTileSampleHex: List<String>,
+    val decodedTilePixelSampleHex: List<String>,
 )
 
 internal data class XRectangleCommand(

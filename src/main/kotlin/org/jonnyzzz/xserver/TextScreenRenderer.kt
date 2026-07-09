@@ -432,6 +432,10 @@ internal object TextScreenRenderer {
                     append(metadata.rawSampleHex.joinToString(",", prefix = "[", postfix = "]"))
                     append(" decoded=")
                     append(metadata.decodedPixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+                    append(" tileRaw=")
+                    append(metadata.rawTileSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+                    append(" tileDecoded=")
+                    append(metadata.decodedTilePixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
                     appendPutImageSummary(metadata, includeFormat = false)
                     appendLine()
                 }
@@ -982,6 +986,14 @@ internal object TextScreenRenderer {
         if (putImage.decodedPixelSampleHex.isNotEmpty()) {
             append(",decoded=")
             append(putImage.decodedPixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+        }
+        if (putImage.rawTileSampleHex.isNotEmpty()) {
+            append(",tileRaw=")
+            append(putImage.rawTileSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+        }
+        if (putImage.decodedTilePixelSampleHex.isNotEmpty()) {
+            append(",tileDecoded=")
+            append(putImage.decodedTilePixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
         }
     }
 }

@@ -5783,6 +5783,8 @@ class XCoreDrawingProtocolTest {
                 assertContains(stateJson, """"crc32":"0xbec136a6"""")
                 assertContains(stateJson, """"rawSample":["0x56","0x34","0x12","0x00","0xef","0xcd","0xab","0x00"]""")
                 assertContains(stateJson, """"decodedPixels":["0xff123456","0xffabcdef"]""")
+                assertContains(stateJson, """"rawTileSample":["0x56","0x34","0x12","0x00","0xef","0xcd","0xab","0x00"]""")
+                assertContains(stateJson, """"decodedTilePixels":["0xff123456","0xffabcdef"]""")
 
                 val text = httpGet(server.localPort, "/text.txt")
                 assertContains(text, "Recent PutImage commands:")
@@ -5797,6 +5799,8 @@ class XCoreDrawingProtocolTest {
                 assertContains(text, "crc32=0xbec136a6")
                 assertContains(text, "raw=[0x56,0x34,0x12,0x00,0xef,0xcd,0xab,0x00]")
                 assertContains(text, "decoded=[0xff123456,0xffabcdef]")
+                assertContains(text, "tileRaw=[0x56,0x34,0x12,0x00,0xef,0xcd,0xab,0x00]")
+                assertContains(text, "tileDecoded=[0xff123456,0xffabcdef]")
             }
             server.close()
             serverThread.join(1_000)

@@ -13430,6 +13430,8 @@ internal class X11Connection(
             crc32Hex = "0x${crc32.value.toString(16).padStart(8, '0')}",
             rawSampleHex = data.take(16).map { "0x${(it.toInt() and 0xff).toString(16).padStart(2, '0')}" },
             decodedPixelSampleHex = image?.pixels?.take(8)?.map { "0x${it.toUInt().toString(16).padStart(8, '0')}" } ?: emptyList(),
+            rawTileSampleHex = data.take(256).map { "0x${(it.toInt() and 0xff).toString(16).padStart(2, '0')}" },
+            decodedTilePixelSampleHex = image?.pixels?.take(64)?.map { "0x${it.toUInt().toString(16).padStart(8, '0')}" } ?: emptyList(),
         )
     }
 
