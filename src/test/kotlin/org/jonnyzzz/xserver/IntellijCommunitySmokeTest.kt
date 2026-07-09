@@ -564,6 +564,12 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("composites=5#12222/op=1 src=0x200090 dst=0x200091 srcOrigin=0,0 dst=0,0 size=624x2"), summary)
         assertTrue(summary.contains("5#12225/op=3 src=0x200091 dst=0x200046 srcOrigin=33,34 dst=33,34 size=256x2"), summary)
         assertTrue(summary.contains("srcContext=picture=0x200091 format=0x25 valueMask=0x1 repeat=0 attrs=[repeat=none(0)] filter=best"), summary)
+        assertTrue(summary.contains("replay=kotlin[first=#41..#42,band=top,src=0x600280,dst=0x60004a,repeat=normal,filter=good,transform=none,sourceFramebuffer=624x2/0x3eb827c6,producerFramebuffer=624x2 crc32=0x2468ace0,putImageCrc32=0x13572468"), summary)
+        assertTrue(summary.contains("ops=[#41 root=10,20 256x256 srcOrigin=0,0 dst=0,0 256x256|#42 root=266,20 256x256 srcOrigin=256,0 dst=256,0 256x256]"), summary)
+        assertTrue(summary.contains("sourcePixels=[0xff26282c,0xff3b3329],resultPixels=[0xff26282c]|[0xff3b3329]"), summary)
+        assertTrue(summary.contains("xvfb[ref=5#12220..5#12220 count=1 drawable=0x20007d gc=0x200080 crc32=0x1793d6e5,putImageCrc32=0x1793d6e5,render=picture=0x200090 format=0x25 valueMask=0x1 repeat=1 attrs=[repeat=normal(1)] filter=good"), summary)
+        assertTrue(summary.contains("],composites=5#12222/op=1 src=0x200090 dst=0x200091 srcOrigin=0,0 dst=0,0 size=624x2"), summary)
+        assertTrue(summary.contains(";5#12225/op=3 src=0x200091 dst=0x200046 srcOrigin=33,34 dst=33,34 size=256x2"), summary)
         assertTrue(summary.contains("attrs=[repeat=normal(1)]"), summary)
         assertTrue(summary.contains("transform=[0x10000,0x0,0x0,0x0,0x10000,0x0,0x0,0x0,0x10000]"), summary)
         assertTrue(summary.contains("raw=[0x2c,0x28,0x26,0xff] decoded=[0xff26282c]"), summary)
@@ -1071,6 +1077,11 @@ class IntellijCommunitySmokeTest {
                     """
                     X11 PutImage trace proxy listening port=6100 target=127.0.0.1:6099
                     connection=2 request=901 PutImage format=2 depth=32 drawable=0x200076 gc=0x200079 dst=0,0 size=150x2 leftPad=0 dataBytes=1200 crc32=0x2a817acd raw=[0x2c,0x28,0x26,0xff] decoded=[0xff26282c]
+                    connection=2 request=910 RENDER.CreatePicture picture=0x200090 drawable=0x20007d format=0x25 valueMask=0x1 repeat=0 attrs=[repeat=none(0)]
+                    connection=2 request=911 RENDER.CreatePicture picture=0x200091 drawable=0x20007d format=0x25 valueMask=0x1 repeat=0 attrs=[repeat=none(0)]
+                    connection=2 request=912 RENDER.CreatePicture picture=0x200092 drawable=0x20007d format=0x25 valueMask=0x1 repeat=0 attrs=[repeat=none(0)]
+                    connection=2 request=913 RENDER.CreatePicture picture=0x200093 drawable=0x20007d format=0x25 valueMask=0x1 repeat=0 attrs=[repeat=none(0)]
+                    connection=2 request=914 RENDER.CreatePicture picture=0x200094 drawable=0x20007d format=0x25 valueMask=0x1 repeat=0 attrs=[repeat=none(0)]
                     connection=2 request=923 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=600x2 leftPad=0 dataBytes=4800 crc32=0xaccaae6a raw=[0x6b,0x43,0x37,0xff] decoded=[0xff37436b]
                     connection=2 request=950 PutImage format=2 depth=8 drawable=0x20002e gc=0x200030 dst=0,0 size=600x2 leftPad=0 dataBytes=1200 crc32=0x11111111 raw=[0xff] decoded=[]
                     connection=2 request=960 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=600x2 leftPad=0 dataBytes=4800 crc32=0xaccaae6a raw=[0x6b,0x43,0x37,0xff] decoded=[0xff37436b]
@@ -1088,6 +1099,8 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("crc32=0x008493d0"), summary)
         assertTrue(summary.contains("crc32=0x1008493d0"), summary)
         assertTrue(summary.contains("decoded=[0xff37436b]"), summary)
+        assertTrue(summary.contains("render=picture=0x200090 format=0x25 valueMask=0x1 repeat=0 attrs=[repeat=none(0)]|picture=0x200091 format=0x25 valueMask=0x1 repeat=0 attrs=[repeat=none(0)]|picture=0x200092 format=0x25 valueMask=0x1 repeat=0 attrs=[repeat=none(0)]|picture=0x200093 format=0x25 valueMask=0x1 repeat=0 attrs=[repeat=none(0)]|omitted=1"), summary)
+        assertFalse(summary.contains("picture=0x200094"), summary)
         assertFalse(summary.contains("depth=8"), summary)
     }
 
@@ -4113,13 +4126,21 @@ class IntellijCommunitySmokeTest {
                 }
             }
         }
-        return contexts.mapValues { (_, pictures) -> pictures.values.joinToString("|") }
+        return contexts.mapValues { (_, pictures) -> boundedTraceContextList(pictures.values) }
     }
 
     private fun contextWithLatestField(context: String, key: String, value: String): String {
         val stripped = Regex("""\s${Regex.escape(key)}=[^\s]+""").replace(context, "")
         return "$stripped $key=$value"
     }
+
+    private fun boundedTraceContextList(values: Collection<String>, limit: Int = 4): String =
+        values
+            .take(limit)
+            .joinToString("|")
+            .let { joined ->
+                if (values.size > limit) "$joined|omitted=${values.size - limit}" else joined
+            }
 
     private fun intellijXvfbPutImageCompositeContexts(trace: String): Map<String, String> {
         val pictureContexts = linkedMapOf<String, String>()
@@ -4734,6 +4755,7 @@ class IntellijCommunitySmokeTest {
                         postfix = if (sameSize.size > 4) "|omitted=${sameSize.size - 4}]" else "]",
                     ) { it.compactReferenceLabel() }
                 }
+                closest?.let { append(" replay=").append(intellijPutImageStripReplayFixture(group, it)) }
                 appendLine()
             }
             xvfbGroups
@@ -4806,7 +4828,53 @@ class IntellijCommunitySmokeTest {
                     key = grouping.key,
                     sourcePixels = intellijRenderBandPixelSamples(operations.mapNotNull { it.sourceFramebufferPixels }),
                     resultPixels = intellijRenderBandPixelSamples(operations.mapNotNull { it.resultPixels }),
+                    operationSamples = intellijKotlinPutImageStripOperationSamples(operations),
                 )
+            }
+
+    private fun intellijPutImageStripReplayFixture(
+        group: IntellijKotlinPutImageStripGroup,
+        closest: IntellijXvfbPutImageStripGroup,
+    ): String =
+        buildString {
+            append("kotlin[")
+            append("first=#").append(group.firstOperation).append("..#").append(group.lastOperation)
+            append(",band=").append(group.band)
+            group.sourceId?.let { append(",src=").append(it) }
+            group.destinationId?.let { append(",dst=").append(it) }
+            group.repeat?.let { append(",repeat=").append(it) }
+            group.filter?.let { append(",filter=").append(it) }
+            append(",transform=").append(group.transform ?: "none")
+            group.sourceFramebuffer?.let { append(",sourceFramebuffer=").append(it) }
+            group.producerFramebuffer?.let { append(",").append(it) }
+            append(",putImageCrc32=").append(group.key.crc32)
+            append(",ops=").append(group.operationSamples)
+            append(",sourcePixels=").append(group.sourcePixels)
+            append(",resultPixels=").append(group.resultPixels)
+            append("] xvfb[")
+            append("ref=").append(closest.compactReferenceLabel())
+            append(",putImageCrc32=").append(closest.key.crc32)
+            closest.renderContext?.let { append(",render=").append(it) }
+            closest.compositeContext?.let { append(",composites=").append(it) }
+            append(",raw=").append(closest.key.raw)
+            append(",decoded=").append(closest.key.decoded)
+            append("]")
+        }
+
+    private fun intellijKotlinPutImageStripOperationSamples(
+        operations: List<IntellijRenderBandOperation>,
+        limit: Int = 4,
+    ): String =
+        operations
+            .sortedBy { it.id }
+            .take(limit)
+            .joinToString(separator = "|", prefix = "[", postfix = if (operations.size > limit) "|omitted=${operations.size - limit}]" else "]") { operation ->
+                buildString {
+                    append('#').append(operation.id)
+                    operation.rootRectangle?.let { append(" root=").append(it.x).append(',').append(it.y).append(' ').append(it.width).append('x').append(it.height) }
+                    operation.sourceOrigin?.let { append(" srcOrigin=").append(it.x).append(',').append(it.y) }
+                    operation.destinationRegion?.let { append(" dst=").append(it.x).append(',').append(it.y).append(' ').append(it.width).append('x').append(it.height) }
+                }
             }
 
     private fun intellijPutImageStripKeyFromProducerDetail(detail: String): IntellijPutImageStripKey? {
@@ -6318,6 +6386,7 @@ class IntellijCommunitySmokeTest {
         val key: IntellijPutImageStripKey,
         val sourcePixels: String,
         val resultPixels: String,
+        val operationSamples: String,
     )
 
     private data class IntellijFrameBand(
