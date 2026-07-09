@@ -3675,26 +3675,26 @@ internal class X11Connection(
             )
         }
 
-        val renderVisuals = listOf(
-            XRenderDepthVisuals(
-                depth = X11Ids.RootDepth,
-                visuals = listOf(
-                    listOf(X11Ids.RootVisual) to XRender.Rgb24Format,
-                    listOf(X11Ids.RootDirectColorVisual) to XRender.Rgb24Format,
-                    X11Ids.RootRgbVisualAliases.drop(1) to XRender.Rgb24Format,
-                    X11Ids.RootBgrVisualAliases to XRender.Bgr24Format,
-                    X11Ids.RootRgbDirectColorAliases.drop(1) to XRender.Rgb24Format,
-                    X11Ids.RootBgrDirectColorAliases to XRender.Bgr24Format,
-                ),
+        val visualDepths = mapOf(
+            X11Ids.RootDepth to listOf(
+                listOf(X11Ids.RootVisual) to XRender.Rgb24Format,
+                listOf(X11Ids.RootDirectColorVisual) to XRender.Rgb24Format,
+                X11Ids.RootRgbVisualAliases.drop(1) to XRender.Rgb24Format,
+                X11Ids.RootBgrVisualAliases to XRender.Bgr24Format,
+                X11Ids.RootRgbDirectColorAliases.drop(1) to XRender.Rgb24Format,
+                X11Ids.RootBgrDirectColorAliases to XRender.Bgr24Format,
             ),
-            XRenderDepthVisuals(
-                depth = X11Ids.RgbaDepth,
-                visuals = listOf(
-                    X11Ids.RgbaRgbVisualAliases to XRender.Argb32Format,
-                    X11Ids.RgbaBgrVisualAliases to XRender.Bgr32Format,
-                ),
+            X11Ids.RgbaDepth to listOf(
+                X11Ids.RgbaRgbVisualAliases to XRender.Argb32Format,
+                X11Ids.RgbaBgrVisualAliases to XRender.Bgr32Format,
             ),
         )
+        val renderVisuals = XPixmapFormats.ScreenDepths.map { format ->
+            XRenderDepthVisuals(
+                depth = format.depth,
+                visuals = visualDepths[format.depth].orEmpty(),
+            )
+        }
         val visualCount = renderVisuals.sumOf { depth -> depth.visuals.sumOf { it.first.size } }
         val screen = ByteArray(8 + renderVisuals.sumOf { depth -> 8 + depth.visuals.sumOf { it.first.size * 8 } })
         byteOrder.put32(screen, 0, renderVisuals.size)
@@ -3717,7 +3717,7 @@ internal class X11Connection(
         val reply = reply(extra = 0, payloadUnits = payload.size / 4)
         byteOrder.put32(reply, 8, pictFormats.size)
         byteOrder.put32(reply, 12, 1)
-        byteOrder.put32(reply, 16, 2)
+        byteOrder.put32(reply, 16, renderVisuals.size)
         byteOrder.put32(reply, 20, visualCount)
         byteOrder.put32(reply, 24, 0)
         payload.copyInto(reply, 32)

@@ -35,7 +35,7 @@ class XRenderProtocolTest {
                 val formats = readReply(socket.getInputStream())
                 assertEquals(6, u32le(formats, 8))
                 assertEquals(1, u32le(formats, 12))
-                assertEquals(2, u32le(formats, 16))
+                assertEquals(6, u32le(formats, 16))
                 val rootRenderVisuals = X11Ids.RootDepthVisualAliases
                 assertEquals(rootRenderVisuals.size + X11Ids.RgbaVisualAliases.size, u32le(formats, 20))
                 assertEquals(0, u32le(formats, 24))
@@ -52,7 +52,7 @@ class XRenderProtocolTest {
                 assertEquals(XRender.Bgr32Format, u32le(formats, bgr32Offset))
                 assertEquals(32, formats[bgr32Offset + 5].toInt() and 0xff)
                 val screenOffset = 32 + 28 * 6
-                assertEquals(2, u32le(formats, screenOffset))
+                assertEquals(6, u32le(formats, screenOffset))
                 assertEquals(XRender.A1Format, u32le(formats, screenOffset + 4))
                 assertEquals(24, formats[screenOffset + 8].toInt() and 0xff)
                 assertEquals(rootRenderVisuals.size, u16le(formats, screenOffset + 10))
@@ -73,7 +73,13 @@ class XRenderProtocolTest {
                 val directBgrAliasOffset = rootVisualOffset + rootRenderVisuals.indexOf(X11Ids.RootBgrDirectColorAliases.last()) * 8
                 assertEquals(X11Ids.RootBgrDirectColorAliases.last(), u32le(formats, directBgrAliasOffset))
                 assertEquals(XRender.Bgr24Format, u32le(formats, directBgrAliasOffset + 4))
-                val rgbaDepthOffset = rootVisualOffset + rootRenderVisuals.size * 8
+                var depthOffset = rootVisualOffset + rootRenderVisuals.size * 8
+                for (expectedDepth in listOf(1, 4, 8, 16)) {
+                    assertEquals(expectedDepth, formats[depthOffset].toInt() and 0xff)
+                    assertEquals(0, u16le(formats, depthOffset + 2))
+                    depthOffset += 8
+                }
+                val rgbaDepthOffset = depthOffset
                 assertEquals(32, formats[rgbaDepthOffset].toInt() and 0xff)
                 assertEquals(X11Ids.RgbaVisualAliases.size, u16le(formats, rgbaDepthOffset + 2))
                 val rgbaVisualOffset = rgbaDepthOffset + 8
