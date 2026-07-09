@@ -409,6 +409,12 @@ internal class X11State(
             firstEvent = XXInput.FirstEvent,
             firstError = XXInput.FirstError,
         ),
+        XExtension(
+            name = "Generic Event Extension",
+            majorOpcode = XGenericEvent.MajorOpcode,
+            firstEvent = XGenericEvent.FirstEvent,
+            firstError = XGenericEvent.FirstError,
+        ),
     )
 
     init {

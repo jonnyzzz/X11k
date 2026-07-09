@@ -234,6 +234,10 @@ internal class X11Connection(
                 xinput(minorOpcode, body, opcode)
                 return
             }
+            if (extension.name == "Generic Event Extension") {
+                xge(minorOpcode, body, opcode)
+                return
+            }
         }
         when (opcode) {
             1 -> createWindow(minorOpcode, body)
@@ -8996,6 +9000,7 @@ internal class X11Connection(
             XRandr.MajorOpcode -> "RANDR.${XRandr.operationName(minorOpcode)}"
             XDoubleBuffer.MajorOpcode -> "DOUBLE-BUFFER.${XDoubleBuffer.operationName(minorOpcode)}"
             XXInput.MajorOpcode -> "XInputExtension.${XXInput.operationName(minorOpcode)}"
+            XGenericEvent.MajorOpcode -> "Generic Event Extension.${XGenericEvent.operationName(minorOpcode)}"
             1 -> "CreateWindow"
             2 -> "ChangeWindowAttributes"
             3 -> "GetWindowAttributes"
@@ -9130,6 +9135,31 @@ internal class X11Connection(
             name.copyInto(reply, offset)
             offset += name.size
         }
+        write(reply)
+    }
+
+    private fun xge(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        when (minorOpcode) {
+            XGenericEvent.QueryVersion -> xgeQueryVersion(body, majorOpcode)
+            else -> unsupportedRequest(majorOpcode, minorOpcode, "Generic Event Extension.${XGenericEvent.operationName(minorOpcode)}")
+        }
+    }
+
+    private fun xgeQueryVersion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XGenericEvent.QueryVersion, badValue = 0)
+        val clientMajor = byteOrder.u16(body, 0)
+        val clientMinor = byteOrder.u16(body, 2)
+        if (clientMajor < XGenericEvent.MajorVersion) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XGenericEvent.QueryVersion, badValue = clientMajor)
+        }
+        val minor = if (clientMajor == XGenericEvent.MajorVersion) {
+            minOf(clientMinor, XGenericEvent.MinorVersion)
+        } else {
+            XGenericEvent.MinorVersion
+        }
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put16(reply, 8, XGenericEvent.MajorVersion)
+        byteOrder.put16(reply, 10, minor)
         write(reply)
     }
 

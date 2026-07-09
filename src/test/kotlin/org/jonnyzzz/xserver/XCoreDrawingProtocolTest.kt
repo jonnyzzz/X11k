@@ -1298,7 +1298,10 @@ class XCoreDrawingProtocolTest {
 
                 val genericEvent = readReply(socket.getInputStream())
                 assertEquals(5, u16le(genericEvent, 2))
-                assertEquals(0, genericEvent[8].toInt())
+                assertEquals(1, genericEvent[8].toInt())
+                assertEquals(XGenericEvent.MajorOpcode, genericEvent[9].toInt() and 0xff)
+                assertEquals(XGenericEvent.FirstEvent, genericEvent[10].toInt() and 0xff)
+                assertEquals(XGenericEvent.FirstError, genericEvent[11].toInt() and 0xff)
 
                 val xinput = readReply(socket.getInputStream())
                 assertEquals(6, u16le(xinput, 2))
@@ -1355,9 +1358,9 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 16, opcode = 99, badValue = 0, sequence = 1)
 
                 val reply = readReply(socket.getInputStream())
-                assertEquals(16, reply[1].toInt() and 0xff)
+                assertEquals(17, reply[1].toInt() and 0xff)
                 assertEquals(2, u16le(reply, 2))
-                assertEquals(40, u32le(reply, 4))
+                assertEquals(46, u32le(reply, 4))
                 var offset = 32
                 val names = mutableListOf<String>()
                 repeat(reply[1].toInt() and 0xff) {
@@ -1365,7 +1368,7 @@ class XCoreDrawingProtocolTest {
                     names += reply.copyOfRange(offset, offset + length).decodeToString()
                     offset += length
                 }
-                assertEquals(listOf("GLX", "BIG-REQUESTS", "RENDER", "MIT-SHM", "XFIXES", "SHAPE", "XKEYBOARD", "XINERAMA", "XTEST", "XC-MISC", "MIT-SUNDRY-NONSTANDARD", "MIT-SCREEN-SAVER", "SYNC", "RANDR", "DOUBLE-BUFFER", "XInputExtension"), names)
+                assertEquals(listOf("GLX", "BIG-REQUESTS", "RENDER", "MIT-SHM", "XFIXES", "SHAPE", "XKEYBOARD", "XINERAMA", "XTEST", "XC-MISC", "MIT-SUNDRY-NONSTANDARD", "MIT-SCREEN-SAVER", "SYNC", "RANDR", "DOUBLE-BUFFER", "XInputExtension", "Generic Event Extension"), names)
             }
             server.close()
             serverThread.join(1_000)
