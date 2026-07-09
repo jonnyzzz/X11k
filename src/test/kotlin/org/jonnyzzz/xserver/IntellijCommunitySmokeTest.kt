@@ -401,6 +401,49 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij xvfb robot candidate inventory includes frame band phase distances`() {
+        fun capture(argb: Int): VisualCapture = visualCapture(solidImage(IntellijCaptureWidth, IntellijCaptureHeight, argb))
+        val actualRobot = capture(0xff20_2020.toInt())
+        val actualSvg = capture(0xff20_2020.toInt())
+        val matchingReference = capture(0xff20_2020.toInt())
+        val bottomDriftImage = solidImage(IntellijCaptureWidth, IntellijCaptureHeight, 0xff20_2020.toInt())
+        val frame = Rectangle(10, 20, 1260, 860)
+        val graphics = bottomDriftImage.createGraphics()
+        try {
+            graphics.color = java.awt.Color(0xff40_4040.toInt(), true)
+            graphics.fillRect(frame.x, frame.y + frame.height - 96, frame.width, 96)
+        } finally {
+            graphics.dispose()
+        }
+        val bottomDriftReference = visualCapture(bottomDriftImage)
+        val reference = IntellijReferenceCapture(
+            robot = bottomDriftReference,
+            robotCandidates = listOf(bottomDriftReference, matchingReference),
+            selectedRobotCandidateIndex = 1,
+            logs = emptyList(),
+        )
+        val inventory = intellijXvfbRobotCandidateInventory(
+            reference,
+            actualRobot,
+            actualSvg,
+            """
+            - 0x26 parent=0x0 label="root" geometry=0,0 1280x900 class=InputOutput depth=24 visual=0x21 backgroundPixel=16777215 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=0
+            - 0x200003 parent=0x26 label="Idea frame" geometry=10,20 1260x860 class=InputOutput depth=24 visual=0x21 backgroundPixel=0 backgroundPixmap=none borderPixel=0 borderPixmap=none mapped=true focused=false stack=1
+            """.trimIndent(),
+        )
+
+        assertTrue(inventory.contains("count=2"), inventory)
+        assertTrue(inventory.contains("selected=1"), inventory)
+        assertTrue(inventory.contains("bestFull=1"), inventory)
+        assertTrue(inventory.contains("bestTop=0"), inventory)
+        assertTrue(inventory.contains("bestRight=1"), inventory)
+        assertTrue(inventory.contains("bestBottom=1"), inventory)
+        assertTrue(inventory.contains("0: bestTop"), inventory)
+        assertTrue(inventory.contains("bottomBounds=0,0 1260x96"), inventory)
+        assertTrue(inventory.contains("1: selected bestFull bestRight bestBottom"), inventory)
+    }
+
+    @Test
     fun `intellij render band diagnostics split top frame section from text report`() {
         val text =
             """
@@ -4135,7 +4178,7 @@ class IntellijCommunitySmokeTest {
             ),
         )
         File(directory, "intellij-xvfb-robot-candidates.txt").writeText(
-            intellijXvfbRobotCandidateInventory(reference, actual.robot, composedSvgCapture),
+            intellijXvfbRobotCandidateInventory(reference, actual.robot, composedSvgCapture, actual.text),
         )
         File(directory, "intellij-kotlin-html-previews.txt").writeText(htmlPreviewInventory(htmlWindowPreviewSurfaces(actual.html)))
         val logs = reference.logs + actual.logs
@@ -5424,25 +5467,65 @@ class IntellijCommunitySmokeTest {
         reference: IntellijReferenceCapture,
         actualRobot: VisualCapture,
         actualSvg: VisualCapture,
-    ): String =
-        buildString {
+        text: String,
+    ): String {
+        val bands = largestMappedRootChildWindow(text)
+            ?.let(::intellijFrameBands)
+            .orEmpty()
+        fun bestIndex(distance: (VisualCapture) -> Double): Int? =
+            reference.robotCandidates
+                .mapIndexed { index, candidate -> index to distance(candidate) }
+                .minByOrNull { it.second }
+                ?.first
+        val bestFull = bestIndex { intellijParityPairSelectionDistance(it, actualRobot, actualSvg) }
+        val bestBands = bands.associate { band ->
+            band.reportBand to bestIndex { candidate ->
+                maxOf(
+                    imageDistance(regionImage(candidate.image, band.region), regionImage(actualRobot.image, band.region)),
+                    imageDistance(regionImage(candidate.image, band.region), regionImage(actualSvg.image, band.region)),
+                )
+            }
+        }
+        return buildString {
             appendLine("count=${reference.robotCandidates.size}")
             appendLine("selected=${reference.selectedRobotCandidateIndex}")
+            appendLine("bestFull=${bestFull ?: "unavailable"}")
+            bands.forEach { band ->
+                appendLine("best${band.reportBand.replaceFirstChar { it.uppercase() }}=${bestBands[band.reportBand] ?: "unavailable"}")
+            }
             reference.robotCandidates.forEachIndexed { index, candidate ->
                 val robotDistance = imageDistance(candidate.image, actualRobot.image)
                 val svgDistance = imageDistance(candidate.image, actualSvg.image)
                 append(index)
-                append(": selectionDistance=")
+                append(":")
+                val markers = listOfNotNull(
+                    "selected".takeIf { index == reference.selectedRobotCandidateIndex },
+                    "bestFull".takeIf { index == bestFull },
+                ) + bands.mapNotNull { band ->
+                    "best${band.reportBand.replaceFirstChar { it.uppercase() }}".takeIf { index == bestBands[band.reportBand] }
+                }
+                if (markers.isNotEmpty()) append(' ').append(markers.joinToString(" "))
+                append(" selectionDistance=")
                 append(intellijParityPairSelectionDistance(candidate, actualRobot, actualSvg))
                 append(" robotVsKotlin=")
                 append(robotDistance)
                 append(" svgVsKotlin=")
                 append(svgDistance)
+                bands.forEach { band ->
+                    val candidateRegion = regionImage(candidate.image, band.region)
+                    val robotRegion = regionImage(actualRobot.image, band.region)
+                    val svgRegion = regionImage(actualSvg.image, band.region)
+                    append(' ').append(band.reportBand).append('=')
+                    append(maxOf(imageDistance(candidateRegion, robotRegion), imageDistance(candidateRegion, svgRegion)))
+                    append(' ').append(band.reportBand).append("Bounds=")
+                    append(mismatchBounds(candidateRegion, robotRegion).unionNullable(mismatchBounds(candidateRegion, svgRegion)).toMetricString())
+                }
                 append(" selected=")
                 append(index == reference.selectedRobotCandidateIndex)
                 appendLine()
             }
         }
+    }
 
     private fun intellijParityPairAttemptInventory(
         attempts: List<IntellijParityPairCapture>,
@@ -6601,6 +6684,13 @@ class IntellijCommunitySmokeTest {
 
     private fun Rectangle?.toMetricString(): String =
         this?.let { "${it.x},${it.y} ${it.width}x${it.height}" } ?: "none"
+
+    private fun Rectangle?.unionNullable(other: Rectangle?): Rectangle? =
+        when {
+            this == null -> other
+            other == null -> this
+            else -> union(other)
+        }
 
     private fun intellijRenderBandSection(text: String, band: String): String {
         val header = "RENDER operations intersecting $band mapped root-child band:"
