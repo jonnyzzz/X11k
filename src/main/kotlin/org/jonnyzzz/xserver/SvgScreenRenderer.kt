@@ -1490,14 +1490,21 @@ internal object SvgScreenRenderer {
     }
 
     private fun displaySurface(snapshot: XScreenSnapshot, window: XWindowSnapshot): XDisplaySurface? {
+        val windowSurface = windowFramebufferSurface(window)
+        if (window.framebufferPainted && windowSurface != null) return windowSurface
         val pixmap = matchingPixmapCandidates(snapshot, window)
             .firstOrNull { window.id in it.matchingWindowIds }
         val pixmapSurface = pixmap?.let(::pixmapDisplaySurface)
         if (pixmapSurface != null) {
             if (shouldUsePixmapSurface(snapshot, window, pixmap)) return pixmapSurface
         }
+        if (windowSurface != null) return windowSurface
+        return pixmapSurface
+    }
+
+    private fun windowFramebufferSurface(window: XWindowSnapshot): XDisplaySurface? =
         window.framebufferDataUri?.let {
-            return XDisplaySurface(
+            XDisplaySurface(
                 href = it,
                 source = "window-framebuffer",
                 cssClass = "framebuffer-image",
@@ -1505,8 +1512,6 @@ internal object SvgScreenRenderer {
                 height = window.height,
             )
         }
-        return pixmapSurface
-    }
 
     private fun pixmapDisplaySurface(pixmap: XPixmapSnapshot): XDisplaySurface? {
         val href = pixmap.framebufferDataUri ?: return null

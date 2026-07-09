@@ -7694,6 +7694,7 @@ internal class X11State(
     }
 
     private fun rootDisplayFramebufferForWindow(window: XWindow, context: XRootDisplaySurfaceContext): XFramebuffer {
+        if (window.framebufferClientPainted) return window.framebuffer
         val pixmapSurface = rootMatchingPixmapSurfaces(context, window)
             .firstOrNull { window.id in it.matchingWindowIds }
         if (pixmapSurface != null && shouldUseRootPixmapSurface(context, window, pixmapSurface)) return pixmapSurface.framebuffer

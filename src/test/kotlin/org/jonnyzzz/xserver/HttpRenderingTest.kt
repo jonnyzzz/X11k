@@ -1285,7 +1285,7 @@ class HttpRenderingTest {
     }
 
     @Test
-    fun `screen svg presents matching backing pixmap painted after direct window framebuffer`() {
+    fun `screen svg keeps painted window framebuffer ahead of newer backing pixmap`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             Socket("127.0.0.1", server.localPort).use { socket ->
@@ -1295,22 +1295,37 @@ class HttpRenderingTest {
 
                 out.write(createWindowRequest(0x0020_0001, 10, 20, 64, 64))
                 out.write(changePropertyRequest(0x0020_0001, "late backing pixmap target"))
+                out.write(mapWindowRequest(0x0020_0001))
                 out.write(createGcRequest(0x0020_1001, 0x0020_0001))
-                out.write(putImageRequest(0x0020_0001, 0x0020_1001))
+                out.write(putImageRequest(0x0020_0001, 0x0020_1001, firstPixel = 0x00ff_0000))
                 out.write(createPixmapRequest(0x0020_0100, width = 64, height = 64))
                 out.write(createGcRequest(0x0020_1002, 0x0020_0100))
-                out.write(putImageRequest(0x0020_0100, 0x0020_1002))
-                out.write(mapWindowRequest(0x0020_0001))
+                out.write(putImageRequest(0x0020_0100, 0x0020_1002, firstPixel = 0x0000_ff00))
                 out.flush()
                 Thread.sleep(100)
 
                 val svg = httpGet(server.localPort, "/screen.svg").body
+                val screen = screenFramebufferImage(svg)
                 assertContains(svg, "late backing pixmap target")
-                assertContains(svg, """class="framebuffer-image backing-pixmap-image"""")
+                assertContains(svg, """class="framebuffer-image"""")
                 assertContains(svg, """data-window-id="0x200001"""")
-                assertContains(svg, """data-pixmap-id="0x200100"""")
-                assertContains(svg, """data-source="matching-pixmap"""")
-                assertFalse(svg.contains("""data-source="window-framebuffer""""))
+                assertContains(svg, """data-source="window-framebuffer"""")
+                assertFalse(svg.contains("""class="framebuffer-image backing-pixmap-image""""))
+                assertFalse(svg.contains("""data-source="matching-pixmap""""))
+                assertEquals(
+                    0xffff_0000.toInt(),
+                    screen.getRGB(50, 50),
+                    "Visible root framebuffer must keep the painted window pixel over a newer matching pixmap",
+                )
+                assertFalse(
+                    screen.getRGB(50, 50) == 0xff00_ff00.toInt(),
+                    "Visible root framebuffer must not source the newer matching pixmap once the window was painted",
+                )
+
+                val html = httpGet(server.localPort, "/").body
+                assertContains(html, "late backing pixmap target")
+                assertContains(html, "Best painted surface")
+                assertContains(html, """data-pixmap-id="0x200100"""")
             }
 
             server.close()
@@ -2580,7 +2595,7 @@ class HttpRenderingTest {
         return bytes
     }
 
-    private fun putImageRequest(drawable: Int, gc: Int): ByteArray {
+    private fun putImageRequest(drawable: Int, gc: Int, firstPixel: Int = 0x00ff_0000): ByteArray {
         val bytes = ByteArray(40)
         bytes[0] = 72
         bytes[1] = 2
@@ -2592,7 +2607,7 @@ class HttpRenderingTest {
         put16le(bytes, 16, 40)
         put16le(bytes, 18, 30)
         bytes[21] = 24
-        put32le(bytes, 24, 0x00ff_0000)
+        put32le(bytes, 24, firstPixel)
         put32le(bytes, 28, 0x0000_ff00)
         put32le(bytes, 32, 0x0000_00ff)
         return bytes
