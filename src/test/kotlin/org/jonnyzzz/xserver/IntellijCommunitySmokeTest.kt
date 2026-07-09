@@ -373,7 +373,17 @@ class IntellijCommunitySmokeTest {
     fun `intellij robot svg candidate inventory includes frame band distances`() {
         val inventory = intellijRobotSvgCandidateInventory(
             listOf(
-                IntellijSvgCandidateDistance(index = 0, full = 0.25, top = 0.0, right = 0.1, bottom = 0.7),
+                IntellijSvgCandidateDistance(
+                    index = 0,
+                    full = 0.25,
+                    fullMismatchBounds = "2,3 4x5",
+                    top = 0.0,
+                    topMismatchBounds = "none",
+                    right = 0.1,
+                    rightMismatchBounds = "1,0 2x3",
+                    bottom = 0.7,
+                    bottomMismatchBounds = "8,9 10x11",
+                ),
                 IntellijSvgCandidateDistance(index = 1, full = null, top = null, right = null, bottom = null),
             ),
             selectedIndex = 0,
@@ -381,7 +391,12 @@ class IntellijCommunitySmokeTest {
 
         assertTrue(inventory.contains("count=2"), inventory)
         assertTrue(inventory.contains("selected=0"), inventory)
-        assertTrue(inventory.contains("0: selected bestFull bestTop bestRight bestBottom full=0.25 top=0.0 right=0.1 bottom=0.7"), inventory)
+        assertTrue(
+            inventory.contains(
+                "0: selected bestFull bestTop bestRight bestBottom full=0.25 fullBounds=2,3 4x5 top=0.0 topBounds=none right=0.1 rightBounds=1,0 2x3 bottom=0.7 bottomBounds=8,9 10x11",
+            ),
+            inventory,
+        )
         assertTrue(inventory.contains("1: full=unavailable top=unavailable right=unavailable bottom=unavailable"), inventory)
     }
 
@@ -2067,12 +2082,20 @@ class IntellijCommunitySmokeTest {
                     frameBands[name]?.let { region ->
                         imageDistance(regionImage(robot.image, region), regionImage(candidate.image, region))
                     }
+                fun bandMismatchBounds(name: String): String? =
+                    frameBands[name]?.let { region ->
+                        mismatchBounds(regionImage(robot.image, region), regionImage(candidate.image, region)).toMetricString()
+                    }
                 IntellijSvgCandidateDistance(
                     index = index,
                     full = fullImageDistance(robot.image, candidate.image),
+                    fullMismatchBounds = mismatchBounds(robot.image, candidate.image).toMetricString(),
                     top = bandDistance("top"),
+                    topMismatchBounds = bandMismatchBounds("top"),
                     right = bandDistance("right"),
+                    rightMismatchBounds = bandMismatchBounds("right"),
                     bottom = bandDistance("bottom"),
+                    bottomMismatchBounds = bandMismatchBounds("bottom"),
                 )
             }
         }
@@ -5595,9 +5618,13 @@ class IntellijCommunitySmokeTest {
                 )
                 if (markers.isNotEmpty()) append(' ').append(markers.joinToString(" "))
                 append(" full=").append(distance.full ?: "unavailable")
+                distance.fullMismatchBounds?.let { append(" fullBounds=").append(it) }
                 append(" top=").append(distance.top ?: "unavailable")
+                distance.topMismatchBounds?.let { append(" topBounds=").append(it) }
                 append(" right=").append(distance.right ?: "unavailable")
+                distance.rightMismatchBounds?.let { append(" rightBounds=").append(it) }
                 append(" bottom=").append(distance.bottom ?: "unavailable")
+                distance.bottomMismatchBounds?.let { append(" bottomBounds=").append(it) }
                 appendLine()
             }
         }
@@ -6195,9 +6222,13 @@ class IntellijCommunitySmokeTest {
     private data class IntellijSvgCandidateDistance(
         val index: Int,
         val full: Double?,
+        val fullMismatchBounds: String? = null,
         val top: Double?,
+        val topMismatchBounds: String? = null,
         val right: Double?,
+        val rightMismatchBounds: String? = null,
         val bottom: Double?,
+        val bottomMismatchBounds: String? = null,
     )
 
     private data class IntellijLogArtifact(
@@ -6371,8 +6402,8 @@ class IntellijCommunitySmokeTest {
         const val IntellijParityReadyWaitSeconds = 240
         const val IntellijContainerCommandTimeoutSeconds = 900
         const val IntellijRobotSvgCaptureAttempts = 4
-        const val IntellijRobotSvgPostCaptureSamples = 4
-        const val IntellijRobotSvgPostCaptureSampleDelayMs = 75L
+        const val IntellijRobotSvgPostCaptureSamples = 12
+        const val IntellijRobotSvgPostCaptureSampleDelayMs = 50L
         const val IntellijRobotSvgCaptureDistanceThreshold = 1.0
         const val IntellijParityPairAttempts = 2
         const val IntellijParityPairDistanceTarget = 1.0
