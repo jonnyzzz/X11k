@@ -12603,7 +12603,7 @@ class XRenderProtocolTest {
                 out.flush()
 
                 val image = readReply(socket.getInputStream())
-                assertEquals(0xff7f_0080.toInt(), pixelAt(image, imageWidth = 8, x = 4, y = 3))
+                assertEquals(0xff87_0078.toInt(), pixelAt(image, imageWidth = 8, x = 4, y = 3))
                 assertContains(httpGet(server.localPort, "/state.json"), """"polyEdge":1""")
                 val text = httpGet(server.localPort, "/text.txt")
                 assertFalse(text.contains("polyEdge=1"))
@@ -12687,7 +12687,7 @@ class XRenderProtocolTest {
 
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xffff_ffff.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 1))
-                assertEquals(0xff90_9090.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 2))
+                assertEquals(0xff88_8888.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 2))
                 assertEquals(0xff00_0000.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 3))
             }
             server.close()
@@ -12735,7 +12735,7 @@ class XRenderProtocolTest {
 
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 10, x = 4, y = 3))
-                assertEquals(0xff7f_0080.toInt(), pixelAt(image, imageWidth = 10, x = 6, y = 3))
+                assertEquals(0xff87_0078.toInt(), pixelAt(image, imageWidth = 10, x = 6, y = 3))
             }
             server.close()
             serverThread.join(1_000)
@@ -12983,7 +12983,7 @@ class XRenderProtocolTest {
                 out.flush()
 
                 val image = readReply(socket.getInputStream())
-                assertEquals(0xfffe_0001.toInt(), pixelAt(image, imageWidth = 8, x = 4, y = 4))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 8, x = 4, y = 4))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 8, x = 5, y = 4))
             }
             server.close()

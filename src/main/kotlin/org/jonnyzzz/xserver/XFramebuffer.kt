@@ -2669,16 +2669,16 @@ internal class XFramebuffer(
             return if (sampleX >= minOf(left, right) && sampleX < maxOf(left, right)) TrapezoidSamples else 0
         }
         var covered = 0
-        for (sampleYIndex in 0 until TrapezoidSampleGrid) {
-            val sampleY = y + (sampleYIndex + 0.5) / TrapezoidSampleGrid
+        for (sampleYIndex in 0 until TrapezoidSampleGridY) {
+            val sampleY = y + (sampleYIndex + 0.5) / TrapezoidSampleGridY
             if (sampleY < top || sampleY >= bottom) continue
             val left = trapezoid.left.xAt(sampleY)
             val right = trapezoid.right.xAt(sampleY)
             val minX = minOf(left, right)
             val maxX = maxOf(left, right)
-            for (sampleXIndex in 0 until TrapezoidSampleGrid) {
-                val sampleX = x + (sampleXIndex + 0.5) / TrapezoidSampleGrid
-                if (sampleX >= minX && sampleX < maxX) covered += 1
+            for (sampleXIndex in 0 until TrapezoidSampleGridX) {
+                val sampleX = x + (sampleXIndex + 0.5) / TrapezoidSampleGridX
+                if (sampleX >= minX && sampleX <= maxX) covered += 1
             }
         }
         return covered
@@ -5701,8 +5701,9 @@ internal class XFramebuffer(
         private const val ArcChord = 0
         private const val CorePixelMask = 0x00ff_ffff
         private const val FixedOne = 65_536.0
-        private const val TrapezoidSampleGrid = 64
-        private const val TrapezoidSamples = TrapezoidSampleGrid * TrapezoidSampleGrid
+        private const val TrapezoidSampleGridX = 17
+        private const val TrapezoidSampleGridY = 15
+        private const val TrapezoidSamples = TrapezoidSampleGridX * TrapezoidSampleGridY
         private const val TriangleSampleGrid = 4
         private const val TriangleSamples = TriangleSampleGrid * TriangleSampleGrid
         private const val TransformEpsilon = 1.0e-9
