@@ -412,6 +412,47 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `root GetImage sees high offset RENDER pixmap copy middle rows`() {
+        XServer(ServerOptions(port = 0, width = 1280, height = 900)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 10, y = 20, width = 1260, height = 860, borderWidth = 0))
+                out.write(mapWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 1260, height = 860))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 856, y = 841, width = 104, height = 16, red = 0x2626, green = 0x2828, blue = 0x2c2c, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 856, y = 847, width = 104, height = 4, red = 0x9292, green = 0xb7b7, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderComposite(
+                        PixmapPictureId,
+                        PictureId,
+                        operation = XRender.OpOver,
+                        sourceX = 856,
+                        sourceY = 841,
+                        destinationX = 856,
+                        destinationY = 841,
+                        width = 104,
+                        height = 16,
+                    ),
+                )
+                out.write(getImageRequest(X11Ids.RootWindow, x = 866, y = 867, width = 104, height = 4))
+                out.flush()
+
+                val image = readReplySkippingEvents(socket.getInputStream())
+                assertEquals(0xff92_b7ff.toInt(), pixelAt(image, imageWidth = 104, x = 0, y = 0))
+                assertEquals(0xff92_b7ff.toInt(), pixelAt(image, imageWidth = 104, x = 32, y = 2))
+                assertEquals(0xff92_b7ff.toInt(), pixelAt(image, imageWidth = 104, x = 103, y = 3))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER A1 FillRectangles remains readable through core GetImage`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

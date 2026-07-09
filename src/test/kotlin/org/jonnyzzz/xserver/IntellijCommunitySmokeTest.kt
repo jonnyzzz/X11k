@@ -1050,6 +1050,30 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij parity samples xvfb reference robot frames`() {
+        val source = Files.readString(projectRoot().resolve("src/test/kotlin/org/jonnyzzz/xserver/IntellijCommunitySmokeTest.kt"))
+        val parityAnchor = "    @Test\n    fun `intellij community robot and svg roughly match xvfb reference`()"
+        val parityEnd = "\n    private fun projectRoot()"
+        val xvfbAnchor = "    private fun runIntellijAgainstXvfb(image: String, url: String?, configDir: Path): IntellijReferenceCapture ="
+        val xvfbEnd = "\n    private fun runIntellijAgainstKotlinServer("
+        assertTrue(source.contains(parityAnchor), source)
+        assertTrue(source.contains(parityEnd), source)
+        assertTrue(source.contains(xvfbAnchor), source)
+        assertTrue(source.contains(xvfbEnd), source)
+        val parityBody = sourceBodyBetweenLast(source, parityAnchor, parityEnd)
+        val xvfbBody = sourceBodyBetweenLast(source, xvfbAnchor, xvfbEnd)
+
+        assertTrue(parityBody.contains("val selectedReference = reference.withClosestRobotTo(actual.robot, composedSvgCapture)"), parityBody)
+        assertTrue(parityBody.contains("reference = selectedReference"), parityBody)
+        assertTrue(xvfbBody.contains("val robotCandidates = captureIntellijXvfbRobotCandidates(container)"), xvfbBody)
+        assertTrue(xvfbBody.contains("robotCandidates = robotCandidates"), xvfbBody)
+        assertTrue(source.contains("repeat(IntellijXvfbRobotCaptureSamples)"), source)
+        assertTrue(source.contains("IntellijXvfbRobotCaptureSampleDelayMs"), source)
+        assertTrue(source.contains("intellij-xvfb-robot-candidates.txt"), source)
+        assertTrue(source.contains("selectedXvfbRobotCandidate="), source)
+    }
+
+    @Test
     fun `intellij xvfb reference can run bounded extension experiments`() {
         val source = Files.readString(projectRoot().resolve("src/test/kotlin/org/jonnyzzz/xserver/IntellijCommunitySmokeTest.kt"))
         val xvfbAnchor = "    private fun runIntellijAgainstXvfb(image: String, url: String?, configDir: Path): IntellijReferenceCapture ="
@@ -1302,6 +1326,63 @@ class IntellijCommunitySmokeTest {
         assertTrue(
             log.contains(
                 "attrs=[repeat=pad(2),clip-x-origin=-2,clip-y-origin=3,graphics-exposure=false(0),poly-edge=sharp(0),component-alpha=true(1)]",
+            ),
+            log,
+        )
+    }
+
+    @Test
+    fun `intellij xvfb putimage trace proxy decodes render gradient and fill requests`() {
+        val tempDir = Files.createTempDirectory("x11-render-gradient-fill-trace-proxy")
+        val sourceFile = tempDir.resolve("X11PutImageTraceProxy.java")
+        val logFile = tempDir.resolve("trace.log")
+        Files.writeString(sourceFile, x11PutImageTraceProxySource())
+        val compiler = ToolProvider.getSystemJavaCompiler()
+            ?: error("A JDK compiler is required for this focused proxy-source test")
+        assertEquals(0, compiler.run(null, null, null, "-d", tempDir.toString(), sourceFile.toString()))
+
+        URLClassLoader(arrayOf(tempDir.toUri().toURL()), null).use { loader ->
+            val clazz = Class.forName("X11PutImageTraceProxy", true, loader)
+            val constructor = clazz.getDeclaredConstructor(
+                Int::class.javaPrimitiveType,
+                String::class.java,
+                Int::class.javaPrimitiveType,
+                String::class.java,
+            )
+            constructor.isAccessible = true
+            val proxy = constructor.newInstance(0, "127.0.0.1", 0, logFile.toString())
+            val logRenderCreateLinearGradient = clazz.getDeclaredMethod(
+                "logRenderCreateLinearGradient",
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                ByteArray::class.java,
+                Int::class.javaPrimitiveType,
+                Boolean::class.javaPrimitiveType,
+            )
+            val logRenderFillRectangles = clazz.getDeclaredMethod(
+                "logRenderFillRectangles",
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                ByteArray::class.java,
+                Int::class.javaPrimitiveType,
+                Boolean::class.javaPrimitiveType,
+            )
+            logRenderCreateLinearGradient.isAccessible = true
+            logRenderFillRectangles.isAccessible = true
+            logRenderCreateLinearGradient.invoke(proxy, 9, 31, renderCreateLinearGradientTraceBytes(), 4, true)
+            logRenderFillRectangles.invoke(proxy, 9, 32, renderFillRectanglesTraceBytes(), 4, true)
+        }
+
+        val log = Files.readString(logFile)
+        assertTrue(
+            log.contains(
+                "connection=9 request=31 RENDER.CreateLinearGradient picture=0x2000a0 p1=0x600000,0x20000 p2=0xc00000,0x20000 stops=2 stopValues=[0x0,0x10000] colors=[0xff92b7ff,0xff366ace] rawColors=[0x9292,0xb7b7,0xffff,0xffff|0x3636,0x6a6a,0xcece,0xffff]",
+            ),
+            log,
+        )
+        assertTrue(
+            log.contains(
+                "connection=9 request=32 RENDER.FillRectangles op=3 dst=0x2000a1 color=0x2626,0x2828,0x2c2c,0xffff rects=2 rectangles=[-2,3 4x5|6,-7 8x9]",
             ),
             log,
         )
@@ -1809,14 +1890,15 @@ class IntellijCommunitySmokeTest {
             val actual = runIntellijAgainstKotlinServer(port, clientImage, url, kotlinConfig)
             val composedSvg = composeSvgLayers(actual.svgLayers, IntellijCaptureWidth, IntellijCaptureHeight)
             val composedSvgCapture = visualCapture(composedSvg)
+            val selectedReference = reference.withClosestRobotTo(actual.robot, composedSvgCapture)
             val pair = IntellijParityPairCapture(
                 attempt = attempt,
-                reference = reference,
+                reference = selectedReference,
                 actual = actual,
                 composedSvg = composedSvg,
                 composedSvgCapture = composedSvgCapture,
-                robotDistance = imageDistance(reference.robot.image, actual.robot.image),
-                svgDistance = imageDistance(reference.robot.image, composedSvgCapture.image),
+                robotDistance = imageDistance(selectedReference.robot.image, actual.robot.image),
+                svgDistance = imageDistance(selectedReference.robot.image, composedSvgCapture.image),
                 robotSvgDistance = imageDistance(actual.robot.image, composedSvgCapture.image),
             )
             attempts += pair
@@ -2284,22 +2366,15 @@ class IntellijCommunitySmokeTest {
                     )
                     captureIntellijRuntimeUiDiagnostics(container, "/tmp/idea-xvfb.pid")
                     captureIntellijConfigOptionsInventory(container)
-                    val capture = execIntellijShell(
+                    execIntellijShell(
                         container,
                         """
                         set -eu
-                        idea=${'$'}(cat /tmp/idea-xvfb.pid)
-                        xvfb=${'$'}(cat /tmp/xvfb.pid)
-                        kill -0 "${'$'}idea"
-                        kill -0 "${'$'}xvfb"
                         DISPLAY=:99 xwininfo -root -tree >/tmp/xwininfo-xvfb-root-tree.log 2>&1 || true
                         DISPLAY=:99 xprop -root >/tmp/xprop-xvfb-root.log 2>&1 || true
-                        TRACE_XVFB_PUTIMAGE='${traceXvfbPutImage}'
-                        xvfb_display=:99
-                        DISPLAY="${'$'}xvfb_display" java -cp /tmp XIntellijRobotCapture
                         """.trimIndent(),
                     )
-                    assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
+                    val robotCandidates = captureIntellijXvfbRobotCandidates(container)
                     val logs = collectIntellijLogs(
                         container = container,
                         prefix = "intellij-xvfb",
@@ -2307,7 +2382,8 @@ class IntellijCommunitySmokeTest {
                         extraLogs = extraLogs,
                     )
                     IntellijReferenceCapture(
-                        robot = visualCapture(capture.stdout),
+                        robot = robotCandidates.first(),
+                        robotCandidates = robotCandidates,
                         logs = logs,
                     )
                 } finally {
@@ -2318,6 +2394,26 @@ class IntellijCommunitySmokeTest {
                     )
                 }
             }
+
+    private fun captureIntellijXvfbRobotCandidates(container: GenericContainer<*>): List<VisualCapture> =
+        buildList {
+            repeat(IntellijXvfbRobotCaptureSamples) { index ->
+                if (index > 0) Thread.sleep(IntellijXvfbRobotCaptureSampleDelayMs)
+                val capture = execIntellijShell(
+                    container,
+                    """
+                    set -eu
+                    idea=${'$'}(cat /tmp/idea-xvfb.pid)
+                    xvfb=${'$'}(cat /tmp/xvfb.pid)
+                    kill -0 "${'$'}idea"
+                    kill -0 "${'$'}xvfb"
+                    DISPLAY=:99 java -Dx.captureDelayMs=0 -cp /tmp XIntellijRobotCapture
+                    """.trimIndent(),
+                )
+                assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
+                add(visualCapture(capture.stdout))
+            }
+        }
 
     private fun runIntellijAgainstKotlinServer(port: Int, image: String, url: String?, configDir: Path): IntellijKotlinCapture {
         XServer(
@@ -3188,10 +3284,14 @@ class IntellijCommunitySmokeTest {
               logRenderCreatePicture(connection, requestIndex, request, body, little);
             } else if (minor == 8) {
               logRenderComposite(connection, requestIndex, request, body, little);
+            } else if (minor == 26) {
+              logRenderFillRectangles(connection, requestIndex, request, body, little);
             } else if (minor == 28) {
               logRenderSetPictureTransform(connection, requestIndex, request, body, little);
             } else if (minor == 30) {
               logRenderSetPictureFilter(connection, requestIndex, request, body, little);
+            } else if (minor == 34) {
+              logRenderCreateLinearGradient(connection, requestIndex, request, body, little);
             }
           }
 
@@ -3351,6 +3451,108 @@ class IntellijCommunitySmokeTest {
                 " size=" + width + "x" + height);
           }
 
+          private void logRenderFillRectangles(int connection, int requestIndex, byte[] request, int body, boolean little) {
+            if (request.length < body + 16) {
+              renderLine("connection=" + connection + " request=" + requestIndex + " RENDER.FillRectangles malformedBytes=" + request.length);
+              return;
+            }
+            int op = request[body] & 0xff;
+            long dst = u32(request, body + 4, little);
+            int red = u16(request, body + 8, little);
+            int green = u16(request, body + 10, little);
+            int blue = u16(request, body + 12, little);
+            int alpha = u16(request, body + 14, little);
+            int rectangleBytes = request.length - body - 16;
+            int rectangleCount = rectangleBytes / 8;
+            renderLine("connection=" + connection +
+                " request=" + requestIndex +
+                " RENDER.FillRectangles op=" + op +
+                " dst=0x" + Long.toHexString(dst) +
+                " color=" + hex16(red) + "," + hex16(green) + "," + hex16(blue) + "," + hex16(alpha) +
+                " rects=" + rectangleCount +
+                " rectangles=" + renderRectangleSample(request, body + 16, rectangleCount, little));
+          }
+
+          private static String renderRectangleSample(byte[] request, int offset, int rectangleCount, boolean little) {
+            StringBuilder out = new StringBuilder("[");
+            int count = Math.min(rectangleCount, 4);
+            for (int i = 0; i < count; i++) {
+              if (i > 0) out.append('|');
+              int x = i16(request, offset + i * 8, little);
+              int y = i16(request, offset + i * 8 + 2, little);
+              int width = u16(request, offset + i * 8 + 4, little);
+              int height = u16(request, offset + i * 8 + 6, little);
+              out.append(x).append(',').append(y).append(' ').append(width).append('x').append(height);
+            }
+            if (rectangleCount > count) out.append("|omitted=").append(rectangleCount - count);
+            return out.append(']').toString();
+          }
+
+          private void logRenderCreateLinearGradient(int connection, int requestIndex, byte[] request, int body, boolean little) {
+            if (request.length < body + 24) {
+              renderLine("connection=" + connection + " request=" + requestIndex + " RENDER.CreateLinearGradient malformedBytes=" + request.length);
+              return;
+            }
+            long picture = u32(request, body, little);
+            long p1x = u32(request, body + 4, little);
+            long p1y = u32(request, body + 8, little);
+            long p2x = u32(request, body + 12, little);
+            long p2y = u32(request, body + 16, little);
+            long stopCountLong = u32(request, body + 20, little);
+            if (stopCountLong > 4096L) {
+              renderLine("connection=" + connection + " request=" + requestIndex + " RENDER.CreateLinearGradient picture=0x" + Long.toHexString(picture) + " stops=" + stopCountLong + " malformedBytes=" + request.length);
+              return;
+            }
+            int stopCount = (int) stopCountLong;
+            int stopOffset = body + 24;
+            int colorOffset = stopOffset + stopCount * 4;
+            if (colorOffset < stopOffset || request.length < colorOffset + stopCount * 8) {
+              renderLine("connection=" + connection + " request=" + requestIndex + " RENDER.CreateLinearGradient picture=0x" + Long.toHexString(picture) + " stops=" + stopCount + " malformedBytes=" + request.length);
+              return;
+            }
+            renderLine("connection=" + connection +
+                " request=" + requestIndex +
+                " RENDER.CreateLinearGradient picture=0x" + Long.toHexString(picture) +
+                " p1=0x" + Long.toHexString(p1x) + ",0x" + Long.toHexString(p1y) +
+                " p2=0x" + Long.toHexString(p2x) + ",0x" + Long.toHexString(p2y) +
+                " stops=" + stopCount +
+                " stopValues=" + renderStopSample(request, stopOffset, stopCount, little) +
+                " colors=" + renderColorSample(request, colorOffset, stopCount, little, false) +
+                " rawColors=" + renderColorSample(request, colorOffset, stopCount, little, true));
+          }
+
+          private static String renderStopSample(byte[] request, int offset, int stopCount, boolean little) {
+            StringBuilder out = new StringBuilder("[");
+            int count = Math.min(stopCount, 6);
+            for (int i = 0; i < count; i++) {
+              if (i > 0) out.append(',');
+              out.append("0x").append(Long.toHexString(u32(request, offset + i * 4, little)));
+            }
+            if (stopCount > count) out.append(",omitted=").append(stopCount - count);
+            return out.append(']').toString();
+          }
+
+          private static String renderColorSample(byte[] request, int offset, int colorCount, boolean little, boolean raw) {
+            StringBuilder out = new StringBuilder("[");
+            int count = Math.min(colorCount, 6);
+            for (int i = 0; i < count; i++) {
+              if (i > 0) out.append(raw ? '|' : ',');
+              int colorOffset = offset + i * 8;
+              int red = u16(request, colorOffset, little);
+              int green = u16(request, colorOffset + 2, little);
+              int blue = u16(request, colorOffset + 4, little);
+              int alpha = u16(request, colorOffset + 6, little);
+              if (raw) {
+                out.append(hex16(red)).append(',').append(hex16(green)).append(',').append(hex16(blue)).append(',').append(hex16(alpha));
+              } else {
+                long argb = ((long) (alpha / 257) << 24) | ((long) (red / 257) << 16) | ((long) (green / 257) << 8) | (long) (blue / 257);
+                out.append("0x").append(hex32(argb));
+              }
+            }
+            if (colorCount > count) out.append(raw ? "|omitted=" : ",omitted=").append(colorCount - count);
+            return out.append(']').toString();
+          }
+
           private void logRenderSetPictureTransform(int connection, int requestIndex, byte[] request, int body, boolean little) {
             if (request.length < body + 40) {
               renderLine("connection=" + connection + " request=" + requestIndex + " RENDER.SetPictureTransform malformedBytes=" + request.length);
@@ -3481,6 +3683,10 @@ class IntellijCommunitySmokeTest {
 
           private static String hex32(long value) {
             return String.format("%08x", value & 0xffffffffL);
+          }
+
+          private static String hex16(int value) {
+            return "0x" + String.format("%04x", value & 0xffff);
           }
 
           private static String decodedArgbSample(int format, int depth, byte[] data, int limit) {
@@ -3798,6 +4004,9 @@ class IntellijCommunitySmokeTest {
                 actual.robotSvgCandidateDistances,
                 selectedIndex = actual.selectedSvgCandidateIndex,
             ),
+        )
+        File(directory, "intellij-xvfb-robot-candidates.txt").writeText(
+            intellijXvfbRobotCandidateInventory(reference, actual.robot, composedSvgCapture),
         )
         File(directory, "intellij-kotlin-html-previews.txt").writeText(htmlPreviewInventory(htmlWindowPreviewSurfaces(actual.html)))
         val logs = reference.logs + actual.logs
@@ -4293,6 +4502,73 @@ class IntellijCommunitySmokeTest {
         u32(1)
         return out.toByteArray().also { bytes ->
             assertEquals(44, bytes.size)
+        }
+    }
+
+    private fun renderCreateLinearGradientTraceBytes(): ByteArray {
+        val out = ByteArrayOutputStream()
+        fun u32(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+            out.write((value ushr 16) and 0xff)
+            out.write((value ushr 24) and 0xff)
+        }
+
+        fun u16(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+        }
+
+        out.write(ByteArray(4))
+        u32(0x002000a0)
+        u32(0x00600000)
+        u32(0x00020000)
+        u32(0x00c00000)
+        u32(0x00020000)
+        u32(2)
+        u32(0x00000000)
+        u32(0x00010000)
+        listOf(
+            listOf(0x9292, 0xb7b7, 0xffff, 0xffff),
+            listOf(0x3636, 0x6a6a, 0xcece, 0xffff),
+        ).flatten().forEach(::u16)
+        return out.toByteArray().also { bytes ->
+            assertEquals(52, bytes.size)
+        }
+    }
+
+    private fun renderFillRectanglesTraceBytes(): ByteArray {
+        val out = ByteArrayOutputStream()
+        fun u32(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+            out.write((value ushr 16) and 0xff)
+            out.write((value ushr 24) and 0xff)
+        }
+
+        fun u16(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+        }
+
+        out.write(ByteArray(4))
+        out.write(3)
+        out.write(byteArrayOf(0, 0, 0))
+        u32(0x002000a1)
+        u16(0x2626)
+        u16(0x2828)
+        u16(0x2c2c)
+        u16(0xffff)
+        u16(-2)
+        u16(3)
+        u16(4)
+        u16(5)
+        u16(6)
+        u16(-7)
+        u16(8)
+        u16(9)
+        return out.toByteArray().also { bytes ->
+            assertEquals(36, bytes.size)
         }
     }
 
@@ -4954,6 +5230,46 @@ class IntellijCommunitySmokeTest {
             imageDistance(actualRobot.image, actualSvg.image),
         )
 
+    private fun IntellijReferenceCapture.withClosestRobotTo(
+        actualRobot: VisualCapture,
+        actualSvg: VisualCapture,
+    ): IntellijReferenceCapture {
+        val best = robotCandidates
+            .mapIndexed { index, candidate ->
+                index to intellijParityPairSelectionDistance(candidate, actualRobot, actualSvg)
+            }
+            .minByOrNull { it.second }
+            ?: return this
+        return copy(
+            robot = robotCandidates[best.first],
+            selectedRobotCandidateIndex = best.first,
+        )
+    }
+
+    private fun intellijXvfbRobotCandidateInventory(
+        reference: IntellijReferenceCapture,
+        actualRobot: VisualCapture,
+        actualSvg: VisualCapture,
+    ): String =
+        buildString {
+            appendLine("count=${reference.robotCandidates.size}")
+            appendLine("selected=${reference.selectedRobotCandidateIndex}")
+            reference.robotCandidates.forEachIndexed { index, candidate ->
+                val robotDistance = imageDistance(candidate.image, actualRobot.image)
+                val svgDistance = imageDistance(candidate.image, actualSvg.image)
+                append(index)
+                append(": selectionDistance=")
+                append(intellijParityPairSelectionDistance(candidate, actualRobot, actualSvg))
+                append(" robotVsKotlin=")
+                append(robotDistance)
+                append(" svgVsKotlin=")
+                append(svgDistance)
+                append(" selected=")
+                append(index == reference.selectedRobotCandidateIndex)
+                appendLine()
+            }
+        }
+
     private fun intellijParityPairAttemptInventory(
         attempts: List<IntellijParityPairCapture>,
         selectedAttempt: Int,
@@ -4969,6 +5285,8 @@ class IntellijCommunitySmokeTest {
                 append(" robotVsXvfb=").append(attempt.robotDistance)
                 append(" svgVsXvfb=").append(attempt.svgDistance)
                 append(" robotVsSvg=").append(attempt.robotSvgDistance)
+                append(" xvfbCandidateCount=").append(attempt.reference.robotCandidates.size)
+                append(" selectedXvfbRobotCandidate=").append(attempt.reference.selectedRobotCandidateIndex)
                 append(" selected=").append(attempt.attempt == selectedAttempt)
                 appendLine()
             }
@@ -6289,6 +6607,8 @@ class IntellijCommunitySmokeTest {
 
     private data class IntellijReferenceCapture(
         val robot: VisualCapture,
+        val robotCandidates: List<VisualCapture> = listOf(robot),
+        val selectedRobotCandidateIndex: Int = 0,
         val logs: List<IntellijLogArtifact>,
     )
 
@@ -6526,6 +6846,8 @@ class IntellijCommunitySmokeTest {
         const val IntellijRobotSvgPostCaptureSamples = 12
         const val IntellijRobotSvgPostCaptureSampleDelayMs = 50L
         const val IntellijRobotSvgCaptureDistanceThreshold = 1.0
+        const val IntellijXvfbRobotCaptureSamples = 6
+        const val IntellijXvfbRobotCaptureSampleDelayMs = 50L
         const val IntellijParityPairAttempts = 2
         const val IntellijParityPairDistanceTarget = 1.0
     }

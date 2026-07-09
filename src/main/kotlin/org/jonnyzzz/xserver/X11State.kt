@@ -5224,7 +5224,12 @@ internal class X11State(
         fun add(x: Int, y: Int = 0) {
             if (x in 0 until image.width && y in 0 until image.height) points += x to y
         }
-        listOf(0, 1, 2, 3, 4, 8, 16).forEach(::add)
+        val sampleRows = linkedSetOf(0)
+        if (image.height > 1) sampleRows += image.height / 2
+        if (image.height > 2) sampleRows += image.height - 1
+        for (sampleY in sampleRows) {
+            listOf(0, 1, 2, 3, 4, 8, 16).forEach { sampleX -> add(sampleX, sampleY) }
+        }
         var x = 0
         while (x < image.width && points.size < limit) {
             add(x)
