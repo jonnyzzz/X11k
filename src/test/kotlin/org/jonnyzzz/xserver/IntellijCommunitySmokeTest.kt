@@ -585,6 +585,7 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("xvfbOnly size=600x2 dataBytes=4800 crc32=0xcda50bae count=1"), summary)
         assertTrue(summary.contains("drawable=0x20007d gc=0x200080"), summary)
         assertFalse(summary.contains("size=128x2"), summary)
+        assertIntellijPutImageStripCorrelationTracePresent(summary)
     }
 
     @Test
@@ -1928,6 +1929,7 @@ class IntellijCommunitySmokeTest {
         assertIntellijRuntimeUiDiagnosticsPresent(reference.logs + actual.logs)
         if (intellijTraceXvfbPutImageEnabled()) {
             assertIntellijXvfbPutImageTracePresent(reference.logs)
+            assertIntellijPutImageStripCorrelationTracePresent(reference.logs, actual.text)
         }
 
         assertIntellijVisualClose(reference.robot, actual.robot, "Kotlin Robot IntelliJ capture")
@@ -4249,6 +4251,31 @@ class IntellijCommunitySmokeTest {
             "Xvfb reference run must retain at least one client PutImage summary\n$trace",
         )
     }
+
+    private fun assertIntellijPutImageStripCorrelationTracePresent(logs: List<IntellijLogArtifact>, text: String) {
+        assertIntellijPutImageStripCorrelationTracePresent(intellijPutImageStripCorrelation(logs, text))
+    }
+
+    private fun assertIntellijPutImageStripCorrelationTracePresent(summary: String) {
+        assertTrue(summary.startsWith("IntelliJ PutImage strip correlation:\n"), summary)
+        assertTrue(summary.contains("xvfbTrace=present"), summary)
+        val xvfbGroups = intellijCorrelationHeaderCount(summary, "xvfbGroups")
+        val kotlinGroups = intellijCorrelationHeaderCount(summary, "kotlinGroups")
+        assertTrue(xvfbGroups > 0, "Traced IntelliJ parity must retain Xvfb thin strip groups\n$summary")
+        assertTrue(kotlinGroups > 0, "Traced IntelliJ parity must retain Kotlin producer strip groups\n$summary")
+        assertTrue(
+            Regex("""(?m)^- band=.*\bclosestReason=(?!none\b)\S+""").containsMatchIn(summary),
+            "Traced IntelliJ parity must retain at least one actionable Xvfb/Kotlin strip correlation\n$summary",
+        )
+    }
+
+    private fun intellijCorrelationHeaderCount(summary: String, name: String): Int =
+        Regex("""\b${Regex.escape(name)}=(\d+)""")
+            .find(summary)
+            ?.groupValues
+            ?.get(1)
+            ?.toInt()
+            ?: 0
 
     private fun intellijXvfbPutImageStripProfiles(logs: List<IntellijLogArtifact>): String {
         val traceArtifact = logs.firstOrNull { it.fileName == "intellij-xvfb-putimage-trace.log" }
