@@ -512,6 +512,7 @@ class IntellijCommunitySmokeTest {
                     connection=5 request=12224 RENDER.SetPictureTransform picture=0x200091 transform=[0x10000,0x0,0xfd900000,0x0,0x10000,0x0,0x0,0x0,0x10000]
                     connection=5 request=12225 RENDER.Composite op=3 src=0x200091 mask=0x0 dst=0x200046 srcOrigin=33,34 maskOrigin=0,0 dst=33,34 size=256x2
                     connection=5 request=12236 PutImage format=2 depth=32 drawable=0x20007d gc=0x200080 dst=0,0 size=600x2 leftPad=0 dataBytes=4800 crc32=0xcda50bae raw=[0x37,0x4f,0x34,0xff] decoded=[0xff344f37]
+                    connection=5 request=12237 PutImage format=2 depth=32 drawable=0x20007f gc=0x200082 dst=0,0 size=624x2 leftPad=0 dataBytes=4992 crc32=0x42c0ffee raw=[0x2d,0x28,0x26,0xff] decoded=[0xff26282d]
                     """.trimIndent(),
             ),
         )
@@ -538,11 +539,12 @@ class IntellijCommunitySmokeTest {
         val summary = intellijPutImageStripCorrelation(logs, text)
 
         assertTrue(summary.startsWith("IntelliJ PutImage strip correlation:"), summary)
-        assertTrue(summary.contains("xvfbTrace=present xvfbGroups=2 kotlinGroups=1"), summary)
+        assertTrue(summary.contains("xvfbTrace=present xvfbGroups=3 kotlinGroups=1"), summary)
         assertTrue(summary.contains("band=top count=2 first=#41 last=#42"), summary)
         assertTrue(summary.contains("size=624x2 dataBytes=4992 crc32=0x13572468"), summary)
-        assertTrue(summary.contains("xvfbSameSize=1 xvfbSameCrc=0 status=crc-mismatch"), summary)
+        assertTrue(summary.contains("xvfbSameSize=2 xvfbSameCrc=0 status=crc-mismatch closestReason=highest-count-same-size"), summary)
         assertTrue(summary.contains("xvfbClosest=5#12220..5#12220 count=1 drawable=0x20007d gc=0x200080 crc32=0x1793d6e5"), summary)
+        assertTrue(summary.contains("xvfbSameSizeRefs=[5#12220..5#12220 count=1 drawable=0x20007d gc=0x200080 crc32=0x1793d6e5|5#12237..5#12237 count=1 drawable=0x20007f gc=0x200082 crc32=0x42c0ffee]"), summary)
         assertTrue(summary.contains("render=picture=0x200090 format=0x25 valueMask=0x1 repeat=1 attrs=[repeat=normal(1)] filter=good"), summary)
         assertTrue(summary.contains("composites=5#12222/op=1 src=0x200090 dst=0x200091 srcOrigin=0,0 dst=0,0 size=624x2"), summary)
         assertTrue(summary.contains("5#12225/op=3 src=0x200091 dst=0x200046 srcOrigin=33,34 dst=33,34 size=256x2"), summary)
@@ -4665,7 +4667,13 @@ class IntellijCommunitySmokeTest {
                 val sameSize = xvfbBySize[group.key.size].orEmpty()
                 val sameCrc = sameSize.filter { it.key.crc32 == group.key.crc32 }
                 val closest = sameCrc.firstOrNull()
-                    ?: sameSize.maxWithOrNull(compareBy<IntellijXvfbPutImageStripGroup> { it.count }.thenByDescending { -it.firstRequest })
+                    ?: sameSize.sortedWith(compareByDescending<IntellijXvfbPutImageStripGroup> { it.count }.thenBy { it.firstRequest })
+                        .firstOrNull()
+                val closestReason = when {
+                    sameCrc.isNotEmpty() -> "crc"
+                    closest != null -> "highest-count-same-size"
+                    else -> "none"
+                }
                 val status = when {
                     sameCrc.isNotEmpty() -> "crc-match"
                     sameSize.isNotEmpty() -> "crc-mismatch"
@@ -4692,7 +4700,17 @@ class IntellijCommunitySmokeTest {
                 append(" xvfbSameSize=").append(sameSize.size)
                 append(" xvfbSameCrc=").append(sameCrc.size)
                 append(" status=").append(status)
+                append(" closestReason=").append(closestReason)
                 closest?.let { append(" xvfbClosest=").append(it.referenceLabel()) }
+                if (sameSize.size > 1) {
+                    append(" xvfbSameSizeRefs=")
+                    sameSize.take(4).joinTo(
+                        this,
+                        separator = "|",
+                        prefix = "[",
+                        postfix = if (sameSize.size > 4) "|omitted=${sameSize.size - 4}]" else "]",
+                    ) { it.compactReferenceLabel() }
+                }
                 appendLine()
             }
             xvfbGroups
@@ -6224,16 +6242,21 @@ class IntellijCommunitySmokeTest {
     ) {
         fun referenceLabel(): String =
             buildString {
+                append(compactReferenceLabel())
+                append(" raw=").append(key.raw)
+                append(" decoded=").append(key.decoded)
+                renderContext?.let { append(" render=").append(it) }
+                compositeContext?.let { append(" composites=").append(it) }
+            }
+
+        fun compactReferenceLabel(): String =
+            buildString {
                 append(firstConnection).append('#').append(firstRequest)
                 append("..").append(lastConnection).append('#').append(lastRequest)
                 append(" count=").append(count)
                 append(" drawable=").append(drawable)
                 append(" gc=").append(gc)
                 append(" crc32=").append(key.crc32)
-                append(" raw=").append(key.raw)
-                append(" decoded=").append(key.decoded)
-                renderContext?.let { append(" render=").append(it) }
-                compositeContext?.let { append(" composites=").append(it) }
             }
     }
 
