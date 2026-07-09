@@ -521,6 +521,7 @@ class IntellijCommunitySmokeTest {
                     X11 PutImage trace proxy listening unix=/tmp/.X11-unix/X99 target=unix:/tmp/.X11-unix/X98
                     connection=5 request=12000 QueryExtension name=RENDER
                     connection=5 request=12000 QueryExtensionReply name=RENDER present=true majorOpcode=139
+                    connection=5 request=12217 PutImage format=2 depth=32 drawable=0x20007f gc=0x200082 dst=0,0 size=624x2 leftPad=0 dataBytes=4992 crc32=0x42c0ffee raw=[0x2d,0x28,0x26,0xff] decoded=[0xff26282d] tileRaw=[0x2d,0x28,0x26,0xff] tileDecoded=[0xff26282d]
                     connection=5 request=12218 RENDER.CreatePicture picture=0x200090 drawable=0x20007d format=0x25 valueMask=0x1 repeat=1 attrs=[repeat=normal(1)]
                     connection=5 request=12219 RENDER.SetPictureFilter picture=0x200090 filter=good
                     connection=5 request=12219 RENDER.SetPictureTransform picture=0x200090 transform=[0x10000,0x0,0x0,0x0,0x10000,0x0,0x0,0x0,0x10000]
@@ -561,9 +562,9 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("xvfbTrace=present xvfbGroups=3 kotlinGroups=1"), summary)
         assertTrue(summary.contains("band=top count=2 first=#41 last=#42"), summary)
         assertTrue(summary.contains("size=624x2 dataBytes=4992 crc32=0x13572468"), summary)
-        assertTrue(summary.contains("xvfbSameSize=2 xvfbSameCrc=0 status=crc-mismatch closestReason=highest-count-same-size"), summary)
+        assertTrue(summary.contains("xvfbSameSize=2 xvfbSameCrc=0 xvfbContextMatches=1 status=crc-mismatch closestReason=context-match"), summary)
         assertTrue(summary.contains("xvfbClosest=5#12220..5#12220 count=1 drawable=0x20007d gc=0x200080 crc32=0x1793d6e5"), summary)
-        assertTrue(summary.contains("xvfbSameSizeRefs=[5#12220..5#12220 count=1 drawable=0x20007d gc=0x200080 crc32=0x1793d6e5|5#12237..5#12237 count=1 drawable=0x20007f gc=0x200082 crc32=0x42c0ffee]"), summary)
+        assertTrue(summary.contains("xvfbSameSizeRefs=[5#12217..5#12237 count=2 drawable=0x20007f gc=0x200082 crc32=0x42c0ffee|5#12220..5#12220 count=1 drawable=0x20007d gc=0x200080 crc32=0x1793d6e5]"), summary)
         assertTrue(summary.contains("render=picture=0x200090 format=0x25 valueMask=0x1 repeat=1 attrs=[repeat=normal(1)] filter=good"), summary)
         assertTrue(summary.contains("composites=5#12222/op=1 src=0x200090 dst=0x200091 srcOrigin=0,0 dst=0,0 size=624x2"), summary)
         assertTrue(summary.contains("5#12225/op=3 src=0x200091 dst=0x200046 srcOrigin=33,34 dst=33,34 size=256x2"), summary)
@@ -4727,11 +4728,18 @@ class IntellijCommunitySmokeTest {
             kotlinGroups.take(limit).forEach { group ->
                 val sameSize = xvfbBySize[group.key.size].orEmpty()
                 val sameCrc = sameSize.filter { it.key.crc32 == group.key.crc32 }
+                val contextMatches = sameSize.filter { it.contextMatchScore(group) > 0 }
                 val closest = sameCrc.firstOrNull()
+                    ?: contextMatches.sortedWith(
+                        compareByDescending<IntellijXvfbPutImageStripGroup> { it.contextMatchScore(group) }
+                            .thenByDescending { it.count }
+                            .thenBy { it.firstRequest },
+                    ).firstOrNull()
                     ?: sameSize.sortedWith(compareByDescending<IntellijXvfbPutImageStripGroup> { it.count }.thenBy { it.firstRequest })
                         .firstOrNull()
                 val closestReason = when {
                     sameCrc.isNotEmpty() -> "crc"
+                    contextMatches.isNotEmpty() -> "context-match"
                     closest != null -> "highest-count-same-size"
                     else -> "none"
                 }
@@ -4760,6 +4768,7 @@ class IntellijCommunitySmokeTest {
                 append(" resultPixels=").append(group.resultPixels)
                 append(" xvfbSameSize=").append(sameSize.size)
                 append(" xvfbSameCrc=").append(sameCrc.size)
+                append(" xvfbContextMatches=").append(contextMatches.size)
                 append(" status=").append(status)
                 append(" closestReason=").append(closestReason)
                 closest?.let { append(" xvfbClosest=").append(it.referenceLabel()) }
@@ -4881,6 +4890,22 @@ class IntellijCommunitySmokeTest {
             append(",decoded=").append(closest.key.decoded)
             append("]")
         }
+
+    private fun IntellijXvfbPutImageStripGroup.contextMatchScore(group: IntellijKotlinPutImageStripGroup): Int {
+        val context = listOfNotNull(renderContext, compositeContext).joinToString(" ")
+        if (context.isBlank()) return 0
+        var score = 0
+        group.filter?.let { filter ->
+            if (Regex("""\bfilter=${Regex.escape(filter)}\b""").containsMatchIn(context)) score += 2
+        }
+        group.transform?.let { transform ->
+            if (context.contains("transform=$transform")) score += 3
+        }
+        group.repeat?.let { repeat ->
+            if (context.contains("repeat=$repeat") || context.contains("repeat=$repeat(")) score += 1
+        }
+        return score
+    }
 
     private fun intellijKotlinPutImageStripOperationSamples(
         operations: List<IntellijRenderBandOperation>,
