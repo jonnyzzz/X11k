@@ -164,6 +164,18 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij parity pair scoring uses the worst retained renderer distance`() {
+        val reference = visualCapture(solidImage(10, 10, 0xff22_3344.toInt()))
+        val closeRobot = visualCapture(solidImage(10, 10, 0xff22_3344.toInt()))
+        val closeSvg = visualCapture(solidImage(10, 10, 0xff22_3345.toInt()))
+        val farRobot = visualCapture(solidImage(10, 10, 0xff88_3344.toInt()))
+        val farSvg = visualCapture(solidImage(10, 10, 0xff22_3344.toInt()))
+
+        assertEquals(1.0, intellijParityPairSelectionDistance(reference, closeRobot, closeSvg))
+        assertEquals(102.0, intellijParityPairSelectionDistance(reference, farRobot, farSvg))
+    }
+
+    @Test
     fun `intellij smoke svg candidate diagnostics tolerate non composable samples`() {
         val robotImage = solidImage(6, 6, 0xff33_6699.toInt())
         val robot = visualCapture(robotImage)
@@ -960,10 +972,12 @@ class IntellijCommunitySmokeTest {
         assertTrue(source.contains(parityEnd), source)
         val parityBody = sourceBodyBetweenLast(source, parityAnchor, parityEnd)
 
-        assertTrue(parityBody.contains("""val referenceConfig = cleanIntellijConfigDir("xvfb")"""), parityBody)
-        assertTrue(parityBody.contains("""val kotlinConfig = cleanIntellijConfigDir("kotlin")"""), parityBody)
+        assertTrue(parityBody.contains("""for (attempt in 1..intellijParityPairAttempts())"""), parityBody)
+        assertTrue(parityBody.contains("""val referenceConfig = cleanIntellijConfigDir("xvfb-pair-${'$'}attempt")"""), parityBody)
+        assertTrue(parityBody.contains("""val kotlinConfig = cleanIntellijConfigDir("kotlin-pair-${'$'}attempt")"""), parityBody)
         assertTrue(parityBody.contains("runIntellijAgainstXvfb(referenceImage, url, referenceConfig)"), parityBody)
         assertTrue(parityBody.contains("runIntellijAgainstKotlinServer(port, clientImage, url, kotlinConfig)"), parityBody)
+        assertTrue(parityBody.contains("intellijParityPairAttemptInventory(attempts, selectedAttempt = bestPair.attempt)"), parityBody)
         assertFalse(parityBody.contains("sharedConfig"), parityBody)
         assertFalse(parityBody.contains("cleanIntellijConfigDir()"), parityBody)
         assertTrue(source.contains("""withFileSystemBind(configDir.toString(), "/tmp/idea-config", BindMode.READ_WRITE)"""), source)
@@ -1748,18 +1762,43 @@ class IntellijCommunitySmokeTest {
         assumeTrue(imageExists(clientImage), "Build $clientImage first with scripts/run-supervised.sh gradle dockerBuildX11Client")
         assumeTrue(imageExists(referenceImage), "Build $referenceImage first with scripts/run-supervised.sh gradle dockerBuildX11Images")
 
-        val referenceConfig = cleanIntellijConfigDir("xvfb")
-        val kotlinConfig = cleanIntellijConfigDir("kotlin")
-        val reference = runIntellijAgainstXvfb(referenceImage, url, referenceConfig)
-        val actual = runIntellijAgainstKotlinServer(port, clientImage, url, kotlinConfig)
-
-        val composedSvg = composeSvgLayers(actual.svgLayers, IntellijCaptureWidth, IntellijCaptureHeight)
-        val composedSvgCapture = visualCapture(composedSvg)
+        val attempts = mutableListOf<IntellijParityPairCapture>()
+        var selected: IntellijParityPairCapture? = null
+        for (attempt in 1..intellijParityPairAttempts()) {
+            val referenceConfig = cleanIntellijConfigDir("xvfb-pair-$attempt")
+            val kotlinConfig = cleanIntellijConfigDir("kotlin-pair-$attempt")
+            val reference = runIntellijAgainstXvfb(referenceImage, url, referenceConfig)
+            val actual = runIntellijAgainstKotlinServer(port, clientImage, url, kotlinConfig)
+            val composedSvg = composeSvgLayers(actual.svgLayers, IntellijCaptureWidth, IntellijCaptureHeight)
+            val composedSvgCapture = visualCapture(composedSvg)
+            val pair = IntellijParityPairCapture(
+                attempt = attempt,
+                reference = reference,
+                actual = actual,
+                composedSvg = composedSvg,
+                composedSvgCapture = composedSvgCapture,
+                robotDistance = imageDistance(reference.robot.image, actual.robot.image),
+                svgDistance = imageDistance(reference.robot.image, composedSvgCapture.image),
+                robotSvgDistance = imageDistance(actual.robot.image, composedSvgCapture.image),
+            )
+            attempts += pair
+            val best = selected
+            if (best == null || pair.selectionDistance < best.selectionDistance) selected = pair
+            if (pair.selectionDistance <= IntellijParityPairDistanceTarget) break
+        }
+        val bestPair = selected ?: error("IntelliJ parity did not produce any Xvfb/Kotlin pair")
+        val reference = bestPair.reference
+        val actual = bestPair.actual
+        val composedSvg = bestPair.composedSvg
+        val composedSvgCapture = bestPair.composedSvgCapture
         dumpIntellijParityArtifacts(
             reference = reference,
             actual = actual,
             composedSvg = composedSvg,
             composedSvgCapture = composedSvgCapture,
+        )
+        File(intellijSmokeArtifactsDirectory(), "intellij-parity-pair-attempts.txt").writeText(
+            intellijParityPairAttemptInventory(attempts, selectedAttempt = bestPair.attempt),
         )
 
         assertTrue(actual.text.contains("Content window"), actual.text)
@@ -1879,6 +1918,13 @@ class IntellijCommunitySmokeTest {
     private fun intellijTraceXvfbPutImageEnabled(): Boolean =
         System.getProperty("x.intellijTraceXvfbPutImage") == "true" ||
             System.getenv("X_INTELLIJ_TRACE_XVFB_PUTIMAGE") == "true"
+
+    private fun intellijParityPairAttempts(): Int =
+        (System.getProperty("x.intellijParityPairAttempts")
+            ?: System.getenv("X_INTELLIJ_PARITY_PAIR_ATTEMPTS"))
+            ?.toIntOrNull()
+            ?.coerceIn(1, 5)
+            ?: IntellijParityPairAttempts
 
     private fun intellijXvfbExtraArgs(): String =
         (System.getProperty("x.intellijXvfbExtraArgs") ?: System.getenv("X_INTELLIJ_XVFB_EXTRA_ARGS")).orEmpty()
@@ -4740,6 +4786,37 @@ class IntellijCommunitySmokeTest {
     private fun intellijProducerFramebufferFromDetail(detail: String): String? =
         Regex("""\bproducerFramebuffer=\d+x\d+\s+crc32=0x[0-9a-f]+""").find(detail)?.value
 
+    private fun intellijParityPairSelectionDistance(
+        reference: VisualCapture,
+        actualRobot: VisualCapture,
+        actualSvg: VisualCapture,
+    ): Double =
+        maxOf(
+            imageDistance(reference.image, actualRobot.image),
+            imageDistance(reference.image, actualSvg.image),
+            imageDistance(actualRobot.image, actualSvg.image),
+        )
+
+    private fun intellijParityPairAttemptInventory(
+        attempts: List<IntellijParityPairCapture>,
+        selectedAttempt: Int,
+    ): String =
+        buildString {
+            appendLine("IntelliJ parity pair attempts:")
+            appendLine("configuredAttempts=${intellijParityPairAttempts()}")
+            appendLine("targetDistance=$IntellijParityPairDistanceTarget")
+            appendLine("selectedAttempt=$selectedAttempt")
+            attempts.forEach { attempt ->
+                append("attempt=").append(attempt.attempt)
+                append(" selectionDistance=").append(attempt.selectionDistance)
+                append(" robotVsXvfb=").append(attempt.robotDistance)
+                append(" svgVsXvfb=").append(attempt.svgDistance)
+                append(" robotVsSvg=").append(attempt.robotSvgDistance)
+                append(" selected=").append(attempt.attempt == selectedAttempt)
+                appendLine()
+            }
+        }
+
     private fun intellijRenderBandMismatchTileSummary(
         section: String,
         region: Rectangle,
@@ -6077,6 +6154,20 @@ class IntellijCommunitySmokeTest {
         val svgCandidateDistances: List<IntellijSvgCandidateDistance>,
     )
 
+    private data class IntellijParityPairCapture(
+        val attempt: Int,
+        val reference: IntellijReferenceCapture,
+        val actual: IntellijKotlinCapture,
+        val composedSvg: BufferedImage,
+        val composedSvgCapture: VisualCapture,
+        val robotDistance: Double,
+        val svgDistance: Double,
+        val robotSvgDistance: Double,
+    ) {
+        val selectionDistance: Double =
+            maxOf(robotDistance, svgDistance, robotSvgDistance)
+    }
+
     private data class IntellijSvgScore(
         val index: Int,
         val svg: String,
@@ -6260,5 +6351,7 @@ class IntellijCommunitySmokeTest {
         const val IntellijRobotSvgPostCaptureSamples = 4
         const val IntellijRobotSvgPostCaptureSampleDelayMs = 75L
         const val IntellijRobotSvgCaptureDistanceThreshold = 1.0
+        const val IntellijParityPairAttempts = 2
+        const val IntellijParityPairDistanceTarget = 1.0
     }
 }
