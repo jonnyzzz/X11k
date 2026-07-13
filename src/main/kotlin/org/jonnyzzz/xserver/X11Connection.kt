@@ -8352,7 +8352,6 @@ internal class X11Connection(
         }
         val reply = reply(extra = drawable.depth, payloadUnits = bytes.size / 4)
         byteOrder.put32(reply, 8, state.drawableVisual(drawableId))
-        byteOrder.put32(reply, 12, bytes.size)
         bytes.copyInto(reply, 32)
         write(reply)
     }

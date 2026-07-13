@@ -111,7 +111,7 @@ class XCoreDrawingProtocolTest {
                 assertEquals(24, image[1].toInt() and 0xff)
                 assertEquals(60, u32le(image, 4))
                 assertEquals(X11Ids.RootVisual, u32le(image, 8))
-                assertEquals(240, u32le(image, 12))
+                assertGetImagePaddingZero(image)
                 assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 2, 3))
                 assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 6, 3))
                 assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 8, 3))
@@ -740,7 +740,8 @@ class XCoreDrawingProtocolTest {
                 assertEquals(57, error[10].toInt() and 0xff)
 
                 val image = readReply(socket.getInputStream())
-                assertEquals(4, u32le(image, 12))
+                assertEquals(1, u32le(image, 4))
+                assertGetImagePaddingZero(image)
                 assertEquals(0xff, image[32].toInt() and 0xff)
             }
             server.close()
@@ -841,7 +842,8 @@ class XCoreDrawingProtocolTest {
 
                 val image = readReply(socket.getInputStream())
                 assertEquals(16, image[1].toInt() and 0xff)
-                assertEquals(4, u32le(image, 12))
+                assertEquals(1, u32le(image, 4))
+                assertGetImagePaddingZero(image)
                 assertEquals(0xf800, u16le(image, 32))
                 assertEquals(0x07e0, u16le(image, 34))
 
@@ -5834,7 +5836,8 @@ class XCoreDrawingProtocolTest {
 
                 val image = readReply(socket.getInputStream())
                 assertEquals(8, image[1].toInt() and 0xff)
-                assertEquals(4, u32le(image, 12))
+                assertEquals(1, u32le(image, 4))
+                assertGetImagePaddingZero(image)
                 assertEquals(0x80, image[32].toInt() and 0xff)
                 assertEquals(0x00, image[33].toInt() and 0xff)
             }
@@ -5869,7 +5872,8 @@ class XCoreDrawingProtocolTest {
 
                 val image = readReply(socket.getInputStream())
                 assertEquals(8, image[1].toInt() and 0xff)
-                assertEquals(4, u32le(image, 12))
+                assertEquals(1, u32le(image, 4))
+                assertGetImagePaddingZero(image)
                 assertEquals(0x12, image[32].toInt() and 0xff)
                 assertEquals(0x80, image[33].toInt() and 0xff)
                 assertEquals(0xff, image[34].toInt() and 0xff)
@@ -5906,7 +5910,8 @@ class XCoreDrawingProtocolTest {
 
                 val image = readReply(socket.getInputStream())
                 assertEquals(1, image[1].toInt() and 0xff)
-                assertEquals(4, u32le(image, 12))
+                assertEquals(1, u32le(image, 4))
+                assertGetImagePaddingZero(image)
                 assertEquals(0x85, image[32].toInt() and 0xff)
                 assertEquals(0x01, image[33].toInt() and 0xff)
                 assertEquals(0, image[34].toInt() and 0xff)
@@ -5978,7 +5983,8 @@ class XCoreDrawingProtocolTest {
 
                 val image = readReply(socket.getInputStream())
                 assertEquals(4, image[1].toInt() and 0xff)
-                assertEquals(4, u32le(image, 12))
+                assertEquals(1, u32le(image, 4))
+                assertGetImagePaddingZero(image)
                 assertEquals(0x02, image[32].toInt() and 0xff)
                 assertEquals(0x0a, image[33].toInt() and 0xff)
                 assertEquals(0x0f, image[34].toInt() and 0xff)
@@ -6701,7 +6707,7 @@ class XCoreDrawingProtocolTest {
                 assertEquals(1, image[0].toInt())
                 assertEquals(8, u16le(image, 2))
                 assertEquals(1, u32le(image, 4))
-                assertEquals(4, u32le(image, 12))
+                assertGetImagePaddingZero(image)
             }
             server.close()
             serverThread.join(1_000)
@@ -6728,7 +6734,7 @@ class XCoreDrawingProtocolTest {
                 assertEquals(24, masked[1].toInt() and 0xff)
                 assertEquals(1, u32le(masked, 4))
                 assertEquals(X11Ids.RootVisual, u32le(masked, 8))
-                assertEquals(4, u32le(masked, 12))
+                assertGetImagePaddingZero(masked)
                 assertEquals(0x0012_0000, pixelAt(masked, 1, 0, 0))
 
                 val xyPixmap = readReply(socket.getInputStream())
@@ -6736,7 +6742,7 @@ class XCoreDrawingProtocolTest {
                 assertEquals(24, xyPixmap[1].toInt() and 0xff)
                 assertEquals(1, u32le(xyPixmap, 4))
                 assertEquals(X11Ids.RootVisual, u32le(xyPixmap, 8))
-                assertEquals(4, u32le(xyPixmap, 12))
+                assertGetImagePaddingZero(xyPixmap)
                 assertEquals(1, xyPixmap[32].toInt() and 0xff)
                 assertEquals(0, xyPixmap[33].toInt() and 0xff)
                 assertEquals(0, xyPixmap[34].toInt() and 0xff)
@@ -6771,7 +6777,7 @@ class XCoreDrawingProtocolTest {
                 assertEquals(24, image[1].toInt() and 0xff)
                 assertEquals(2, u32le(image, 4))
                 assertEquals(X11Ids.RootVisual, u32le(image, 8))
-                assertEquals(8, u32le(image, 12))
+                assertGetImagePaddingZero(image)
                 assertEquals(1, image[32].toInt() and 0xff)
                 assertZeroBytes(image, 33, 36)
                 assertEquals(2, image[36].toInt() and 0xff)
@@ -7015,7 +7021,7 @@ class XCoreDrawingProtocolTest {
                 assertEquals(24, image[1].toInt() and 0xff)
                 assertEquals(2, u32be(image, 4))
                 assertEquals(X11Ids.RootVisual, u32be(image, 8))
-                assertEquals(8, u32be(image, 12))
+                assertGetImagePaddingZero(image)
                 assertEquals(0xff12_3456.toInt(), pixelAt(image, 2, 0, 0))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, 2, 1, 0))
             }
@@ -24577,6 +24583,10 @@ class XCoreDrawingProtocolTest {
         for (index in from until until) {
             assertEquals(0, bytes[index].toInt() and 0xff, "byte $index")
         }
+    }
+
+    private fun assertGetImagePaddingZero(reply: ByteArray) {
+        assertZeroBytes(reply, 12, 32)
     }
 
     private fun countPixels(reply: ByteArray, imageWidth: Int, imageHeight: Int, pixel: Int): Int {
