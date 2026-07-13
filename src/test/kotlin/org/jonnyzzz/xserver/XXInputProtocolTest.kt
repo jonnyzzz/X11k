@@ -110,9 +110,23 @@ class XXInputProtocolTest {
                 out.write(xinputXiSelectEventsRequest(0x0102_0304, emptyList()))
                 out.write(request(XXInput.MajorOpcode, XXInput.XISelectEvents, u32leBytes(X11Ids.RootWindow)))
                 out.write(xinputXiSelectEventsRequest(X11Ids.RootWindow, emptyList()))
-                out.write(xinputXiSelectEventsRequest(X11Ids.RootWindow, listOf(0 to byteArrayOf(0x01, 0x00, 0x00, 0x00))))
+                out.write(
+                    xinputXiSelectEventsRequest(
+                        X11Ids.RootWindow,
+                        listOf(
+                            0 to byteArrayOf(0x01, 0x00, 0x00, 0x00),
+                            XXInput.MasterPointerId to byteArrayOf(0x20, 0x00, 0x00, 0x00),
+                        ),
+                    ),
+                )
                 out.write(request(XXInput.MajorOpcode, XXInput.XIGetSelectedEvents, ByteArray(0)))
                 out.write(xinputXiGetSelectedEventsRequest(0x0102_0304))
+                out.write(xinputXiGetSelectedEventsRequest(X11Ids.RootWindow))
+                out.write(xinputXiSelectEventsRequest(X11Ids.RootWindow, listOf(XXInput.MasterPointerId to byteArrayOf(0x02))))
+                out.write(xinputXiGetSelectedEventsRequest(X11Ids.RootWindow))
+                out.write(xinputXiSelectEventsRequest(X11Ids.RootWindow, listOf(XXInput.MasterPointerId to byteArrayOf(0x00, 0x00, 0x00, 0x00))))
+                out.write(xinputXiGetSelectedEventsRequest(X11Ids.RootWindow))
+                out.write(xinputXiSelectEventsRequest(X11Ids.RootWindow, listOf(0 to byteArrayOf())))
                 out.write(xinputXiGetSelectedEventsRequest(X11Ids.RootWindow))
                 out.write(queryPointerRequest())
                 out.flush()
@@ -128,12 +142,37 @@ class XXInputProtocolTest {
                 assertError(socket.getInputStream(), error = 3, badValue = 0x0102_0304, sequence = 8, minorOpcode = XXInput.XIGetSelectedEvents)
 
                 val selected = readReply(socket.getInputStream())
-                assertEquals(9, u16le(selected, 2))
-                assertEquals(XXInput.XIGetSelectedEvents, selected[1].toInt() and 0xff)
-                assertEquals(0, u16le(selected, 8))
+                assertXi2SelectedEvents(
+                    selected,
+                    sequence = 9,
+                    expected = listOf(
+                        0 to byteArrayOf(0x01, 0x00, 0x00, 0x00),
+                        XXInput.MasterPointerId to byteArrayOf(0x20, 0x00, 0x00, 0x00),
+                    ),
+                )
+
+                val replaced = readReply(socket.getInputStream())
+                assertXi2SelectedEvents(
+                    replaced,
+                    sequence = 11,
+                    expected = listOf(
+                        0 to byteArrayOf(0x01, 0x00, 0x00, 0x00),
+                        XXInput.MasterPointerId to byteArrayOf(0x02, 0x00, 0x00, 0x00),
+                    ),
+                )
+
+                val clearedPointer = readReply(socket.getInputStream())
+                assertXi2SelectedEvents(
+                    clearedPointer,
+                    sequence = 13,
+                    expected = listOf(0 to byteArrayOf(0x01, 0x00, 0x00, 0x00)),
+                )
+
+                val clearedAll = readReply(socket.getInputStream())
+                assertXi2SelectedEvents(clearedAll, sequence = 15, expected = emptyList())
 
                 val pointer = readReply(socket.getInputStream())
-                assertEquals(10, u16le(pointer, 2))
+                assertEquals(16, u16le(pointer, 2))
             }
             server.close()
             serverThread.join(1_000)
@@ -308,6 +347,24 @@ class XXInputProtocolTest {
         assertEquals(XKeyboard.MinKeycode, u32le(reply, classOffset + 8))
         assertEquals(XKeyboard.MaxKeycode, u32le(reply, classOffset + 8 + (XKeyboard.MaxKeycode - XKeyboard.MinKeycode) * 4))
         assertEquals(reply.size, classOffset + keyClassUnits * 4)
+    }
+
+    private fun assertXi2SelectedEvents(reply: ByteArray, sequence: Int, expected: List<Pair<Int, ByteArray>>) {
+        assertEquals(XXInput.XIGetSelectedEvents, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        val expectedPayload = expected.sumOf { 4 + padded(it.second.size) }
+        assertEquals(expectedPayload / 4, u32le(reply, 4))
+        assertEquals(expected.size, u16le(reply, 8))
+        assertEquals(32 + expectedPayload, reply.size)
+        var offset = 32
+        for ((deviceId, mask) in expected) {
+            val paddedMask = ByteArray(padded(mask.size))
+            mask.copyInto(paddedMask)
+            assertEquals(deviceId, u16le(reply, offset))
+            assertEquals(paddedMask.size / 4, u16le(reply, offset + 2))
+            assertEquals(paddedMask.toList(), reply.copyOfRange(offset + 4, offset + 4 + paddedMask.size).toList())
+            offset += 4 + paddedMask.size
+        }
     }
 
     private fun padded(size: Int): Int =
