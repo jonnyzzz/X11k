@@ -627,6 +627,8 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("producerFramebuffer=624x2 crc32=0x2468ace0"), summary)
         assertTrue(summary.contains("xvfbOnly size=600x2 dataBytes=4800 crc32=0xcda50bae count=1"), summary)
         assertTrue(summary.contains("drawable=0x20007d gc=0x200080"), summary)
+        assertTrue(summary.contains("kotlinContextMatches=1"), summary)
+        assertTrue(summary.contains("kotlinClosest=kotlin#41..#42 count=2 band=top size=624x2 crc32=0x13572468 src=0x600280 dst=0x60004a repeat=normal filter=good sourceFramebuffer=624x2/0x3eb827c6 producerFramebuffer=624x2 crc32=0x2468ace0"), summary)
         assertFalse(summary.contains("size=128x2"), summary)
         assertIntellijPutImageStripCorrelationTracePresent(summary)
     }
@@ -5273,6 +5275,12 @@ class IntellijCommunitySmokeTest {
                 .filter { it.key.size !in kotlinSizes }
                 .take(limit)
                 .forEach { group ->
+                    val contextMatches = kotlinGroups.filter { group.contextMatchScore(it) > 0 }
+                    val closest = contextMatches.sortedWith(
+                        compareByDescending<IntellijKotlinPutImageStripGroup> { group.contextMatchScore(it) }
+                            .thenByDescending { it.count }
+                            .thenBy { it.firstOperation },
+                    ).firstOrNull()
                     append("- xvfbOnly size=").append(group.key.size)
                     append(" dataBytes=").append(group.key.dataBytes)
                     append(" crc32=").append(group.key.crc32)
@@ -5287,6 +5295,8 @@ class IntellijCommunitySmokeTest {
                     append(" rowDecoded=").append(group.key.rowDecoded)
                     group.renderContext?.let { append(" render=").append(it) }
                     group.compositeContext?.let { append(" composites=").append(it) }
+                    append(" kotlinContextMatches=").append(contextMatches.size)
+                    closest?.let { append(" kotlinClosest=").append(it.compactReferenceLabel()) }
                     appendLine()
                 }
         }
@@ -5397,6 +5407,22 @@ class IntellijCommunitySmokeTest {
         }
         return score
     }
+
+    private fun IntellijKotlinPutImageStripGroup.compactReferenceLabel(): String =
+        buildString {
+            append("kotlin#").append(firstOperation).append("..#").append(lastOperation)
+            append(" count=").append(count)
+            append(" band=").append(band)
+            append(" size=").append(key.size)
+            append(" crc32=").append(key.crc32)
+            sourceId?.let { append(" src=").append(it) }
+            destinationId?.let { append(" dst=").append(it) }
+            repeat?.let { append(" repeat=").append(it) }
+            filter?.let { append(" filter=").append(it) }
+            transform?.let { append(" transform=").append(it) }
+            sourceFramebuffer?.let { append(" sourceFramebuffer=").append(it) }
+            producerFramebuffer?.let { append(' ').append(it) }
+        }
 
     private fun intellijKotlinPutImageStripOperationSamples(
         operations: List<IntellijRenderBandOperation>,
