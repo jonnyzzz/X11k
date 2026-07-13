@@ -12001,6 +12001,127 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER IntelliJ top strip transformed source origins expose frame pixels`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val stripPixmap = PixmapId
+                val stripPicture = PixmapPictureId
+                val framePixmap = PixmapId + 0x10
+                val framePicture = PixmapPictureId + 0x10
+                val stripWidth = 600
+                val stripHeight = 2
+                val sampleWidth = 64
+                val transformedOrigin = 624
+
+                fun stripPixel(x: Int, y: Int): Int {
+                    val wrappedX = Math.floorMod(x, stripWidth)
+                    val wrappedY = Math.floorMod(y, stripHeight)
+                    val red = (0x30 - wrappedX / 48).coerceAtLeast(0x20)
+                    val green = (0x54 - wrappedX / 18 - wrappedY).coerceAtLeast(0x28)
+                    val blue = (0x54 - wrappedX / 16 - wrappedY).coerceAtLeast(0x28)
+                    return (0xff shl 24) or (red shl 16) or (green shl 8) or blue
+                }
+
+                fun expectedRow(sourceX: Int, y: Int): List<Int> =
+                    List(sampleWidth) { dx -> stripPixel(sourceX - transformedOrigin + dx, y) }
+
+                val sourcePixels = IntArray(stripWidth * stripHeight) { index ->
+                    stripPixel(index % stripWidth, index / stripWidth)
+                }
+
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 10, y = 20, width = sampleWidth, height = 4, borderWidth = 0))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(createPixmapRequest(stripPixmap, depth = 32, width = stripWidth, height = stripHeight))
+                out.write(createPixmapRequest(framePixmap, depth = 32, width = sampleWidth, height = 4))
+                out.write(createGcRequest(PutImageGcId, stripPixmap))
+                out.write(putImage32OnlyRequest(stripPixmap, width = stripWidth, height = stripHeight, pixels = sourcePixels))
+                out.write(renderCreatePicture(stripPicture, stripPixmap, XRender.Argb32Format))
+                out.write(renderCreatePicture(framePicture, framePixmap, XRender.Argb32Format))
+                out.write(renderChangePicture(stripPicture, repeat = XRender.RepeatNormal))
+                out.write(renderSetPictureFilter(stripPicture, "good", values = emptyList()))
+                out.write(
+                    renderSetPictureTransform(
+                        stripPicture,
+                        listOf(
+                            0x0001_0000,
+                            0,
+                            -0x0270_0000,
+                            0,
+                            0x0001_0000,
+                            0,
+                            0,
+                            0,
+                            0x0001_0000,
+                        ),
+                    ),
+                )
+                out.write(
+                    renderComposite(
+                        stripPicture,
+                        framePicture,
+                        operation = XRender.OpOver,
+                        sourceX = 624,
+                        sourceY = 0,
+                        destinationX = 0,
+                        destinationY = 0,
+                        width = sampleWidth,
+                        height = stripHeight,
+                    ),
+                )
+                out.write(
+                    renderComposite(
+                        stripPicture,
+                        framePicture,
+                        operation = XRender.OpOver,
+                        sourceX = 880,
+                        sourceY = 0,
+                        destinationX = 0,
+                        destinationY = 2,
+                        width = sampleWidth,
+                        height = stripHeight,
+                    ),
+                )
+                out.write(
+                    renderComposite(
+                        framePicture,
+                        PictureId,
+                        operation = XRender.OpSrc,
+                        sourceX = 0,
+                        sourceY = 0,
+                        destinationX = 0,
+                        destinationY = 0,
+                        width = sampleWidth,
+                        height = 4,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = sampleWidth, height = 4))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertPixelRow(image, imageWidth = sampleWidth, y = 0, expected = expectedRow(sourceX = 624, y = 0))
+                assertPixelRow(image, imageWidth = sampleWidth, y = 1, expected = expectedRow(sourceX = 624, y = 1))
+                assertPixelRow(image, imageWidth = sampleWidth, y = 2, expected = expectedRow(sourceX = 880, y = 0))
+                assertPixelRow(image, imageWidth = sampleWidth, y = 3, expected = expectedRow(sourceX = 880, y = 1))
+
+                waitUntil {
+                    httpGet(server.localPort, "/text.txt").contains("source=0x${stripPicture.toUInt().toString(16)}/pixmap repeat=normal filter=good")
+                }
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "source=0x${stripPicture.toUInt().toString(16)}/pixmap repeat=normal filter=good")
+                assertContains(text, "transform=[0x10000,0x0,0xfd900000,0x0,0x10000,0x0,0x0,0x0,0x10000]")
+                assertContains(text, "source=0x${framePicture.toUInt().toString(16)}/pixmap repeat=none")
+                assertContains(text, "putImage=format=2,depth=32,leftPad=0,size=600x2,dataBytes=4800,rowStride=2400,crc32=")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER transformed linear gradient survives A8 mask through intermediate picture`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
