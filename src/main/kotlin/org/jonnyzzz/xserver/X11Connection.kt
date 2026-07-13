@@ -3655,14 +3655,7 @@ internal class X11Connection(
 
     private fun renderQueryPictFormats(body: ByteArray) {
         if (body.isNotEmpty()) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 1, badValue = 0)
-        val pictFormats = listOf(
-            PictFormatSpec(XRender.A1Format, depth = 1, redShift = 0, redMask = 0, greenShift = 0, greenMask = 0, blueShift = 0, blueMask = 0, alphaShift = 0, alphaMask = 0x1),
-            PictFormatSpec(XRender.A8Format, depth = 8, redShift = 0, redMask = 0, greenShift = 0, greenMask = 0, blueShift = 0, blueMask = 0, alphaShift = 0, alphaMask = 0xff),
-            PictFormatSpec(XRender.Argb32Format, depth = 32, redShift = 16, greenShift = 8, blueShift = 0, alphaShift = 24, alphaMask = 0xff),
-            PictFormatSpec(XRender.Rgb24Format, depth = 24, redShift = 16, greenShift = 8, blueShift = 0, alphaShift = 0, alphaMask = 0),
-            PictFormatSpec(XRender.Bgr24Format, depth = 24, redShift = 0, greenShift = 8, blueShift = 16, alphaShift = 0, alphaMask = 0),
-            PictFormatSpec(XRender.Bgr32Format, depth = 32, redShift = 0, greenShift = 8, blueShift = 16, alphaShift = 0, alphaMask = 0),
-        )
+        val pictFormats = XRender.PictFormatSpecs
         val formats = ByteArray(28 * pictFormats.size)
         pictFormats.forEachIndexed { index, spec ->
             putPictFormat(
@@ -3729,19 +3722,6 @@ internal class X11Connection(
         payload.copyInto(reply, 32)
         write(reply)
     }
-
-    private data class PictFormatSpec(
-        val id: Int,
-        val depth: Int,
-        val redShift: Int,
-        val redMask: Int = 0xff,
-        val greenShift: Int,
-        val greenMask: Int = 0xff,
-        val blueShift: Int,
-        val blueMask: Int = 0xff,
-        val alphaShift: Int,
-        val alphaMask: Int,
-    )
 
     private data class XRenderDepthVisuals(
         val depth: Int,
@@ -13622,21 +13602,16 @@ internal class X11Connection(
                 }
             }
             XRender.Argb32Format,
-            XRender.Rgb24Format,
-            XRender.Bgr24Format,
-            XRender.Bgr32Format,
+            in XRender.PictFormats,
             -> {
-                val stride = width * 4
+                val stride = XRender.directFormatStrideBytes(format, width) ?: return null
                 if (offset + stride * height > data.size) return null
                 for (y in 0 until height) {
                     val rowOffset = offset + y * stride
                     for (x in 0 until width) {
-                        val pixel = byteOrder.u32(data, rowOffset + x * 4)
-                        pixels[y * width + x] = when (format) {
-                            XRender.Rgb24Format -> XFramebuffer.opaque(pixel)
-                            XRender.Bgr24Format, XRender.Bgr32Format -> XFramebuffer.opaque(XRender.bgrToRgb(pixel))
-                            else -> XFramebuffer.argb(pixel)
-                        }
+                        val byteOffset = rowOffset + x * if (XRender.formatDepth(format) == 16) 2 else 4
+                        val pixel = if (XRender.formatDepth(format) == 16) byteOrder.u16(data, byteOffset) else byteOrder.u32(data, byteOffset)
+                        pixels[y * width + x] = XRender.directPixelToArgb(pixel, format) ?: return null
                     }
                 }
             }
@@ -13652,7 +13627,7 @@ internal class X11Connection(
         return when (format) {
             XRender.A8Format -> paddedLength(width) * height
             XRender.A1Format -> ((width + 31) / 32) * 4 * height
-            XRender.Argb32Format, XRender.Rgb24Format, XRender.Bgr24Format, XRender.Bgr32Format -> width * 4 * height
+            in XRender.PictFormats -> (XRender.directFormatStrideBytes(format, width) ?: 0) * height
             else -> 0
         }
     }
@@ -13662,7 +13637,7 @@ internal class X11Connection(
         return when (format) {
             XRender.A8Format -> paddedLength(width.toLong()) * height.toLong()
             XRender.A1Format -> ((width.toLong() + 31L) / 32L) * 4L * height.toLong()
-            XRender.Argb32Format, XRender.Rgb24Format, XRender.Bgr24Format, XRender.Bgr32Format -> width.toLong() * 4L * height.toLong()
+            in XRender.PictFormats -> (XRender.directFormatStrideBytes(format, width) ?: 0).toLong() * height.toLong()
             else -> 0
         }
     }

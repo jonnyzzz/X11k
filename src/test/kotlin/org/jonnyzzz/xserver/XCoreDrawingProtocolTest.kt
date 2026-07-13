@@ -2655,7 +2655,7 @@ class XCoreDrawingProtocolTest {
                 val formats = readReply(socket.getInputStream())
                 assertEquals(1, formats[0].toInt())
                 assertEquals(4, u16le(formats, 2))
-                assertEquals(6, u32le(formats, 8))
+                assertEquals(XRender.PictFormatSpecs.size, u32le(formats, 8))
 
                 assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = 0, sequence = 5)
                 assertError(socket.getInputStream(), error = XRender.PictFormatError, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = 0x7fff_0001, sequence = 6)

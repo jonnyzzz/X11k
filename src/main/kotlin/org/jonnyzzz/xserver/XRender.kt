@@ -14,11 +14,67 @@ internal object XRender {
     const val A1Format = 0x0000_0023
     const val A8Format = 0x0000_0024
     const val Argb32Format = 0x0000_0025
+    const val Xrgb32Format = 0x0000_0026
+    const val Abgr32Format = 0x0000_0027
+    const val Xbgr32Format = 0x0000_0028
     const val Rgb24Format = 0x0000_0029
     const val Bgr24Format = 0x0000_002a
+    const val X4R4G4B4Format = 0x0000_002b
+    const val X4B4G4R4Format = 0x0000_002c
+    const val X1R5G5B5Format = 0x0000_002d
+    const val X1B5G5R5Format = 0x0000_002e
+    const val A1R5G5B5Format = 0x0000_002f
+    const val A1B5G5R5Format = 0x0000_0030
+    const val R5G6B5Format = 0x0000_0031
+    const val B5G6R5Format = 0x0000_0032
+    const val A4R4G4B4Format = 0x0000_0033
+    const val A4B4G4R4Format = 0x0000_0034
     const val Bgr32Format = 0x0000_0035
-    val DirectFormats = setOf(A1Format, A8Format, Argb32Format, Rgb24Format, Bgr24Format, Bgr32Format)
+    const val A2R10G10B10Format = 0x0000_0036
+    const val X2R10G10B10Format = 0x0000_0037
+    const val A2B10G10R10Format = 0x0000_0038
+    const val X2B10G10R10Format = 0x0000_0039
+
+    val PictFormatSpecs = listOf(
+        PictFormatSpec(A1Format, depth = 1, redShift = 0, redMask = 0, greenShift = 0, greenMask = 0, blueShift = 0, blueMask = 0, alphaShift = 0, alphaMask = 0x1),
+        PictFormatSpec(A8Format, depth = 8, redShift = 0, redMask = 0, greenShift = 0, greenMask = 0, blueShift = 0, blueMask = 0, alphaShift = 0, alphaMask = 0xff),
+        PictFormatSpec(Argb32Format, depth = 32, redShift = 16, greenShift = 8, blueShift = 0, alphaShift = 24, alphaMask = 0xff),
+        PictFormatSpec(Xrgb32Format, depth = 32, redShift = 16, greenShift = 8, blueShift = 0, alphaShift = 0, alphaMask = 0),
+        PictFormatSpec(Abgr32Format, depth = 32, redShift = 8, greenShift = 16, blueShift = 24, alphaShift = 0, alphaMask = 0xff),
+        PictFormatSpec(Xbgr32Format, depth = 32, redShift = 8, greenShift = 16, blueShift = 24, alphaShift = 0, alphaMask = 0),
+        PictFormatSpec(Rgb24Format, depth = 24, redShift = 16, greenShift = 8, blueShift = 0, alphaShift = 0, alphaMask = 0),
+        PictFormatSpec(Bgr24Format, depth = 24, redShift = 0, greenShift = 8, blueShift = 16, alphaShift = 0, alphaMask = 0),
+        PictFormatSpec(X4R4G4B4Format, depth = 16, redShift = 8, redMask = 0xf, greenShift = 4, greenMask = 0xf, blueShift = 0, blueMask = 0xf, alphaShift = 0, alphaMask = 0),
+        PictFormatSpec(X4B4G4R4Format, depth = 16, redShift = 0, redMask = 0xf, greenShift = 4, greenMask = 0xf, blueShift = 8, blueMask = 0xf, alphaShift = 0, alphaMask = 0),
+        PictFormatSpec(X1R5G5B5Format, depth = 16, redShift = 10, redMask = 0x1f, greenShift = 5, greenMask = 0x1f, blueShift = 0, blueMask = 0x1f, alphaShift = 0, alphaMask = 0),
+        PictFormatSpec(X1B5G5R5Format, depth = 16, redShift = 0, redMask = 0x1f, greenShift = 5, greenMask = 0x1f, blueShift = 10, blueMask = 0x1f, alphaShift = 0, alphaMask = 0),
+        PictFormatSpec(A1R5G5B5Format, depth = 16, redShift = 10, redMask = 0x1f, greenShift = 5, greenMask = 0x1f, blueShift = 0, blueMask = 0x1f, alphaShift = 15, alphaMask = 0x1),
+        PictFormatSpec(A1B5G5R5Format, depth = 16, redShift = 0, redMask = 0x1f, greenShift = 5, greenMask = 0x1f, blueShift = 10, blueMask = 0x1f, alphaShift = 15, alphaMask = 0x1),
+        PictFormatSpec(R5G6B5Format, depth = 16, redShift = 11, redMask = 0x1f, greenShift = 5, greenMask = 0x3f, blueShift = 0, blueMask = 0x1f, alphaShift = 0, alphaMask = 0),
+        PictFormatSpec(B5G6R5Format, depth = 16, redShift = 0, redMask = 0x1f, greenShift = 5, greenMask = 0x3f, blueShift = 11, blueMask = 0x1f, alphaShift = 0, alphaMask = 0),
+        PictFormatSpec(A4R4G4B4Format, depth = 16, redShift = 8, redMask = 0xf, greenShift = 4, greenMask = 0xf, blueShift = 0, blueMask = 0xf, alphaShift = 12, alphaMask = 0xf),
+        PictFormatSpec(A4B4G4R4Format, depth = 16, redShift = 0, redMask = 0xf, greenShift = 4, greenMask = 0xf, blueShift = 8, blueMask = 0xf, alphaShift = 12, alphaMask = 0xf),
+        PictFormatSpec(Bgr32Format, depth = 32, redShift = 0, greenShift = 8, blueShift = 16, alphaShift = 0, alphaMask = 0),
+        PictFormatSpec(A2R10G10B10Format, depth = 32, redShift = 20, redMask = 0x3ff, greenShift = 10, greenMask = 0x3ff, blueShift = 0, blueMask = 0x3ff, alphaShift = 30, alphaMask = 0x3),
+        PictFormatSpec(X2R10G10B10Format, depth = 32, redShift = 20, redMask = 0x3ff, greenShift = 10, greenMask = 0x3ff, blueShift = 0, blueMask = 0x3ff, alphaShift = 0, alphaMask = 0),
+        PictFormatSpec(A2B10G10R10Format, depth = 32, redShift = 0, redMask = 0x3ff, greenShift = 10, greenMask = 0x3ff, blueShift = 20, blueMask = 0x3ff, alphaShift = 30, alphaMask = 0x3),
+        PictFormatSpec(X2B10G10R10Format, depth = 32, redShift = 0, redMask = 0x3ff, greenShift = 10, greenMask = 0x3ff, blueShift = 20, blueMask = 0x3ff, alphaShift = 0, alphaMask = 0),
+    )
+    val DirectFormats = PictFormatSpecs.map { it.id }.toSet()
     val PictFormats = DirectFormats
+
+    data class PictFormatSpec(
+        val id: Int,
+        val depth: Int,
+        val redShift: Int,
+        val redMask: Int = 0xff,
+        val greenShift: Int,
+        val greenMask: Int = 0xff,
+        val blueShift: Int,
+        val blueMask: Int = 0xff,
+        val alphaShift: Int,
+        val alphaMask: Int,
+    )
 
     const val OpClear = 0
     const val OpSrc = 1
@@ -179,27 +235,52 @@ internal object XRender {
     fun isValidPolyMode(polyMode: Int): Boolean =
         polyMode == PolyModePrecise || polyMode == PolyModeImprecise
 
+    fun pictFormatSpec(format: Int): PictFormatSpec? =
+        PictFormatSpecs.firstOrNull { it.id == format }
+
     fun formatDepth(format: Int): Int? =
-        when (format) {
-            Argb32Format -> 32
-            Rgb24Format -> 24
-            Bgr24Format -> 24
-            Bgr32Format -> 32
-            A8Format -> 8
-            A1Format -> 1
-            else -> null
-        }
+        pictFormatSpec(format)?.depth
 
     fun isRgbLikeFormat(format: Int): Boolean =
-        format == Rgb24Format || format == Bgr24Format || format == Bgr32Format
+        isComponentFormat(format) && !hasAlphaComponent(format)
 
     fun isComponentFormat(format: Int): Boolean =
-        format == Argb32Format || isRgbLikeFormat(format)
+        pictFormatSpec(format)?.let { it.redMask != 0 || it.greenMask != 0 || it.blueMask != 0 } == true
+
+    fun hasAlphaComponent(format: Int): Boolean =
+        pictFormatSpec(format)?.let { it.alphaMask != 0 } == true
+
+    fun directPixelToArgb(pixel: Int, format: Int): Int? {
+        val spec = pictFormatSpec(format) ?: return null
+        if (!isComponentFormat(format)) return null
+        val red = component(pixel, spec.redShift, spec.redMask)
+        val green = component(pixel, spec.greenShift, spec.greenMask)
+        val blue = component(pixel, spec.blueShift, spec.blueMask)
+        val alpha = if (spec.alphaMask == 0) 0xff else component(pixel, spec.alphaShift, spec.alphaMask)
+        return (alpha shl 24) or (red shl 16) or (green shl 8) or blue
+    }
+
+    fun directFormatStrideBytes(format: Int, width: Int): Int? {
+        if (width <= 0) return null
+        val bitsPerPixel = when (formatDepth(format)) {
+            16 -> 16
+            24, 32 -> 32
+            else -> return null
+        }
+        val bytes = width.toLong() * bitsPerPixel / 8L
+        return ((bytes + 3L) and -4L).takeIf { it <= Int.MAX_VALUE }?.toInt()
+    }
 
     fun bgrToRgb(pixel: Int): Int =
         ((pixel and 0x0000_00ff) shl 16) or
             (pixel and 0x0000_ff00) or
             ((pixel ushr 16) and 0x0000_00ff)
+
+    private fun component(pixel: Int, shift: Int, mask: Int): Int {
+        if (mask == 0) return 0
+        val value = (pixel ushr shift) and mask
+        return if (mask == 0xff) value else (value * 255 + mask / 2) / mask
+    }
 
     fun argb32Pixel(red: Int, green: Int, blue: Int, alpha: Int): Int =
         ((alpha ushr 8).coerceIn(0, 255) shl 24) or

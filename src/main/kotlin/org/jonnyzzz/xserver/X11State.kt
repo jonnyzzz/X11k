@@ -6741,7 +6741,7 @@ internal class X11State(
         val snapshot = framebuffer.takeIf { drawableId == snapshotDrawableId }?.snapshotWithOrigins()
         if (
             snapshot == null &&
-            !isBgrPictureFormat(format) &&
+            !XRender.isComponentFormat(format) &&
             transform == IdentityTransform &&
             repeat == XRender.RepeatNone &&
             !hasPictureClip() &&
@@ -7169,14 +7169,15 @@ internal class X11State(
         return when (format) {
             XRender.A1Format -> if (alpha >= 0x80) (0xff shl 24) or 1 else 0
             XRender.A8Format -> (alpha shl 24) or alpha
-            XRender.Bgr24Format, XRender.Bgr32Format ->
-                XFramebuffer.opaque(if (rawDrawablePixels) XRender.bgrToRgb(pixel) else pixel)
-            else -> pixel
+            else -> when {
+                rawDrawablePixels && XRender.isComponentFormat(format) ->
+                    XRender.directPixelToArgb(pixel, format) ?: pixel
+                XRender.isRgbLikeFormat(format) ->
+                    XFramebuffer.opaque(pixel)
+                else -> pixel
+            }
         }
     }
-
-    private fun isBgrPictureFormat(format: Int): Boolean =
-        format == XRender.Bgr24Format || format == XRender.Bgr32Format
 
     private fun semanticPixelForPictureFormat(pixel: Int, format: Int): Int {
         val alpha = (pixel ushr 24) and 0xff
@@ -7194,14 +7195,12 @@ internal class X11State(
         return when (maskFormat) {
             XRender.A1Format -> if (alpha >= 0x80) 0xff shl 24 else 0
             XRender.A8Format -> alpha shl 24
-            XRender.Argb32Format -> when (glyphFormat) {
-                XRender.Argb32Format -> XFramebuffer.argb(pixel)
-                XRender.Rgb24Format, XRender.Bgr24Format, XRender.Bgr32Format -> XFramebuffer.opaque(pixel)
+            in XRender.PictFormats -> when {
+                XRender.isRgbLikeFormat(maskFormat) && XRender.isComponentFormat(glyphFormat) -> XFramebuffer.opaque(pixel)
+                XRender.isRgbLikeFormat(maskFormat) -> grayOpaque()
+                XRender.isComponentFormat(glyphFormat) && XRender.hasAlphaComponent(glyphFormat) -> XFramebuffer.argb(pixel)
+                XRender.isComponentFormat(glyphFormat) -> XFramebuffer.opaque(pixel)
                 else -> grayAlpha()
-            }
-            XRender.Rgb24Format, XRender.Bgr24Format, XRender.Bgr32Format -> when (glyphFormat) {
-                XRender.Argb32Format, XRender.Rgb24Format, XRender.Bgr24Format, XRender.Bgr32Format -> XFramebuffer.opaque(pixel)
-                else -> grayOpaque()
             }
             else -> alpha shl 24
         }
@@ -7211,16 +7210,18 @@ internal class X11State(
         when (format) {
             XRender.A1Format -> if (((destination ushr 24) and 0xff) != 0 || ((source ushr 24) and 0xff) >= 0x80) 0xff shl 24 else 0
             XRender.A8Format -> (((destination ushr 24) and 0xff) + ((source ushr 24) and 0xff)).coerceAtMost(0xff) shl 24
-            XRender.Rgb24Format, XRender.Bgr24Format, XRender.Bgr32Format ->
+            in XRender.PictFormats -> if (XRender.isRgbLikeFormat(format)) {
                 XFramebuffer.opaque(
                     (saturatingChannel(destination, source, 16) shl 16) or
                         (saturatingChannel(destination, source, 8) shl 8) or
                         saturatingChannel(destination, source, 0),
                 )
-            XRender.Argb32Format -> (saturatingChannel(destination, source, 24) shl 24) or
-                (saturatingChannel(destination, source, 16) shl 16) or
-                (saturatingChannel(destination, source, 8) shl 8) or
-                saturatingChannel(destination, source, 0)
+            } else {
+                (saturatingChannel(destination, source, 24) shl 24) or
+                    (saturatingChannel(destination, source, 16) shl 16) or
+                    (saturatingChannel(destination, source, 8) shl 8) or
+                    saturatingChannel(destination, source, 0)
+            }
             else -> source
         }
 

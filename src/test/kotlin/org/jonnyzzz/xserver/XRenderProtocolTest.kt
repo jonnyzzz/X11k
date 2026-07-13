@@ -33,25 +33,63 @@ class XRenderProtocolTest {
                 socket.getOutputStream().write(request(XRender.MajorOpcode, 1, ByteArray(0)))
                 socket.getOutputStream().flush()
                 val formats = readReply(socket.getInputStream())
-                assertEquals(6, u32le(formats, 8))
+                val expectedFormats = listOf(
+                    XRender.A1Format,
+                    XRender.A8Format,
+                    XRender.Argb32Format,
+                    XRender.Xrgb32Format,
+                    XRender.Abgr32Format,
+                    XRender.Xbgr32Format,
+                    XRender.Rgb24Format,
+                    XRender.Bgr24Format,
+                    XRender.X4R4G4B4Format,
+                    XRender.X4B4G4R4Format,
+                    XRender.X1R5G5B5Format,
+                    XRender.X1B5G5R5Format,
+                    XRender.A1R5G5B5Format,
+                    XRender.A1B5G5R5Format,
+                    XRender.R5G6B5Format,
+                    XRender.B5G6R5Format,
+                    XRender.A4R4G4B4Format,
+                    XRender.A4B4G4R4Format,
+                    XRender.Bgr32Format,
+                    XRender.A2R10G10B10Format,
+                    XRender.X2R10G10B10Format,
+                    XRender.A2B10G10R10Format,
+                    XRender.X2B10G10R10Format,
+                )
+                assertEquals(expectedFormats.size, u32le(formats, 8))
                 assertEquals(1, u32le(formats, 12))
                 assertEquals(6, u32le(formats, 16))
                 val rootRenderVisuals = X11Ids.RootDepthVisualAliases
                 assertEquals(rootRenderVisuals.size + X11Ids.RgbaVisualAliases.size, u32le(formats, 20))
                 assertEquals(0, u32le(formats, 24))
+                assertEquals(expectedFormats, expectedFormats.indices.map { u32le(formats, 32 + 28 * it) })
                 assertEquals(XRender.A1Format, u32le(formats, 32))
                 assertEquals(1, formats[37].toInt() and 0xff)
                 val argb32Offset = 32 + 28 * 2
                 assertEquals(XRender.Argb32Format, u32le(formats, argb32Offset))
                 assertEquals(32, formats[argb32Offset + 5].toInt() and 0xff)
-                val bgr24Offset = 32 + 28 * 4
+                val xrgb32Offset = 32 + 28 * 3
+                assertEquals(XRender.Xrgb32Format, u32le(formats, xrgb32Offset))
+                assertEquals(0, u16le(formats, xrgb32Offset + 22))
+                val abgr32Offset = 32 + 28 * 4
+                assertEquals(XRender.Abgr32Format, u32le(formats, abgr32Offset))
+                assertEquals(8, u16le(formats, abgr32Offset + 8))
+                assertEquals(24, u16le(formats, abgr32Offset + 16))
+                assertEquals(0xff, u16le(formats, abgr32Offset + 22))
+                val r5g6b5Offset = 32 + 28 * 14
+                assertEquals(XRender.R5G6B5Format, u32le(formats, r5g6b5Offset))
+                assertEquals(16, formats[r5g6b5Offset + 5].toInt() and 0xff)
+                assertEquals(0x3f, u16le(formats, r5g6b5Offset + 14))
+                val bgr24Offset = 32 + 28 * 7
                 assertEquals(XRender.Bgr24Format, u32le(formats, bgr24Offset))
                 assertEquals(0, u16le(formats, bgr24Offset + 8))
                 assertEquals(16, u16le(formats, bgr24Offset + 16))
-                val bgr32Offset = 32 + 28 * 5
+                val bgr32Offset = 32 + 28 * 18
                 assertEquals(XRender.Bgr32Format, u32le(formats, bgr32Offset))
                 assertEquals(32, formats[bgr32Offset + 5].toInt() and 0xff)
-                val screenOffset = 32 + 28 * 6
+                val screenOffset = 32 + 28 * expectedFormats.size
                 assertEquals(6, u32le(formats, screenOffset))
                 assertEquals(XRender.A1Format, u32le(formats, screenOffset + 4))
                 assertEquals(24, formats[screenOffset + 8].toInt() and 0xff)
@@ -154,6 +192,167 @@ class XRenderProtocolTest {
                 val stateJson = httpGet(server.localPort, "/state.json")
                 assertContains(stateJson, """"visual":"0x${X11Ids.RootRgbDirectColorAliases.last().toUInt().toString(16)}"""")
                 assertContains(stateJson, """"visual":"0x${X11Ids.RootBgrDirectColorAliases.last().toUInt().toString(16)}"""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER CreatePicture accepts Xvfb direct format aliases for matching drawable depths`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val depth32Pixmap = PixmapId
+                val depth16Pixmap = PixmapId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(depth32Pixmap, depth = 32, width = 2, height = 2))
+                out.write(renderCreatePicture(PictureId, depth32Pixmap, XRender.Xrgb32Format))
+                out.write(renderCreatePicture(PictureId + 1, depth32Pixmap, XRender.Abgr32Format))
+                out.write(createPixmapRequest(depth16Pixmap, depth = 16, width = 2, height = 2))
+                out.write(renderCreatePicture(PictureId + 2, depth16Pixmap, XRender.R5G6B5Format))
+                out.write(renderCreatePicture(PictureId + 3, depth32Pixmap, XRender.R5G6B5Format))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 8, badValue = XRender.R5G6B5Format, sequence = 7, minorOpcode = 4)
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "drawable=0x${depth32Pixmap.toUInt().toString(16)} kind=pixmap")
+                assertContains(text, "format=0x${XRender.Xrgb32Format.toUInt().toString(16)}")
+                assertContains(text, "format=0x${XRender.Abgr32Format.toUInt().toString(16)}")
+                assertContains(text, "format=0x${XRender.R5G6B5Format.toUInt().toString(16)}")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER Composite samples raw depth32 direct format aliases`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val sourcePixmap = PixmapId
+                val xrgbPicture = PixmapPictureId
+                val abgrPicture = PixmapPictureId + 1
+                val destinationPicture = PictureId
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(sourcePixmap, depth = 32, width = 2, height = 1))
+                out.write(createGcRequest(PutImageGcId, sourcePixmap))
+                out.write(
+                    putImage32OnlyRequest(
+                        sourcePixmap,
+                        width = 2,
+                        height = 1,
+                        pixels = intArrayOf(
+                            0x0011_2233,
+                            0x3322_11ff,
+                        ),
+                    ),
+                )
+                out.write(renderCreatePicture(destinationPicture, WindowId, XRender.Rgb24Format))
+                out.write(renderCreatePicture(xrgbPicture, sourcePixmap, XRender.Xrgb32Format))
+                out.write(renderCreatePicture(abgrPicture, sourcePixmap, XRender.Abgr32Format))
+                out.write(renderComposite(xrgbPicture, destinationPicture, operation = XRender.OpSrc, sourceX = 0, destinationX = 0, destinationY = 0, width = 1, height = 1))
+                out.write(renderComposite(abgrPicture, destinationPicture, operation = XRender.OpSrc, sourceX = 1, destinationX = 1, destinationY = 0, width = 1, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(24, image[1].toInt() and 0xff)
+                assertPixelRow(
+                    image,
+                    imageWidth = 2,
+                    y = 0,
+                    expected = listOf(
+                        0xff11_2233.toInt(),
+                        0xff11_2233.toInt(),
+                    ),
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER no-alpha direct destinations are opaque for destination-alpha operators`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val destinationPixmap = PixmapId
+                val xrgbPicture = PixmapPictureId
+                val windowPicture = PictureId
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(destinationPixmap, depth = 32, width = 1, height = 1))
+                out.write(renderCreatePicture(windowPicture, WindowId, XRender.Rgb24Format))
+                out.write(renderCreatePicture(xrgbPicture, destinationPixmap, XRender.Xrgb32Format))
+                out.write(renderFillRectangles(xrgbPicture, x = 0, y = 0, width = 1, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0x8000, operation = XRender.OpSrc))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderComposite(SolidPictureId, xrgbPicture, operation = XRender.OpIn, destinationX = 0, destinationY = 0, width = 1, height = 1))
+                out.write(renderComposite(xrgbPicture, windowPicture, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 1, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(24, image[1].toInt() and 0xff)
+                assertEquals(0xff00_ff00.toInt(), u32le(image, 32))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER Composite samples raw depth16 direct format aliases`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val sourcePixmap = PixmapId
+                val sourcePicture = PixmapPictureId
+                val destinationPicture = PictureId
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(sourcePixmap, depth = 16, width = 2, height = 1))
+                out.write(createGcRequest(PutImageGcId, sourcePixmap))
+                out.write(
+                    putImage16OnlyRequest(
+                        sourcePixmap,
+                        width = 2,
+                        height = 1,
+                        pixels = intArrayOf(
+                            0xf800,
+                            0x07e0,
+                        ),
+                    ),
+                )
+                out.write(renderCreatePicture(destinationPicture, WindowId, XRender.Rgb24Format))
+                out.write(renderCreatePicture(sourcePicture, sourcePixmap, XRender.R5G6B5Format))
+                out.write(renderComposite(sourcePicture, destinationPicture, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 2, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(24, image[1].toInt() and 0xff)
+                assertPixelRow(
+                    image,
+                    imageWidth = 2,
+                    y = 0,
+                    expected = listOf(
+                        0xffff_0000.toInt(),
+                        0xff00_ff00.toInt(),
+                    ),
+                )
             }
             server.close()
             serverThread.join(1_000)
@@ -17454,6 +17653,25 @@ class XRenderProtocolTest {
         put16le(body, 8, width)
         put16le(body, 10, height)
         body[17] = 32
+        data.copyInto(body, 20)
+        return request(72, 2, body)
+    }
+
+    private fun putImage16OnlyRequest(drawable: Int, width: Int, height: Int, pixels: IntArray, gc: Int = PutImageGcId): ByteArray {
+        require(pixels.size == width * height)
+        val stride = (width * 2 + 3) and -4
+        val data = ByteArray(stride * height)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                put16le(data, y * stride + x * 2, pixels[y * width + x])
+            }
+        }
+        val body = ByteArray(20 + data.size)
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        put16le(body, 8, width)
+        put16le(body, 10, height)
+        body[17] = 16
         data.copyInto(body, 20)
         return request(72, 2, body)
     }

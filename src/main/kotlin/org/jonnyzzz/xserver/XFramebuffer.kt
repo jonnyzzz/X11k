@@ -2004,6 +2004,8 @@ internal class XFramebuffer(
                     index,
                     if (usesCoreRaster(function, planeMask)) {
                     corePixel(source = sourcePixel, destination = pixels[index], function = function, planeMask = planeMask, wireDepth = wireDepth)
+                } else if (wireDepth == 16) {
+                    wirePixelForDepth(sourcePixel, wireDepth)
                 } else {
                     sourcePixel
                     },
@@ -2514,10 +2516,12 @@ internal class XFramebuffer(
     }
 
     private fun renderDestinationPixel(index: Int, destinationFormat: Int): Int =
-        when (destinationFormat) {
-            XRender.Bgr24Format, XRender.Bgr32Format ->
-                opaque(if (rawDrawablePixels[index]) XRender.bgrToRgb(pixels[index]) else pixels[index])
-            else -> pixels[index]
+        if (rawDrawablePixels[index] && XRender.isComponentFormat(destinationFormat)) {
+            XRender.directPixelToArgb(pixels[index], destinationFormat) ?: pixels[index]
+        } else if (XRender.isRgbLikeFormat(destinationFormat)) {
+            opaque(pixels[index])
+        } else {
+            pixels[index]
         }
 
     private fun compositeBoundsOptional(
