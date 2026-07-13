@@ -12370,6 +12370,26 @@ class XRenderProtocolTest {
                 val tempImage = readReply(socket.getInputStream())
                 val frameImage = readReply(socket.getInputStream())
                 val windowImage = readReply(socket.getInputStream())
+                val xvfbOracleFirstPixels = listOf(
+                    0xff92_b7ff.toInt(),
+                    0xff51_6387.toInt(),
+                    0xff10_1010.toInt(),
+                    0xff8f_b4fd.toInt(),
+                    0xff8e_b4fd.toInt(),
+                    0xff4f_6286.toInt(),
+                    0xff10_1010.toInt(),
+                    0xff8b_b1fb.toInt(),
+                    0xff8a_b1fb.toInt(),
+                    0xff4d_6086.toInt(),
+                    0xff10_1010.toInt(),
+                    0xff88_aefa.toInt(),
+                    0xff87_aef9.toInt(),
+                    0xff4b_5f85.toInt(),
+                    0xff10_1010.toInt(),
+                    0xff84_acf8.toInt(),
+                )
+                assertPixelRow(frameImage, imageWidth = bandWidth, y = 0, expected = xvfbOracleFirstPixels)
+                assertPixelRow(windowImage, imageWidth = bandWidth, y = 0, expected = xvfbOracleFirstPixels)
                 assertTrue(pixelAt(tempImage, bandWidth, 0, 0) != pixelAt(tempImage, bandWidth, bandWidth - 1, 0), "gradient should vary across the bottom-band source range")
                 listOf(0, 4, 8, 12).forEach { x ->
                     assertEquals(pixelAt(tempImage, bandWidth, x, 0), pixelAt(frameImage, bandWidth, x, 0), "full mask should copy source at $x,0 into the frame band")
