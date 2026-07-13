@@ -606,7 +606,7 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("xvfbTrace=present xvfbGroups=3 kotlinGroups=1"), summary)
         assertTrue(summary.contains("band=top count=2 first=#41 last=#42"), summary)
         assertTrue(summary.contains("size=624x2 dataBytes=4992 crc32=0x13572468"), summary)
-        assertTrue(summary.contains("xvfbSameSize=2 xvfbSameCrc=0 xvfbContextMatches=1 status=crc-mismatch closestReason=context-match"), summary)
+        assertTrue(summary.contains("xvfbSameSize=2 xvfbSameCrc=0 xvfbContextMatches=1 status=crc-mismatch closestReason=context-sample-delta"), summary)
         assertTrue(summary.contains("xvfbClosest=5#12220..5#12220 count=1 drawable=0x20007d gc=0x200080 crc32=0x1793d6e5"), summary)
         assertTrue(summary.contains("xvfbSameSizeRefs=[5#12217..5#12237 count=2 drawable=0x20007f gc=0x200082 crc32=0x42c0ffee|5#12220..5#12220 count=1 drawable=0x20007d gc=0x200080 crc32=0x1793d6e5]"), summary)
         assertTrue(summary.contains("render=picture=0x200090 format=0x25 valueMask=0x1 repeat=1 attrs=[repeat=normal(1)] filter=good"), summary)
@@ -644,6 +644,54 @@ class IntellijCommunitySmokeTest {
         )
         assertFalse(summary.contains("size=128x2"), summary)
         assertIntellijPutImageStripCorrelationTracePresent(summary)
+    }
+
+    @Test
+    fun `intellij putimage strip correlation prefers pixel-close context candidate over count`() {
+        val logs = listOf(
+            IntellijLogArtifact(
+                fileName = "intellij-xvfb-putimage-trace.log",
+                text =
+                    """
+                    connection=5 request=100 QueryExtension name=RENDER
+                    connection=5 request=100 QueryExtensionReply name=RENDER present=true majorOpcode=139
+                    connection=5 request=101 PutImage format=2 depth=32 drawable=0x2000aa gc=0x2000ab dst=0,0 size=128x2 leftPad=0 dataBytes=1024 crc32=0xbad00001 raw=[0x00,0x00,0xff,0xff] decoded=[0xffff0000] tileRaw=[0x00,0x00,0xff,0xff] tileDecoded=[0xffff0000] rowRaw=[[0x00,0x00,0xff,0xff]] rowDecoded=[[0xffff0000]]
+                    connection=5 request=102 PutImage format=2 depth=32 drawable=0x2000aa gc=0x2000ab dst=0,0 size=128x2 leftPad=0 dataBytes=1024 crc32=0xbad00001 raw=[0x00,0x00,0xff,0xff] decoded=[0xffff0000] tileRaw=[0x00,0x00,0xff,0xff] tileDecoded=[0xffff0000] rowRaw=[[0x00,0x00,0xff,0xff]] rowDecoded=[[0xffff0000]]
+                    connection=5 request=103 RENDER.CreatePicture picture=0x2000ac drawable=0x2000aa format=0x25 valueMask=0x1 repeat=1 attrs=[repeat=normal(1)]
+                    connection=5 request=104 RENDER.SetPictureFilter picture=0x2000ac filter=good
+                    connection=5 request=105 RENDER.Composite op=3 src=0x2000ac mask=0x0 dst=0x200046 srcOrigin=0,0 maskOrigin=0,0 dst=0,0 size=128x2
+                    connection=5 request=106 PutImage format=2 depth=32 drawable=0x2000ba gc=0x2000bb dst=0,0 size=128x2 leftPad=0 dataBytes=1024 crc32=0x22222222 raw=[0x11,0x11,0x11,0xff] decoded=[0xff111111] tileRaw=[0x11,0x11,0x11,0xff,0x22,0x22,0x22,0xff] tileDecoded=[0xff111111,0xff222222] rowRaw=[[0x11,0x11,0x11,0xff,0x22,0x22,0x22,0xff]] rowDecoded=[[0xff111111,0xff222222]]
+                    connection=5 request=107 RENDER.CreatePicture picture=0x2000bc drawable=0x2000ba format=0x25 valueMask=0x1 repeat=1 attrs=[repeat=normal(1)]
+                    connection=5 request=108 RENDER.SetPictureFilter picture=0x2000bc filter=good
+                    connection=5 request=109 RENDER.Composite op=3 src=0x2000bc mask=0x0 dst=0x200046 srcOrigin=0,0 maskOrigin=0,0 dst=0,0 size=128x2
+                    """.trimIndent(),
+            ),
+        )
+        val text =
+            """
+            RENDER operations intersecting top mapped root-child band:
+            - region=10,20 1260x120 window=0x200003
+            - #41 Composite minor=8 root=10,20 128x2 local=0,0 128x2 op=3 src=0x600280 mask=0x0 dst=0x60004a srcOrigin=0,0 maskOrigin=0,0 dst=0,0 128x2 source=0x600280/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60027f#131 paints=1 first=#40/Composite last=#40/Composite drawings=1 firstDrawing=PutImage lastDrawing=PutImage lastResult=128x2 crc32=0x11111111 framebuffer=128x2 crc32=0x11111111 pixels=[0xff111111,0xff222222] producerSourcePopulation=0x600120#12 paints=0 drawings=1 lastDrawing=PutImage putImageCrc32=0x11112222 putImage=format=2,depth=32,leftPad=0,size=128x2,dataBytes=1024,rowStride=512,crc32=0x11112222,raw=[0x11,0x11,0x11,0xff],decoded=[0xff111111],tileRaw=[0x11,0x11,0x11,0xff,0x22,0x22,0x22,0xff],tileDecoded=[0xff111111,0xff222222],rowRaw=[[0x11,0x11,0x11,0xff,0x22,0x22,0x22,0xff]],rowDecoded=[[0xff111111,0xff222222]] producerFramebuffer=128x2 crc32=0x11112222 pixels=[0xff111111,0xff222222] result=128x2 crc32=0x11112222 pixels=[0xff111111,0xff222222]
+            - #42 Composite minor=8 root=138,20 128x2 local=128,0 128x2 op=3 src=0x600280 mask=0x0 dst=0x60004a srcOrigin=128,0 maskOrigin=0,0 dst=128,0 128x2 source=0x600280/pixmap repeat=normal filter=good destination=0x60004a/pixmap repeat=none sourcePopulation=0x60027f#131 paints=1 first=#40/Composite last=#40/Composite drawings=1 firstDrawing=PutImage lastDrawing=PutImage lastResult=128x2 crc32=0x11111111 framebuffer=128x2 crc32=0x11111111 pixels=[0xff111111,0xff222222] producerSourcePopulation=0x600120#12 paints=0 drawings=1 lastDrawing=PutImage putImageCrc32=0x11112222 putImage=format=2,depth=32,leftPad=0,size=128x2,dataBytes=1024,rowStride=512,crc32=0x11112222,raw=[0x11,0x11,0x11,0xff],decoded=[0xff111111],tileRaw=[0x11,0x11,0x11,0xff,0x22,0x22,0x22,0xff],tileDecoded=[0xff111111,0xff222222],rowRaw=[[0x11,0x11,0x11,0xff,0x22,0x22,0x22,0xff]],rowDecoded=[[0xff111111,0xff222222]] producerFramebuffer=128x2 crc32=0x11112222 pixels=[0xff111111,0xff222222] result=128x2 crc32=0x11112222 pixels=[0xff111111,0xff222222]
+
+            RENDER operations intersecting right mapped root-child band:
+            - region=1174,20 96x860 window=0x200003
+            - None.
+
+            RENDER operations intersecting bottom mapped root-child band:
+            - region=10,784 1260x96 window=0x200003
+            - None.
+
+            Recent PutImage commands:
+            - None.
+            """.trimIndent()
+
+        val summary = intellijPutImageStripCorrelation(logs, text)
+
+        assertTrue(summary.contains("xvfbSameSize=2 xvfbSameCrc=0 xvfbContextMatches=2 status=crc-mismatch closestReason=context-sample-delta"), summary)
+        assertTrue(summary.contains("xvfbClosest=5#106..5#106 count=1 drawable=0x2000ba gc=0x2000bb crc32=0x22222222"), summary)
+        assertTrue(summary.contains("xvfbSameSizeRefs=[5#101..5#102 count=2 drawable=0x2000aa gc=0x2000ab crc32=0xbad00001|5#106..5#106 count=1 drawable=0x2000ba gc=0x2000bb crc32=0x22222222]"), summary)
+        assertTrue(summary.contains("sampleDelta=kotlinSize=128x2,xvfbSize=128x2,widthDelta=0,heightDelta=0,kotlinRows=1,xvfbRows=1,kotlinSamplePixels=2,xvfbSamplePixels=2,direct=offset=0,compared=2,exact=2,firstDiff=-1,avgAbsRgb=0.000,maxAbsRgb=0,bestPhase=offset=0,compared=2,exact=2,firstDiff=-1,avgAbsRgb=0.000,maxAbsRgb=0,rowExact=[2/2]"), summary)
     }
 
     @Test
@@ -5462,16 +5510,17 @@ class IntellijCommunitySmokeTest {
                 val sameCrc = sameSize.filter { it.key.crc32 == group.key.crc32 }
                 val contextMatches = sameSize.filter { it.contextMatchScore(group) > 0 }
                 val closest = sameCrc.firstOrNull()
-                    ?: contextMatches.sortedWith(
-                        compareByDescending<IntellijXvfbPutImageStripGroup> { it.contextMatchScore(group) }
-                            .thenByDescending { it.count }
-                            .thenBy { it.firstRequest },
-                    ).firstOrNull()
-                    ?: sameSize.sortedWith(compareByDescending<IntellijXvfbPutImageStripGroup> { it.count }.thenBy { it.firstRequest })
-                        .firstOrNull()
+                    ?: contextMatches.minWithOrNull { left, right ->
+                        intellijCompareXvfbPutImageStripCandidate(group, left, right)
+                    }
+                    ?: sameSize.minWithOrNull { left, right ->
+                        intellijCompareXvfbPutImageStripCandidate(group, left, right)
+                    }
                 val closestReason = when {
                     sameCrc.isNotEmpty() -> "crc"
+                    contextMatches.isNotEmpty() && closest?.let { intellijPutImageStripBestPhaseScore(group.key, it.key) } != null -> "context-sample-delta"
                     contextMatches.isNotEmpty() -> "context-match"
+                    closest?.let { intellijPutImageStripBestPhaseScore(group.key, it.key) } != null -> "sample-delta-same-size"
                     closest != null -> "highest-count-same-size"
                     else -> "none"
                 }
@@ -5524,11 +5573,9 @@ class IntellijCommunitySmokeTest {
                 .take(limit)
                 .forEach { group ->
                     val contextMatches = kotlinGroups.filter { group.contextMatchScore(it) > 0 }
-                    val closest = contextMatches.sortedWith(
-                        compareByDescending<IntellijKotlinPutImageStripGroup> { group.contextMatchScore(it) }
-                            .thenByDescending { it.count }
-                            .thenBy { it.firstOperation },
-                    ).firstOrNull()
+                    val closest = contextMatches.minWithOrNull { left, right ->
+                        intellijCompareKotlinPutImageStripCandidate(group, left, right)
+                    }
                     append("- xvfbOnly size=").append(group.key.size)
                     append(" dataBytes=").append(group.key.dataBytes)
                     append(" crc32=").append(group.key.crc32)
@@ -5560,13 +5607,7 @@ class IntellijCommunitySmokeTest {
         val kotlinPixels = kotlinRows.flatten()
         val xvfbPixels = xvfbRows.flatten()
         val direct = intellijPutImageStripPixelScore(kotlinPixels, xvfbPixels, 0)
-        val phase = (-8..8)
-            .mapNotNull { offset -> intellijPutImageStripPixelScore(kotlinPixels, xvfbPixels, offset) }
-            .minWithOrNull(
-                compareBy<IntellijPutImageStripPixelScore> { it.averageAbsRgb }
-                    .thenByDescending { it.exact }
-                    .thenBy { abs(it.offset) },
-            )
+        val phase = intellijPutImageStripBestPhaseScore(kotlin, xvfb)
         val kotlinSize = intellijPutImageStripSize(kotlin.size)
         val xvfbSize = intellijPutImageStripSize(xvfb.size)
         return buildString {
@@ -5607,6 +5648,75 @@ class IntellijCommunitySmokeTest {
             .findAll(sample)
             .map { it.value.removePrefix("0x").toUInt(16).toInt() }
             .toList()
+
+    private fun intellijPutImageStripBestPhaseScore(
+        kotlin: IntellijPutImageStripKey,
+        xvfb: IntellijPutImageStripKey,
+    ): IntellijPutImageStripPixelScore? {
+        val kotlinPixels = intellijPutImageStripSampleRows(kotlin).flatten()
+        val xvfbPixels = intellijPutImageStripSampleRows(xvfb).flatten()
+        return (-8..8)
+            .mapNotNull { offset -> intellijPutImageStripPixelScore(kotlinPixels, xvfbPixels, offset) }
+            .minWithOrNull(::intellijComparePutImageStripPixelScore)
+    }
+
+    private fun intellijCompareXvfbPutImageStripCandidate(
+        kotlinGroup: IntellijKotlinPutImageStripGroup,
+        left: IntellijXvfbPutImageStripGroup,
+        right: IntellijXvfbPutImageStripGroup,
+    ): Int {
+        val context = right.contextMatchScore(kotlinGroup).compareTo(left.contextMatchScore(kotlinGroup))
+        if (context != 0) return context
+        val sample = intellijCompareNullablePutImageStripPixelScore(
+            intellijPutImageStripBestPhaseScore(kotlinGroup.key, left.key),
+            intellijPutImageStripBestPhaseScore(kotlinGroup.key, right.key),
+        )
+        if (sample != 0) return sample
+        val count = right.count.compareTo(left.count)
+        if (count != 0) return count
+        return left.firstRequest.compareTo(right.firstRequest)
+    }
+
+    private fun intellijCompareKotlinPutImageStripCandidate(
+        xvfbGroup: IntellijXvfbPutImageStripGroup,
+        left: IntellijKotlinPutImageStripGroup,
+        right: IntellijKotlinPutImageStripGroup,
+    ): Int {
+        val context = xvfbGroup.contextMatchScore(right).compareTo(xvfbGroup.contextMatchScore(left))
+        if (context != 0) return context
+        val sample = intellijCompareNullablePutImageStripPixelScore(
+            intellijPutImageStripBestPhaseScore(left.key, xvfbGroup.key),
+            intellijPutImageStripBestPhaseScore(right.key, xvfbGroup.key),
+        )
+        if (sample != 0) return sample
+        val count = right.count.compareTo(left.count)
+        if (count != 0) return count
+        return left.firstOperation.compareTo(right.firstOperation)
+    }
+
+    private fun intellijCompareNullablePutImageStripPixelScore(
+        left: IntellijPutImageStripPixelScore?,
+        right: IntellijPutImageStripPixelScore?,
+    ): Int =
+        when {
+            left == null && right == null -> 0
+            left == null -> 1
+            right == null -> -1
+            else -> intellijComparePutImageStripPixelScore(left, right)
+        }
+
+    private fun intellijComparePutImageStripPixelScore(
+        left: IntellijPutImageStripPixelScore,
+        right: IntellijPutImageStripPixelScore,
+    ): Int {
+        val average = left.averageAbsRgb.compareTo(right.averageAbsRgb)
+        if (average != 0) return average
+        val exact = right.exact.compareTo(left.exact)
+        if (exact != 0) return exact
+        val offset = abs(left.offset).compareTo(abs(right.offset))
+        if (offset != 0) return offset
+        return left.offset.compareTo(right.offset)
+    }
 
     private fun intellijPutImageStripPixelScore(
         kotlinPixels: List<Int>,
