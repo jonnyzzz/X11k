@@ -11882,6 +11882,125 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER IntelliJ strip chain samples high offset repeated intermediate pictures into window`() {
+        XServer(ServerOptions(port = 0, width = 1280, height = 900)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val stripPixmapA = PixmapId
+                val stripPictureA = PixmapPictureId
+                val stripPixmapB = PixmapId + 0x10
+                val stripPictureB = PixmapPictureId + 0x10
+                val framePixmap = PixmapId + 0x20
+                val framePicture = PixmapPictureId + 0x20
+                val stripWidthA = 624
+                val stripWidthB = 600
+                val stripHeight = 2
+                val frameWidth = 1260
+                val frameHeight = 160
+                val copyY = 34
+
+                fun stripPixel(seed: Int, width: Int, x: Int, y: Int): Int {
+                    val wrappedX = Math.floorMod(x, width)
+                    val wrappedY = Math.floorMod(y, stripHeight)
+                    val red = (0x20 + seed + wrappedX / 12).coerceAtMost(0xff)
+                    val green = (0x30 + seed + (wrappedX + wrappedY * 5) / 10).coerceAtMost(0xff)
+                    val blue = (0x40 + seed + (wrappedX * 3 + wrappedY * 7) / 16).coerceAtMost(0xff)
+                    return (0xff shl 24) or (red shl 16) or (green shl 8) or blue
+                }
+
+                fun stripPixels(seed: Int, width: Int): IntArray =
+                    IntArray(width * stripHeight) { index -> stripPixel(seed, width, index % width, index / width) }
+
+                fun expectedRow(seed: Int, width: Int, sourceX: Int, sourceY: Int, count: Int): List<Int> =
+                    List(count) { dx -> stripPixel(seed, width, sourceX + dx, sourceY) }
+
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 10, y = 20, width = frameWidth, height = frameHeight, borderWidth = 0))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(createPixmapRequest(framePixmap, depth = 32, width = frameWidth, height = frameHeight))
+                out.write(renderCreatePicture(framePicture, framePixmap, XRender.Argb32Format))
+                out.write(createPixmapRequest(stripPixmapA, depth = 32, width = stripWidthA, height = stripHeight))
+                out.write(createPixmapRequest(stripPixmapB, depth = 32, width = stripWidthB, height = stripHeight))
+                out.write(createGcRequest(PutImageGcId, stripPixmapA))
+                out.write(createGcRequest(PutImageGcId + 1, stripPixmapB))
+                out.write(putImage32OnlyRequest(stripPixmapA, width = stripWidthA, height = stripHeight, pixels = stripPixels(seed = 0, width = stripWidthA)))
+                out.write(putImage32OnlyRequest(stripPixmapB, width = stripWidthB, height = stripHeight, pixels = stripPixels(seed = 0x30, width = stripWidthB), gc = PutImageGcId + 1))
+                out.write(renderCreatePicture(stripPictureA, stripPixmapA, XRender.Argb32Format))
+                out.write(renderCreatePicture(stripPictureB, stripPixmapB, XRender.Argb32Format))
+                out.write(renderChangePicture(stripPictureA, repeat = XRender.RepeatNormal))
+                out.write(renderChangePicture(stripPictureB, repeat = XRender.RepeatNormal))
+                out.write(renderSetPictureFilter(stripPictureA, "good", values = emptyList()))
+                out.write(renderSetPictureFilter(stripPictureB, "best", values = emptyList()))
+                out.write(
+                    renderComposite(
+                        stripPictureA,
+                        framePicture,
+                        operation = XRender.OpOver,
+                        sourceX = 128,
+                        sourceY = copyY,
+                        destinationX = 128,
+                        destinationY = copyY,
+                        width = 256,
+                        height = stripHeight,
+                    ),
+                )
+                out.write(
+                    renderComposite(
+                        stripPictureB,
+                        framePicture,
+                        operation = XRender.OpOver,
+                        sourceX = 440,
+                        sourceY = copyY,
+                        destinationX = 440,
+                        destinationY = copyY,
+                        width = 160,
+                        height = stripHeight,
+                    ),
+                )
+                out.write(
+                    renderComposite(
+                        framePicture,
+                        PictureId,
+                        operation = XRender.OpSrc,
+                        sourceX = 0,
+                        sourceY = 0,
+                        destinationX = 0,
+                        destinationY = 0,
+                        width = frameWidth,
+                        height = frameHeight,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 128, y = copyY, width = 472, height = stripHeight))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertPixelRow(image, imageWidth = 472, y = 0, expected = expectedRow(seed = 0, width = stripWidthA, sourceX = 128, sourceY = copyY, count = 256))
+                assertPixelRow(image, imageWidth = 472, y = 1, expected = expectedRow(seed = 0, width = stripWidthA, sourceX = 128, sourceY = copyY + 1, count = 256))
+                assertPixelRow(image, imageWidth = 472, y = 0, xOffset = 312, expected = expectedRow(seed = 0x30, width = stripWidthB, sourceX = 440, sourceY = copyY, count = 160))
+                assertPixelRow(image, imageWidth = 472, y = 1, xOffset = 312, expected = expectedRow(seed = 0x30, width = stripWidthB, sourceX = 440, sourceY = copyY + 1, count = 160))
+
+                waitUntil {
+                    val text = httpGet(server.localPort, "/text.txt")
+                    text.contains("sourcePopulation=0x${stripPixmapA.toUInt().toString(16)}#") &&
+                        text.contains("sourcePopulation=0x${stripPixmapB.toUInt().toString(16)}#")
+                }
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "source=0x${stripPictureA.toUInt().toString(16)}/pixmap repeat=normal filter=good")
+                assertContains(text, "source=0x${stripPictureB.toUInt().toString(16)}/pixmap repeat=normal filter=best")
+                assertContains(text, "sourcePopulation=0x${stripPixmapA.toUInt().toString(16)}#")
+                assertContains(text, "sourcePopulation=0x${stripPixmapB.toUInt().toString(16)}#")
+                assertContains(text, "source=0x${framePicture.toUInt().toString(16)}/pixmap repeat=none")
+                assertContains(text, "putImage=format=2,depth=32,leftPad=0,size=624x2,dataBytes=4992,rowStride=2496,crc32=")
+                assertContains(text, "putImage=format=2,depth=32,leftPad=0,size=600x2,dataBytes=4800,rowStride=2400,crc32=")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER transformed linear gradient survives A8 mask through intermediate picture`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -17299,10 +17418,10 @@ class XRenderProtocolTest {
     private fun pixelAt(reply: ByteArray, imageWidth: Int, x: Int, y: Int): Int =
         u32le(reply, 32 + (y * imageWidth + x) * 4)
 
-    private fun assertPixelRow(reply: ByteArray, imageWidth: Int, y: Int, expected: List<Int>) {
-        val actual = expected.indices.map { x -> pixelAt(reply, imageWidth, x, y) }
+    private fun assertPixelRow(reply: ByteArray, imageWidth: Int, y: Int, xOffset: Int = 0, expected: List<Int>) {
+        val actual = expected.indices.map { x -> pixelAt(reply, imageWidth, xOffset + x, y) }
         expected.forEachIndexed { x, pixel ->
-            assertEquals(pixel, actual[x], "pixel at $x,$y row=${actual.map { it.toUInt().toString(16) }}")
+            assertEquals(pixel, actual[x], "pixel at ${xOffset + x},$y row=${actual.map { it.toUInt().toString(16) }}")
         }
     }
 
