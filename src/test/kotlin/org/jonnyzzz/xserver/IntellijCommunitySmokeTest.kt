@@ -1664,6 +1664,81 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij xvfb putimage trace proxy correlates getimage replies`() {
+        val tempDir = Files.createTempDirectory("x11-getimage-reply-trace-proxy")
+        val sourceFile = tempDir.resolve("X11PutImageTraceProxy.java")
+        val logFile = tempDir.resolve("trace.log")
+        Files.writeString(sourceFile, x11PutImageTraceProxySource())
+        val compiler = ToolProvider.getSystemJavaCompiler()
+            ?: error("A JDK compiler is required for this focused proxy-source test")
+        assertEquals(0, compiler.run(null, null, null, "-d", tempDir.toString(), sourceFile.toString()))
+
+        URLClassLoader(arrayOf(tempDir.toUri().toURL()), null).use { loader ->
+            val clazz = Class.forName("X11PutImageTraceProxy", true, loader)
+            val stateClazz = Class.forName("X11PutImageTraceProxy\$ConnectionTraceState", true, loader)
+            val constructor = clazz.getDeclaredConstructor(
+                Int::class.javaPrimitiveType,
+                String::class.java,
+                Int::class.javaPrimitiveType,
+                String::class.java,
+            )
+            constructor.isAccessible = true
+            val proxy = constructor.newInstance(0, "127.0.0.1", 0, logFile.toString())
+            val stateConstructor = stateClazz.getDeclaredConstructor()
+            stateConstructor.isAccessible = true
+            val state = stateConstructor.newInstance()
+            stateClazz.getDeclaredField("byteOrderKnown").also {
+                it.isAccessible = true
+                it.setBoolean(state, true)
+            }
+            stateClazz.getDeclaredField("little").also {
+                it.isAccessible = true
+                it.setBoolean(state, true)
+            }
+            stateClazz.getDeclaredField("setupComplete").also {
+                it.isAccessible = true
+                it.setBoolean(state, true)
+            }
+            val serverBuffer = stateClazz.getDeclaredField("serverBuffer").also { it.isAccessible = true }
+            val logGetImageRequest = clazz.getDeclaredMethod(
+                "logGetImageRequest",
+                Int::class.javaPrimitiveType,
+                stateClazz,
+                Int::class.javaPrimitiveType,
+                ByteArray::class.java,
+                Boolean::class.javaPrimitiveType,
+            )
+            logGetImageRequest.isAccessible = true
+            val parseServerMessages = clazz.getDeclaredMethod(
+                "parseServerMessages",
+                Int::class.javaPrimitiveType,
+                stateClazz,
+            )
+            parseServerMessages.isAccessible = true
+
+            logGetImageRequest.invoke(proxy, 7, state, 44, getImageRequestTraceBytes(), true)
+            (serverBuffer.get(state) as ByteArrayOutputStream)
+                .write(getImageReplyBytes(sequence = 44))
+            parseServerMessages.invoke(proxy, 7, state)
+        }
+
+        val log = Files.readString(logFile)
+        assertTrue(
+            log.contains("connection=7 request=44 GetImage format=2 drawable=0x20007d src=3,4 size=2x1 planeMask=0xffffffff"),
+            log,
+        )
+        assertTrue(
+            log.contains("connection=7 request=44 GetImageReply format=2 depth=32 drawable=0x20007d src=3,4 size=2x1"),
+            log,
+        )
+        assertTrue(log.contains("pad12=0x0"), log)
+        assertTrue(log.contains("dataBytes=8"), log)
+        assertTrue(log.contains("raw=[0x11,0x22,0x33,0xff,0x22,0x33,0x44,0x80]"), log)
+        assertTrue(log.contains("decoded=[0xff332211,0x80443322]"), log)
+        assertTrue(log.contains("rowDecoded=[[0xff332211,0x80443322]]"), log)
+    }
+
+    @Test
     fun `intellij glx jcef diagnostics summary extracts preflight and angle failures`() {
         val pbufferFbConfig = "0x${(XGlx.RootFbConfigId + 5).toString(16)}"
         val kotlinText =
@@ -3054,6 +3129,7 @@ class IntellijCommunitySmokeTest {
 
         public class X11PutImageTraceProxy {
           private static final int MAX_LOGGED_PUTIMAGE_LINES = 4096;
+          private static final int MAX_LOGGED_GETIMAGE_LINES = 4096;
           private static final int MAX_LOGGED_RENDER_LINES = 16384;
           private final String listenMode;
           private final String listenAddress;
@@ -3062,7 +3138,30 @@ class IntellijCommunitySmokeTest {
           private final PrintWriter log;
           private final AtomicInteger nextConnection = new AtomicInteger(1);
           private int putImageLines;
+          private int getImageLines;
           private int renderLines;
+
+          private static final class PendingGetImage {
+            final int requestIndex;
+            final int format;
+            final long drawable;
+            final int x;
+            final int y;
+            final int width;
+            final int height;
+            final long planeMask;
+
+            PendingGetImage(int requestIndex, int format, long drawable, int x, int y, int width, int height, long planeMask) {
+              this.requestIndex = requestIndex;
+              this.format = format;
+              this.drawable = drawable;
+              this.x = x;
+              this.y = y;
+              this.width = width;
+              this.height = height;
+              this.planeMask = planeMask;
+            }
+          }
 
           private static final class ConnectionTraceState {
             volatile boolean byteOrderKnown;
@@ -3070,6 +3169,7 @@ class IntellijCommunitySmokeTest {
             volatile boolean setupComplete;
             volatile int renderMajorOpcode = -1;
             final Map<Integer, String> pendingQueryExtensions = new ConcurrentHashMap<>();
+            final Map<Integer, PendingGetImage> pendingGetImages = new ConcurrentHashMap<>();
             final ByteArrayOutputStream serverBuffer = new ByteArrayOutputStream();
           }
 
@@ -3267,6 +3367,9 @@ class IntellijCommunitySmokeTest {
               if (opcode == 98) {
                 logQueryExtension(connection, state, requestIndex, bytes, little);
               }
+              if (opcode == 73) {
+                logGetImageRequest(connection, state, requestIndex, bytes, little);
+              }
               output.write(bytes);
               output.flush();
               if (opcode == 72) {
@@ -3320,6 +3423,10 @@ class IntellijCommunitySmokeTest {
                       " QueryExtensionReply name=RENDER present=" + present +
                       " majorOpcode=" + majorOpcode);
                 }
+                PendingGetImage getImage = state.pendingGetImages.remove(sequence);
+                if (getImage != null) {
+                  logGetImageReply(connection, getImage, bytes, offset, messageBytes, state.little);
+                }
               }
               offset += messageBytes;
             }
@@ -3342,6 +3449,67 @@ class IntellijCommunitySmokeTest {
             if ("RENDER".equals(name)) {
               renderLine("connection=" + connection + " request=" + requestIndex + " QueryExtension name=RENDER");
             }
+          }
+
+          private void logGetImageRequest(int connection, ConnectionTraceState state, int requestIndex, byte[] request, boolean little) {
+            int payloadOffset = bigRequestPayloadOffset(request, little);
+            if (request.length < payloadOffset + 20) {
+              getImageLine("connection=" + connection + " request=" + requestIndex + " GetImage malformedBytes=" + request.length);
+              return;
+            }
+            int format = request[1] & 0xff;
+            long drawable = u32(request, payloadOffset + 4, little);
+            int x = i16(request, payloadOffset + 8, little);
+            int y = i16(request, payloadOffset + 10, little);
+            int width = u16(request, payloadOffset + 12, little);
+            int height = u16(request, payloadOffset + 14, little);
+            long planeMask = u32(request, payloadOffset + 16, little);
+            state.pendingGetImages.put(
+                requestIndex & 0xffff,
+                new PendingGetImage(requestIndex, format, drawable, x, y, width, height, planeMask));
+            getImageLine("connection=" + connection +
+                " request=" + requestIndex +
+                " GetImage format=" + format +
+                " drawable=0x" + Long.toHexString(drawable) +
+                " src=" + x + "," + y +
+                " size=" + width + "x" + height +
+                " planeMask=0x" + Long.toHexString(planeMask));
+          }
+
+          private void logGetImageReply(
+              int connection,
+              PendingGetImage request,
+              byte[] reply,
+              int offset,
+              int messageBytes,
+              boolean little
+          ) {
+            int depth = reply[offset + 1] & 0xff;
+            long extraWords = u32(reply, offset + 4, little);
+            long visual = u32(reply, offset + 8, little);
+            long pad12 = u32(reply, offset + 12, little);
+            int dataOffset = offset + 32;
+            int dataBytes = Math.max(0, Math.min(messageBytes - 32, reply.length - dataOffset));
+            byte[] data = Arrays.copyOfRange(reply, dataOffset, dataOffset + dataBytes);
+            CRC32 crc = new CRC32();
+            crc.update(data);
+            getImageLine("connection=" + connection +
+                " request=" + request.requestIndex +
+                " GetImageReply format=" + request.format +
+                " depth=" + depth +
+                " drawable=0x" + Long.toHexString(request.drawable) +
+                " src=" + request.x + "," + request.y +
+                " size=" + request.width + "x" + request.height +
+                " planeMask=0x" + Long.toHexString(request.planeMask) +
+                " visual=0x" + Long.toHexString(visual) +
+                " pad12=0x" + Long.toHexString(pad12) +
+                " extraWords=" + extraWords +
+                " dataBytes=" + data.length +
+                " crc32=0x" + hex32(crc.getValue()) +
+                " raw=" + rawSample(data, 64) +
+                " decoded=" + decodedArgbSample(request.format, depth, data, 16) +
+                " rowRaw=" + rawRowSample(request.format, request.width, request.height, depth, 0, data, 2, 128) +
+                " rowDecoded=" + decodedArgbRowSample(request.format, request.width, request.height, depth, data, 2, 32));
           }
 
           private void logRenderRequest(int connection, int requestIndex, byte[] request, boolean little) {
@@ -3894,6 +4062,18 @@ class IntellijCommunitySmokeTest {
               } else if (putImageLines == MAX_LOGGED_PUTIMAGE_LINES) {
                 lineLocked("PutImage trace line limit reached; further PutImage summaries suppressed");
                 putImageLines++;
+              }
+            }
+          }
+
+          private void getImageLine(String text) {
+            synchronized (log) {
+              if (getImageLines < MAX_LOGGED_GETIMAGE_LINES) {
+                lineLocked(text);
+                getImageLines++;
+              } else if (getImageLines == MAX_LOGGED_GETIMAGE_LINES) {
+                lineLocked("GetImage trace line limit reached; further GetImage summaries suppressed");
+                getImageLines++;
               }
             }
           }
@@ -4836,6 +5016,60 @@ class IntellijCommunitySmokeTest {
         out.write(ByteArray(20))
         return out.toByteArray().also { bytes ->
             assertEquals(32, bytes.size)
+        }
+    }
+
+    private fun getImageRequestTraceBytes(): ByteArray {
+        val out = ByteArrayOutputStream()
+        fun u16(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+        }
+        fun u32(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+            out.write((value ushr 16) and 0xff)
+            out.write((value ushr 24) and 0xff)
+        }
+
+        out.write(73)
+        out.write(2)
+        u16(5)
+        u32(0x0020007d)
+        u16(3)
+        u16(4)
+        u16(2)
+        u16(1)
+        u32(-1)
+        return out.toByteArray().also { bytes ->
+            assertEquals(20, bytes.size)
+        }
+    }
+
+    private fun getImageReplyBytes(sequence: Int): ByteArray {
+        val out = ByteArrayOutputStream()
+        fun u16(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+        }
+        fun u32(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+            out.write((value ushr 16) and 0xff)
+            out.write((value ushr 24) and 0xff)
+        }
+
+        val data = byteArrayOf(0x11, 0x22, 0x33, 0xff.toByte(), 0x22, 0x33, 0x44, 0x80.toByte())
+        out.write(1)
+        out.write(32)
+        u16(sequence)
+        u32(data.size / 4)
+        u32(0x21)
+        u32(0)
+        out.write(ByteArray(16))
+        out.write(data)
+        return out.toByteArray().also { bytes ->
+            assertEquals(40, bytes.size)
         }
     }
 
