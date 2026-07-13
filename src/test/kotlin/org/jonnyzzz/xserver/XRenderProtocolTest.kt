@@ -11906,7 +11906,7 @@ class XRenderProtocolTest {
                     }
                 }
                 val out = socket.getOutputStream()
-                out.write(createWindowRequest(WindowId))
+                out.write(createWindowRequest(WindowId, width = width, height = height))
                 out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
                 out.write(createPixmapRequest(tempPixmap, depth = 32, width = width, height = height))
                 out.write(createPixmapRequest(intermediatePixmap, depth = 32, width = width, height = height))
@@ -11983,15 +11983,20 @@ class XRenderProtocolTest {
                 )
                 out.write(getImageRequest(tempPixmap, x = 0, y = 0, width = width, height = height))
                 out.write(getImageRequest(intermediatePixmap, x = 0, y = 0, width = width, height = height))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = width, height = height))
                 out.flush()
 
                 val tempImage = readReply(socket.getInputStream())
                 val intermediateImage = readReply(socket.getInputStream())
+                val windowImage = readReply(socket.getInputStream())
                 assertTrue(pixelAt(tempImage, width, 0, 0) != pixelAt(tempImage, width, width - 1, 0), "gradient should vary across the transformed source range")
                 assertEquals(pixelAt(tempImage, width, 0, 0), pixelAt(intermediateImage, width, 0, 0), "full mask should copy the gradient source")
                 assertEquals(baseline, pixelAt(intermediateImage, width, 2, 0), "zero mask should preserve the intermediate background")
                 assertTrue(pixelAt(intermediateImage, width, 1, 0) != baseline, "half mask should blend away from the background")
                 assertTrue(pixelAt(intermediateImage, width, 1, 0) != pixelAt(tempImage, width, 1, 0), "half mask should not copy the source fully")
+                assertEquals(pixelAt(intermediateImage, width, 0, 0), pixelAt(windowImage, width, 0, 0), "window composite should expose the intermediate full-mask pixel")
+                assertEquals(pixelAt(intermediateImage, width, 1, 0), pixelAt(windowImage, width, 1, 0), "window composite should expose the intermediate half-mask pixel")
+                assertEquals(pixelAt(intermediateImage, width, 2, 0), pixelAt(windowImage, width, 2, 0), "window composite should expose the intermediate zero-mask pixel")
 
                 waitUntil {
                     httpGet(server.localPort, "/text.txt").contains("mask=0x${MaskPictureId.toUInt().toString(16)}/pixmap")
