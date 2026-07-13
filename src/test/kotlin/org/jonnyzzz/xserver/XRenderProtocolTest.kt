@@ -12788,6 +12788,61 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER linear gradient matches Pixman fixed scanline and float walker for AWT colors`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 304, height = 1))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 24 to 205,
+                        p2 = 300 to 260,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0xd2ff, blue = 0x28ff, alpha = 0xffff),
+                            RenderColor(red = 0x28ff, green = 0xa0ff, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
+                out.write(
+                    renderComposite(
+                        GradientPictureId,
+                        PixmapPictureId,
+                        operation = XRender.OpSrc,
+                        sourceX = 24,
+                        sourceY = 205,
+                        destinationX = 0,
+                        destinationY = 0,
+                        width = 304,
+                        height = 1,
+                    ),
+                )
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 304, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                mapOf(
+                    107 to 0xffaf_c079.toInt(),
+                    145 to 0xff92_b995.toInt(),
+                    189 to 0xff72_b1b6.toInt(),
+                    212 to 0xff60_adc7.toInt(),
+                ).forEach { (x, expected) ->
+                    assertEquals(expected, pixelAt(image, imageWidth = 304, x = x, y = 0), "pixel at $x,0")
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER linear gradient matches Xvfb straight alpha translucent stop interpolation`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

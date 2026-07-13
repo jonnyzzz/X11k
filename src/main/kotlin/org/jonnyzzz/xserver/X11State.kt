@@ -5585,6 +5585,7 @@ internal class X11State(
         }
         val gradientSampler = source.gradientSampler(premultiplied = premultiplyGradientForArgb32Storage)
         if (gradientSampler != null) {
+            val gradientScanlineSampler = source.gradientScanlineSampler(premultiplied = premultiplyGradientForArgb32Storage)
             return destinationFramebuffer.compositeGenerated(
                 sourceX = sourceX,
                 sourceY = sourceY,
@@ -5600,6 +5601,7 @@ internal class X11State(
                 maskY = maskY,
                 maskAlphaAt = maskAlphaAt,
                 destinationFormat = destination.format,
+                sourceScanlineAt = gradientScanlineSampler,
             ) { x, y ->
                 gradientSampler(x, y)
             }
@@ -7050,6 +7052,11 @@ internal class X11State(
             ?: radialGradient?.pixelSampler(repeat, transform, premultiplied)
             ?: conicalGradient?.pixelSampler(repeat, transform, premultiplied)
 
+    private fun XPicture.gradientScanlineSampler(premultiplied: Boolean): ((x: Int, y: Int, width: Int) -> IntArray)? =
+        linearGradient
+            ?.takeIf { repeat == XRender.RepeatPad && transform == IdentityTransform }
+            ?.pixmanPadScanlineSampler(premultiplied)
+
     private fun XPicture.sourcePixelSampler(snapshotDrawableId: Int? = null, premultiplyGradient: Boolean = false): ((x: Int, y: Int) -> Int)? {
         solidPixel?.let { pixel -> return { x, y -> withAlphaMap(pixel, x + 0.5, y + 0.5) ?: 0 } }
         gradientSampler(premultiplied = premultiplyGradient)?.let { sampler -> return { x, y -> withAlphaMap(sampler(x, y), x + 0.5, y + 0.5) ?: 0 } }
@@ -7320,6 +7327,96 @@ internal class X11State(
             }
             sampleGradientPosition(position, pairs, fixedStops, repeat, premultiplied)
         }
+    }
+
+    private fun XLinearGradient.pixmanPadScanlineSampler(premultiplied: Boolean): (x: Int, y: Int, width: Int) -> IntArray {
+        val pairs = stops.zip(colors).sortedBy { it.first }
+        if (pairs.isEmpty()) return { _, _, width -> IntArray(width) }
+        val dx = p2.x.toLong() - p1.x.toLong()
+        val dy = p2.y.toLong() - p1.y.toLong()
+        val length = dx * dx + dy * dy
+        return { x, y, width ->
+            val pixels = IntArray(width)
+            if (length == 0L) {
+                val pixel = pixmanPadGradientPixel(0L, pairs, premultiplied)
+                pixels.fill(pixel)
+            } else {
+                val sampleX = (x.toLong() shl 16) + 0x8000L
+                val sampleY = (y.toLong() shl 16) + 0x8000L
+                val numerator =
+                    dx * sampleX + dy * sampleY -
+                        (dx * p1.x.toLong() + dy * p1.y.toLong())
+                val inverseDenominator = 65_536.0 / length.toDouble()
+                val firstPosition = (numerator.toDouble() * inverseDenominator).toLong()
+                val increment = (dx * 65_536L).toDouble() * inverseDenominator
+                // Pixman truncates the initial 48.16 position and each scanline offset independently.
+                for (column in pixels.indices) {
+                    val position = firstPosition + (increment * column).toLong()
+                    pixels[column] = pixmanPadGradientPixel(position, pairs, premultiplied)
+                }
+            }
+            pixels
+        }
+    }
+
+    private fun pixmanPadGradientPixel(
+        position: Long,
+        pairs: List<Pair<Int, XRenderColor>>,
+        premultiplied: Boolean,
+    ): Int {
+        if (position <= pairs.first().first.toLong()) return pixmanConstantGradientPixel(pairs.first().second, premultiplied)
+        if (position >= pairs.last().first.toLong()) return pixmanConstantGradientPixel(pairs.last().second, premultiplied)
+        for (index in 0 until pairs.lastIndex) {
+            val left = pairs[index]
+            val right = pairs[index + 1]
+            if (position < right.first.toLong()) {
+                if (right.first <= left.first) return pixmanConstantGradientPixel(right.second, premultiplied)
+                return pixmanInterpolatedGradientPixel(position, left, right, premultiplied)
+            }
+        }
+        return pixmanConstantGradientPixel(pairs.last().second, premultiplied)
+    }
+
+    private fun pixmanConstantGradientPixel(color: XRenderColor, premultiplied: Boolean): Int {
+        val colorScale = 1.0f / 257.0f
+        fun component(shift: Int): Float {
+            val value = color.rawChannel(shift).toFloat() * colorScale
+            return (value + value) / 510.0f
+        }
+        val alpha = 255.0f * component(24)
+        fun channel(shift: Int): Int {
+            val value = if (premultiplied && shift != 24) alpha * component(shift) else 255.0f * component(shift)
+            return (value + 0.5f).toInt().coerceIn(0, 255)
+        }
+        return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
+    private fun pixmanInterpolatedGradientPixel(
+        position: Long,
+        left: Pair<Int, XRenderColor>,
+        right: Pair<Int, XRenderColor>,
+        premultiplied: Boolean,
+    ): Int {
+        val fixedScale = 1.0f / 65_536.0f
+        val colorScale = 1.0f / 257.0f
+        val componentScale = 1.0f / 255.0f
+        val leftX = left.first.toFloat() * fixedScale
+        val rightX = right.first.toFloat() * fixedScale
+        val reciprocal = 1.0f / (rightX - leftX)
+        val sample = position.toFloat() * fixedScale
+        fun component(shift: Int): Float {
+            val leftValue = left.second.rawChannel(shift).toFloat() * colorScale
+            val rightValue = right.second.rawChannel(shift).toFloat() * colorScale
+            val bias = (leftValue * rightX - rightValue * leftX) * reciprocal * componentScale
+            val slope = (rightValue - leftValue) * reciprocal * componentScale
+            return slope * sample + bias
+        }
+        val alpha = 255.0f * component(24)
+        fun channel(shift: Int): Int {
+            val value = if (premultiplied && shift != 24) alpha * component(shift) else 255.0f * component(shift)
+            return (value + 0.5f).toInt().coerceIn(0, 255)
+        }
+        return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
     }
 
     private fun XRadialGradient.pixelSampler(repeat: Int, transform: List<Int>, premultiplied: Boolean): (x: Double, y: Double) -> Int {

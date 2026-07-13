@@ -1874,6 +1874,7 @@ internal class XFramebuffer(
         maskPixelAt: ((x: Int, y: Int) -> Int?)? = null,
         destinationFormat: Int = XRender.Rgb24Format,
         sourcePremultiplied: Boolean = false,
+        sourceScanlineAt: ((x: Int, y: Int, width: Int) -> IntArray)? = null,
         sourcePixelAt: (x: Int, y: Int) -> Int,
     ): XImagePixels? {
         val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return null
@@ -1881,12 +1882,18 @@ internal class XFramebuffer(
         val generated = IntArray(bounds.width * bounds.height)
         var painted = false
         for (row in 0 until bounds.height) {
+            val scanline = sourceScanlineAt?.invoke(
+                sourceX + bounds.destinationX - destinationX,
+                sourceY + bounds.destinationY + row - destinationY,
+                bounds.width,
+            )
+            require(scanline == null || scanline.size == bounds.width)
             for (column in 0 until bounds.width) {
                 val dx = bounds.destinationX + column
                 val dy = bounds.destinationY + row
                 val sx = sourceX + dx - destinationX
                 val sy = sourceY + dy - destinationY
-                val sourcePixel = sourcePixelAt(sx, sy)
+                val sourcePixel = scanline?.get(column) ?: sourcePixelAt(sx, sy)
                 generated[row * bounds.width + column] = sourcePixel
                 if (!insideClip(dx, dy, clipRectangles, clipMask)) continue
                 val index = dy * this.width + dx
