@@ -11882,6 +11882,133 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER transformed linear gradient survives A8 mask through intermediate picture`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val tempPixmap = PixmapId
+                val tempPicture = PixmapPictureId
+                val intermediatePixmap = PixmapId + 0x10
+                val intermediatePicture = PixmapPictureId + 0x10
+                val width = 104
+                val height = 16
+                val sourceX = 856
+                val sourceY = 847
+                val baseline = 0xff10_1010.toInt()
+                val mask = ByteArray(width * height) { index ->
+                    when (index % width % 4) {
+                        0 -> 0xff.toByte()
+                        1 -> 0x80.toByte()
+                        2 -> 0x00
+                        else -> 0xff.toByte()
+                    }
+                }
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(createPixmapRequest(tempPixmap, depth = 32, width = width, height = height))
+                out.write(createPixmapRequest(intermediatePixmap, depth = 32, width = width, height = height))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = width, height = height))
+                out.write(putImage8Request(MaskPixmapId, width = width, height = height, alphas = mask))
+                out.write(renderCreatePicture(tempPicture, tempPixmap, XRender.Argb32Format))
+                out.write(renderCreatePicture(intermediatePicture, intermediatePixmap, XRender.Argb32Format))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = width to 0,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0x9292, green = 0xb7b7, blue = 0xffff, alpha = 0xffff),
+                            RenderColor(red = 0x3636, green = 0x6a6a, blue = 0xcece, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
+                out.write(
+                    renderSetPictureTransform(
+                        GradientPictureId,
+                        listOf(
+                            0x0001_0000,
+                            0,
+                            -0x0358_0000,
+                            0,
+                            0x0001_0000,
+                            -0x034f_0000,
+                            0,
+                            0,
+                            0x0001_0000,
+                        ),
+                    ),
+                )
+                out.write(renderFillRectangles(intermediatePicture, x = 0, y = 0, width = width, height = height, red = 0x1010, green = 0x1010, blue = 0x1010, alpha = 0xffff))
+                out.write(
+                    renderComposite(
+                        GradientPictureId,
+                        tempPicture,
+                        operation = XRender.OpSrc,
+                        sourceX = sourceX,
+                        sourceY = sourceY,
+                        destinationX = 0,
+                        destinationY = 0,
+                        width = width,
+                        height = height,
+                    ),
+                )
+                out.write(
+                    renderComposite(
+                        tempPicture,
+                        intermediatePicture,
+                        mask = MaskPictureId,
+                        operation = XRender.OpOver,
+                        destinationX = 0,
+                        destinationY = 0,
+                        width = width,
+                        height = height,
+                    ),
+                )
+                out.write(
+                    renderComposite(
+                        intermediatePicture,
+                        PictureId,
+                        operation = XRender.OpSrc,
+                        destinationX = 0,
+                        destinationY = 0,
+                        width = width,
+                        height = height,
+                    ),
+                )
+                out.write(getImageRequest(tempPixmap, x = 0, y = 0, width = width, height = height))
+                out.write(getImageRequest(intermediatePixmap, x = 0, y = 0, width = width, height = height))
+                out.flush()
+
+                val tempImage = readReply(socket.getInputStream())
+                val intermediateImage = readReply(socket.getInputStream())
+                assertTrue(pixelAt(tempImage, width, 0, 0) != pixelAt(tempImage, width, width - 1, 0), "gradient should vary across the transformed source range")
+                assertEquals(pixelAt(tempImage, width, 0, 0), pixelAt(intermediateImage, width, 0, 0), "full mask should copy the gradient source")
+                assertEquals(baseline, pixelAt(intermediateImage, width, 2, 0), "zero mask should preserve the intermediate background")
+                assertTrue(pixelAt(intermediateImage, width, 1, 0) != baseline, "half mask should blend away from the background")
+                assertTrue(pixelAt(intermediateImage, width, 1, 0) != pixelAt(tempImage, width, 1, 0), "half mask should not copy the source fully")
+
+                waitUntil {
+                    httpGet(server.localPort, "/text.txt").contains("mask=0x${MaskPictureId.toUInt().toString(16)}/pixmap")
+                }
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "CreateLinearGradient")
+                assertContains(text, "SetPictureTransform")
+                assertContains(text, "source=0x${GradientPictureId.toUInt().toString(16)}/linear-gradient")
+                assertContains(text, "mask=0x${MaskPictureId.toUInt().toString(16)}/pixmap repeat=none")
+                assertContains(text, "source=0x${intermediatePicture.toUInt().toString(16)}/pixmap repeat=none")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER OpOver good filter matches Xvfb transformed repeated ARGB32 pixmap strip`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
