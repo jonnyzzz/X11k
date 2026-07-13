@@ -36,6 +36,7 @@ tasks.test {
         "x.intellijParity",
         "x.intellijDebug",
         "x.intellijTraceXvfbPutImage",
+        "x.intellijParityPairAttempts",
         "x.intellijUrl",
         "x.intellijImage",
         "x.intellijReferenceImage",
