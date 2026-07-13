@@ -98,6 +98,46 @@ class XXInputProtocolTest {
     }
 
     @Test
+    fun `XInputExtension stores XI2 client pointer and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(request(XXInput.MajorOpcode, XXInput.XIGetClientPointer, ByteArray(0)))
+                out.write(xinputXiGetClientPointerRequest(0x0102_0304))
+                out.write(xinputXiGetClientPointerRequest(0))
+                out.write(request(XXInput.MajorOpcode, XXInput.XISetClientPointer, u32leBytes(X11Ids.RootWindow)))
+                out.write(xinputXiSetClientPointerRequest(0x0102_0304, XXInput.MasterPointerId))
+                out.write(xinputXiSetClientPointerRequest(0, XXInput.MasterKeyboardId))
+                out.write(xinputXiSetClientPointerRequest(X11Ids.RootWindow, XXInput.MasterPointerId))
+                out.write(xinputXiGetClientPointerRequest(X11Ids.RootWindow))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, sequence = 1, minorOpcode = XXInput.XIGetClientPointer)
+                assertError(socket.getInputStream(), error = 3, badValue = 0x0102_0304, sequence = 2, minorOpcode = XXInput.XIGetClientPointer)
+
+                val defaultPointer = readReply(socket.getInputStream())
+                assertXi2ClientPointer(defaultPointer, sequence = 3, set = false, deviceId = XXInput.MasterPointerId)
+
+                assertError(socket.getInputStream(), error = 16, sequence = 4, minorOpcode = XXInput.XISetClientPointer)
+                assertError(socket.getInputStream(), error = 3, badValue = 0x0102_0304, sequence = 5, minorOpcode = XXInput.XISetClientPointer)
+                assertError(socket.getInputStream(), error = 2, badValue = XXInput.MasterKeyboardId, sequence = 6, minorOpcode = XXInput.XISetClientPointer)
+
+                val explicitPointer = readReply(socket.getInputStream())
+                assertXi2ClientPointer(explicitPointer, sequence = 8, set = true, deviceId = XXInput.MasterPointerId)
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(9, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XInputExtension validates XI2 selection framing and recovers stream`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -238,6 +278,16 @@ class XXInputProtocolTest {
         return request(XXInput.MajorOpcode, XXInput.XIGetProperty, body)
     }
 
+    private fun xinputXiSetClientPointerRequest(windowId: Int, deviceId: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, windowId)
+        put16le(body, 4, deviceId)
+        return request(XXInput.MajorOpcode, XXInput.XISetClientPointer, body)
+    }
+
+    private fun xinputXiGetClientPointerRequest(windowId: Int): ByteArray =
+        request(XXInput.MajorOpcode, XXInput.XIGetClientPointer, u32leBytes(windowId))
+
     private fun xinputXiSelectEventsRequest(windowId: Int, masks: List<Pair<Int, ByteArray>>): ByteArray {
         val maskBytes = masks.sumOf { 4 + ((it.second.size + 3) and -4) }
         val body = ByteArray(8 + maskBytes)
@@ -347,6 +397,16 @@ class XXInputProtocolTest {
         assertEquals(XKeyboard.MinKeycode, u32le(reply, classOffset + 8))
         assertEquals(XKeyboard.MaxKeycode, u32le(reply, classOffset + 8 + (XKeyboard.MaxKeycode - XKeyboard.MinKeycode) * 4))
         assertEquals(reply.size, classOffset + keyClassUnits * 4)
+    }
+
+    private fun assertXi2ClientPointer(reply: ByteArray, sequence: Int, set: Boolean, deviceId: Int) {
+        assertEquals(0, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(0, u32le(reply, 4))
+        assertEquals(if (set) 1 else 0, reply[8].toInt() and 0xff)
+        assertEquals(0, reply[9].toInt() and 0xff)
+        assertEquals(deviceId, u16le(reply, 10))
+        assertEquals(0, reply.drop(12).sumOf { it.toInt() and 0xff })
     }
 
     private fun assertXi2SelectedEvents(reply: ByteArray, sequence: Int, expected: List<Pair<Int, ByteArray>>) {

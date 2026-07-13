@@ -33,6 +33,7 @@ internal class X11Connection(
     private var pendingSyncCounterAwait: List<XSyncWaitCondition>? = null
     private var pendingSyncFenceAwait: List<Int>? = null
     private val xinputXi2SelectedEvents = linkedMapOf<Int, LinkedHashMap<Int, ByteArray>>()
+    private var xinputClientPointerDeviceId: Int? = null
 
     fun run() {
         try {
@@ -9169,6 +9170,8 @@ internal class X11Connection(
             XXInput.ListInputDevices -> xinputListInputDevices(body, majorOpcode)
             XXInput.XIQueryVersion -> xinputXiQueryVersion(body, majorOpcode)
             XXInput.XIQueryDevice -> xinputXiQueryDevice(body, majorOpcode)
+            XXInput.XISetClientPointer -> xinputXiSetClientPointer(body, majorOpcode)
+            XXInput.XIGetClientPointer -> xinputXiGetClientPointer(body, majorOpcode)
             XXInput.XISelectEvents -> xinputXiSelectEvents(body, majorOpcode)
             XXInput.XIGetSelectedEvents -> xinputXiGetSelectedEvents(body, majorOpcode)
             XXInput.XIListProperties -> xinputXiListProperties(body, majorOpcode)
@@ -9225,6 +9228,32 @@ internal class X11Connection(
         val reply = reply(extra = XXInput.XIQueryDevice, payloadUnits = payload.size / 4)
         byteOrder.put16(reply, 8, deviceIds.size)
         payload.copyInto(reply, 32)
+        write(reply)
+    }
+
+    private fun xinputXiSetClientPointer(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.XISetClientPointer, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        if (windowId != 0 && state.window(windowId) == null) {
+            return writeError(error = 3, opcode = majorOpcode, minorOpcode = XXInput.XISetClientPointer, badValue = windowId)
+        }
+        val deviceId = byteOrder.u16(body, 4)
+        if (deviceId != XXInput.MasterPointerId) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXInput.XISetClientPointer, badValue = deviceId)
+        }
+        xinputClientPointerDeviceId = deviceId
+    }
+
+    private fun xinputXiGetClientPointer(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.XIGetClientPointer, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        if (windowId != 0 && state.window(windowId) == null) {
+            return writeError(error = 3, opcode = majorOpcode, minorOpcode = XXInput.XIGetClientPointer, badValue = windowId)
+        }
+        val explicitPointer = xinputClientPointerDeviceId
+        val reply = reply(extra = 0, payloadUnits = 0)
+        reply[8] = if (explicitPointer != null) 1 else 0
+        byteOrder.put16(reply, 10, explicitPointer ?: XXInput.MasterPointerId)
         write(reply)
     }
 
