@@ -165,6 +165,12 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij robot svg capture accepts exact frames before bounded fallback`() {
+        assertTrue(intellijRobotSvgCaptureIsAcceptable(0.0))
+        assertFalse(intellijRobotSvgCaptureIsAcceptable(0.000001))
+    }
+
+    @Test
     fun `intellij parity pair scoring uses the worst retained renderer distance`() {
         val reference = visualCapture(solidImage(10, 10, 0xff22_3344.toInt()))
         val closeRobot = visualCapture(solidImage(10, 10, 0xff22_3344.toInt()))
@@ -2450,13 +2456,16 @@ class IntellijCommunitySmokeTest {
                 selectedSvgCandidateIndex = selected.index,
                 svgCandidateDistances = intellijSvgCandidateDistances(robot, svgCandidates, text),
             )
-            if (frame.robotSvgDistance <= IntellijRobotSvgCaptureDistanceThreshold) return frame
+            if (intellijRobotSvgCaptureIsAcceptable(frame.robotSvgDistance)) return frame
             val currentBest = best
             if (currentBest == null || frame.robotSvgDistance < currentBest.robotSvgDistance) best = frame
             if (attempt + 1 < IntellijRobotSvgCaptureAttempts) Thread.sleep(1_000)
         }
         return best ?: error("IntelliJ Robot/SVG capture did not produce a composable frame")
     }
+
+    private fun intellijRobotSvgCaptureIsAcceptable(distance: Double): Boolean =
+        distance <= IntellijRobotSvgCaptureDistanceThreshold
 
     private fun runIntellijAgainstXvfb(image: String, url: String?, configDir: Path): IntellijReferenceCapture =
         intellijContainer(image, configDir)
@@ -7624,7 +7633,7 @@ class IntellijCommunitySmokeTest {
         const val IntellijRobotSvgCaptureAttempts = 4
         const val IntellijRobotSvgPostCaptureSamples = 12
         const val IntellijRobotSvgPostCaptureSampleDelayMs = 50L
-        const val IntellijRobotSvgCaptureDistanceThreshold = 1.0
+        const val IntellijRobotSvgCaptureDistanceThreshold = 0.0
         const val IntellijXvfbRobotCaptureSamples = 6
         const val IntellijXvfbRobotCaptureSampleDelayMs = 50L
         const val IntellijParityPairAttempts = 2
