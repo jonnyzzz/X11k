@@ -5499,14 +5499,14 @@ internal class X11State(
         val maskFramebuffer = mask?.drawableFramebuffer()
         val maskPixelAt = mask?.takeIf { it.componentAlpha }?.componentMaskSampler(snapshotDrawableId = destinationDrawableId)
         val maskAlphaAt = if (maskPixelAt == null) mask?.maskAlphaSampler(snapshotDrawableId = destinationDrawableId) else null
-        val premultiplyGradientForArgb32Storage = source.isGradientRenderSource() &&
+        val storesGradientInArgb32 = source.isGradientRenderSource() &&
             operation == XRender.OpSrc &&
             destination.format == XRender.Argb32Format &&
             maskFramebuffer == null &&
             maskPixelAt == null &&
             maskAlphaAt == null
-        fun storagePixel(pixel: Int): Int =
-            if (premultiplyGradientForArgb32Storage) premultiplyPixel(pixel) else pixel
+        val premultiplyGradientForArgb32Storage = storesGradientInArgb32 && source.alphaMap == 0
+        val premultiplyAlphaMappedGradientForArgb32Storage = storesGradientInArgb32 && source.alphaMap != 0
         if (maskPixelAt != null) {
             val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0) {
                 source.compositeSourcePixelSamplerOptional(destinationDrawableId)
@@ -5531,7 +5531,7 @@ internal class X11State(
                 destinationFormat = destination.format,
                 sourcePremultiplied = source.drawableId != null,
             ) { x, y ->
-                sourcePixelAt(x, y)?.let(::storagePixel)
+                sourcePixelAt(x, y)
             }
         }
         if (source.alphaMap != 0) {
@@ -5553,11 +5553,16 @@ internal class X11State(
                 destinationFormat = destination.format,
                 sourcePremultiplied = source.drawableId != null,
             ) { x, y ->
-                sourcePixelAt(x, y)?.let(::storagePixel)
+                sourcePixelAt(x, y)?.let { pixel ->
+                    if (premultiplyAlphaMappedGradientForArgb32Storage) premultiplyPixel(pixel) else pixel
+                }
             }
         }
         if (source.hasPictureClip() || source.hasSourceSubwindowClip()) {
-            val sourcePixelAt = source.sourcePixelSamplerOptional(snapshotDrawableId = destinationDrawableId) ?: return null
+            val sourcePixelAt = source.sourcePixelSamplerOptional(
+                snapshotDrawableId = destinationDrawableId,
+                premultiplyGradient = premultiplyGradientForArgb32Storage,
+            ) ?: return null
             return destinationFramebuffer.compositeGeneratedOptional(
                 sourceX = sourceX,
                 sourceY = sourceY,
@@ -5575,10 +5580,10 @@ internal class X11State(
                 destinationFormat = destination.format,
                 sourcePremultiplied = source.drawableId != null,
             ) { x, y ->
-                sourcePixelAt(x, y)?.let(::storagePixel)
+                sourcePixelAt(x, y)
             }
         }
-        val gradientSampler = source.gradientSampler()
+        val gradientSampler = source.gradientSampler(premultiplied = premultiplyGradientForArgb32Storage)
         if (gradientSampler != null) {
             return destinationFramebuffer.compositeGenerated(
                 sourceX = sourceX,
@@ -5596,7 +5601,7 @@ internal class X11State(
                 maskAlphaAt = maskAlphaAt,
                 destinationFormat = destination.format,
             ) { x, y ->
-                storagePixel(gradientSampler(x, y))
+                gradientSampler(x, y)
             }
         }
         val solid = source.solidPixel?.let { semanticPixelForPictureFormat(it, destination.format) }
@@ -7037,17 +7042,17 @@ internal class X11State(
         return if (offset <= size) offset else period - offset
     }
 
-    private fun XPicture.gradientSampler(): ((x: Int, y: Int) -> Int)? =
-        gradientSamplerAt()?.let { sampler -> { x, y -> sampler(x + 0.5, y + 0.5) } }
+    private fun XPicture.gradientSampler(premultiplied: Boolean = false): ((x: Int, y: Int) -> Int)? =
+        gradientSamplerAt(premultiplied)?.let { sampler -> { x, y -> sampler(x + 0.5, y + 0.5) } }
 
-    private fun XPicture.gradientSamplerAt(): ((x: Double, y: Double) -> Int)? =
-        linearGradient?.pixelSampler(repeat, transform)
-            ?: radialGradient?.pixelSampler(repeat, transform)
-            ?: conicalGradient?.pixelSampler(repeat, transform)
+    private fun XPicture.gradientSamplerAt(premultiplied: Boolean = false): ((x: Double, y: Double) -> Int)? =
+        linearGradient?.pixelSampler(repeat, transform, premultiplied)
+            ?: radialGradient?.pixelSampler(repeat, transform, premultiplied)
+            ?: conicalGradient?.pixelSampler(repeat, transform, premultiplied)
 
-    private fun XPicture.sourcePixelSampler(snapshotDrawableId: Int? = null): ((x: Int, y: Int) -> Int)? {
+    private fun XPicture.sourcePixelSampler(snapshotDrawableId: Int? = null, premultiplyGradient: Boolean = false): ((x: Int, y: Int) -> Int)? {
         solidPixel?.let { pixel -> return { x, y -> withAlphaMap(pixel, x + 0.5, y + 0.5) ?: 0 } }
-        gradientSampler()?.let { sampler -> return { x, y -> withAlphaMap(sampler(x, y), x + 0.5, y + 0.5) ?: 0 } }
+        gradientSampler(premultiplied = premultiplyGradient)?.let { sampler -> return { x, y -> withAlphaMap(sampler(x, y), x + 0.5, y + 0.5) ?: 0 } }
         val sourceDrawableId = drawableId ?: return null
         val framebuffer = drawableFramebuffer() ?: return null
         val sourceSubwindowClip = sourceSubwindowClip()
@@ -7058,9 +7063,12 @@ internal class X11State(
         return { x, y -> sampleDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName, sourceSubwindowClip) ?: 0 }
     }
 
-    private fun XPicture.sourcePixelSamplerOptional(snapshotDrawableId: Int? = null): ((x: Int, y: Int) -> Int?)? {
+    private fun XPicture.sourcePixelSamplerOptional(
+        snapshotDrawableId: Int? = null,
+        premultiplyGradient: Boolean = false,
+    ): ((x: Int, y: Int) -> Int?)? {
         solidPixel?.let { pixel -> return { x, y -> if (insidePictureClip(x, y)) withAlphaMap(pixel, x + 0.5, y + 0.5) else null } }
-        gradientSampler()?.let { sampler ->
+        gradientSampler(premultiplied = premultiplyGradient)?.let { sampler ->
             return { x, y -> if (insidePictureClip(x, y)) withAlphaMap(sampler(x, y), x + 0.5, y + 0.5) else null }
         }
         val sourceDrawableId = drawableId ?: return null
@@ -7288,7 +7296,7 @@ internal class X11State(
         return x1 + (x2 - x1) * ((y - y1) / (y2 - y1))
     }
 
-    private fun XLinearGradient.pixelSampler(repeat: Int, transform: List<Int>): (x: Double, y: Double) -> Int {
+    private fun XLinearGradient.pixelSampler(repeat: Int, transform: List<Int>, premultiplied: Boolean): (x: Double, y: Double) -> Int {
         val pairs = stops.zip(colors).sortedBy { it.first }
         if (pairs.isEmpty()) return { _, _ -> 0xff00_0000.toInt() }
         val x1 = p1.x.fixedToDouble()
@@ -7310,11 +7318,11 @@ internal class X11State(
                     ((sampleX - x1) * dx + (sampleY - y1) * dy) / denominator
                 }
             }
-            sampleGradientPosition(position, pairs, fixedStops, repeat)
+            sampleGradientPosition(position, pairs, fixedStops, repeat, premultiplied)
         }
     }
 
-    private fun XRadialGradient.pixelSampler(repeat: Int, transform: List<Int>): (x: Double, y: Double) -> Int {
+    private fun XRadialGradient.pixelSampler(repeat: Int, transform: List<Int>, premultiplied: Boolean): (x: Double, y: Double) -> Int {
         val pairs = stops.zip(colors).sortedBy { it.first }
         if (pairs.isEmpty()) return { _, _ -> 0xff00_0000.toInt() }
         val x1 = inner.center.x.fixedToDouble()
@@ -7336,7 +7344,7 @@ internal class X11State(
                 val c = pdx * pdx + pdy * pdy - r1 * r1
                 radialPosition(a, b, c, r1, dr, repeat)
             }
-            sampleGradientPosition(position, pairs, fixedStops, repeat)
+            sampleGradientPosition(position, pairs, fixedStops, repeat, premultiplied)
         }
     }
 
@@ -7364,7 +7372,7 @@ internal class X11State(
         }
     }
 
-    private fun XConicalGradient.pixelSampler(repeat: Int, transform: List<Int>): (x: Double, y: Double) -> Int {
+    private fun XConicalGradient.pixelSampler(repeat: Int, transform: List<Int>, premultiplied: Boolean): (x: Double, y: Double) -> Int {
         val pairs = stops.zip(colors).sortedBy { it.first }
         if (pairs.isEmpty()) return { _, _ -> 0xff00_0000.toInt() }
         val centerX = center.x.fixedToDouble()
@@ -7376,7 +7384,7 @@ internal class X11State(
                 val radians = normalizeRadians(atan2(sample.second - centerY, sample.first - centerX) + angleRadians)
                 1.0 - radians / (2.0 * PI)
             }
-            sampleGradientPosition(position, pairs, fixedStops, repeat)
+            sampleGradientPosition(position, pairs, fixedStops, repeat, premultiplied)
         }
     }
 
@@ -7399,49 +7407,72 @@ internal class X11State(
         return ((m00 * x + m01 * y + m02) / w) to ((m10 * x + m11 * y + m12) / w)
     }
 
-    private fun sampleGradientPosition(position: Double?, pairs: List<Pair<Int, XRenderColor>>, fixedStops: List<Double>, repeat: Int): Int {
+    private fun sampleGradientPosition(
+        position: Double?,
+        pairs: List<Pair<Int, XRenderColor>>,
+        fixedStops: List<Double>,
+        repeat: Int,
+        premultiplied: Boolean,
+    ): Int {
         val repeatedPosition = position?.let { repeatPosition(it, fixedStops.first(), fixedStops.last(), repeat) }
         return if (repeatedPosition == null) {
             0
         } else if (repeat == XRender.RepeatNormal) {
-            normalRepeatPixel(repeatedPosition, pairs, fixedStops)
+            normalRepeatPixel(repeatedPosition, pairs, fixedStops, premultiplied)
         } else {
-            stopPixel(repeatedPosition, pairs, fixedStops)
+            stopPixel(repeatedPosition, pairs, fixedStops, premultiplied)
         }
     }
 
-    private fun normalRepeatPixel(position: Double, pairs: List<Pair<Int, XRenderColor>>, fixedStops: List<Double>): Int {
+    private fun normalRepeatPixel(
+        position: Double,
+        pairs: List<Pair<Int, XRenderColor>>,
+        fixedStops: List<Double>,
+        premultiplied: Boolean,
+    ): Int {
         if (position < fixedStops.first()) {
             val startStop = fixedStops.last() - 1.0
             val endStop = fixedStops.first()
-            return interpolateStopPixel(position, startStop, endStop, pairs.last().second, pairs.first().second)
+            return interpolateStopPixel(position, startStop, endStop, pairs.last().second, pairs.first().second, premultiplied)
         }
         if (position > fixedStops.last()) {
             val startStop = fixedStops.last()
             val endStop = fixedStops.first() + 1.0
-            return interpolateStopPixel(position, startStop, endStop, pairs.last().second, pairs.first().second)
+            return interpolateStopPixel(position, startStop, endStop, pairs.last().second, pairs.first().second, premultiplied)
         }
-        return stopPixel(position, pairs, fixedStops)
+        return stopPixel(position, pairs, fixedStops, premultiplied)
     }
 
-    private fun stopPixel(position: Double, pairs: List<Pair<Int, XRenderColor>>, fixedStops: List<Double>): Int {
-        if (position <= fixedStops.first()) return pairs.first().second.argb32Pixel
-        var pixel = pairs.last().second.argb32Pixel
+    private fun stopPixel(
+        position: Double,
+        pairs: List<Pair<Int, XRenderColor>>,
+        fixedStops: List<Double>,
+        premultiplied: Boolean,
+    ): Int {
+        if (position <= fixedStops.first()) return gradientPixel(pairs.first().second, premultiplied)
+        var pixel = gradientPixel(pairs.last().second, premultiplied)
         for (index in 0 until pairs.lastIndex) {
             val startStop = fixedStops[index]
             val endStop = fixedStops[index + 1]
             if (position <= endStop) {
-                pixel = interpolateStopPixel(position, startStop, endStop, pairs[index].second, pairs[index + 1].second)
+                pixel = interpolateStopPixel(position, startStop, endStop, pairs[index].second, pairs[index + 1].second, premultiplied)
                 break
             }
         }
         return pixel
     }
 
-    private fun interpolateStopPixel(position: Double, startStop: Double, endStop: Double, startPixel: XRenderColor, endPixel: XRenderColor): Int {
-        if (endStop <= startStop) return endPixel.argb32Pixel
+    private fun interpolateStopPixel(
+        position: Double,
+        startStop: Double,
+        endStop: Double,
+        startPixel: XRenderColor,
+        endPixel: XRenderColor,
+        premultiplied: Boolean,
+    ): Int {
+        if (endStop <= startStop) return gradientPixel(endPixel, premultiplied)
         val ratio = (position - startStop) / (endStop - startStop)
-        return interpolatePixel(startPixel, endPixel, ratio)
+        return interpolatePixel(startPixel, endPixel, ratio, premultiplied)
     }
 
     private fun repeatPosition(position: Double, start: Double, end: Double, repeat: Int): Double? {
@@ -7462,11 +7493,19 @@ internal class X11State(
         return if (offset <= 1.0) offset else 2.0 - offset
     }
 
-    private fun interpolatePixel(start: XRenderColor, end: XRenderColor, ratio: Double): Int {
+    private fun gradientPixel(color: XRenderColor, premultiplied: Boolean): Int =
+        if (premultiplied) interpolatePixel(color, color, ratio = 0.0, premultiplied = true) else color.argb32Pixel
+
+    private fun interpolatePixel(start: XRenderColor, end: XRenderColor, ratio: Double, premultiplied: Boolean = false): Int {
+        fun rawChannel(shift: Int): Double {
+            val startValue = start.rawChannel(shift)
+            val endValue = end.rawChannel(shift)
+            return startValue + (endValue - startValue) * ratio
+        }
+        val alpha = rawChannel(24)
         fun channel(shift: Int): Int {
-            val a = start.rawChannel(shift)
-            val b = end.rawChannel(shift)
-            return ((a + (b - a) * ratio) / 257.0).roundToInt().coerceIn(0, 255)
+            val value = if (premultiplied && shift != 24) rawChannel(shift) * alpha / 65_535.0 else rawChannel(shift)
+            return (value / 257.0).roundToInt().coerceIn(0, 255)
         }
         return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
     }

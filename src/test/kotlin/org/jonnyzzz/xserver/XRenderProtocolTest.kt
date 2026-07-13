@@ -12840,8 +12840,8 @@ class XRenderProtocolTest {
                         p2 = 0 to 300,
                         stops = listOf(0, 0x0001_0000),
                         colors = listOf(
-                            RenderColor(red = 0x2626, green = 0x2828, blue = 0x2c2c, alpha = 0x0000),
-                            RenderColor(red = 0x2626, green = 0x2828, blue = 0x2c2c, alpha = 0xffff),
+                            RenderColor(red = 0x26ff, green = 0x28ff, blue = 0x2cff, alpha = 0x0000),
+                            RenderColor(red = 0x26ff, green = 0x28ff, blue = 0x2cff, alpha = 0xffff),
                         ),
                     ),
                 )
@@ -12855,9 +12855,13 @@ class XRenderProtocolTest {
                     0 to 0x0000_0000,
                     1 to 0x0100_0000,
                     10 to 0x0901_0102,
+                    11 to 0x0a01_0202,
                     20 to 0x1103_0303,
-                    30 to 0x1a04_0404,
-                    33 to 0x1c04_0405,
+                    25 to 0x1603_0304,
+                    26 to 0x1703_0404,
+                    30 to 0x1a04_0405,
+                    32 to 0x1c04_0405,
+                    33 to 0x1c04_0505,
                 ).forEach { (y, expected) ->
                     assertEquals(expected, pixelAt(image, imageWidth = 1, x = 0, y = y), "pixel at 0,$y")
                 }
