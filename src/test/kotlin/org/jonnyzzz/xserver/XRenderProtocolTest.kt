@@ -12133,6 +12133,154 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER IntelliJ bottom band masked gradient copies offset frame pixels into window`() {
+        XServer(ServerOptions(port = 0, width = 1280, height = 900)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val tempPixmap = PixmapId
+                val tempPicture = PixmapPictureId
+                val maskPixmap = MaskPixmapId
+                val maskPicture = MaskPictureId
+                val framePixmap = PixmapId + 0x10
+                val framePicture = PixmapPictureId + 0x10
+                val bandWidth = 104
+                val bandHeight = 16
+                val frameWidth = 1260
+                val frameHeight = 160
+                val frameX = 856
+                val frameY = 83
+                val sourceX = 856
+                val sourceY = 847
+                val baseline = 0xff10_1010.toInt()
+                val mask = ByteArray(bandWidth * bandHeight) { index ->
+                    when (index % bandWidth % 4) {
+                        0 -> 0xff.toByte()
+                        1 -> 0x80.toByte()
+                        2 -> 0x00
+                        else -> 0xff.toByte()
+                    }
+                }
+
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 10, y = 20, width = bandWidth, height = bandHeight, borderWidth = 0))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(createPixmapRequest(tempPixmap, depth = 32, width = bandWidth, height = bandHeight))
+                out.write(createPixmapRequest(maskPixmap, depth = 8, width = bandWidth, height = bandHeight))
+                out.write(createPixmapRequest(framePixmap, depth = 32, width = frameWidth, height = frameHeight))
+                out.write(putImage8Request(maskPixmap, width = bandWidth, height = bandHeight, alphas = mask))
+                out.write(renderCreatePicture(tempPicture, tempPixmap, XRender.Argb32Format))
+                out.write(renderCreatePicture(maskPicture, maskPixmap, XRender.A8Format))
+                out.write(renderCreatePicture(framePicture, framePixmap, XRender.Argb32Format))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = bandWidth to 0,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0x9292, green = 0xb7b7, blue = 0xffff, alpha = 0xffff),
+                            RenderColor(red = 0x3636, green = 0x6a6a, blue = 0xcece, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
+                out.write(
+                    renderSetPictureTransform(
+                        GradientPictureId,
+                        listOf(
+                            0x0001_0000,
+                            0,
+                            -0x0358_0000,
+                            0,
+                            0x0001_0000,
+                            -0x034f_0000,
+                            0,
+                            0,
+                            0x0001_0000,
+                        ),
+                    ),
+                )
+                out.write(renderFillRectangles(framePicture, x = frameX, y = frameY, width = bandWidth, height = bandHeight, red = 0x1010, green = 0x1010, blue = 0x1010, alpha = 0xffff))
+                out.write(
+                    renderComposite(
+                        GradientPictureId,
+                        tempPicture,
+                        operation = XRender.OpSrc,
+                        sourceX = sourceX,
+                        sourceY = sourceY,
+                        destinationX = 0,
+                        destinationY = 0,
+                        width = bandWidth,
+                        height = bandHeight,
+                    ),
+                )
+                out.write(
+                    renderComposite(
+                        tempPicture,
+                        framePicture,
+                        mask = maskPicture,
+                        operation = XRender.OpOver,
+                        destinationX = frameX,
+                        destinationY = frameY,
+                        width = bandWidth,
+                        height = bandHeight,
+                    ),
+                )
+                out.write(
+                    renderComposite(
+                        framePicture,
+                        PictureId,
+                        operation = XRender.OpSrc,
+                        sourceX = frameX,
+                        sourceY = frameY,
+                        destinationX = 0,
+                        destinationY = 0,
+                        width = bandWidth,
+                        height = bandHeight,
+                    ),
+                )
+                out.write(getImageRequest(tempPixmap, x = 0, y = 0, width = bandWidth, height = bandHeight))
+                out.write(getImageRequest(framePixmap, x = frameX, y = frameY, width = bandWidth, height = bandHeight))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = bandWidth, height = bandHeight))
+                out.flush()
+
+                val tempImage = readReply(socket.getInputStream())
+                val frameImage = readReply(socket.getInputStream())
+                val windowImage = readReply(socket.getInputStream())
+                assertTrue(pixelAt(tempImage, bandWidth, 0, 0) != pixelAt(tempImage, bandWidth, bandWidth - 1, 0), "gradient should vary across the bottom-band source range")
+                listOf(0, 4, 8, 12).forEach { x ->
+                    assertEquals(pixelAt(tempImage, bandWidth, x, 0), pixelAt(frameImage, bandWidth, x, 0), "full mask should copy source at $x,0 into the frame band")
+                    assertEquals(pixelAt(frameImage, bandWidth, x, 0), pixelAt(windowImage, bandWidth, x, 0), "window should expose frame pixel at $x,0")
+                }
+                listOf(2, 6, 10, 14).forEach { x ->
+                    assertEquals(baseline, pixelAt(frameImage, bandWidth, x, 0), "zero mask should preserve frame baseline at $x,0")
+                    assertEquals(baseline, pixelAt(windowImage, bandWidth, x, 0), "window should expose zero-mask baseline at $x,0")
+                }
+                listOf(1, 5, 9, 13).forEach { x ->
+                    assertTrue(pixelAt(frameImage, bandWidth, x, 0) != baseline, "half mask should blend away from baseline at $x,0")
+                    assertTrue(pixelAt(frameImage, bandWidth, x, 0) != pixelAt(tempImage, bandWidth, x, 0), "half mask should not copy source fully at $x,0")
+                    assertEquals(pixelAt(frameImage, bandWidth, x, 0), pixelAt(windowImage, bandWidth, x, 0), "window should expose half-mask frame pixel at $x,0")
+                }
+
+                waitUntil {
+                    httpGet(server.localPort, "/text.txt").contains("mask=0x${maskPicture.toUInt().toString(16)}/pixmap")
+                }
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "source=0x${GradientPictureId.toUInt().toString(16)}/linear-gradient")
+                assertContains(text, "mask=0x${maskPicture.toUInt().toString(16)}/pixmap repeat=none")
+                assertContains(text, "source=0x${tempPicture.toUInt().toString(16)}/pixmap repeat=none")
+                assertContains(text, "destination=0x${framePicture.toUInt().toString(16)}/pixmap repeat=none")
+                assertContains(text, "source=0x${framePicture.toUInt().toString(16)}/pixmap repeat=none")
+                assertContains(text, "dst=$frameX,$frameY ${bandWidth}x${bandHeight}")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER OpOver good filter matches Xvfb transformed repeated ARGB32 pixmap strip`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
