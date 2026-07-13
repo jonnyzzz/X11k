@@ -672,6 +672,13 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij parity reports unavailable primary frame input comparison as unverified`() {
+        assertEquals("true", intellijPrimaryFrameStripInputStatus(true))
+        assertEquals("false", intellijPrimaryFrameStripInputStatus(false))
+        assertEquals("unverified", intellijPrimaryFrameStripInputStatus(null))
+    }
+
+    @Test
     fun `intellij putimage strip correlation prefers pixel-close context candidate over count`() {
         val logs = listOf(
             IntellijLogArtifact(
@@ -1164,7 +1171,7 @@ class IntellijCommunitySmokeTest {
         assertTrue(parityBody.contains("intellijParityPairAttemptInventory(attempts, selectedAttempt = bestPair.attempt)"), parityBody)
         assertTrue(parityBody.contains("intellijPrimaryFrameStripInputsMatch"), parityBody)
         assertTrue(parityBody.contains("intellijParityPairIsBetter(pair, best)"), parityBody)
-        assertTrue(parityBody.contains("pair.primaryFrameStripInputsMatch && pair.selectionDistance <= IntellijParityPairDistanceTarget"), parityBody)
+        assertTrue(parityBody.contains("pair.primaryFrameStripInputsMatch != false && pair.selectionDistance <= IntellijParityPairDistanceTarget"), parityBody)
         assertFalse(parityBody.contains("sharedConfig"), parityBody)
         assertFalse(parityBody.contains("cleanIntellijConfigDir()"), parityBody)
         assertTrue(source.contains("""withFileSystemBind(configDir.toString(), "/tmp/idea-config", BindMode.READ_WRITE)"""), source)
@@ -2125,8 +2132,11 @@ class IntellijCommunitySmokeTest {
             val composedSvg = composeSvgLayers(actual.svgLayers, IntellijCaptureWidth, IntellijCaptureHeight)
             val composedSvgCapture = visualCapture(composedSvg)
             val selectedReference = reference.withClosestRobotTo(actual.robot, composedSvgCapture)
-            val primaryFrameStripInputsMatch = !intellijTraceXvfbPutImageEnabled() ||
+            val primaryFrameStripInputsMatch = if (intellijTraceXvfbPutImageEnabled()) {
                 intellijPrimaryFrameStripInputsMatch(intellijPutImageStripCorrelation(selectedReference.logs, actual.text))
+            } else {
+                null
+            }
             val pair = IntellijParityPairCapture(
                 attempt = attempt,
                 reference = selectedReference,
@@ -2141,7 +2151,7 @@ class IntellijCommunitySmokeTest {
             attempts += pair
             val best = selected
             if (best == null || intellijParityPairIsBetter(pair, best)) selected = pair
-            if (pair.primaryFrameStripInputsMatch && pair.selectionDistance <= IntellijParityPairDistanceTarget) break
+            if (pair.primaryFrameStripInputsMatch != false && pair.selectionDistance <= IntellijParityPairDistanceTarget) break
         }
         val bestPair = selected ?: error("IntelliJ parity did not produce any Xvfb/Kotlin pair")
         val reference = bestPair.reference
@@ -6083,13 +6093,16 @@ class IntellijCommunitySmokeTest {
                 append(" robotVsXvfb=").append(attempt.robotDistance)
                 append(" svgVsXvfb=").append(attempt.svgDistance)
                 append(" robotVsSvg=").append(attempt.robotSvgDistance)
-                append(" primaryFrameStripInputsMatch=").append(attempt.primaryFrameStripInputsMatch)
+                append(" primaryFrameStripInputsMatch=").append(intellijPrimaryFrameStripInputStatus(attempt.primaryFrameStripInputsMatch))
                 append(" xvfbCandidateCount=").append(attempt.reference.robotCandidates.size)
                 append(" selectedXvfbRobotCandidate=").append(attempt.reference.selectedRobotCandidateIndex)
                 append(" selected=").append(attempt.attempt == selectedAttempt)
                 appendLine()
             }
         }
+
+    private fun intellijPrimaryFrameStripInputStatus(matches: Boolean?): String =
+        matches?.toString() ?: "unverified"
 
     private fun intellijRenderBandMismatchTileSummary(
         section: String,
@@ -7450,7 +7463,7 @@ class IntellijCommunitySmokeTest {
         val robotDistance: Double,
         val svgDistance: Double,
         val robotSvgDistance: Double,
-        val primaryFrameStripInputsMatch: Boolean,
+        val primaryFrameStripInputsMatch: Boolean?,
     ) {
         val selectionDistance: Double =
             maxOf(robotDistance, svgDistance, robotSvgDistance)
@@ -7458,8 +7471,16 @@ class IntellijCommunitySmokeTest {
 
     private fun intellijParityPairIsBetter(candidate: IntellijParityPairCapture, current: IntellijParityPairCapture): Boolean =
         when {
-            candidate.primaryFrameStripInputsMatch != current.primaryFrameStripInputsMatch -> candidate.primaryFrameStripInputsMatch
+            candidate.primaryFrameStripInputRank != current.primaryFrameStripInputRank ->
+                candidate.primaryFrameStripInputRank > current.primaryFrameStripInputRank
             else -> candidate.selectionDistance < current.selectionDistance
+        }
+
+    private val IntellijParityPairCapture.primaryFrameStripInputRank: Int
+        get() = when (primaryFrameStripInputsMatch) {
+            true -> 2
+            null -> 1
+            false -> 0
         }
 
     private data class IntellijSvgScore(
