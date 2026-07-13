@@ -917,6 +917,41 @@ internal object TextScreenRenderer {
                 }
             }
         }
+        provenance.maskPopulation?.let { population ->
+            append(" maskPopulation=")
+            append(population.drawableIdHex)
+            append("#")
+            append(population.generation)
+            append(" paints=")
+            append(population.paintCount)
+            if (population.drawingPaintCount > 0) {
+                append(" drawings=")
+                append(population.drawingPaintCount)
+                population.lastDrawingPaint?.let { last ->
+                    append(" lastDrawing=")
+                    append(last.kind.name)
+                    last.putImage?.let { putImage ->
+                        append(" putImageCrc32=")
+                        append(putImage.crc32Hex)
+                        appendPutImageSummary(putImage)
+                    }
+                }
+            }
+            population.framebuffer?.let { framebuffer ->
+                append(" maskFramebuffer=")
+                append(framebuffer.width)
+                append('x')
+                append(framebuffer.height)
+                append(" crc32=")
+                append(framebuffer.crc32Hex)
+                append(" pixels=")
+                append(framebuffer.pixelSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+                if (framebuffer.pointSampleHex.isNotEmpty()) {
+                    append(" pointPixels=")
+                    append(framebuffer.pointSampleHex.joinToString(",", prefix = "[", postfix = "]"))
+                }
+            }
+        }
         provenance.freed?.let { appendPicture("freed", it) }
         provenance.result?.let { result ->
             append(" result=")

@@ -3906,6 +3906,20 @@ class XRenderProtocolTest {
                 assertEquals(0xff80_007f.toInt(), u32le(image, 36))
                 assertEquals(0xff00_00ff.toInt(), u32le(image, 40))
                 assertEquals(0xffff_0000.toInt(), u32le(image, 44))
+
+                val maskPixmapId = "0x${MaskPixmapId.toUInt().toString(16)}"
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"maskPopulation":{"drawable":"${maskPixmapId}"""")
+                assertContains(json, """"drawingPaintCount":1""")
+                assertContains(json, """"lastDrawingPaint":{"drawable":"${maskPixmapId}"""")
+                assertContains(json, """"kind":"PutImage"""")
+                assertContains(json, """"putImage":{"format":2,"depth":8""")
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "maskPopulation=${maskPixmapId}#")
+                assertContains(text, "drawings=1 lastDrawing=PutImage putImageCrc32=")
+                assertContains(text, "putImage=format=2,depth=8,leftPad=0,size=2x2,dataBytes=8,rowStride=4,crc32=")
+                assertContains(text, "maskFramebuffer=2x2 crc32=")
             }
             server.close()
             serverThread.join(1_000)

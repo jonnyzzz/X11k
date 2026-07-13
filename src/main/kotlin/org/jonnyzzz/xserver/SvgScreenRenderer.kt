@@ -1936,6 +1936,9 @@ internal object SvgScreenRenderer {
         provenance.sourcePopulation?.let { population ->
             field("sourcePopulation") { appendRenderDrawablePopulation(population) }
         }
+        provenance.maskPopulation?.let { population ->
+            field("maskPopulation") { appendRenderDrawablePopulation(population) }
+        }
         provenance.freed?.let { picture ->
             field("freed") { appendRenderPictureSnapshot(picture) }
         }
@@ -2005,6 +2008,10 @@ internal object SvgScreenRenderer {
         if (includeSourcePopulation) {
             paint.sourcePopulation?.let { population ->
                 append(""","sourcePopulation":""")
+                appendRenderDrawablePopulation(population)
+            }
+            paint.maskPopulation?.let { population ->
+                append(""","maskPopulation":""")
                 appendRenderDrawablePopulation(population)
             }
         }

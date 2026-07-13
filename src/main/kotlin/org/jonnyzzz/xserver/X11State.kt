@@ -5202,6 +5202,7 @@ internal class X11State(
             destinationRegion = operation.provenance?.destinationRegion,
             result = operation.provenance?.result,
             sourcePopulation = operation.provenance?.sourcePopulation,
+            maskPopulation = operation.provenance?.maskPopulation,
         )
 
     @Synchronized
@@ -6524,6 +6525,7 @@ internal class X11State(
                 destination = renderPictureSnapshot(destination),
                 destinationRegion = XRectangleCommand(destinationX, destinationY, width, height),
                 sourcePopulation = renderDrawablePopulationSnapshot(source),
+                maskPopulation = mask?.let(::renderDrawablePopulationSnapshot),
                 result = renderResultSnapshot(result.image),
             ),
             destinationDrawableId = destinationDrawableId,
@@ -12663,6 +12665,7 @@ internal data class XRenderOperationProvenance(
     val destination: XRenderPictureSnapshot? = null,
     val destinationRegion: XRectangleCommand? = null,
     val sourcePopulation: XRenderDrawablePopulationSnapshot? = null,
+    val maskPopulation: XRenderDrawablePopulationSnapshot? = null,
     val freed: XRenderPictureSnapshot? = null,
     val result: XRenderOperationResultSnapshot? = null,
 )
@@ -12691,6 +12694,7 @@ internal data class XRenderDrawablePaintSnapshot(
     val destinationRegion: XRectangleCommand?,
     val result: XRenderOperationResultSnapshot?,
     val sourcePopulation: XRenderDrawablePopulationSnapshot? = null,
+    val maskPopulation: XRenderDrawablePopulationSnapshot? = null,
 )
 
 internal data class XCoreDrawablePaintSnapshot(
