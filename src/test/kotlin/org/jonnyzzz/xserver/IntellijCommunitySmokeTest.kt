@@ -18,6 +18,7 @@ import java.nio.file.LinkOption
 import java.nio.file.StandardCopyOption
 import java.net.ServerSocket
 import java.util.Base64
+import java.util.Locale
 import java.net.URLClassLoader
 import javax.imageio.ImageIO
 import javax.tools.ToolProvider
@@ -617,6 +618,12 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("ops=[#41 root=10,20 256x256 srcOrigin=0,0 dst=0,0 256x256|#42 root=266,20 256x256 srcOrigin=256,0 dst=256,0 256x256]"), summary)
         assertTrue(summary.contains("sourcePixels=[0xff26282c,0xff3b3329],resultPixels=[0xff26282c]|[0xff3b3329]"), summary)
         assertTrue(summary.contains("xvfb[ref=5#12220..5#12220 count=1 drawable=0x20007d gc=0x200080 crc32=0x1793d6e5,putImageCrc32=0x1793d6e5"), summary)
+        assertTrue(
+            summary.contains(
+                "sampleDelta=kotlinSize=624x2,xvfbSize=624x2,widthDelta=0,heightDelta=0,kotlinRows=1,xvfbRows=1,kotlinSamplePixels=2,xvfbSamplePixels=2,direct=offset=0,compared=2,exact=1,firstDiff=1,avgAbsRgb=18.000,maxAbsRgb=36,bestPhase=offset=1,compared=1,exact=0,firstDiff=0,avgAbsRgb=1.000,maxAbsRgb=1,rowExact=[1/2]",
+            ),
+            summary,
+        )
         assertTrue(summary.contains("render=picture=0x200090 format=0x25 valueMask=0x1 repeat=1 attrs=[repeat=normal(1)] filter=good"), summary)
         assertTrue(summary.contains("putImageCrc32=0x1793d6e5,tileRaw=[0x2c,0x28,0x26,0xff,0x2d,0x28,0x26,0xff],tileDecoded=[0xff26282c,0xff26282d]"), summary)
         assertTrue(summary.contains("],composites=5#12222/op=1 src=0x200090 dst=0x200091 srcOrigin=0,0 dst=0,0 size=624x2"), summary)
@@ -629,6 +636,12 @@ class IntellijCommunitySmokeTest {
         assertTrue(summary.contains("drawable=0x20007d gc=0x200080"), summary)
         assertTrue(summary.contains("kotlinContextMatches=1"), summary)
         assertTrue(summary.contains("kotlinClosest=kotlin#41..#42 count=2 band=top size=624x2 crc32=0x13572468 src=0x600280 dst=0x60004a repeat=normal filter=good sourceFramebuffer=624x2/0x3eb827c6 producerFramebuffer=624x2 crc32=0x2468ace0"), summary)
+        assertTrue(
+            summary.contains(
+                "sampleDelta=kotlinSize=624x2,xvfbSize=600x2,widthDelta=24,heightDelta=0,kotlinRows=1,xvfbRows=1,kotlinSamplePixels=2,xvfbSamplePixels=1,direct=offset=0,compared=1,exact=0,firstDiff=0,avgAbsRgb=64.000,maxAbsRgb=64,bestPhase=offset=-1,compared=1,exact=0,firstDiff=0,avgAbsRgb=49.000,maxAbsRgb=49,rowExact=[0/1]",
+            ),
+            summary,
+        )
         assertFalse(summary.contains("size=128x2"), summary)
         assertIntellijPutImageStripCorrelationTracePresent(summary)
     }
@@ -5503,6 +5516,7 @@ class IntellijCommunitySmokeTest {
                     ) { it.compactReferenceLabel() }
                 }
                 closest?.let { append(" replay=").append(intellijPutImageStripReplayFixture(group, it)) }
+                closest?.let { append(" sampleDelta=").append(intellijPutImageStripSampleDelta(group.key, it.key)) }
                 appendLine()
             }
             xvfbGroups
@@ -5531,9 +5545,122 @@ class IntellijCommunitySmokeTest {
                     group.compositeContext?.let { append(" composites=").append(it) }
                     append(" kotlinContextMatches=").append(contextMatches.size)
                     closest?.let { append(" kotlinClosest=").append(it.compactReferenceLabel()) }
+                    closest?.let { append(" sampleDelta=").append(intellijPutImageStripSampleDelta(it.key, group.key)) }
                     appendLine()
                 }
         }
+    }
+
+    private fun intellijPutImageStripSampleDelta(
+        kotlin: IntellijPutImageStripKey,
+        xvfb: IntellijPutImageStripKey,
+    ): String {
+        val kotlinRows = intellijPutImageStripSampleRows(kotlin)
+        val xvfbRows = intellijPutImageStripSampleRows(xvfb)
+        val kotlinPixels = kotlinRows.flatten()
+        val xvfbPixels = xvfbRows.flatten()
+        val direct = intellijPutImageStripPixelScore(kotlinPixels, xvfbPixels, 0)
+        val phase = (-8..8)
+            .mapNotNull { offset -> intellijPutImageStripPixelScore(kotlinPixels, xvfbPixels, offset) }
+            .minWithOrNull(
+                compareBy<IntellijPutImageStripPixelScore> { it.averageAbsRgb }
+                    .thenByDescending { it.exact }
+                    .thenBy { abs(it.offset) },
+            )
+        val kotlinSize = intellijPutImageStripSize(kotlin.size)
+        val xvfbSize = intellijPutImageStripSize(xvfb.size)
+        return buildString {
+            append("kotlinSize=").append(kotlin.size)
+            append(",xvfbSize=").append(xvfb.size)
+            append(",widthDelta=").append(kotlinSize?.let { k -> xvfbSize?.let { x -> k.first - x.first } } ?: "unknown")
+            append(",heightDelta=").append(kotlinSize?.let { k -> xvfbSize?.let { x -> k.second - x.second } } ?: "unknown")
+            append(",kotlinRows=").append(kotlinRows.size)
+            append(",xvfbRows=").append(xvfbRows.size)
+            append(",kotlinSamplePixels=").append(kotlinPixels.size)
+            append(",xvfbSamplePixels=").append(xvfbPixels.size)
+            append(",direct=").append(direct?.summary() ?: "none")
+            append(",bestPhase=").append(phase?.summary() ?: "none")
+            append(",rowExact=").append(intellijPutImageStripRowExactSummary(kotlinRows, xvfbRows))
+        }
+    }
+
+    private fun intellijPutImageStripSampleRows(key: IntellijPutImageStripKey): List<List<Int>> =
+        listOf(key.rowDecoded, key.tileDecoded, key.decoded)
+            .asSequence()
+            .map(::intellijPutImageStripArgbRows)
+            .firstOrNull { it.isNotEmpty() }
+            ?: emptyList()
+
+    private fun intellijPutImageStripArgbRows(sample: String): List<List<Int>> {
+        if (sample == "[]") return emptyList()
+        val rows = Regex("""\[(0x[0-9a-f]{8}(?:,0x[0-9a-f]{8})*)]""")
+            .findAll(sample)
+            .map { match -> intellijPutImageStripArgbValues(match.value) }
+            .filter { it.isNotEmpty() }
+            .toList()
+        if (rows.isNotEmpty()) return rows
+        return listOf(intellijPutImageStripArgbValues(sample)).filter { it.isNotEmpty() }
+    }
+
+    private fun intellijPutImageStripArgbValues(sample: String): List<Int> =
+        Regex("""0x[0-9a-f]{8}""")
+            .findAll(sample)
+            .map { it.value.removePrefix("0x").toUInt(16).toInt() }
+            .toList()
+
+    private fun intellijPutImageStripPixelScore(
+        kotlinPixels: List<Int>,
+        xvfbPixels: List<Int>,
+        offset: Int,
+    ): IntellijPutImageStripPixelScore? {
+        val kotlinStart = maxOf(0, -offset)
+        val xvfbStart = maxOf(0, offset)
+        val count = minOf(kotlinPixels.size - kotlinStart, xvfbPixels.size - xvfbStart)
+        if (count <= 0) return null
+        var exact = 0
+        var total = 0
+        var max = 0
+        var firstDiff = -1
+        repeat(count) { index ->
+            val kotlinPixel = kotlinPixels[kotlinStart + index]
+            val xvfbPixel = xvfbPixels[xvfbStart + index]
+            if (kotlinPixel == xvfbPixel) {
+                exact++
+            } else if (firstDiff < 0) {
+                firstDiff = index
+            }
+            val delta = intellijPutImageStripAbsRgbDelta(kotlinPixel, xvfbPixel)
+            total += delta
+            max = maxOf(max, delta)
+        }
+        return IntellijPutImageStripPixelScore(
+            offset = offset,
+            compared = count,
+            exact = exact,
+            firstDiff = firstDiff,
+            averageAbsRgb = total.toDouble() / count.toDouble(),
+            maxAbsRgb = max,
+        )
+    }
+
+    private fun intellijPutImageStripAbsRgbDelta(left: Int, right: Int): Int =
+        abs(((left ushr 16) and 0xff) - ((right ushr 16) and 0xff)) +
+            abs(((left ushr 8) and 0xff) - ((right ushr 8) and 0xff)) +
+            abs((left and 0xff) - (right and 0xff))
+
+    private fun intellijPutImageStripRowExactSummary(kotlinRows: List<List<Int>>, xvfbRows: List<List<Int>>): String {
+        val commonRows = minOf(kotlinRows.size, xvfbRows.size)
+        if (commonRows == 0) return "[]"
+        return (0 until commonRows).joinToString(separator = ",", prefix = "[", postfix = "]") { row ->
+            val commonPixels = minOf(kotlinRows[row].size, xvfbRows[row].size)
+            val exact = (0 until commonPixels).count { index -> kotlinRows[row][index] == xvfbRows[row][index] }
+            "$exact/$commonPixels"
+        }
+    }
+
+    private fun intellijPutImageStripSize(size: String): Pair<Int, Int>? {
+        val match = Regex("""(\d+)x(\d+)""").matchEntire(size) ?: return null
+        return match.groupValues[1].toInt() to match.groupValues[2].toInt()
     }
 
     private fun intellijKotlinPutImageProducerStripGroups(text: String): List<IntellijKotlinPutImageStripGroup> =
@@ -7226,6 +7353,18 @@ class IntellijCommunitySmokeTest {
         val rowRaw: String,
         val rowDecoded: String,
     )
+
+    private data class IntellijPutImageStripPixelScore(
+        val offset: Int,
+        val compared: Int,
+        val exact: Int,
+        val firstDiff: Int,
+        val averageAbsRgb: Double,
+        val maxAbsRgb: Int,
+    ) {
+        fun summary(): String =
+            "offset=$offset,compared=$compared,exact=$exact,firstDiff=$firstDiff,avgAbsRgb=${"%.3f".format(Locale.US, averageAbsRgb)},maxAbsRgb=$maxAbsRgb"
+    }
 
     private data class IntellijXvfbPutImageStripGroup(
         val count: Int,
