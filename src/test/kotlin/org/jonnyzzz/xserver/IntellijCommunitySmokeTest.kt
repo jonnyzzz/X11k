@@ -1250,6 +1250,82 @@ class IntellijCommunitySmokeTest {
 
         assertTrue(source.contains("""Long.getLong("x.captureDelayMs", 1200L)"""), source)
         assertTrue(source.contains("Thread.sleep(delayMs)"), source)
+        assertFalse(source.contains("robot.mousePress"), source)
+    }
+
+    @Test
+    fun `intellij runtime diagnostics normalizes tool windows before parity capture`() {
+        val source = intellijUiDiagnosticsAgentSource()
+
+        assertTrue(source.contains("normalizeToolWindows(out)"), source)
+        assertTrue(source.contains("application, \"invokeAndWait\""), source)
+        assertTrue(source.contains("toolWindowManager, \"getToolWindow\", new Class<?>[] { String.class }, \"Project\""), source)
+        assertTrue(source.contains("toolWindowManager, \"getToolWindow\", new Class<?>[] { String.class }, \"Gradle\""), source)
+        assertTrue(source.contains("gradleToolWindow, \"activate\""), source)
+        assertTrue(source.contains("activationCompleted.await(10, java.util.concurrent.TimeUnit.SECONDS)"), source)
+        assertTrue(source.contains("runtimeActiveToolWindowAfter="), source)
+    }
+
+    @Test
+    fun `intellij parity waits for exact stable frames on both servers`() {
+        val source = Files.readString(projectRoot().resolve("src/test/kotlin/org/jonnyzzz/xserver/IntellijCommunitySmokeTest.kt"))
+        val kotlinStabilityBody = sourceBodyBetweenLast(
+            source,
+            "    private fun waitForStableIntellijSvg(port: Int): String {",
+            "\n    private fun closestIntellijSvgToRobot(",
+        )
+        val xvfbCaptureBody = sourceBodyBetweenLast(
+            source,
+            "    private fun captureIntellijXvfbRobotCandidates(container: GenericContainer<*>): List<VisualCapture> {",
+            "\n    private fun runIntellijAgainstKotlinServer(",
+        )
+
+        assertTrue(kotlinStabilityBody.contains("intellijFramesExactlyEqual"), kotlinStabilityBody)
+        assertTrue(xvfbCaptureBody.contains("intellijFramesExactlyEqual"), xvfbCaptureBody)
+        assertTrue(xvfbCaptureBody.contains("IntellijXvfbRobotCaptureMaxSamples"), xvfbCaptureBody)
+        assertTrue(kotlinStabilityBody.contains("stability.observe(capture)"), kotlinStabilityBody)
+        assertTrue(xvfbCaptureBody.contains("stability.observe(current)"), xvfbCaptureBody)
+        assertFalse(kotlinStabilityBody.contains("lastDistance <= 1.0"), kotlinStabilityBody)
+        assertFalse(xvfbCaptureBody.contains("imageDistance(previous"), xvfbCaptureBody)
+    }
+
+    @Test
+    fun `intellij exact frame equality checks every argb pixel`() {
+        val reference = BufferedImage(7, 7, BufferedImage.TYPE_INT_ARGB)
+        val same = BufferedImage(7, 7, BufferedImage.TYPE_INT_ARGB)
+        val changedBetweenOldSamples = BufferedImage(7, 7, BufferedImage.TYPE_INT_ARGB)
+        reference.setRGB(1, 1, 0x7f12_3456)
+        same.setRGB(1, 1, 0x7f12_3456)
+        changedBetweenOldSamples.setRGB(1, 1, 0x7f12_3457)
+
+        assertTrue(intellijFramesExactlyEqual(reference, same))
+        assertFalse(intellijFramesExactlyEqual(reference, changedBetweenOldSamples))
+        assertFalse(intellijFramesExactlyEqual(reference, BufferedImage(6, 7, BufferedImage.TYPE_INT_ARGB)))
+    }
+
+    @Test
+    fun `intellij frame stability retains only the exact stable suffix`() {
+        fun frame(argb: Int) = BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB).apply { setRGB(1, 1, argb) }
+        val transition = frame(0xff12_3456.toInt())
+        val stable = frame(0xff65_4321.toInt())
+        val tracker = ExactFrameStabilityTracker<BufferedImage>(2, ::intellijFramesExactlyEqual)
+
+        assertFalse(tracker.observe(transition))
+        assertFalse(tracker.observe(stable))
+        assertFalse(tracker.observe(stable))
+        assertTrue(tracker.observe(stable))
+        assertEquals(4, tracker.observedCount)
+        assertEquals(2, tracker.stablePairs)
+        assertEquals(3, tracker.stableSuffix().size)
+        assertTrue(tracker.stableSuffix().all { intellijFramesExactlyEqual(stable, it) })
+
+        val alternating = ExactFrameStabilityTracker<BufferedImage>(2, ::intellijFramesExactlyEqual)
+        repeat(IntellijXvfbRobotCaptureMaxSamples) { index ->
+            assertFalse(alternating.observe(if (index % 2 == 0) transition else stable))
+        }
+        assertEquals(IntellijXvfbRobotCaptureMaxSamples, alternating.observedCount)
+        assertEquals(0, alternating.stablePairs)
+        assertEquals(1, alternating.stableSuffix().size)
     }
 
     @Test
@@ -1301,6 +1377,70 @@ class IntellijCommunitySmokeTest {
         assertFalse(parityBody.contains("cleanIntellijConfigDir()"), parityBody)
         assertTrue(source.contains("""withFileSystemBind(configDir.toString(), "/tmp/idea-config", BindMode.READ_WRITE)"""), source)
         assertTrue(buildScript.contains(""""x.intellijParityPairAttempts","""), buildScript)
+    }
+
+    @Test
+    fun `intellij parity config suppresses only the transient jcef balloon`() {
+        val config = cleanIntellijConfigDir("notification-seed-test")
+        val notifications = config.resolve("options/notifications.xml")
+        val xml = Files.readString(notifications)
+
+        assertTrue(Files.isRegularFile(notifications), notifications.toString())
+        assertTrue(xml.contains("""component name="NotificationConfiguration"""), xml)
+        assertTrue(xml.contains("""notification groupId="JCEF" displayType="NONE" shouldLog="false"""), xml)
+        assertEquals(1, Regex("<notification ").findAll(xml).count(), xml)
+        assertFalse(xml.contains("ide.browser.jcef.sandbox.enable"), xml)
+    }
+
+    @Test
+    fun `intellij parity requires retained jcef and markdown diagnostics on both servers`() {
+        val complete = listOf("intellij-xvfb", "intellij-kotlin").map { prefix ->
+            IntellijLogArtifact(
+                fileName = "$prefix-idea.log",
+                text =
+                    """
+                    INFO - #c.i.u.j.JBCefApp - JCEF-sandbox is enabled
+                    WARN - #c.i.u.j.JBCefAppArmorUtils - Unprivileged user namespaces check failed
+                    INFO - #org.intellij.plugins.markdown.ui.preview.MarkdownPreviewFileEditor - MarkdownPreviewFileEditor: setHtml finished
+                    """.trimIndent(),
+            )
+        }
+        assertIntellijJcefMarkdownDiagnosticsPresent(complete)
+
+        val missingKotlinJcef = complete.map { artifact ->
+            if (artifact.fileName == "intellij-kotlin-idea.log") {
+                artifact.copy(text = "MarkdownPreviewFileEditor: setHtml finished")
+            } else {
+                artifact
+            }
+        }
+        assertFailsWith<AssertionError> {
+            assertIntellijJcefMarkdownDiagnosticsPresent(missingKotlinJcef)
+        }
+    }
+
+    @Test
+    fun `intellij parity requires normalized tool window diagnostics on both servers`() {
+        val complete = listOf("intellij-xvfb", "intellij-kotlin").map { prefix ->
+            IntellijLogArtifact(
+                fileName = "$prefix-ui-runtime-diagnostics.log",
+                text =
+                    """
+                    agentLoaded=true
+                    runtimeActiveToolWindowAfter=Gradle
+                    runtimeEditorComponentActiveAfter=false
+                    runtimeProjectToolWindowVisibleAfter=true
+                    runtimeGradleToolWindowVisibleAfter=true
+                    """.trimIndent(),
+            )
+        }
+        assertIntellijNormalizedToolWindowDiagnosticsPresent(complete)
+
+        assertFailsWith<AssertionError> {
+            assertIntellijNormalizedToolWindowDiagnosticsPresent(
+                complete.map { artifact -> artifact.copy(text = artifact.text.replace("runtimeGradleToolWindowVisibleAfter=true", "runtimeGradleToolWindowVisibleAfter=false")) },
+            )
+        }
     }
 
     @Test
@@ -1356,7 +1496,7 @@ class IntellijCommunitySmokeTest {
         assertTrue(parityBody.contains("reference = selectedReference"), parityBody)
         assertTrue(xvfbBody.contains("val robotCandidates = captureIntellijXvfbRobotCandidates(container)"), xvfbBody)
         assertTrue(xvfbBody.contains("robotCandidates = robotCandidates"), xvfbBody)
-        assertTrue(source.contains("repeat(IntellijXvfbRobotCaptureSamples)"), source)
+        assertTrue(source.contains("repeat(IntellijXvfbRobotCaptureMaxSamples)"), source)
         assertTrue(source.contains("IntellijXvfbRobotCaptureSampleDelayMs"), source)
         assertTrue(source.contains("intellij-xvfb-robot-candidates.txt"), source)
         assertTrue(source.contains("selectedXvfbRobotCandidate="), source)
@@ -2321,6 +2461,8 @@ class IntellijCommunitySmokeTest {
         assertIntellijHtmlPreviewHasLargeSurface(actual.html, actual.text)
         assertTrue(actual.text.contains("Unsupported requests:\n- None."), actual.text)
         assertFalse(actual.text.contains("Download SDK") || actual.text.contains("Download JDK"), actual.text)
+        assertIntellijJcefMarkdownDiagnosticsPresent(reference.logs + actual.logs)
+        assertIntellijNormalizedToolWindowDiagnosticsPresent(reference.logs + actual.logs)
         assertIntellijRuntimeUiDiagnosticsPresent(reference.logs + actual.logs)
         if (intellijTraceXvfbPutImageEnabled()) {
             assertIntellijXvfbPutImageTracePresent(reference.logs)
@@ -2414,9 +2556,20 @@ class IntellijCommunitySmokeTest {
         val buildTmp = root.resolve("build/tmp").normalize()
         check(config.startsWith(buildTmp)) { "Refusing to use IntelliJ config outside build/tmp/: $config" }
         config.toFile().deleteRecursively()
-        Files.createDirectories(config)
+        val options = config.resolve("options")
+        Files.createDirectories(options)
+        Files.writeString(options.resolve("notifications.xml"), intellijNotificationConfigurationSeed())
         return config
     }
+
+    private fun intellijNotificationConfigurationSeed(): String =
+        """
+        <application>
+          <component name="NotificationConfiguration">
+            <notification groupId="JCEF" displayType="NONE" shouldLog="false" />
+          </component>
+        </application>
+        """.trimIndent()
 
     private fun intellijContainer(image: String, configDir: Path? = null): GenericContainer<*> {
         val container = GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
@@ -2510,22 +2663,16 @@ class IntellijCommunitySmokeTest {
     private fun waitForStableIntellijSvg(port: Int): String {
         val visible = waitForVisibleIntellijPixels(port)
         val deadline = System.currentTimeMillis() + 30_000
-        var previous: VisualCapture? = null
+        val stability = ExactFrameStabilityTracker<VisualCapture>(IntellijStableFramePairs) { before, after ->
+            intellijFramesExactlyEqual(before.image, after.image)
+        }
         var lastSvg = ""
-        var lastDistance = Double.POSITIVE_INFINITY
-        var stablePairs = 0
         while (System.currentTimeMillis() < deadline) {
             val svg = httpGet(port, "/screen.svg")
             val layers = svgCompositionLayers(svg)
             if (layers.isNotEmpty()) {
                 val capture = visualCapture(composeSvgLayers(layers, IntellijCaptureWidth, IntellijCaptureHeight))
-                val before = previous
-                if (before != null) {
-                    lastDistance = imageDistance(before.image, capture.image)
-                    stablePairs = if (lastDistance <= 1.0) stablePairs + 1 else 0
-                    if (stablePairs >= 2) return svg
-                }
-                previous = capture
+                if (stability.observe(capture)) return svg
                 lastSvg = svg
             }
             Thread.sleep(250)
@@ -2535,8 +2682,9 @@ class IntellijCommunitySmokeTest {
             "IntelliJ screen SVG did not expose composable layers while waiting for stability; visible=$visible",
         )
         assertTrue(
-            stablePairs >= 2,
-            "IntelliJ screen SVG did not stabilize before capture; lastDistance=$lastDistance visible=$visible",
+            stability.stablePairs >= IntellijStableFramePairs,
+            "IntelliJ screen SVG did not stabilize before capture; " +
+                "samples=${stability.observedCount} stablePairs=${stability.stablePairs} visible=$visible",
         )
         return lastSvg
     }
@@ -2812,25 +2960,32 @@ class IntellijCommunitySmokeTest {
                 }
             }
 
-    private fun captureIntellijXvfbRobotCandidates(container: GenericContainer<*>): List<VisualCapture> =
-        buildList {
-            repeat(IntellijXvfbRobotCaptureSamples) { index ->
-                if (index > 0) Thread.sleep(IntellijXvfbRobotCaptureSampleDelayMs)
-                val capture = execIntellijShell(
-                    container,
-                    """
-                    set -eu
-                    idea=${'$'}(cat /tmp/idea-xvfb.pid)
-                    xvfb=${'$'}(cat /tmp/xvfb.pid)
-                    kill -0 "${'$'}idea"
-                    kill -0 "${'$'}xvfb"
-                    DISPLAY=:99 java -Dx.captureDelayMs=0 -cp /tmp XIntellijRobotCapture
-                    """.trimIndent(),
-                )
-                assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
-                add(visualCapture(capture.stdout))
-            }
+    private fun captureIntellijXvfbRobotCandidates(container: GenericContainer<*>): List<VisualCapture> {
+        val stability = ExactFrameStabilityTracker<VisualCapture>(IntellijStableFramePairs) { before, after ->
+            intellijFramesExactlyEqual(before.image, after.image)
         }
+        repeat(IntellijXvfbRobotCaptureMaxSamples) { index ->
+            if (index > 0) Thread.sleep(IntellijXvfbRobotCaptureSampleDelayMs)
+            val capture = execIntellijShell(
+                container,
+                """
+                set -eu
+                idea=${'$'}(cat /tmp/idea-xvfb.pid)
+                xvfb=${'$'}(cat /tmp/xvfb.pid)
+                kill -0 "${'$'}idea"
+                kill -0 "${'$'}xvfb"
+                DISPLAY=:99 java -Dx.captureDelayMs=0 -cp /tmp XIntellijRobotCapture
+                """.trimIndent(),
+            )
+            assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
+            val current = visualCapture(capture.stdout)
+            if (stability.observe(current)) return stability.stableSuffix()
+        }
+        error(
+            "Xvfb IntelliJ Robot capture did not stabilize after ${stability.observedCount} samples; " +
+                "stablePairs=${stability.stablePairs}",
+        )
+    }
 
     private fun runIntellijAgainstKotlinServer(port: Int, image: String, url: String?, configDir: Path): IntellijKotlinCapture {
         XServer(
@@ -4412,6 +4567,7 @@ class IntellijCommunitySmokeTest {
             File file = new File(args == null || args.isBlank() ? "/tmp/idea-ui-runtime-diagnostics.log" : args);
             try (PrintWriter out = new PrintWriter(file)) {
               out.println("agentLoaded=true");
+              normalizeToolWindows(out);
               Object uiSettings = callStatic("com.intellij.ide.ui.UISettings", "getInstance");
               Object uiShadow = callStatic("com.intellij.ide.ui.UISettings", "getShadowInstance");
               Object state = call(uiSettings, "getState");
@@ -4461,6 +4617,68 @@ class IntellijCommunitySmokeTest {
               } catch (Throwable ignored) {
               }
             }
+          }
+
+          private static void normalizeToolWindows(PrintWriter out) throws Exception {
+            Object projectManager = callStatic("com.intellij.openapi.project.ProjectManager", "getInstance");
+            Object[] projects = (Object[]) call(projectManager, "getOpenProjects");
+            if (projects.length == 0) throw new IllegalStateException("No open IntelliJ project");
+            Object project = projects[0];
+            Class<?> projectClass = Class.forName("com.intellij.openapi.project.Project");
+            Class<?> toolWindowManagerClass = Class.forName("com.intellij.openapi.wm.ToolWindowManager");
+            Method getInstance = toolWindowManagerClass.getMethod("getInstance", projectClass);
+            Object toolWindowManager = getInstance.invoke(null, project);
+            Object projectToolWindow = call(toolWindowManager, "getToolWindow", new Class<?>[] { String.class }, "Project");
+            Object gradleToolWindow = call(toolWindowManager, "getToolWindow", new Class<?>[] { String.class }, "Gradle");
+            if (projectToolWindow == null || gradleToolWindow == null) {
+              throw new IllegalStateException("Expected Project and Gradle tool windows to be registered");
+            }
+
+            Throwable[] failure = new Throwable[1];
+            String[] state = new String[8];
+            java.util.concurrent.CountDownLatch activationCompleted = new java.util.concurrent.CountDownLatch(1);
+            Runnable activationCallback = () -> activationCompleted.countDown();
+            Runnable activation = () -> {
+              try {
+                state[0] = String.valueOf(call(toolWindowManager, "getActiveToolWindowId"));
+                state[1] = String.valueOf(call(toolWindowManager, "isEditorComponentActive"));
+                state[2] = String.valueOf(call(projectToolWindow, "isVisible"));
+                state[3] = String.valueOf(call(gradleToolWindow, "isVisible"));
+                call(projectToolWindow, "show");
+                call(gradleToolWindow, "show");
+                call(gradleToolWindow, "activate", new Class<?>[] { Runnable.class, boolean.class }, activationCallback, true);
+              } catch (Throwable t) {
+                failure[0] = t;
+              }
+            };
+            Object application = callStatic("com.intellij.openapi.application.ApplicationManager", "getApplication");
+            call(application, "invokeAndWait", new Class<?>[] { Runnable.class }, activation);
+            if (failure[0] != null) throw new RuntimeException("Failed to request Gradle tool window activation", failure[0]);
+            if (!activationCompleted.await(10, java.util.concurrent.TimeUnit.SECONDS)) {
+              throw new IllegalStateException("Timed out activating the Gradle tool window");
+            }
+
+            Runnable observe = () -> {
+              try {
+                state[4] = String.valueOf(call(toolWindowManager, "getActiveToolWindowId"));
+                state[5] = String.valueOf(call(toolWindowManager, "isEditorComponentActive"));
+                state[6] = String.valueOf(call(projectToolWindow, "isVisible"));
+                state[7] = String.valueOf(call(gradleToolWindow, "isVisible"));
+              } catch (Throwable t) {
+                failure[0] = t;
+              }
+            };
+            call(application, "invokeAndWait", new Class<?>[] { Runnable.class }, observe);
+            if (failure[0] != null) throw new RuntimeException("Failed to observe normalized tool windows", failure[0]);
+
+            out.println("runtimeActiveToolWindowBefore=" + state[0]);
+            out.println("runtimeEditorComponentActiveBefore=" + state[1]);
+            out.println("runtimeProjectToolWindowVisibleBefore=" + state[2]);
+            out.println("runtimeGradleToolWindowVisibleBefore=" + state[3]);
+            out.println("runtimeActiveToolWindowAfter=" + state[4]);
+            out.println("runtimeEditorComponentActiveAfter=" + state[5]);
+            out.println("runtimeProjectToolWindowVisibleAfter=" + state[6]);
+            out.println("runtimeGradleToolWindowVisibleAfter=" + state[7]);
           }
 
           private static void writeGraphicsDiagnostics(PrintWriter out) {
@@ -4803,6 +5021,35 @@ class IntellijCommunitySmokeTest {
         val directory = intellijSmokeArtifactsDirectory()
         logs.forEach { artifact ->
             File(directory, artifact.fileName).writeText(artifact.text)
+        }
+    }
+
+    private fun assertIntellijJcefMarkdownDiagnosticsPresent(logs: List<IntellijLogArtifact>) {
+        for (prefix in listOf("intellij-xvfb", "intellij-kotlin")) {
+            val ideaLog = logs.firstOrNull { it.fileName == "$prefix-idea.log" }?.text.orEmpty()
+            assertTrue(
+                ideaLog.contains("JCEF-sandbox is enabled"),
+                "$prefix must retain JCEF initialization diagnostics in idea.log",
+            )
+            assertTrue(
+                ideaLog.contains("MarkdownPreviewFileEditor: setHtml finished"),
+                "$prefix must retain completed Markdown/JCEF rendering diagnostics in idea.log",
+            )
+        }
+    }
+
+    private fun assertIntellijNormalizedToolWindowDiagnosticsPresent(logs: List<IntellijLogArtifact>) {
+        val required = listOf(
+            "runtimeActiveToolWindowAfter=Gradle",
+            "runtimeEditorComponentActiveAfter=false",
+            "runtimeProjectToolWindowVisibleAfter=true",
+            "runtimeGradleToolWindowVisibleAfter=true",
+        )
+        for (prefix in listOf("intellij-xvfb", "intellij-kotlin")) {
+            val diagnostics = logs.firstOrNull { it.fileName == "$prefix-ui-runtime-diagnostics.log" }?.text.orEmpty()
+            required.forEach { line ->
+                assertTrue(diagnostics.lineSequence().any { it == line }, "$prefix missing normalized UI state $line\n$diagnostics")
+            }
         }
     }
 
@@ -7644,6 +7891,16 @@ class IntellijCommunitySmokeTest {
         return total.toDouble() / samples.toDouble()
     }
 
+    private fun intellijFramesExactlyEqual(reference: BufferedImage, actual: BufferedImage): Boolean {
+        if (reference.width != actual.width || reference.height != actual.height) return false
+        for (y in 0 until reference.height) {
+            for (x in 0 until reference.width) {
+                if (reference.getRGB(x, y) != actual.getRGB(x, y)) return false
+            }
+        }
+        return true
+    }
+
     private fun fullImageDistance(reference: BufferedImage, actual: BufferedImage): Double {
         assertEquals(reference.width, actual.width, "image width should match")
         assertEquals(reference.height, actual.height, "image height should match")
@@ -7933,6 +8190,30 @@ class IntellijCommunitySmokeTest {
             "VisualCapture(width=$width, height=$height, nonWhitePixels=$nonWhitePixels, averageRgb=$averageRgb)"
     }
 
+    private class ExactFrameStabilityTracker<T>(
+        private val requiredStablePairs: Int,
+        private val exactlyEqual: (T, T) -> Boolean,
+    ) {
+        private val suffix = mutableListOf<T>()
+        private var previous: T? = null
+
+        var observedCount: Int = 0
+            private set
+        var stablePairs: Int = 0
+            private set
+
+        fun observe(current: T): Boolean {
+            observedCount++
+            stablePairs = if (previous?.let { exactlyEqual(it, current) } == true) stablePairs + 1 else 0
+            if (stablePairs == 0) suffix.clear()
+            suffix += current
+            previous = current
+            return stablePairs >= requiredStablePairs
+        }
+
+        fun stableSuffix(): List<T> = suffix.toList()
+    }
+
     private data class ImageStats(
         val id: String,
         val width: Int,
@@ -7963,8 +8244,9 @@ class IntellijCommunitySmokeTest {
         const val IntellijRobotSvgPostCaptureSamples = 12
         const val IntellijRobotSvgPostCaptureSampleDelayMs = 50L
         const val IntellijRobotSvgCaptureDistanceThreshold = 0.0
-        const val IntellijXvfbRobotCaptureSamples = 6
-        const val IntellijXvfbRobotCaptureSampleDelayMs = 50L
+        const val IntellijStableFramePairs = 2
+        const val IntellijXvfbRobotCaptureMaxSamples = 20
+        const val IntellijXvfbRobotCaptureSampleDelayMs = 250L
         const val IntellijParityPairAttempts = 2
         const val IntellijParityPairDistanceTarget = 1.0
         const val IntellijParityMaxLineAverageDistanceTarget = 48.0

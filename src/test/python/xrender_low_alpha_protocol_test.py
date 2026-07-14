@@ -261,6 +261,8 @@ def run(host, port, dump):
         gradient_destination_picture = ids.allocate()
         fill_pixmap = ids.allocate()
         fill_picture = ids.allocate()
+        lifecycle_destination_pixmap = ids.allocate()
+        lifecycle_destination_picture = ids.allocate()
 
         gradient_width = 5
         sources = [0x0F000000, 0x08000000, 0x05000000, 0x02000000, 0x80146E2D]
@@ -303,9 +305,16 @@ def run(host, port, dump):
         sock.sendall(get_image(destination_pixmap, width))
         masked_src = read_pixels(sock, width)
 
-        sock.sendall(create_pixmap(32, gradient_pixmap, root, 1, gradient_width))
+        sock.sendall(create_pixmap(32, gradient_pixmap, root, 256, 256))
         sock.sendall(create_gc(gradient_gc, gradient_pixmap))
         sock.sendall(create_picture(render_opcode, gradient_destination_picture, gradient_pixmap, argb32))
+        sock.sendall(create_pixmap(24, lifecycle_destination_pixmap, root, 256, gradient_width + 1))
+        sock.sendall(create_picture(
+            render_opcode,
+            lifecycle_destination_picture,
+            lifecycle_destination_pixmap,
+            rgb24,
+        ))
         sock.sendall(create_linear_gradient(
             render_opcode,
             gradient_picture,
@@ -400,6 +409,93 @@ def run(host, port, dump):
         sock.sendall(get_image(fill_pixmap, 1, gradient_width))
         rgb24_gradient_over = read_pixels(sock, 1, gradient_width)
 
+        sock.sendall(composite(
+            render_opcode,
+            OP_SRC,
+            gradient_picture,
+            gradient_destination_picture,
+            256,
+            height=gradient_width,
+            source_x=847,
+            source_y=827,
+        ))
+        sock.sendall(get_image(gradient_pixmap, 1, gradient_width))
+        scratch_band_left_edge = read_pixels(sock, 1, gradient_width)
+        sock.sendall(get_image(gradient_pixmap, 1, gradient_width, x=255))
+        scratch_band_right_edge = read_pixels(sock, 1, gradient_width)
+
+        sock.sendall(fill_rectangles(
+            render_opcode,
+            OP_SRC,
+            lifecycle_destination_picture,
+            (0x19FF, 0x1AFF, 0x1CFF, 0xFFFF),
+            256,
+            gradient_width + 1,
+        ))
+        sock.sendall(composite(
+            render_opcode,
+            OP_OVER,
+            gradient_destination_picture,
+            lifecycle_destination_picture,
+            256,
+            height=gradient_width,
+        ))
+        sock.sendall(get_image(lifecycle_destination_pixmap, 1, x=17, y=3))
+        lifecycle_fixed_row_y0 = read_pixels(sock, 1)
+
+        sock.sendall(fill_rectangles(
+            render_opcode,
+            OP_SRC,
+            lifecycle_destination_picture,
+            (0x19FF, 0x1AFF, 0x1CFF, 0xFFFF),
+            256,
+            gradient_width + 1,
+        ))
+        sock.sendall(composite(
+            render_opcode,
+            OP_OVER,
+            gradient_destination_picture,
+            lifecycle_destination_picture,
+            256,
+            height=gradient_width,
+            destination_y=1,
+        ))
+        sock.sendall(get_image(lifecycle_destination_pixmap, 1, x=17, y=3))
+        lifecycle_fixed_row_y1 = read_pixels(sock, 1)
+
+        sock.sendall(composite(
+            render_opcode,
+            OP_SRC,
+            gradient_picture,
+            gradient_destination_picture,
+            5,
+            height=gradient_width,
+            source_x=847,
+            source_y=828,
+        ))
+        sock.sendall(get_image(gradient_pixmap, 6, gradient_width))
+        scratch_after_5x5_repaint = read_pixels(sock, 6, gradient_width)
+
+        sock.sendall(fill_rectangles(
+            render_opcode,
+            OP_SRC,
+            lifecycle_destination_picture,
+            (0x19FF, 0x1AFF, 0x1CFF, 0xFFFF),
+            256,
+            gradient_width + 1,
+        ))
+        sock.sendall(composite(
+            render_opcode,
+            OP_OVER,
+            gradient_destination_picture,
+            lifecycle_destination_picture,
+            5,
+            height=gradient_width,
+            destination_y=1,
+        ))
+        sock.sendall(get_image(lifecycle_destination_pixmap, 6, x=0, y=3))
+        lifecycle_5x5_fixed_row = read_pixels(sock, 6)
+
         results = {
             "drawable_over": hex_pixels(drawable_over),
             "drawable_rgb24_over": hex_pixels(drawable_rgb24_over),
@@ -408,7 +504,12 @@ def run(host, port, dump):
             "masked_src": hex_pixels(masked_src),
             "gradient": hex_pixels(gradient),
             "gradient_over": hex_pixels(gradient_over),
+            "lifecycle_5x5_fixed_row": hex_pixels(lifecycle_5x5_fixed_row),
+            "lifecycle_fixed_row_y0": hex_pixels(lifecycle_fixed_row_y0),
+            "lifecycle_fixed_row_y1": hex_pixels(lifecycle_fixed_row_y1),
             "rgb24_gradient_over": hex_pixels(rgb24_gradient_over),
+            "scratch_after_5x5_repaint": hex_pixels(scratch_after_5x5_repaint),
+            "scratch_band_edges": hex_pixels(scratch_band_left_edge + scratch_band_right_edge),
             "shifted_drawable_rgb24_over": hex_pixels(shifted_drawable_rgb24_over),
         }
         if dump:
@@ -439,6 +540,26 @@ def run(host, port, dump):
         ])
         assert_rgb24("transformed notification gradient OpOver on RGB24", rgb24_gradient_over, [
             0x0018181A, 0x0018191B, 0x0018191B, 0x0019191B, 0x00191A1C,
+        ])
+        assert_pixels("reusable ARGB32 scratch 256x5 edge columns", scratch_band_left_edge + scratch_band_right_edge, [
+            0x0F000000, 0x0C000000, 0x08000000, 0x05000000, 0x02000000,
+            0x0F000000, 0x0C000000, 0x08000000, 0x05000000, 0x02000000,
+        ])
+        assert_rgb24("reusable scratch at fixed row with destination y=0", lifecycle_fixed_row_y0, [
+            0x0019191B,
+        ])
+        assert_rgb24("reusable scratch at fixed row with destination y=1", lifecycle_fixed_row_y1, [
+            0x0018191B,
+        ])
+        assert_pixels("reusable ARGB32 scratch after 5x5 origin repaint", scratch_after_5x5_repaint, [
+            0x0C000000, 0x0C000000, 0x0C000000, 0x0C000000, 0x0C000000, 0x0F000000,
+            0x08000000, 0x08000000, 0x08000000, 0x08000000, 0x08000000, 0x0C000000,
+            0x05000000, 0x05000000, 0x05000000, 0x05000000, 0x05000000, 0x08000000,
+            0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x05000000,
+            0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000,
+        ])
+        assert_rgb24("reused 5x5 scratch OpOver boundary", lifecycle_5x5_fixed_row, [
+            0x0019191B, 0x0019191B, 0x0019191B, 0x0019191B, 0x0019191B, 0x00191A1C,
         ])
 
 
