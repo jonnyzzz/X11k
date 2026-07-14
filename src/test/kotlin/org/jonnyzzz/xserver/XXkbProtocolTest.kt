@@ -2,6 +2,8 @@ package org.jonnyzzz.xserver
 
 import java.io.InputStream
 import java.net.Socket
+import java.nio.file.Path
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -4391,7 +4393,7 @@ class XXkbProtocolTest {
         withServer { socket, _ ->
             val wanted = XXkb.XiFeatureButtonActions or XXkb.XiFeatureIndicatorNames or XXkb.XiFeatureIndicatorMaps or XXkb.XiFeatureIndicatorState
             val out = socket.getOutputStream()
-            out.write(getDeviceInfoRequest(wanted = wanted, allButtons = true, firstButton = 1, nButtons = 3, ledClass = 0x0300, ledId = 0x0400))
+            out.write(getDeviceInfoRequest(wanted = wanted, allButtons = true, firstButton = 1, nButtons = 3, ledClass = XXkb.AllXIClasses, ledId = XXkb.AllXIIds))
             out.flush()
 
             val reply = readReply(socket.getInputStream())
@@ -4400,8 +4402,8 @@ class XXkbProtocolTest {
             assertEquals(1, u16le(reply, 2))
             assertEquals(511, u32le(reply, 4))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
-            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 10))
-            assertEquals(wanted and XXkb.XiFeatureButtonActions.inv(), u16le(reply, 12))
+            assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
+            assertEquals(0, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
             assertEquals(1, reply[16].toInt() and 0xff)
             assertEquals(3, reply[17].toInt() and 0xff)
@@ -4437,13 +4439,48 @@ class XXkbProtocolTest {
             assertEquals(1, u16le(reply, 2))
             assertEquals(1, u32le(reply, 4))
             assertEquals(0, u16le(reply, 8))
-            assertEquals(0, u16le(reply, 10))
-            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 12))
+            assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
+            assertEquals(0, u16le(reply, 12))
             assertEquals(0, reply[18].toInt() and 0xff)
             assertEquals(0, reply[19].toInt() and 0xff)
             assertEquals(0, reply[20].toInt() and 0xff)
             assertEquals(0, u16le(reply, 32))
             assertEquals(36, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetDeviceInfo exposes canonical core keyboard LED feedback`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                getDeviceInfoRequest(
+                    wanted = XXkb.XiFeatureIndicators,
+                    allButtons = false,
+                    firstButton = 0,
+                    nButtons = 0,
+                    ledClass = XXkb.AllXIClasses,
+                    ledId = XXkb.AllXIIds,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                ),
+            )
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(6, u32le(reply, 4))
+            assertEquals(XXkb.XiFeatureIndicators, u16le(reply, 8))
+            assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
+            assertEquals(0, u16le(reply, 12))
+            assertEquals(1, u16le(reply, 14))
+            assertEquals(0, reply[20].toInt() and 0xff)
+            assertEquals(XXkb.KbdFeedbackClass, u16le(reply, 36))
+            assertEquals(0, u16le(reply, 38))
+            assertEquals(0, u32le(reply, 40))
+            assertEquals(0, u32le(reply, 44))
+            assertEquals(0x0000_07ff, u32le(reply, 48))
+            assertEquals(0, u32le(reply, 52))
+            assertEquals(56, reply.size)
         }
     }
 
@@ -4460,7 +4497,7 @@ class XXkbProtocolTest {
             assertEquals(2, u16le(reply, 2))
             assertEquals(3, u32le(reply, 4))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
-            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 10))
+            assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
             assertEquals(0, u16le(reply, 12))
             assertEquals(2, reply[16].toInt() and 0xff)
             assertEquals(1, reply[17].toInt() and 0xff)
@@ -4503,7 +4540,7 @@ class XXkbProtocolTest {
             assertEquals(1, u16le(reply, 2))
             assertEquals(1, u32le(reply, 4))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
-            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 10))
+            assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
             assertEquals(0, u16le(reply, 12))
             assertEquals(0, reply[18].toInt() and 0xff)
             assertEquals(0, reply[19].toInt() and 0xff)
@@ -4518,15 +4555,15 @@ class XXkbProtocolTest {
             val wanted = XXkb.XiFeatureButtonActions or XXkb.XiFeatureIndicatorNames or XXkb.XiFeatureIndicatorMaps
             val out = socket.getOutputStream()
             out.write(setDeviceInfoRequest(nButtons = 2, nDeviceLedFeedbacks = 1, change = XXkb.XiFeatureButtonActions))
-            out.write(getDeviceInfoRequest(wanted = wanted, allButtons = false, firstButton = 1, nButtons = 2))
+            out.write(getDeviceInfoRequest(wanted = wanted, allButtons = false, firstButton = 1, nButtons = 2, ledClass = XXkb.AllXIClasses, ledId = XXkb.AllXIIds))
             out.flush()
 
             val reply = readReply(socket.getInputStream())
             assertEquals(2, u16le(reply, 2))
             assertEquals(5, u32le(reply, 4))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
-            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 10))
-            assertEquals(wanted and XXkb.XiFeatureButtonActions.inv(), u16le(reply, 12))
+            assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
+            assertEquals(0, u16le(reply, 12))
             assertEquals(1, reply[16].toInt() and 0xff)
             assertEquals(2, reply[17].toInt() and 0xff)
             assertEquals(1, reply[18].toInt() and 0xff)
@@ -4557,14 +4594,15 @@ class XXkbProtocolTest {
                     ledState = 0x0000_0001,
                 ),
             )
-            out.write(getDeviceInfoRequest(wanted = wanted, allButtons = false, firstButton = 0, nButtons = 0, ledClass = XXkb.DfltXIClass, ledId = XXkb.DfltXIId))
+            out.write(getDeviceInfoRequest(wanted = wanted, allButtons = false, firstButton = 0, nButtons = 0, ledClass = XXkb.AllXIClasses, ledId = XXkb.AllXIIds))
             out.flush()
 
             assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetDeviceInfo)
             val reply = readReply(socket.getInputStream())
             assertEquals(2, u16le(reply, 2))
             assertEquals(0, u16le(reply, 8))
-            assertEquals(wanted, u16le(reply, 12))
+            assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
+            assertEquals(0, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
             assertEquals(36, reply.size)
         }
@@ -4683,17 +4721,18 @@ class XXkbProtocolTest {
                     ledNamesPresent = 0x0000_0003,
                     ledMapsPresent = 0x0000_0002,
                     ledState = 0x0000_0002,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
-            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureIndicators, allButtons = false, firstButton = 0, nButtons = 0, ledClass = XXkb.DfltXIClass, ledId = XXkb.DfltXIId))
+            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureIndicators, allButtons = false, firstButton = 0, nButtons = 0, ledClass = XXkb.DfltXIClass, ledId = XXkb.DfltXIId, deviceSpec = XXkb.DeviceSpecUseCoreKeyboard))
             out.flush()
 
             assertXkbExtensionDeviceNotify(
                 socket.getInputStream().readExactly(32),
                 sequence = 2,
                 reason = reason,
-                ledClass = XXkb.DfltXIClass,
-                ledId = XXkb.DfltXIId,
+                ledClass = XXkb.KbdFeedbackClass,
+                ledId = 0,
                 ledsDefined = 0x0000_0003,
                 ledState = 0x0000_0002,
             )
@@ -4715,6 +4754,7 @@ class XXkbProtocolTest {
                     change = XXkb.XiFeatureIndicatorNames or XXkb.XiFeatureIndicatorMaps,
                     ledNamesPresent = 0x0000_0003,
                     ledMapsPresent = 0x0000_0002,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.write(
@@ -4731,17 +4771,18 @@ class XXkbProtocolTest {
                     ledNamesPresent = 0,
                     ledMapsPresent = 0,
                     ledState = 0x0000_0002,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
-            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureIndicators, allButtons = false, firstButton = 0, nButtons = 0, ledClass = XXkb.DfltXIClass, ledId = XXkb.DfltXIId))
+            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureIndicators, allButtons = false, firstButton = 0, nButtons = 0, ledClass = XXkb.DfltXIClass, ledId = XXkb.DfltXIId, deviceSpec = XXkb.DeviceSpecUseCoreKeyboard))
             out.flush()
 
             assertXkbExtensionDeviceNotify(
                 socket.getInputStream().readExactly(32),
                 sequence = 3,
                 reason = XXkb.XiFeatureIndicatorState,
-                ledClass = XXkb.DfltXIClass,
-                ledId = XXkb.DfltXIId,
+                ledClass = XXkb.KbdFeedbackClass,
+                ledId = 0,
                 ledsDefined = 0x0000_0003,
                 ledState = 0x0000_0002,
             )
@@ -4764,6 +4805,7 @@ class XXkbProtocolTest {
                     ledNamesPresent = 0,
                     ledMapsPresent = 0,
                     ledState = 0x0000_0002,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.write(
@@ -4780,17 +4822,18 @@ class XXkbProtocolTest {
                     ledNamesPresent = 0x0000_0003,
                     ledMapsPresent = 0x0000_0002,
                     ledState = 0,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
-            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureIndicators, allButtons = false, firstButton = 0, nButtons = 0, ledClass = XXkb.DfltXIClass, ledId = XXkb.DfltXIId))
+            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureIndicators, allButtons = false, firstButton = 0, nButtons = 0, ledClass = XXkb.DfltXIClass, ledId = XXkb.DfltXIId, deviceSpec = XXkb.DeviceSpecUseCoreKeyboard))
             out.flush()
 
             assertXkbExtensionDeviceNotify(
                 socket.getInputStream().readExactly(32),
                 sequence = 3,
                 reason = reason,
-                ledClass = XXkb.DfltXIClass,
-                ledId = XXkb.DfltXIId,
+                ledClass = XXkb.KbdFeedbackClass,
+                ledId = 0,
                 ledsDefined = 0x0000_0003,
                 ledState = 0x0000_0002,
             )
@@ -4801,7 +4844,7 @@ class XXkbProtocolTest {
     }
 
     @Test
-    fun `XKEYBOARD SetDeviceInfo emits requester-only unsupported feature notify for non-core device`() {
+    fun `XKEYBOARD SetDeviceInfo reports Match for core keyboard button actions`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
             out.write(
@@ -4821,13 +4864,7 @@ class XXkbProtocolTest {
             out.write(useExtensionRequest())
             out.flush()
 
-            assertXkbExtensionDeviceNotify(
-                socket.getInputStream().readExactly(32),
-                sequence = 2,
-                reason = XXkb.XiFeatureUnsupportedFeature,
-                supported = 0,
-                unsupported = XXkb.XiFeatureButtonActions,
-            )
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetDeviceInfo)
             val version = readReply(socket.getInputStream())
             assertEquals(3, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
@@ -4875,7 +4912,7 @@ class XXkbProtocolTest {
                     ledNamesPresent = 0,
                     ledMapsPresent = 0,
                     ledState = 0x0000_0001,
-                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                    deviceSpec = 3,
                 ),
             )
             out.write(useExtensionRequest())
@@ -4885,6 +4922,7 @@ class XXkbProtocolTest {
                 socket.getInputStream().readExactly(32),
                 sequence = 2,
                 reason = XXkb.XiFeatureUnsupportedFeature,
+                deviceId = 3,
                 ledClass = XXkb.KbdFeedbackClass,
                 ledId = 7,
                 supported = 0,
@@ -4934,7 +4972,7 @@ class XXkbProtocolTest {
                             nButtons = 1,
                             nDeviceLedFeedbacks = 0,
                             change = XXkb.XiFeatureButtonActions,
-                            deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                            deviceSpec = 3,
                         ),
                     )
                     requesterOut.flush()
@@ -4943,6 +4981,7 @@ class XXkbProtocolTest {
                         requester.getInputStream().readExactly(32),
                         sequence = 2,
                         reason = XXkb.XiFeatureUnsupportedFeature,
+                        deviceId = 3,
                         supported = 0,
                         unsupported = XXkb.XiFeatureButtonActions,
                     )
@@ -5018,7 +5057,7 @@ class XXkbProtocolTest {
                     nButtons = 1,
                     nDeviceLedFeedbacks = 0,
                     change = XXkb.XiFeatureButtonActions,
-                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                    deviceSpec = 3,
                 ),
             )
             out.write(useExtensionRequest())
@@ -5047,6 +5086,7 @@ class XXkbProtocolTest {
                     ledState = 0x0000_0001,
                     ledNameAtoms = listOf(0x40),
                     ledMaps = listOf(ledMap),
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.write(
@@ -5057,6 +5097,7 @@ class XXkbProtocolTest {
                     nButtons = 0,
                     ledClass = XXkb.DfltXIClass,
                     ledId = XXkb.DfltXIId,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.flush()
@@ -5065,18 +5106,18 @@ class XXkbProtocolTest {
             assertEquals(2, u16le(reply, 2))
             assertEquals(10, u32le(reply, 4))
             assertEquals(wanted, u16le(reply, 8))
-            assertEquals(XXkb.XiFeatureButtonActions or XXkb.XiFeatureIndicators, u16le(reply, 10))
+            assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
             assertEquals(0, u16le(reply, 12))
             assertEquals(1, u16le(reply, 14))
             assertEquals(0, reply[18].toInt() and 0xff)
             assertEquals(0, reply[19].toInt() and 0xff)
-            assertEquals(255, reply[20].toInt() and 0xff)
+            assertEquals(0, reply[20].toInt() and 0xff)
             assertEquals(0, u32le(reply, 32))
-            assertEquals(XXkb.DfltXIClass, u16le(reply, 36))
-            assertEquals(XXkb.DfltXIId, u16le(reply, 38))
+            assertEquals(XXkb.KbdFeedbackClass, u16le(reply, 36))
+            assertEquals(0, u16le(reply, 38))
             assertEquals(0x0000_0001, u32le(reply, 40))
             assertEquals(0x0000_0001, u32le(reply, 44))
-            assertEquals(0x0000_0003, u32le(reply, 48))
+            assertEquals(0x0000_07ff, u32le(reply, 48))
             assertEquals(0x0000_0001, u32le(reply, 52))
             assertEquals(0x40, u32le(reply, 56))
             assertEquals(ledMap.toList(), reply.copyOfRange(60, 72).toList())
@@ -5127,6 +5168,7 @@ class XXkbProtocolTest {
                     ledState = 0x0000_0001,
                     ledNameAtoms = listOf(0x40),
                     ledMaps = listOf(ledMap),
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.write(
@@ -5138,6 +5180,7 @@ class XXkbProtocolTest {
                     ledMapsPresent = 0,
                     ledPhysIndicators = 0x0000_0007,
                     ledState = 0x0000_0004,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.write(
@@ -5148,6 +5191,7 @@ class XXkbProtocolTest {
                     nButtons = 0,
                     ledClass = XXkb.DfltXIClass,
                     ledId = XXkb.DfltXIId,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.flush()
@@ -5158,7 +5202,7 @@ class XXkbProtocolTest {
             assertEquals(1, u16le(reply, 14))
             assertEquals(0x0000_0001, u32le(reply, 40))
             assertEquals(0x0000_0001, u32le(reply, 44))
-            assertEquals(0x0000_0007, u32le(reply, 48))
+            assertEquals(0x0000_07ff, u32le(reply, 48))
             assertEquals(0x0000_0004, u32le(reply, 52))
             assertEquals(0x40, u32le(reply, 56))
             assertEquals(ledMap.toList(), reply.copyOfRange(60, 72).toList())
@@ -5177,12 +5221,13 @@ class XXkbProtocolTest {
                     nDeviceLedFeedbacks = 1,
                     change = wanted,
                     ledClass = XXkb.KbdFeedbackClass,
-                    ledId = 7,
+                    ledId = 0,
                     ledNamesPresent = 0x0000_0001,
                     ledMapsPresent = 0,
                     ledPhysIndicators = 0x0000_0005,
                     ledState = 0x0000_0004,
                     ledNameAtoms = listOf(0x40),
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.write(
@@ -5193,6 +5238,7 @@ class XXkbProtocolTest {
                     nButtons = 0,
                     ledClass = XXkb.DfltXIClass,
                     ledId = XXkb.DfltXIId,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.flush()
@@ -5201,13 +5247,13 @@ class XXkbProtocolTest {
             assertEquals(2, u16le(reply, 2))
             assertEquals(7, u32le(reply, 4))
             assertEquals(wanted, u16le(reply, 8))
-            assertEquals(XXkb.XiFeatureButtonActions or XXkb.XiFeatureIndicators, u16le(reply, 10))
+            assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
             assertEquals(1, u16le(reply, 14))
             assertEquals(XXkb.KbdFeedbackClass, u16le(reply, 36))
-            assertEquals(7, u16le(reply, 38))
+            assertEquals(0, u16le(reply, 38))
             assertEquals(0x0000_0001, u32le(reply, 40))
             assertEquals(0, u32le(reply, 44))
-            assertEquals(0x0000_0005, u32le(reply, 48))
+            assertEquals(0x0000_07ff, u32le(reply, 48))
             assertEquals(0x0000_0004, u32le(reply, 52))
             assertEquals(0x40, u32le(reply, 56))
             assertEquals(60, reply.size)
@@ -5215,7 +5261,7 @@ class XXkbProtocolTest {
     }
 
     @Test
-    fun `XKEYBOARD GetDeviceInfo rejects invalid LED selector after feedback is supported`() {
+    fun `XKEYBOARD GetDeviceInfo rejects invalid LED selector with canonical feedback`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
             out.write(
@@ -5224,10 +5270,11 @@ class XXkbProtocolTest {
                     nDeviceLedFeedbacks = 1,
                     change = XXkb.XiFeatureIndicatorState,
                     ledClass = XXkb.KbdFeedbackClass,
-                    ledId = 1,
+                    ledId = 0,
                     ledNamesPresent = 0,
                     ledMapsPresent = 0,
                     ledState = 0x0000_0001,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.write(
@@ -5238,6 +5285,7 @@ class XXkbProtocolTest {
                     nButtons = 0,
                     ledClass = 0x0700,
                     ledId = XXkb.DfltXIId,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.write(
@@ -5248,6 +5296,7 @@ class XXkbProtocolTest {
                     nButtons = 0,
                     ledClass = XXkb.KbdFeedbackClass,
                     ledId = 0x0700,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 1, nButtons = 1))
@@ -5264,7 +5313,7 @@ class XXkbProtocolTest {
     }
 
     @Test
-    fun `XKEYBOARD GetDeviceInfo rejects invalid LED selector before feedback is stored`() {
+    fun `XKEYBOARD GetDeviceInfo validates selectors against canonical feedback inventory`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
             out.write(
@@ -5275,6 +5324,7 @@ class XXkbProtocolTest {
                     nButtons = 0,
                     ledClass = 0x0700,
                     ledId = XXkb.DfltXIId,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.write(
@@ -5285,6 +5335,7 @@ class XXkbProtocolTest {
                     nButtons = 0,
                     ledClass = XXkb.KbdFeedbackClass,
                     ledId = 0x0700,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 1, nButtons = 1))
@@ -5310,11 +5361,12 @@ class XXkbProtocolTest {
                     nDeviceLedFeedbacks = 1,
                     change = XXkb.XiFeatureIndicatorState,
                     ledClass = XXkb.KbdFeedbackClass,
-                    ledId = 1,
+                    ledId = 0,
                     ledNamesPresent = 0,
                     ledMapsPresent = 0,
                     ledPhysIndicators = 0x0000_0003,
                     ledState = 0x0000_0001,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.write(
@@ -5325,6 +5377,7 @@ class XXkbProtocolTest {
                     nButtons = 0,
                     ledClass = XXkb.LedFeedbackClass,
                     ledId = XXkb.AllXIIds,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.write(
@@ -5335,6 +5388,7 @@ class XXkbProtocolTest {
                     nButtons = 0,
                     ledClass = XXkb.KbdFeedbackClass,
                     ledId = 2,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.write(
@@ -5345,6 +5399,7 @@ class XXkbProtocolTest {
                     nButtons = 0,
                     ledClass = XXkb.KbdFeedbackClass,
                     ledId = XXkb.AllXIIds,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
                 ),
             )
             out.flush()
@@ -5357,10 +5412,10 @@ class XXkbProtocolTest {
             assertEquals(XXkb.XiFeatureIndicatorState, u16le(reply, 8))
             assertEquals(1, u16le(reply, 14))
             assertEquals(XXkb.KbdFeedbackClass, u16le(reply, 36))
-            assertEquals(1, u16le(reply, 38))
+            assertEquals(0, u16le(reply, 38))
             assertEquals(0, u32le(reply, 40))
             assertEquals(0, u32le(reply, 44))
-            assertEquals(0x0000_0003, u32le(reply, 48))
+            assertEquals(0x0000_07ff, u32le(reply, 48))
             assertEquals(0x0000_0001, u32le(reply, 52))
             assertEquals(56, reply.size)
         }
@@ -5378,14 +5433,248 @@ class XXkbProtocolTest {
                     ledId = XXkb.DfltXIId,
                 ),
             )
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 1,
+                    nDeviceLedFeedbacks = 1,
+                    ledClass = XXkb.KbdFeedbackClass,
+                    ledId = 0x0700,
+                ),
+            )
             out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 1, nButtons = 1))
             out.flush()
 
             assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = XXkb.AllXIClasses, sequence = 1, minorOpcode = XXkb.SetDeviceInfo)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 2, minorOpcode = XXkb.SetDeviceInfo)
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
             assertEquals(true, reply.copyOfRange(36, 44).all { it == 0.toByte() })
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetDeviceInfo reports Match for unmatched LED feedback without mutating canonical feedback`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 0,
+                    nDeviceLedFeedbacks = 1,
+                    change = XXkb.XiFeatureIndicatorState,
+                    ledClass = XXkb.KbdFeedbackClass,
+                    ledId = 0,
+                    ledNamesPresent = 0,
+                    ledMapsPresent = 0,
+                    ledState = 0x0000_0001,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                ),
+            )
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 0,
+                    nDeviceLedFeedbacks = 1,
+                    change = XXkb.XiFeatureIndicatorState,
+                    ledClass = XXkb.KbdFeedbackClass,
+                    ledId = 7,
+                    ledNamesPresent = 0,
+                    ledMapsPresent = 0,
+                    ledState = 0x0000_0004,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                ),
+            )
+            out.write(
+                getDeviceInfoRequest(
+                    wanted = XXkb.XiFeatureIndicatorState,
+                    allButtons = false,
+                    firstButton = 0,
+                    nButtons = 0,
+                    ledClass = XXkb.KbdFeedbackClass,
+                    ledId = 0,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                ),
+            )
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetDeviceInfo)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(3, u16le(reply, 2))
+            assertEquals(1, u16le(reply, 14))
+            assertEquals(XXkb.KbdFeedbackClass, u16le(reply, 36))
+            assertEquals(0, u16le(reply, 38))
+            assertEquals(0x0000_0001, u32le(reply, 52))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetDeviceInfo Match failure is atomic with core pointer button actions`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 1,
+                    nDeviceLedFeedbacks = 1,
+                    change = XXkb.XiFeatureButtonActions or XXkb.XiFeatureIndicatorState,
+                    ledNamesPresent = 0,
+                    ledMapsPresent = 0,
+                ),
+            )
+            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 1, nButtons = 1))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetDeviceInfo)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(true, reply.copyOfRange(36, 44).all { it == 0.toByte() })
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetDeviceInfo shares state names and maps with core indicator requests`() {
+        withServer { socket, _ ->
+            val indicatorAtom = 0x40
+            val map = indicatorMapRecord(11)
+            val out = socket.getOutputStream()
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 0,
+                    nDeviceLedFeedbacks = 1,
+                    change = XXkb.XiFeatureIndicators,
+                    ledNamesPresent = 0x0000_0004,
+                    ledMapsPresent = 0x0000_0004,
+                    ledPhysIndicators = -1,
+                    ledState = 0x0000_0004,
+                    ledNameAtoms = listOf(indicatorAtom),
+                    ledMaps = listOf(map),
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                ),
+            )
+            out.write(getIndicatorStateRequest())
+            out.write(getIndicatorMapRequest(which = 0x0000_0004))
+            out.write(getNamedIndicatorRequest(indicatorAtom))
+            out.flush()
+
+            val state = readReply(socket.getInputStream())
+            assertEquals(2, u16le(state, 2))
+            assertEquals(0x0000_0004, u32le(state, 8))
+
+            val maps = readReply(socket.getInputStream())
+            assertEquals(3, u16le(maps, 2))
+            assertEquals(0x0000_0004, u32le(maps, 8))
+            assertEquals(1, maps[16].toInt() and 0xff)
+            assertIndicatorMaps(maps, listOf(map))
+
+            val named = readReply(socket.getInputStream())
+            assertEquals(4, u16le(named, 2))
+            assertEquals(indicatorAtom, u32le(named, 8))
+            assertEquals(1, named[12].toInt() and 0xff)
+            assertEquals(1, named[13].toInt() and 0xff)
+            assertEquals(2, named[15].toInt() and 0xff)
+            assertEquals(map.toList(), named.copyOfRange(16, 28).toList())
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD core indicator writes are visible through GetDeviceInfo`() {
+        withServer { socket, _ ->
+            val indicatorAtom = 0x40
+            val namedMap = indicatorMapRecord(12)
+            val replacementMap = indicatorMapRecord(13)
+            val out = socket.getOutputStream()
+            out.write(setNamedIndicatorRequest(indicatorAtom, setState = true, on = true, setMap = true, createMap = true, map = namedMap))
+            out.write(setIndicatorMapRequest(which = 0x0000_0001, maps = listOf(replacementMap)))
+            out.write(
+                getDeviceInfoRequest(
+                    wanted = XXkb.XiFeatureIndicators,
+                    allButtons = false,
+                    firstButton = 0,
+                    nButtons = 0,
+                    ledClass = XXkb.AllXIClasses,
+                    ledId = XXkb.AllXIIds,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                ),
+            )
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(3, u16le(reply, 2))
+            assertEquals(10, u32le(reply, 4))
+            assertEquals(XXkb.XiFeatureIndicators, u16le(reply, 8))
+            assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
+            assertEquals(1, u16le(reply, 14))
+            assertEquals(XXkb.KbdFeedbackClass, u16le(reply, 36))
+            assertEquals(0, u16le(reply, 38))
+            assertEquals(0x0000_0001, u32le(reply, 40))
+            assertEquals(0x0000_0001, u32le(reply, 44))
+            assertEquals(0x0000_07ff, u32le(reply, 48))
+            assertEquals(0x0000_0001, u32le(reply, 52))
+            assertEquals(indicatorAtom, u32le(reply, 56))
+            assertEquals(replacementMap.toList(), reply.copyOfRange(60, 72).toList())
+            assertEquals(72, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD named indicator allocation avoids sparse DeviceInfo name indexes`() {
+        withServer { socket, _ ->
+            val sparseAtom = 0x40
+            val addedAtom = 0x41
+            val out = socket.getOutputStream()
+            out.write(
+                setDeviceInfoRequest(
+                    nButtons = 0,
+                    nDeviceLedFeedbacks = 1,
+                    change = XXkb.XiFeatureIndicatorNames,
+                    ledNamesPresent = 0x0000_0004,
+                    ledMapsPresent = 0,
+                    ledNameAtoms = listOf(sparseAtom),
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                ),
+            )
+            out.write(setNamedIndicatorRequest(addedAtom, setState = true, on = true, setMap = true, createMap = true))
+            out.write(getNamedIndicatorRequest(sparseAtom))
+            out.write(getNamedIndicatorRequest(addedAtom))
+            out.write(getIndicatorStateRequest())
+            out.flush()
+
+            val sparse = readReply(socket.getInputStream())
+            assertEquals(3, u16le(sparse, 2))
+            assertEquals(2, sparse[15].toInt() and 0xff)
+            assertEquals(0, sparse[13].toInt() and 0xff)
+
+            val added = readReply(socket.getInputStream())
+            assertEquals(4, u16le(added, 2))
+            assertEquals(0, added[15].toInt() and 0xff)
+            assertEquals(1, added[13].toInt() and 0xff)
+
+            val state = readReply(socket.getInputStream())
+            assertEquals(5, u16le(state, 2))
+            assertEquals(0x0000_0001, u32le(state, 8))
+        }
+    }
+
+    @Test
+    fun `Python XKEYBOARD DeviceInfo protocol test passes against Kotlin server`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            val script = Path.of("src", "test", "python", "xkb_device_info_protocol_test.py").toAbsolutePath()
+            val process = ProcessBuilder("python3", script.toString(), "--port", server.localPort.toString())
+                .redirectErrorStream(true)
+                .start()
+            val finished = process.waitFor(10, TimeUnit.SECONDS)
+            val terminated = if (finished) {
+                true
+            } else {
+                process.destroyForcibly()
+                process.waitFor(2, TimeUnit.SECONDS)
+            }
+            if (!terminated) error("Python protocol test did not terminate after forced destruction")
+            val output = process.inputStream.bufferedReader().readText()
+            assertEquals(true, finished, "Python protocol test timed out:\n$output")
+            assertEquals(0, process.exitValue(), "Python protocol test failed:\n$output")
+            assertContains(output, "PASS xkb_device_info_protocol_test")
+            server.close()
+            serverThread.join(1_000)
         }
     }
 
@@ -5407,7 +5696,7 @@ class XXkbProtocolTest {
             assertEquals(5, u16le(reply, 2))
             assertEquals(3, u32le(reply, 4))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
-            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 10))
+            assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
             assertEquals(0, u16le(reply, 12))
             assertEquals(2, reply[16].toInt() and 0xff)
             assertEquals(1, reply[17].toInt() and 0xff)
@@ -6815,6 +7104,7 @@ class XXkbProtocolTest {
         event: ByteArray,
         sequence: Int,
         reason: Int,
+        deviceId: Int = 0,
         ledClass: Int = 0,
         ledId: Int = 0,
         ledsDefined: Int = 0,
@@ -6827,7 +7117,7 @@ class XXkbProtocolTest {
         assertEquals(XXkb.FirstEvent, event[0].toInt() and 0xff)
         assertEquals(XXkb.ExtensionDeviceNotify, event[1].toInt() and 0xff)
         assertEquals(sequence, u16le(event, 2))
-        assertEquals(0, event[8].toInt() and 0xff)
+        assertEquals(deviceId, event[8].toInt() and 0xff)
         assertEquals(0, event[9].toInt() and 0xff)
         assertEquals(reason, u16le(event, 10))
         assertEquals(ledClass, u16le(event, 12))

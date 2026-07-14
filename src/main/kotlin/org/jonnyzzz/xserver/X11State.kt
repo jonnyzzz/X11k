@@ -148,6 +148,8 @@ internal data class XXkbDeviceLedFeedback(
     val maps: List<ByteArray>,
 )
 
+private const val XkbCoreKeyboardPhysicalIndicators = 0x0000_07ff
+
 internal data class XXkbGeometry(
     val name: Int,
     val widthMM: Int,
@@ -287,7 +289,6 @@ internal class X11State(
     private val xkbComponentNameAtoms = linkedMapOf<Int, Int>()
     private val xkbCompatGroupMaps = linkedMapOf<Int, ByteArray>()
     private val xkbCompatSymInterprets = mutableListOf<ByteArray>()
-    private val xkbDeviceLedFeedbacks = linkedMapOf<Int, MutableList<XXkbDeviceLedFeedback>>()
     private var xkbGeometry: XXkbGeometry? = null
     private var activePointerGrab: XInputGrab? = null
     private var frozenPointerOwner: XEventSink? = null
@@ -2023,43 +2024,64 @@ internal class X11State(
 
     @Synchronized
     fun xkbDeviceLedFeedbacks(deviceSpec: Int): List<XXkbDeviceLedFeedback> =
-        xkbDeviceLedFeedbacks[deviceSpec].orEmpty()
-            .map { it.copy(maps = it.maps.map(ByteArray::copyOf)) }
+        if (deviceSpec == XXkb.DeviceSpecUseCoreKeyboard) listOf(xkbCoreKeyboardLedFeedback()) else emptyList()
 
     @Synchronized
     fun setXkbDeviceLedFeedbacks(deviceSpec: Int, feedbacks: List<XXkbDeviceLedFeedback>, change: Int): List<XXkbDeviceLedFeedback> {
-        if (feedbacks.isEmpty()) return emptyList()
+        if (deviceSpec != XXkb.DeviceSpecUseCoreKeyboard || feedbacks.isEmpty()) return emptyList()
         val applied = mutableListOf<XXkbDeviceLedFeedback>()
-        val existing = xkbDeviceLedFeedbacks.getOrPut(deviceSpec) { mutableListOf() }
         for (feedback in feedbacks) {
-            val previousIndex = existing.indexOfFirst { it.ledClass == feedback.ledClass && it.ledId == feedback.ledId }
-            val previous = existing.getOrNull(previousIndex)
-            val merged = if (previous == null) {
-                feedback.copy(
-                    namesPresent = if ((change and XXkb.XiFeatureIndicatorNames) != 0) feedback.namesPresent else 0,
-                    mapsPresent = if ((change and XXkb.XiFeatureIndicatorMaps) != 0) feedback.mapsPresent else 0,
-                    state = if ((change and XXkb.XiFeatureIndicatorState) != 0) feedback.state else 0,
-                    names = if ((change and XXkb.XiFeatureIndicatorNames) != 0) feedback.names else emptyList(),
-                    maps = if ((change and XXkb.XiFeatureIndicatorMaps) != 0) feedback.maps.map(ByteArray::copyOf) else emptyList(),
-                )
-            } else {
-                previous.copy(
-                    physIndicators = feedback.physIndicators,
-                    namesPresent = if ((change and XXkb.XiFeatureIndicatorNames) != 0) feedback.namesPresent else previous.namesPresent,
-                    mapsPresent = if ((change and XXkb.XiFeatureIndicatorMaps) != 0) feedback.mapsPresent else previous.mapsPresent,
-                    state = if ((change and XXkb.XiFeatureIndicatorState) != 0) feedback.state else previous.state,
-                    names = if ((change and XXkb.XiFeatureIndicatorNames) != 0) feedback.names else previous.names,
-                    maps = if ((change and XXkb.XiFeatureIndicatorMaps) != 0) feedback.maps.map(ByteArray::copyOf) else previous.maps.map(ByteArray::copyOf),
-                )
+            if (feedback.ledClass != XXkb.KbdFeedbackClass || feedback.ledId != 0) continue
+            if ((change and XXkb.XiFeatureIndicatorNames) != 0) {
+                xkbNamedIndicatorIndexes.clear()
+                var nameIndex = 0
+                for (bit in 0 until 32) {
+                    if ((feedback.namesPresent and (1 shl bit)) != 0) {
+                        val atom = feedback.names.getOrNull(nameIndex++) ?: 0
+                        if (atom != 0) xkbNamedIndicatorIndexes[atom] = bit
+                    }
+                }
             }
-            if (previousIndex >= 0) {
-                existing[previousIndex] = merged
-            } else {
-                existing += merged
+            if ((change and XXkb.XiFeatureIndicatorMaps) != 0) {
+                xkbIndicatorMaps.clear()
+                var mapIndex = 0
+                for (bit in 0 until 32) {
+                    if ((feedback.mapsPresent and (1 shl bit)) != 0) {
+                        feedback.maps.getOrNull(mapIndex++)?.let { xkbIndicatorMaps[bit] = it.copyOf() }
+                    }
+                }
             }
-            applied += merged.copy(maps = merged.maps.map(ByteArray::copyOf))
+            if ((change and XXkb.XiFeatureIndicatorState) != 0) {
+                xkbIndicatorState = feedback.state
+            }
+            applied += xkbCoreKeyboardLedFeedback()
         }
         return applied
+    }
+
+    private fun xkbCoreKeyboardLedFeedback(): XXkbDeviceLedFeedback {
+        var namesPresent = 0
+        val names = mutableListOf<Int>()
+        for ((atom, index) in xkbNamedIndicatorIndexes.entries.sortedBy { it.value }) {
+            namesPresent = namesPresent or (1 shl index)
+            names += atom
+        }
+        var mapsPresent = 0
+        val maps = mutableListOf<ByteArray>()
+        for ((index, map) in xkbIndicatorMaps.entries.sortedBy { it.key }) {
+            mapsPresent = mapsPresent or (1 shl index)
+            maps += map.copyOf()
+        }
+        return XXkbDeviceLedFeedback(
+            ledClass = XXkb.KbdFeedbackClass,
+            ledId = 0,
+            namesPresent = namesPresent,
+            mapsPresent = mapsPresent,
+            physIndicators = XkbCoreKeyboardPhysicalIndicators,
+            state = xkbIndicatorState,
+            names = names,
+            maps = maps,
+        )
     }
 
     @Synchronized
@@ -2127,7 +2149,8 @@ internal class X11State(
             if (xkbNamedIndicatorIndexes.size >= 32) {
                 return XkbNamedIndicatorUpdate(stateNotify = null, mapChanged = 0, state = xkbIndicatorState)
             }
-            xkbNamedIndicatorIndexes.size.also { xkbNamedIndicatorIndexes[indicator] = it }
+            val usedIndexes = xkbNamedIndicatorIndexes.values.toSet()
+            (0 until 32).first { it !in usedIndexes }.also { xkbNamedIndicatorIndexes[indicator] = it }
         }
         val mask = 1 shl index
         var mapChanged = 0

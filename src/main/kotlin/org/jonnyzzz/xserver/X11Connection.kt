@@ -3342,28 +3342,34 @@ internal class X11Connection(
         val ledClass = byteOrder.u16(body, 8)
         val ledId = byteOrder.u16(body, 10)
         val corePointerDevice = deviceSpec == XXkb.DeviceSpecUseCorePointer
+        val coreKeyboardDevice = deviceSpec == XXkb.DeviceSpecUseCoreKeyboard
+        val coreDevice = corePointerDevice || coreKeyboardDevice
         val totalButtons = if (corePointerDevice) state.pointerMapping().size else 0
         if (corePointerDevice && (wanted and XXkb.XiFeatureButtonActions) != 0 && !xkbDeviceInfoButtonRangeValid(allButtons, firstButton, buttonCount, totalButtons)) {
             return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = 0)
         }
-        val wantsIndicatorInfo = corePointerDevice && (wanted and XXkb.XiFeatureIndicators) != 0
+        val allLedFeedbacks = state.xkbDeviceLedFeedbacks(deviceSpec)
+        val wantsIndicatorInfo = coreDevice && (wanted and XXkb.XiFeatureIndicators) != 0
         if (wantsIndicatorInfo && !xkbGetDeviceInfoLedClassValid(ledClass)) {
             return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = ledClass)
         }
         if (wantsIndicatorInfo && !xkbGetDeviceInfoLedIdValid(ledId)) {
             return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = ledId)
         }
-        val allLedFeedbacks = if (wantsIndicatorInfo) state.xkbDeviceLedFeedbacks(deviceSpec) else emptyList()
-        val requestedLedFeedbacks = if (allLedFeedbacks.isNotEmpty()) {
+        val requestedLedFeedbacks = if (wantsIndicatorInfo) {
             xkbDeviceInfoMatchingLedFeedbacks(allLedFeedbacks, ledClass, ledId).also { feedbacks ->
-                if (feedbacks.isEmpty()) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = 0)
+                val emptyInventoryQuery = allLedFeedbacks.isEmpty() && ledClass == XXkb.AllXIClasses && ledId == XXkb.AllXIIds
+                if (feedbacks.isEmpty() && !emptyInventoryQuery) {
+                    return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = 0)
+                }
             }
         } else {
             emptyList()
         }
-        val supportedLedFeatures = if (requestedLedFeedbacks.isNotEmpty()) XXkb.XiFeatureIndicators else 0
-        val supported = (if (corePointerDevice) XXkb.XiFeatureButtonActions else 0) or supportedLedFeatures
-        val present = wanted and supported
+        val supported = if (coreDevice) XXkb.XiFeatureAllDeviceFeatures else 0
+        val available = (if (corePointerDevice) XXkb.XiFeatureButtonActions else 0) or
+            (if (allLedFeedbacks.isNotEmpty()) XXkb.XiFeatureIndicators else 0)
+        val present = wanted and available
         val unsupported = wanted and supported.inv()
         val firstButtonReturned = if ((present and XXkb.XiFeatureButtonActions) != 0) {
             if (allButtons) 1 else firstButton.takeIf { it in 1..totalButtons } ?: 0
@@ -3412,7 +3418,11 @@ internal class X11Connection(
         if (badChangeBits != 0) {
             return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = badChangeBits)
         }
-        val supportedFeatures = if (deviceSpec == XXkb.DeviceSpecUseCorePointer) XXkb.XiFeatureAllDeviceFeatures else 0
+        val supportedFeatures = when (deviceSpec) {
+            XXkb.DeviceSpecUseCorePointer -> XXkb.XiFeatureAllDeviceFeatures
+            XXkb.DeviceSpecUseCoreKeyboard -> XXkb.XiFeatureAllDeviceFeatures
+            else -> 0
+        }
         var offset = 8
         val buttonActions = mutableListOf<ByteArray>()
         if (change and XXkb.XiFeatureButtonActions != 0) {
@@ -3426,6 +3436,8 @@ internal class X11Connection(
                 repeat(nButtons) { index ->
                     buttonActions += body.copyOfRange(offset + index * 8, offset + (index + 1) * 8)
                 }
+            } else if (deviceSpec == XXkb.DeviceSpecUseCoreKeyboard) {
+                return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
             }
             offset = nextOffset
         }
@@ -3476,13 +3488,22 @@ internal class X11Connection(
                     maps = maps,
                 )
                 requestedLedFeedbacks += feedback
-                if (deviceSpec == XXkb.DeviceSpecUseCorePointer) {
+                if (deviceSpec == XXkb.DeviceSpecUseCorePointer || deviceSpec == XXkb.DeviceSpecUseCoreKeyboard) {
                     ledFeedbacks += feedback
                 }
                 offset = nextOffset.toInt()
             }
         }
         if (offset != body.size) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
+        val resolvedLedFeedbacks = ledFeedbacks.map { requested ->
+            val match = xkbDeviceInfoMatchingLedFeedbacks(
+                state.xkbDeviceLedFeedbacks(deviceSpec),
+                requested.ledClass,
+                requested.ledId,
+            ).singleOrNull()
+                ?: return writeError(error = 8, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
+            requested.copy(ledClass = match.ledClass, ledId = match.ledId)
+        }
         val unsupportedFeatures = change and supportedFeatures.inv()
         if (buttonActions.isNotEmpty()) {
             state.setXkbButtonActions(firstButton, buttonActions)
@@ -3498,7 +3519,7 @@ internal class X11Connection(
                 ),
             )
         }
-        val appliedLedFeedbacks = state.setXkbDeviceLedFeedbacks(deviceSpec, ledFeedbacks, change)
+        val appliedLedFeedbacks = state.setXkbDeviceLedFeedbacks(deviceSpec, resolvedLedFeedbacks, change)
         val indicatorReason = change and XXkb.XiFeatureIndicators
         if (indicatorReason != 0) {
             for (feedback in appliedLedFeedbacks) {
