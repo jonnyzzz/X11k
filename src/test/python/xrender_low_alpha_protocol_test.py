@@ -109,6 +109,16 @@ def query_formats(sock, render_opcode):
         and item["blue"] == (0, 0xFF)
         and item["alpha"] == (24, 0xFF)
     )
+    rgb24 = next(
+        item["id"]
+        for item in formats
+        if item["type"] == 1
+        and item["depth"] == 24
+        and item["red"] == (16, 0xFF)
+        and item["green"] == (8, 0xFF)
+        and item["blue"] == (0, 0xFF)
+        and item["alpha"][1] == 0
+    )
     a8 = next(
         item["id"]
         for item in formats
@@ -119,7 +129,7 @@ def query_formats(sock, render_opcode):
         and item["blue"][1] == 0
         and item["alpha"] == (0, 0xFF)
     )
-    return argb32, a8
+    return argb32, rgb24, a8
 
 
 def create_pixmap(depth, pixmap, root, width, height):
@@ -153,6 +163,11 @@ def change_picture_repeat(render_opcode, picture, repeat):
     return request(render_opcode, 5, struct.pack("<III", picture, 1, repeat))
 
 
+def fill_rectangles(render_opcode, operation, picture, color, width, height):
+    body = struct.pack("<B3xIHHHHhhHH", operation, picture, *color, 0, 0, width, height)
+    return request(render_opcode, 26, body)
+
+
 def create_linear_gradient(render_opcode, picture, p1, p2, colors):
     body = struct.pack("<IiiiiI", picture, p1[0], p1[1], p2[0], p2[1], len(colors))
     body += b"".join(struct.pack("<I", stop) for stop, _ in colors)
@@ -164,15 +179,43 @@ def set_picture_transform(render_opcode, picture, transform):
     return request(render_opcode, 28, struct.pack("<I9i", picture, *transform))
 
 
-def composite(render_opcode, operation, source, destination, width, *, height=1, mask=0, source_x=0, source_y=0):
+def composite(
+    render_opcode,
+    operation,
+    source,
+    destination,
+    width,
+    *,
+    height=1,
+    mask=0,
+    source_x=0,
+    source_y=0,
+    destination_x=0,
+    destination_y=0,
+):
     body = bytearray(32)
     body[0] = operation
-    struct.pack_into("<IIIhhhhhhHH", body, 4, source, mask, destination, source_x, source_y, 0, 0, 0, 0, width, height)
+    struct.pack_into(
+        "<IIIhhhhhhHH",
+        body,
+        4,
+        source,
+        mask,
+        destination,
+        source_x,
+        source_y,
+        0,
+        0,
+        destination_x,
+        destination_y,
+        width,
+        height,
+    )
     return request(render_opcode, 8, body)
 
 
-def get_image(drawable, width, height=1):
-    return request(73, 2, struct.pack("<IhhHHI", drawable, 0, 0, width, height, 0xFFFFFFFF))
+def get_image(drawable, width, height=1, *, x=0, y=0):
+    return request(73, 2, struct.pack("<IhhHHI", drawable, x, y, width, height, 0xFFFFFFFF))
 
 
 def read_pixels(sock, width, height=1):
@@ -191,13 +234,17 @@ def assert_pixels(label, actual, expected):
         raise AssertionError(f"{label}: expected {hex_pixels(expected)}, got {hex_pixels(actual)}")
 
 
+def assert_rgb24(label, actual, expected):
+    assert_pixels(label, [pixel & 0x00FFFFFF for pixel in actual], expected)
+
+
 def run(host, port, dump):
     with socket.create_connection((host, port), timeout=5) as sock:
         sock.settimeout(5)
         resource_base, resource_mask, root = setup(sock)
         ids = ResourceIds(resource_base, resource_mask)
         render_opcode = query_extension(sock, "RENDER")
-        argb32, a8 = query_formats(sock, render_opcode)
+        argb32, rgb24, a8 = query_formats(sock, render_opcode)
 
         source_pixmap = ids.allocate()
         destination_pixmap = ids.allocate()
@@ -212,7 +259,10 @@ def run(host, port, dump):
         gradient_pixmap = ids.allocate()
         gradient_gc = ids.allocate()
         gradient_destination_picture = ids.allocate()
+        fill_pixmap = ids.allocate()
+        fill_picture = ids.allocate()
 
+        gradient_width = 5
         sources = [0x0F000000, 0x08000000, 0x05000000, 0x02000000, 0x80146E2D]
         destinations = [0xFF191A1C, 0xFF191A1C, 0xFF191A1C, 0xFF191A1C, 0xFFE6322C]
         masks = [0xFF, 0x80, 0x80, 0x40, 0x80]
@@ -230,6 +280,19 @@ def run(host, port, dump):
         sock.sendall(create_picture(render_opcode, destination_picture, destination_pixmap, argb32))
         sock.sendall(create_picture(render_opcode, mask_picture, mask_pixmap, a8))
 
+        sock.sendall(create_pixmap(24, fill_pixmap, root, 1, gradient_width + 1))
+        sock.sendall(create_picture(render_opcode, fill_picture, fill_pixmap, rgb24))
+        sock.sendall(fill_rectangles(
+            render_opcode,
+            OP_SRC,
+            fill_picture,
+            (0x19FF, 0x1AFF, 0x1CFF, 0xFFFF),
+            1,
+            gradient_width + 1,
+        ))
+        sock.sendall(get_image(fill_pixmap, 1))
+        fill_rgb24 = read_pixels(sock, 1)
+
         sock.sendall(put_image32(destination_pixmap, destination_gc, width, 1, destinations))
         sock.sendall(composite(render_opcode, OP_OVER, source_picture, destination_picture, width))
         sock.sendall(get_image(destination_pixmap, width))
@@ -240,7 +303,6 @@ def run(host, port, dump):
         sock.sendall(get_image(destination_pixmap, width))
         masked_src = read_pixels(sock, width)
 
-        gradient_width = 5
         sock.sendall(create_pixmap(32, gradient_pixmap, root, 1, gradient_width))
         sock.sendall(create_gc(gradient_gc, gradient_pixmap))
         sock.sendall(create_picture(render_opcode, gradient_destination_picture, gradient_pixmap, argb32))
@@ -271,6 +333,38 @@ def run(host, port, dump):
         sock.sendall(get_image(gradient_pixmap, 1, gradient_width))
         gradient = read_pixels(sock, 1, gradient_width)
 
+        sock.sendall(composite(
+            render_opcode,
+            OP_OVER,
+            gradient_destination_picture,
+            fill_picture,
+            1,
+            height=gradient_width,
+        ))
+        sock.sendall(get_image(fill_pixmap, 1, gradient_width))
+        drawable_rgb24_over = read_pixels(sock, 1, gradient_width)
+        fixed_row_unshifted = [drawable_rgb24_over[3]]
+
+        sock.sendall(fill_rectangles(
+            render_opcode,
+            OP_SRC,
+            fill_picture,
+            (0x19FF, 0x1AFF, 0x1CFF, 0xFFFF),
+            1,
+            gradient_width + 1,
+        ))
+        sock.sendall(composite(
+            render_opcode,
+            OP_OVER,
+            gradient_destination_picture,
+            fill_picture,
+            1,
+            height=gradient_width,
+            destination_y=1,
+        ))
+        sock.sendall(get_image(fill_pixmap, 1, y=3))
+        shifted_drawable_rgb24_over = read_pixels(sock, 1)
+
         sock.sendall(put_image32(gradient_pixmap, gradient_gc, 1, gradient_width, [0xFF191A1C] * gradient_width))
         sock.sendall(composite(
             render_opcode,
@@ -285,11 +379,37 @@ def run(host, port, dump):
         sock.sendall(get_image(gradient_pixmap, 1, gradient_width))
         gradient_over = read_pixels(sock, 1, gradient_width)
 
+        sock.sendall(fill_rectangles(
+            render_opcode,
+            OP_SRC,
+            fill_picture,
+            (0x19FF, 0x1AFF, 0x1CFF, 0xFFFF),
+            1,
+            gradient_width,
+        ))
+        sock.sendall(composite(
+            render_opcode,
+            OP_OVER,
+            gradient_picture,
+            fill_picture,
+            1,
+            height=gradient_width,
+            source_x=847,
+            source_y=827,
+        ))
+        sock.sendall(get_image(fill_pixmap, 1, gradient_width))
+        rgb24_gradient_over = read_pixels(sock, 1, gradient_width)
+
         results = {
             "drawable_over": hex_pixels(drawable_over),
+            "drawable_rgb24_over": hex_pixels(drawable_rgb24_over),
+            "fill_rgb24": hex_pixels(fill_rgb24),
+            "fixed_row_unshifted": hex_pixels(fixed_row_unshifted),
             "masked_src": hex_pixels(masked_src),
             "gradient": hex_pixels(gradient),
             "gradient_over": hex_pixels(gradient_over),
+            "rgb24_gradient_over": hex_pixels(rgb24_gradient_over),
+            "shifted_drawable_rgb24_over": hex_pixels(shifted_drawable_rgb24_over),
         }
         if dump:
             print(json.dumps(results, sort_keys=True))
@@ -298,14 +418,27 @@ def run(host, port, dump):
         assert_pixels("premultiplied drawable OpOver", drawable_over, [
             0xFF18181A, 0xFF18191B, 0xFF19191B, 0xFF191A1C, 0xFF878743,
         ])
+        assert_rgb24("notification RGB24 FillRectangles", fill_rgb24, [0x00191A1C])
         assert_pixels("premultiplied drawable masked OpSrc", masked_src, [
             0x0F000000, 0x04000000, 0x03000000, 0x01000000, 0x400A3717,
         ])
         assert_pixels("transformed notification gradient OpSrc", gradient, [
             0x0F000000, 0x0C000000, 0x08000000, 0x05000000, 0x02000000,
         ])
+        assert_rgb24("stored notification gradient drawable OpOver on RGB24", drawable_rgb24_over, [
+            0x0018181A, 0x0018191B, 0x0018191B, 0x0019191B, 0x00191A1C,
+        ])
+        assert_rgb24("unshifted stored gradient at fixed destination row", fixed_row_unshifted, [
+            0x0019191B,
+        ])
+        assert_rgb24("shifted stored gradient at fixed destination row", shifted_drawable_rgb24_over, [
+            0x0018191B,
+        ])
         assert_pixels("transformed notification gradient OpOver", gradient_over, [
             0xFF18181A, 0xFF18191B, 0xFF18191B, 0xFF19191B, 0xFF191A1C,
+        ])
+        assert_rgb24("transformed notification gradient OpOver on RGB24", rgb24_gradient_over, [
+            0x0018181A, 0x0018191B, 0x0018191B, 0x0019191B, 0x00191A1C,
         ])
 
 
