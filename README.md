@@ -179,7 +179,7 @@ The IntelliJ smoke and parity containers open a clean tracked-file project expor
 under `build/tmp/intellij-community-smoke/project`, so untracked run artifacts do
 not leak into the IDE project tree or visual comparison.
 
-The parity probe writes its current Xvfb reference, Kotlin Robot capture,
+For direct Gradle runs, the parity probe writes its current Xvfb reference, Kotlin Robot capture,
 Kotlin SVG-composed capture, raw `/screen.svg`, `/`, `/text.txt`, SVG layer
 inventory, and HTML per-window preview inventory plus visual diffs, metrics,
 and IntelliJ client logs under
@@ -187,6 +187,11 @@ and IntelliJ client logs under
 with ANGLE/JCEF failure signatures and visual region metrics with full-screen,
 inside-frame, top-frame, right-frame, and bottom-frame mismatch bounds when the
 opt-in parity path runs.
+When launched through `scripts/run-supervised.sh gradle`, IntelliJ and VSCode
+GUI artifacts are retained with the bounded run under
+`runs/gradle-bounded/<run-id>/gui-artifacts/` so later bounded runs cannot clear
+the evidence bundle. Set `GRADLE_GUI_ARTIFACTS_DIR` or pass
+`-Dx.guiArtifactsDir=...` to override that location.
 Add `-Dx.intellijDebug=true` or `X_INTELLIJ_DEBUG=true` to the smoke or parity
 test to also enable the container's XAWT/JCEF trace logs; when present, they are
 copied into the same diagnostics directory, including pid-suffixed JCEF/Chromium
@@ -211,11 +216,12 @@ scripts/run-supervised.sh gradle dockerBuildX11Images
 scripts/run-supervised.sh gradle test --tests org.jonnyzzz.xserver.VSCodeSmokeTest -Dx.vscodeParity=true
 ```
 
-The VSCode parity probe writes its current Xvfb reference, Kotlin Robot capture,
+For direct Gradle runs, the VSCode parity probe writes its current Xvfb reference, Kotlin Robot capture,
 Kotlin SVG-composed capture, raw `/screen.svg`, `/text.txt`, raw `/` HTML,
 SVG layer inventory, HTML per-window preview inventory, visual diffs,
 full-screen metrics, visual region metrics, extension/GLX diagnostics, and
-VSCode logs under `build/tmp/vscode-smoke/`.
+VSCode logs under `build/tmp/vscode-smoke/`; supervised runs use the retained
+per-run location described above.
 
 Run the prototype server:
 

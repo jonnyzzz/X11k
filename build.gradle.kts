@@ -40,6 +40,7 @@ tasks.test {
         "x.intellijUrl",
         "x.intellijImage",
         "x.intellijReferenceImage",
+        "x.guiArtifactsDir",
         "x.vscodeSmoke",
         "x.vscodeParity",
         "x.vscodeUrl",

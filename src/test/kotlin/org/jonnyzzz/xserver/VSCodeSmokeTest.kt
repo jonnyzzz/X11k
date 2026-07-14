@@ -103,19 +103,23 @@ class VSCodeSmokeTest {
 
     @Test
     fun `vscode parity artifact directory is reset before a new bundle`() {
-        val directory = vscodeSmokeArtifactsDirectory()
-        val stale = File(directory, "vscode-xvfb-reference.png")
-        val retainedInputDirectory = File(directory, "project").also { it.mkdirs() }
-        val retainedInput = File(retainedInputDirectory, "README.md")
-        stale.writeText("stale image")
-        retainedInput.writeText("tracked input")
+        val directory = Files.createTempDirectory("vscode-parity-artifacts-test").toFile()
+        try {
+            val stale = File(directory, "vscode-xvfb-reference.png")
+            val retainedInputDirectory = File(directory, "project").also { it.mkdirs() }
+            val retainedInput = File(retainedInputDirectory, "README.md")
+            stale.writeText("stale image")
+            retainedInput.writeText("tracked input")
 
-        val prepared = prepareVSCodeParityArtifactsDirectory()
+            val prepared = prepareVSCodeParityArtifactsDirectory(directory)
 
-        assertEquals(directory, prepared)
-        assertTrue(prepared.isDirectory)
-        assertFalse(stale.exists(), "stale VSCode parity artifacts must not survive into the next bundle")
-        assertTrue(retainedInput.isFile, "generated VSCode project input must survive artifact cleanup")
+            assertEquals(directory, prepared)
+            assertTrue(prepared.isDirectory)
+            assertFalse(stale.exists(), "stale VSCode parity artifacts must not survive into the next bundle")
+            assertTrue(retainedInput.isFile, "generated VSCode project input must survive artifact cleanup")
+        } finally {
+            directory.deleteRecursively()
+        }
     }
 
     @Test
@@ -968,13 +972,21 @@ class VSCodeSmokeTest {
     }
 
     private fun vscodeSmokeArtifactsDirectory(): File =
-        projectRoot().resolve("build/tmp/vscode-smoke").toFile().also { it.mkdirs() }
+        guiArtifactsRoot().resolve("vscode-smoke").toFile().also { it.mkdirs() }
 
-    private fun prepareVSCodeParityArtifactsDirectory(): File =
-        projectRoot().resolve("build/tmp/vscode-smoke").toFile().also {
+    private fun prepareVSCodeParityArtifactsDirectory(
+        directory: File = vscodeSmokeArtifactsDirectory(),
+    ): File =
+        directory.also {
             it.mkdirs()
             it.listFiles()?.filter { child -> child.isFile }?.forEach { child -> child.delete() }
         }
+
+    private fun guiArtifactsRoot(): Path =
+        (System.getProperty("x.guiArtifactsDir") ?: System.getenv("X_GUI_ARTIFACTS_DIR"))
+            ?.takeIf { it.isNotBlank() }
+            ?.let { Path.of(it).toAbsolutePath().normalize() }
+            ?: projectRoot().resolve("build/tmp")
 
     private fun collectVSCodeLogs(container: GenericContainer<*>, prefix: String = "vscode-kotlin"): List<VSCodeLogArtifact> {
         val dynamicLogs = execContainerShell(

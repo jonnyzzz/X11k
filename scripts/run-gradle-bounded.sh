@@ -21,6 +21,7 @@ NATIVE_CRASH_SCAN_GREP_TIMEOUT_SECONDS="${GRADLE_NATIVE_CRASH_SCAN_GREP_TIMEOUT_
 NATIVE_CRASH_SCAN_MAX_FILES="${GRADLE_NATIVE_CRASH_SCAN_MAX_FILES:-200}"
 NATIVE_CRASH_SCAN_MAX_BYTES="${GRADLE_NATIVE_CRASH_SCAN_MAX_BYTES:-1048576}"
 KOTLIN_COMPILER_EXECUTION_STRATEGY="${GRADLE_KOTLIN_COMPILER_EXECUTION_STRATEGY:-in-process}"
+GUI_ARTIFACTS_DIR="${GRADLE_GUI_ARTIFACTS_DIR:-}"
 
 usage() {
   cat <<USAGE
@@ -28,7 +29,7 @@ Usage:
   scripts/run-gradle-bounded.sh [gradle args...]
 
 Runs ./gradlew with repository-safe defaults:
-  --no-daemon --max-workers=1 -Dkotlin.incremental=false
+  --project-dir=<repository root> --no-daemon --max-workers=1 -Dkotlin.incremental=false
   -Dkotlin.compiler.execution.strategy=${KOTLIN_COMPILER_EXECUTION_STRATEGY:-<caller-provided>}
 
 Environment:
@@ -45,6 +46,7 @@ Environment:
   GRADLE_NATIVE_CRASH_SCAN_MAX_FILES=$NATIVE_CRASH_SCAN_MAX_FILES
   GRADLE_NATIVE_CRASH_SCAN_MAX_BYTES=$NATIVE_CRASH_SCAN_MAX_BYTES
   GRADLE_KOTLIN_COMPILER_EXECUTION_STRATEGY=${KOTLIN_COMPILER_EXECUTION_STRATEGY:-<empty means caller-provided/default>}
+  GRADLE_GUI_ARTIFACTS_DIR=${GUI_ARTIFACTS_DIR:-<per-run gui-artifacts directory>}
 
 On wall-clock or output-idle timeout the script writes jps, jcmd/jstack thread
 dumps, Docker/Testcontainers diagnostics, and output tails before terminating the
@@ -62,6 +64,7 @@ if [[ "${1:-}" == "--" ]]; then
 fi
 
 mkdir -p "$RUN_DIR"
+RUN_DIR="$(cd "$RUN_DIR" && pwd)"
 
 timeout_bin() {
   for candidate in /opt/homebrew/bin/timeout gtimeout timeout; do
@@ -355,9 +358,13 @@ diagnose_gradle() {
 }
 
 native_crash_candidate_files() {
+  local roots=("$ROOT/build/test-results/test" "$ROOT/build/tmp")
+  if [[ -d "$GUI_ARTIFACTS_DIR" ]]; then
+    roots+=("$GUI_ARTIFACTS_DIR")
+  fi
   printf '%s\n' "$STDOUT_FILE" "$STDERR_FILE"
   run_bounded "$NATIVE_CRASH_SCAN_FIND_TIMEOUT_SECONDS" find \
-    "$ROOT/build/test-results/test" "$ROOT/build/tmp" \
+    "${roots[@]}" \
     -type f \
     -newer "$RUN_INFO_FILE" \
     \( -name 'TEST-*.xml' \
@@ -399,9 +406,10 @@ scan_native_crash_anchors() {
 
 dump_failure_artifacts() {
   local reason="$1"
-  local safe_reason diag_file native_scan_file
+  local safe_reason diag_file native_scan_file intellij_artifacts_dir
   safe_reason="$(printf '%s' "$reason" | tr -cd '[:alnum:]_-')"
   diag_file="$THIS_RUN_DIR/diagnostics-${safe_reason}-$(date -u +%Y%m%d-%H%M%S).txt"
+  intellij_artifacts_dir="$GUI_ARTIFACTS_DIR/intellij-community-smoke"
   {
     echo "REASON=$reason"
     echo "RUN_ID=$RUN_ID"
@@ -427,8 +435,8 @@ dump_failure_artifacts() {
     head -240 "$native_scan_file" 2>/dev/null || true
     echo
     echo "== intellij smoke artifacts =="
-    if [[ -d "$ROOT/build/tmp/intellij-community-smoke" ]]; then
-      find "$ROOT/build/tmp/intellij-community-smoke" -maxdepth 1 -type f \
+    if [[ -d "$intellij_artifacts_dir" ]]; then
+      find "$intellij_artifacts_dir" -maxdepth 1 -type f \
         \( -name '*.log' -o -name '*.txt' \) -print 2>/dev/null | sort | while read -r file; do
         case "$(basename "$file")" in
           *idea.log|*run.log|*xawt-trace.log|*glx-xdpyinfo.log|*xprop-root.log|*visual-region-metrics.txt)
@@ -493,7 +501,11 @@ STDERR_FILE="$THIS_RUN_DIR/stderr.txt"
 RUN_INFO_FILE="$THIS_RUN_DIR/run-info.txt"
 PID_FILE="$THIS_RUN_DIR/pid.txt"
 
-GRADLE_ARGS=(--no-daemon --max-workers=1 -Dkotlin.incremental=false)
+if [[ -z "$GUI_ARTIFACTS_DIR" ]]; then
+  GUI_ARTIFACTS_DIR="$THIS_RUN_DIR/gui-artifacts"
+fi
+
+GRADLE_ARGS=("--project-dir=$ROOT" --no-daemon --max-workers=1 -Dkotlin.incremental=false)
 has_kotlin_execution_strategy=0
 for arg in "$@"; do
   if [[ "$arg" == -Dkotlin.compiler.execution.strategy=* ]]; then
@@ -504,7 +516,56 @@ done
 if [[ "$has_kotlin_execution_strategy" == "0" && -n "$KOTLIN_COMPILER_EXECUTION_STRATEGY" ]]; then
   GRADLE_ARGS+=("-Dkotlin.compiler.execution.strategy=$KOTLIN_COMPILER_EXECUTION_STRATEGY")
 fi
-GRADLE_ARGS+=("$@")
+USER_GRADLE_ARGS=()
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    -Dx.guiArtifactsDir=*)
+      GUI_ARTIFACTS_DIR="${1#-Dx.guiArtifactsDir=}"
+      shift
+      ;;
+    -D=x.guiArtifactsDir=*)
+      GUI_ARTIFACTS_DIR="${1#-D=x.guiArtifactsDir=}"
+      shift
+      ;;
+    -D)
+      if [[ "${2:-}" == x.guiArtifactsDir=* ]]; then
+        GUI_ARTIFACTS_DIR="${2#x.guiArtifactsDir=}"
+        shift 2
+      else
+        USER_GRADLE_ARGS+=("$1")
+        shift
+      fi
+      ;;
+    --system-prop=x.guiArtifactsDir=*)
+      GUI_ARTIFACTS_DIR="${1#--system-prop=x.guiArtifactsDir=}"
+      shift
+      ;;
+    --system-prop)
+      if [[ "${2:-}" == x.guiArtifactsDir=* ]]; then
+        GUI_ARTIFACTS_DIR="${2#x.guiArtifactsDir=}"
+        shift 2
+      else
+        USER_GRADLE_ARGS+=("$1")
+        shift
+      fi
+      ;;
+    *)
+      USER_GRADLE_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+if [[ -z "$GUI_ARTIFACTS_DIR" ]]; then
+  echo "-Dx.guiArtifactsDir must not be empty." >&2
+  exit 2
+fi
+if [[ "$GUI_ARTIFACTS_DIR" != /* ]]; then
+  GUI_ARTIFACTS_DIR="$ROOT/$GUI_ARTIFACTS_DIR"
+fi
+mkdir -p "$GUI_ARTIFACTS_DIR"
+GUI_ARTIFACTS_DIR="$(cd "$GUI_ARTIFACTS_DIR" && pwd -P)"
+GRADLE_ARGS+=("-Dx.guiArtifactsDir=$GUI_ARTIFACTS_DIR")
+GRADLE_ARGS+=("${USER_GRADLE_ARGS[@]}")
 echo "Running: $ROOT/gradlew ${GRADLE_ARGS[*]}" >&2
 {
   echo "RUN_ID=$RUN_ID"
@@ -516,6 +577,7 @@ echo "Running: $ROOT/gradlew ${GRADLE_ARGS[*]}" >&2
   echo "NO_OUTPUT_TIMEOUT_SECONDS=$NO_OUTPUT_TIMEOUT_SECONDS"
   echo "STDOUT=$STDOUT_FILE"
   echo "STDERR=$STDERR_FILE"
+  echo "GUI_ARTIFACTS=$GUI_ARTIFACTS_DIR"
   echo "LATEST=$RUN_DIR/latest"
 } > "$RUN_INFO_FILE"
 

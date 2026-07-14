@@ -1172,6 +1172,8 @@ class IntellijCommunitySmokeTest {
         assertTrue(parityBody.contains("intellijPrimaryFrameStripInputsMatch"), parityBody)
         assertTrue(parityBody.contains("intellijParityPairIsBetter(pair, best)"), parityBody)
         assertTrue(parityBody.contains("pair.primaryFrameStripInputsMatch != false && pair.selectionDistance <= IntellijParityPairDistanceTarget"), parityBody)
+        assertTrue(parityBody.contains("robotSvgDistance = fullImageDistance(actual.robot.image, composedSvgCapture.image)"), parityBody)
+        assertTrue(parityBody.contains("intellijRobotSvgCaptureIsAcceptable(bestPair.robotSvgDistance)"), parityBody)
         assertFalse(parityBody.contains("sharedConfig"), parityBody)
         assertFalse(parityBody.contains("cleanIntellijConfigDir()"), parityBody)
         assertTrue(source.contains("""withFileSystemBind(configDir.toString(), "/tmp/idea-config", BindMode.READ_WRITE)"""), source)
@@ -1312,19 +1314,23 @@ class IntellijCommunitySmokeTest {
 
     @Test
     fun `intellij parity artifact directory is reset before a new bundle`() {
-        val directory = intellijSmokeArtifactsDirectory()
-        val stale = File(directory, "intellij-xvfb-putimage-trace.log")
-        val retainedInputDirectory = File(directory, "project").also { it.mkdirs() }
-        val retainedInput = File(retainedInputDirectory, "README.md")
-        stale.writeText("stale trace")
-        retainedInput.writeText("tracked input")
+        val directory = Files.createTempDirectory("intellij-parity-artifacts-test").toFile()
+        try {
+            val stale = File(directory, "intellij-xvfb-putimage-trace.log")
+            val retainedInputDirectory = File(directory, "project").also { it.mkdirs() }
+            val retainedInput = File(retainedInputDirectory, "README.md")
+            stale.writeText("stale trace")
+            retainedInput.writeText("tracked input")
 
-        val prepared = prepareIntellijParityArtifactsDirectory()
+            val prepared = prepareIntellijParityArtifactsDirectory(directory)
 
-        assertEquals(directory, prepared)
-        assertTrue(prepared.isDirectory)
-        assertFalse(stale.exists(), "stale IntelliJ parity artifacts must not survive into the next bundle")
-        assertTrue(retainedInput.isFile, "generated IntelliJ project/cache inputs must survive artifact cleanup")
+            assertEquals(directory, prepared)
+            assertTrue(prepared.isDirectory)
+            assertFalse(stale.exists(), "stale IntelliJ parity artifacts must not survive into the next bundle")
+            assertTrue(retainedInput.isFile, "generated IntelliJ project/cache inputs must survive artifact cleanup")
+        } finally {
+            directory.deleteRecursively()
+        }
     }
 
     @Test
@@ -2145,7 +2151,7 @@ class IntellijCommunitySmokeTest {
                 composedSvgCapture = composedSvgCapture,
                 robotDistance = imageDistance(selectedReference.robot.image, actual.robot.image),
                 svgDistance = imageDistance(selectedReference.robot.image, composedSvgCapture.image),
-                robotSvgDistance = imageDistance(actual.robot.image, composedSvgCapture.image),
+                robotSvgDistance = fullImageDistance(actual.robot.image, composedSvgCapture.image),
                 primaryFrameStripInputsMatch = primaryFrameStripInputsMatch,
             )
             attempts += pair
@@ -2166,6 +2172,12 @@ class IntellijCommunitySmokeTest {
         )
         File(intellijSmokeArtifactsDirectory(), "intellij-parity-pair-attempts.txt").writeText(
             intellijParityPairAttemptInventory(attempts, selectedAttempt = bestPair.attempt),
+        )
+
+        assertTrue(
+            intellijRobotSvgCaptureIsAcceptable(bestPair.robotSvgDistance),
+            "Kotlin Robot and SVG captures must represent the same exact IntelliJ frame; " +
+                "attempt=${bestPair.attempt} distance=${bestPair.robotSvgDistance}",
         )
 
         assertTrue(actual.text.contains("Content window"), actual.text)
@@ -6430,13 +6442,21 @@ class IntellijCommunitySmokeTest {
     )
 
     private fun intellijSmokeArtifactsDirectory(): File =
-        projectRoot().resolve("build/tmp/intellij-community-smoke").toFile().also { it.mkdirs() }
+        guiArtifactsRoot().resolve("intellij-community-smoke").toFile().also { it.mkdirs() }
 
-    private fun prepareIntellijParityArtifactsDirectory(): File =
-        projectRoot().resolve("build/tmp/intellij-community-smoke").toFile().also {
+    private fun prepareIntellijParityArtifactsDirectory(
+        directory: File = intellijSmokeArtifactsDirectory(),
+    ): File =
+        directory.also {
             it.mkdirs()
             it.listFiles()?.filter { child -> child.isFile }?.forEach { child -> child.delete() }
         }
+
+    private fun guiArtifactsRoot(): Path =
+        (System.getProperty("x.guiArtifactsDir") ?: System.getenv("X_GUI_ARTIFACTS_DIR"))
+            ?.takeIf { it.isNotBlank() }
+            ?.let { Path.of(it).toAbsolutePath().normalize() }
+            ?: projectRoot().resolve("build/tmp")
 
     private fun collectIntellijLogs(
         container: GenericContainer<*>,
