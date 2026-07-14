@@ -163,8 +163,8 @@ def change_picture_repeat(render_opcode, picture, repeat):
     return request(render_opcode, 5, struct.pack("<III", picture, 1, repeat))
 
 
-def fill_rectangles(render_opcode, operation, picture, color, width, height):
-    body = struct.pack("<B3xIHHHHhhHH", operation, picture, *color, 0, 0, width, height)
+def fill_rectangles(render_opcode, operation, picture, color, width, height, *, x=0, y=0):
+    body = struct.pack("<B3xIHHHHhhHH", operation, picture, *color, x, y, width, height)
     return request(render_opcode, 26, body)
 
 

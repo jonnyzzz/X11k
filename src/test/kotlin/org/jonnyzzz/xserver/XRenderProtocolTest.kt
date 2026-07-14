@@ -4018,6 +4018,14 @@ class XRenderProtocolTest {
         )
     }
 
+    @Test
+    fun `Python XRENDER bottom band oracle passes against Kotlin server`() {
+        runPythonProtocolTest(
+            scriptName = "xrender_bottom_band_protocol_test.py",
+            passMarker = "PASS xrender_bottom_band_protocol_test",
+        )
+    }
+
     private fun runPythonProtocolTest(scriptName: String, passMarker: String) {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
