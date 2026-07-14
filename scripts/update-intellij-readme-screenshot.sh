@@ -13,14 +13,20 @@ RUN_DIR="${RUN_DIR:-$ROOT/runs/intellij-readme-screenshot}"
 PROJECT_EXPORT_DIR="${PROJECT_EXPORT_DIR:-$RUN_DIR/project}"
 IDEA_CACHE_DIR="${IDEA_CACHE_DIR:-$RUN_DIR/idea-cache}"
 IDEA_PROJECT_CONTAINER="${IDEA_PROJECT_CONTAINER:-/workspace/jonnyzzz-x}"
+IDEA_OPEN_FILE_CONTAINER="${IDEA_OPEN_FILE_CONTAINER:-$IDEA_PROJECT_CONTAINER/README.md}"
 READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-600}"
 READY_SETTLE_SECONDS="${READY_SETTLE_SECONDS:-8}"
 CAPTURE_TIMEOUT_SECONDS="${CAPTURE_TIMEOUT_SECONDS:-120}"
 BUILD_TIMEOUT_SECONDS="${BUILD_TIMEOUT_SECONDS:-900}"
 ALLOW_NPX_PLAYWRIGHT="${ALLOW_NPX_PLAYWRIGHT:-0}"
+IDEA_PROJECT_COLOR_INDEX="${IDEA_PROJECT_COLOR_INDEX:-0}"
 
 if (( DISPLAY_NUMBER < 0 )); then
   echo "PORT must be 6000 or greater so DISPLAY can be derived; got PORT=$PORT" >&2
+  exit 2
+fi
+if [[ ! "$IDEA_PROJECT_COLOR_INDEX" =~ ^[0-8]$ ]]; then
+  echo "IDEA_PROJECT_COLOR_INDEX must be an integer from 0 through 8; got $IDEA_PROJECT_COLOR_INDEX" >&2
   exit 2
 fi
 
@@ -36,6 +42,18 @@ intellij_screenshot_ready() {
     "$text" != *"ide.script.launcher.used"* &&
     "$svg" != *"script launcher"* &&
     "$svg" != *"ide.script.launcher.used"* ]]
+}
+
+intellij_project_workspace_seed() {
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: $IDEA_PROJECT_COLOR_INDEX,
+  &quot;fromUser&quot;: false
+}</component>
+</project>
+EOF
 }
 
 assert_readiness() {
@@ -125,6 +143,7 @@ assert_project_export_guard() {
 run_readiness_self_test() {
   local ready_text=$'Screen: 3840 x 2160\nMapped windows: 3\n- 0x200001 label="Content window"'
   local ready_svg='<svg><image class="framebuffer-image backing-pixmap-image"/></svg>'
+  local workspace_seed
   assert_readiness "ready content framebuffer" 1 "$ready_text" "$ready_svg"
   assert_readiness "missing mapped windows" 0 "Content window" "$ready_svg"
   assert_readiness "missing content window" 0 "Mapped windows: 3" "$ready_svg"
@@ -139,6 +158,9 @@ run_readiness_self_test() {
   assert_project_export_guard "repo root rejected" 0 "$ROOT"
   assert_project_export_guard "parent traversal rejected" 0 "$ROOT/runs/../../outside-project"
   assert_project_export_guard "outside tmp rejected" 0 "/tmp/intellij-readme-screenshot-project"
+  workspace_seed="$(intellij_project_workspace_seed)"
+  [[ "$workspace_seed" == *'component name="ProjectColorInfo"'* ]]
+  [[ "$workspace_seed" == *"associatedIndex&quot;: $IDEA_PROJECT_COLOR_INDEX"* ]]
 }
 
 timeout_bin() {
@@ -287,6 +309,8 @@ prepare_project_export() {
     mkdir -p "$PROJECT_EXPORT_DIR/$(dirname "$path")"
     cp -pP "$ROOT/$path" "$PROJECT_EXPORT_DIR/$path"
   done < <(git -C "$ROOT" ls-files -z)
+  mkdir -p "$PROJECT_EXPORT_DIR/.idea"
+  intellij_project_workspace_seed > "$PROJECT_EXPORT_DIR/.idea/workspace.xml"
 }
 
 diagnose_readiness_failure() {
@@ -353,13 +377,24 @@ dismiss_intellij_readme_notifications() {
 }
 
 assert_intellij_readme_launcher_state() {
-  local run_log idea_log text svg
+  local run_log idea_log disabled_plugins text svg
   run_log="$(container_file /tmp/idea-run-readme.log)"
   idea_log="$(container_file /tmp/idea-log/idea.log | tail -400)"
+  disabled_plugins="$(container_file /tmp/idea-config/disabled_plugins.txt)"
   text="$(curl -fsS "http://127.0.0.1:$PORT/text.txt" 2>/dev/null || true)"
   svg="$(curl -fsS "http://127.0.0.1:$PORT/screen.svg" 2>/dev/null || true)"
   if ! printf '%s\n' "$run_log" | grep -qx '\[run-intellij\] launcher=/opt/idea/bin/idea'; then
     echo "IntelliJ README screenshot must use the native IDEA launcher; rebuild jonnyzzz-x/x11-client:latest if this marker is missing." >&2
+    diagnose_readiness_failure
+    exit 1
+  fi
+  if ! printf '%s\n' "$disabled_plugins" | grep -qx 'org.intellij.plugins.markdown'; then
+    echo "IntelliJ README screenshot must disable the Markdown/JCEF preview in its isolated config." >&2
+    diagnose_readiness_failure
+    exit 1
+  fi
+  if ! printf '%s\n' "$idea_log" | grep -q 'fileOpened README.md'; then
+    echo "IntelliJ README screenshot did not open README.md in the isolated editor." >&2
     diagnose_readiness_failure
     exit 1
   fi
@@ -368,6 +403,12 @@ assert_intellij_readme_launcher_state() {
         "$text" == *"script launcher"* ||
         "$svg" == *"script launcher"* ]]; then
     echo "IntelliJ README screenshot detected the script-launcher warning; refusing to refresh $OUT." >&2
+    diagnose_readiness_failure
+    exit 1
+  fi
+  if [[ "$text" == *"Embedded Browser is suspended"* ||
+        "$svg" == *"Embedded Browser is suspended"* ]]; then
+    echo "IntelliJ README screenshot still contains the suspended-browser warning; refusing to refresh $OUT." >&2
     diagnose_readiness_failure
     exit 1
   fi
@@ -402,8 +443,9 @@ docker run -d --name "$IDEA_CONTAINER" \
   -v "$PROJECT_EXPORT_DIR:$IDEA_PROJECT_CONTAINER" \
   -v "$IDEA_CACHE_DIR:/tmp/idea-cache" \
   -e IDEA_CACHE_DIR=/tmp/idea-cache \
+  -e IDEA_OPEN_FILE="$IDEA_OPEN_FILE_CONTAINER" \
   "$IMAGE" \
-  sh -lc "DISPLAY=host.docker.internal:$DISPLAY_NUMBER IDEA_PROJECT=$IDEA_PROJECT_CONTAINER IDEA_TRUST_PROJECT=true IDEA_LAUNCHER=native run-intellij >/tmp/idea-run-readme.log 2>&1" \
+  sh -lc "mkdir -p /tmp/idea-config && printf '%s\\n' org.intellij.plugins.markdown >/tmp/idea-config/disabled_plugins.txt && DISPLAY=host.docker.internal:$DISPLAY_NUMBER IDEA_PROJECT=$IDEA_PROJECT_CONTAINER IDEA_TRUST_PROJECT=true IDEA_LAUNCHER=native run-intellij >/tmp/idea-run-readme.log 2>&1" \
   >"$RUN_DIR/container.id"
 
 ready=0

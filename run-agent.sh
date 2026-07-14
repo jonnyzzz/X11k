@@ -85,6 +85,10 @@ Configuration (env variables):
                       Run codex with an isolated CODEX_HOME containing only
                       model/provider/project trust config for bounded
                       run-agent jobs (default: 1, set 0 to disable)
+  RUN_AGENT_PROCESS_GROUP
+                      Launch the agent in a dedicated POSIX process group so
+                      reparented workers cannot escape timeout cleanup
+                      (default: 1, falls back to PID-tree cleanup without perl)
   RUN_AGENT_HEARTBEAT_SECONDS
                       Update heartbeat.txt while the agent is running (default: 30, 0 disables)
   RUN_AGENT_HEARTBEAT_STATUS_SECONDS
@@ -208,6 +212,7 @@ unset CLAUDECODE
 
 RUN_AGENT_CLAUDE_SAFE_MODE="${RUN_AGENT_CLAUDE_SAFE_MODE:-1}"
 RUN_AGENT_CODEX_ISOLATED="${RUN_AGENT_CODEX_ISOLATED:-1}"
+RUN_AGENT_PROCESS_GROUP="${RUN_AGENT_PROCESS_GROUP:-1}"
 RUN_AGENT_PREFLIGHT_WATCH="${RUN_AGENT_PREFLIGHT_WATCH:-1}"
 RUN_AGENT_PREFLIGHT_RECOVER_STALE="${RUN_AGENT_PREFLIGHT_RECOVER_STALE:-1}"
 RUN_AGENT_PREFLIGHT_STALE_SECONDS="${RUN_AGENT_PREFLIGHT_STALE_SECONDS:-${RUN_AGENT_STALE_SECONDS:-900}}"
@@ -546,6 +551,8 @@ active_child_summary() {
   descendant_process_table | tail -1 | awk '{$1=$1; print substr($0, 1, 220)}'
 }
 
+LAST_DIAGNOSTICS_FILE=""
+
 docker_relevant_container_ids() {
   command -v docker >/dev/null 2>&1 || return 0
   {
@@ -588,6 +595,8 @@ dump_diagnostics() {
   local safe_reason diag_file
   safe_reason="$(printf '%s' "$reason" | tr -cd '[:alnum:]_-')"
   diag_file="$RUN_DIR/diagnostics-${safe_reason}-$(date -u +%Y%m%d-%H%M%S).txt"
+  # Publish the path before collection so a signal reuses the in-progress file.
+  LAST_DIAGNOSTICS_FILE="$diag_file"
   {
     echo "REASON=$reason"
     echo "RUN_ID=$RUN_ID"
@@ -669,7 +678,11 @@ AGENT_PID=""
 on_signal() {
   local sig="$1" code="$2"
   if [ -n "$AGENT_PID" ]; then
-    dump_diagnostics "signal-${sig}"
+    if [ -n "$LAST_DIAGNOSTICS_FILE" ]; then
+      echo "DIAGNOSTICS=$LAST_DIAGNOSTICS_FILE"
+    else
+      dump_diagnostics "signal-${sig}"
+    fi
     terminate_agent_tree
   fi
   rm -f "$PID_FILE" 2>/dev/null || true
@@ -683,22 +696,47 @@ trap 'on_signal HUP  129' HUP
 terminate_agent_tree() {
   [ -n "$AGENT_PID" ] || return
   local pids
+  if [ "$AGENT_PROCESS_GROUP_STARTED" = "1" ]; then
+    kill -TERM -- "-$AGENT_PID" 2>/dev/null || true
+  fi
   pids="$(descendant_pids "$AGENT_PID" | awk 'NF { print }' || true)"
   # shellcheck disable=SC2086
   kill -TERM $pids "$AGENT_PID" 2>/dev/null || true
   sleep 5
+  if [ "$AGENT_PROCESS_GROUP_STARTED" = "1" ]; then
+    kill -KILL -- "-$AGENT_PID" 2>/dev/null || true
+  fi
   pids="$(descendant_pids "$AGENT_PID" | awk 'NF { print }' || true)"
   # shellcheck disable=SC2086
   kill -KILL $pids "$AGENT_PID" 2>/dev/null || true
   wait "$AGENT_PID" 2>/dev/null || true
 }
 
+cleanup_agent_process_group() {
+  [ "$AGENT_PROCESS_GROUP_STARTED" = "1" ] || return
+  if kill -0 -- "-$AGENT_PID" 2>/dev/null; then
+    kill -TERM -- "-$AGENT_PID" 2>/dev/null || true
+    sleep 1
+    kill -KILL -- "-$AGENT_PID" 2>/dev/null || true
+  fi
+}
+
+AGENT_PROCESS_GROUP_STARTED=0
+if [ "$RUN_AGENT_PROCESS_GROUP" != "0" ] && command -v perl >/dev/null 2>&1; then
+  AGENT_PROCESS_GROUP_STARTED=1
+fi
+
 (
   cd "$CWD"
   if [ -n "$CODEX_HOME_OVERRIDE" ]; then
     export CODEX_HOME="$CODEX_HOME_OVERRIDE"
   fi
-  exec "${AGENT_CMD[@]}" <"$PROMPT" 1>"$STDOUT_FILE" 2>"$STDERR_FILE"
+  if [ "$AGENT_PROCESS_GROUP_STARTED" = "1" ]; then
+    exec perl -MPOSIX -e 'defined(POSIX::setsid()) or die "setsid failed: $!\n"; exec @ARGV or die "exec failed: $!\n"' -- \
+      "${AGENT_CMD[@]}" <"$PROMPT" 1>"$STDOUT_FILE" 2>"$STDERR_FILE"
+  else
+    exec "${AGENT_CMD[@]}" <"$PROMPT" 1>"$STDOUT_FILE" 2>"$STDERR_FILE"
+  fi
 ) &
 AGENT_PID=$!
 
@@ -734,9 +772,11 @@ if [ -n "${RUN_AGENT_RESTART_ATTEMPT:-}" ]; then
 RESTART_ATTEMPT=$RUN_AGENT_RESTART_ATTEMPT"
 fi
 if [ -n "$CODEX_HOME_OVERRIDE" ]; then
-  RUN_INFO_BLOCK="$RUN_INFO_BLOCK
+RUN_INFO_BLOCK="$RUN_INFO_BLOCK
 CODEX_HOME=$CODEX_HOME_OVERRIDE"
 fi
+RUN_INFO_BLOCK="$RUN_INFO_BLOCK
+PROCESS_GROUP=$AGENT_PROCESS_GROUP_STARTED"
 if [ "$RUN_AGENT_RELIABILITY_PREAMBLE" != "0" ] && [ -n "${RELIABILITY_FILE:-}" ]; then
   RUN_INFO_BLOCK="$RUN_INFO_BLOCK
 RELIABILITY_PREAMBLE=$RELIABILITY_FILE"
@@ -767,6 +807,7 @@ while kill -0 "$AGENT_PID" 2>/dev/null; do
     LAST_OUTPUT_SIZE="$OUTPUT_SIZE"
     LAST_OUTPUT_SECONDS="$NOW_SECONDS"
     NO_OUTPUT_DIAGNOSTICS_FIRED=false
+    LAST_DIAGNOSTICS_FILE=""
   fi
   OUTPUT_IDLE_SECONDS=$((NOW_SECONDS - LAST_OUTPUT_SECONDS))
   if [ "$RUN_AGENT_HEARTBEAT_SECONDS" -gt 0 ] && \
@@ -826,6 +867,7 @@ done
 
 if [ "$TIMEOUT_FIRED" = false ]; then
   wait "$AGENT_PID" || EXIT_CODE=$?
+  cleanup_agent_process_group
 fi
 rm -f "$PID_FILE"
 

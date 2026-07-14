@@ -183,6 +183,86 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij parity pair scoring catches off sample grid pixels`() {
+        val referenceImage = solidImage(6, 6, 0xff22_3344.toInt())
+        val changedImage = solidImage(6, 6, 0xff22_3344.toInt()).also { it.setRGB(1, 1, 0xff88_3344.toInt()) }
+        val reference = visualCapture(referenceImage)
+        val changed = visualCapture(changedImage)
+
+        assertTrue(
+            intellijParityPairSelectionDistance(reference, changed, reference) > 0.0,
+            "Strict Xvfb parity must inspect pixels outside the five-pixel diagnostic sampling grid",
+        )
+    }
+
+    @Test
+    fun `intellij parity pair scoring rejects a diluted one pixel strip`() {
+        val referenceImage = solidImage(10, 900, 0xff00_0000.toInt())
+        val changedImage = solidImage(10, 900, 0xff00_0000.toInt()).also { image ->
+            for (x in 0 until image.width) image.setRGB(x, 1, 0xffff_ffff.toInt())
+        }
+        val reference = visualCapture(referenceImage)
+        val changed = visualCapture(changedImage)
+
+        assertTrue(fullImageDistance(referenceImage, changedImage) < IntellijParityPairDistanceTarget)
+        assertTrue(
+            intellijParityPairSelectionDistance(reference, changed, reference) > IntellijParityPairDistanceTarget,
+            "Strict Xvfb parity must reject a full-width pixel strip even when its frame mean is diluted",
+        )
+    }
+
+    @Test
+    fun `intellij parity pair scoring rejects a diluted one pixel column`() {
+        val referenceImage = solidImage(1_280, 10, 0xff00_0000.toInt())
+        val changedImage = solidImage(1_280, 10, 0xff00_0000.toInt()).also { image ->
+            for (y in 0 until image.height) image.setRGB(1, y, 0xffff_ffff.toInt())
+        }
+        val reference = visualCapture(referenceImage)
+        val changed = visualCapture(changedImage)
+
+        assertTrue(fullImageDistance(referenceImage, changedImage) < IntellijParityPairDistanceTarget)
+        assertTrue(
+            intellijParityPairSelectionDistance(reference, changed, reference) > IntellijParityPairDistanceTarget,
+            "Strict Xvfb parity must reject a full-height pixel column even when its frame mean is diluted",
+        )
+    }
+
+    @Test
+    fun `intellij parity pair scoring rejects a localized one pixel line`() {
+        val referenceImage = solidImage(1_280, 900, 0xff00_0000.toInt())
+        val changedImage = solidImage(1_280, 900, 0xff00_0000.toInt()).also { image ->
+            for (x in 100 until 180) image.setRGB(x, 100, 0xffff_ffff.toInt())
+        }
+        val reference = visualCapture(referenceImage)
+        val changed = visualCapture(changedImage)
+
+        assertTrue(fullImageDistance(referenceImage, changedImage) < IntellijParityPairDistanceTarget)
+        assertTrue(maxRowAverageRgbDistance(referenceImage, changedImage) < IntellijParityMaxLineAverageDistanceTarget)
+        assertTrue(
+            intellijParityPairSelectionDistance(reference, changed, reference) > IntellijParityPairDistanceTarget,
+            "Strict Xvfb parity must reject a compact visible line that frame and axis means dilute",
+        )
+    }
+
+    @Test
+    fun `intellij parity pair scoring rejects a compact block across tile boundaries`() {
+        val referenceImage = solidImage(1_280, 900, 0xff00_0000.toInt())
+        val changedImage = solidImage(1_280, 900, 0xff00_0000.toInt()).also { image ->
+            for (y in 7..8) {
+                for (x in 7..8) image.setRGB(x, y, 0xffff_ffff.toInt())
+            }
+        }
+        val reference = visualCapture(referenceImage)
+        val changed = visualCapture(changedImage)
+
+        assertTrue(maxTileAverageRgbDistance(referenceImage, changedImage) < IntellijParityMaxLineAverageDistanceTarget)
+        assertTrue(
+            intellijParityPairSelectionDistance(reference, changed, reference) > IntellijParityPairDistanceTarget,
+            "Strict Xvfb parity must reject compact high-contrast defects independent of tile alignment",
+        )
+    }
+
+    @Test
     fun `intellij smoke svg candidate diagnostics tolerate non composable samples`() {
         val robotImage = solidImage(6, 6, 0xff33_6699.toInt())
         val robot = visualCapture(robotImage)
@@ -665,8 +745,10 @@ class IntellijCommunitySmokeTest {
             "size=600x2 dataBytes=4800 crc32=0x22222222 status=crc-mismatch",
         )
         val wrongBand = matching.replace("band=top count=2 size=600x2", "band=right count=2 size=600x2")
+        val terminalProjectTitleWidth = matching.replace("size=624x2", "size=643x2")
 
         assertTrue(intellijPrimaryFrameStripInputsMatch(matching))
+        assertTrue(intellijPrimaryFrameStripInputsMatch(terminalProjectTitleWidth))
         assertFalse(intellijPrimaryFrameStripInputsMatch(oneMismatch))
         assertFalse(intellijPrimaryFrameStripInputsMatch(wrongBand))
     }
@@ -825,25 +907,59 @@ class IntellijCommunitySmokeTest {
             2026-07-04 19:56:49,053 [   1721]   INFO - #c.i.i.p.i.ProjectViewInitNotifier - Project View initialization completed
             2026-07-04 19:56:50,042 [   2710]   INFO - #c.j.p.c.BeforeFileOpenLoggerListener - fileOpened README.md
             """.trimIndent()
-        val indexedBeforeMarkdown =
+        val markdownPreviewed =
             """
             $baseLog
-            2026-07-04 19:56:50,100 [   2768]   INFO - #c.i.u.i.UnindexedFilesIndexer - Finished for jonnyzzz-x. Unindexed files update took 100ms; general responsiveness: ok; EDT responsiveness: ok
             2026-07-04 19:56:50,190 [   2858]   INFO - #org.intellij.plugins.markdown.ui.preview.MarkdownPreviewFileEditor${'$'}Companion - MarkdownPreviewFileEditor: setHtml finished
+            """.trimIndent()
+        val postMarkdownIndexed =
+            """
+            $markdownPreviewed
+            2026-07-04 19:56:50,300 [   2968]   INFO - #c.i.u.i.UnindexedFilesIndexer - Finished for jonnyzzz-x. Unindexed files update took 100ms; general responsiveness: ok; EDT responsiveness: ok
+            2026-07-04 19:56:50,500 [   3168]   INFO - #c.i.w.i.i.WorkspaceModelImpl - Workspace model updated in 20 ms: The Gradle project sync
+              phase = INITIAL_PHASE
+            2026-07-04 19:56:50,600 [   3268]   INFO - #c.i.w.i.i.WorkspaceModelImpl - Workspace model update attempt 1/3, updater took 10 ms: The Gradle project sync
+              phase = SOURCE_SET_MODEL_PHASE
+            2026-07-04 19:56:50,700 [   3368]   INFO - #c.i.u.i.PerProjectIndexingQueue - Finished for [jonnyzzz-x]. No files to index with loading content.
+            """.trimIndent()
+        val sourceSetSynced =
+            """
+            $postMarkdownIndexed
+            2026-07-04 19:56:51,200 [   3868]   INFO - #c.i.w.i.i.WorkspaceModelImpl - Workspace model updated in 700 ms: The Gradle project sync
+              phase = SOURCE_SET_MODEL_PHASE
+            2026-07-04 19:56:51,300 [   3968]   INFO - #c.i.u.i.PerProjectIndexingQueue - Finished for [jonnyzzz-x]. No files to index with loading content.
+            """.trimIndent()
+        val gradleSynced =
+            """
+            $sourceSetSynced
+            2026-07-04 19:56:51,600 [   4268]   INFO - #c.i.w.i.i.WorkspaceModelImpl - Workspace model updated in 300 ms: The Gradle project sync
+              phase = ADDITIONAL_MODEL_PHASE
             """.trimIndent()
         val readyLog =
             """
-            $indexedBeforeMarkdown
-            2026-07-04 19:56:51,744 [   4412]   INFO - #c.i.u.i.UnindexedFilesIndexer - Finished for jonnyzzz-x. Unindexed files update took 1535ms; general responsiveness: ok; EDT responsiveness: ok
+            $gradleSynced
+            2026-07-04 19:56:51,744 [   4412]   INFO - #c.i.u.i.PerProjectIndexingQueue - Finished for [jonnyzzz-x]. No files to index with loading content.
             """.trimIndent()
 
         val missingMarkdown = intellijParityReadiness(baseLog)
         assertFalse(missingMarkdown.ready)
-        assertEquals(listOf("markdown-preview"), missingMarkdown.missing)
+        assertEquals(listOf("markdown-preview", "gradle-sync"), missingMarkdown.missing)
 
-        val missingPostMarkdownIndexing = intellijParityReadiness(indexedBeforeMarkdown)
+        val missingPostMarkdownIndexing = intellijParityReadiness(markdownPreviewed)
         assertFalse(missingPostMarkdownIndexing.ready)
-        assertEquals(listOf("post-markdown-indexing"), missingPostMarkdownIndexing.missing)
+        assertEquals(listOf("post-markdown-indexing", "gradle-sync"), missingPostMarkdownIndexing.missing)
+
+        val missingGradleSync = intellijParityReadiness(postMarkdownIndexed)
+        assertFalse(missingGradleSync.ready)
+        assertEquals(listOf("gradle-sync"), missingGradleSync.missing)
+
+        val missingAdditionalModelSync = intellijParityReadiness(sourceSetSynced)
+        assertFalse(missingAdditionalModelSync.ready)
+        assertEquals(listOf("gradle-sync"), missingAdditionalModelSync.missing)
+
+        val missingPostGradleIndexing = intellijParityReadiness(gradleSynced)
+        assertFalse(missingPostGradleIndexing.ready)
+        assertEquals(listOf("post-gradle-indexing"), missingPostGradleIndexing.missing)
 
         val ready = intellijParityReadiness(readyLog)
         assertTrue(ready.ready)
@@ -851,7 +967,7 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
-    fun `intellij clean project export contains tracked files only`() {
+    fun `intellij clean project export contains tracked files and deterministic color seed`() {
         val root = projectRoot()
         val untracked = root.resolve("build/tmp/intellij-community-smoke/untracked-sentinel.txt")
         Files.createDirectories(untracked.parent)
@@ -863,6 +979,11 @@ class IntellijCommunitySmokeTest {
             assertFalse(
                 Files.exists(export.resolve("build/tmp/intellij-community-smoke/untracked-sentinel.txt")),
                 "generated and untracked files should not be exported into the IntelliJ project mount",
+            )
+            assertEquals(
+                intellijProjectWorkspaceSeed(),
+                Files.readString(export.resolve(".idea/workspace.xml")),
+                "independent IDEA launches must start with the same project header color",
             )
         } finally {
             Files.deleteIfExists(untracked)
@@ -1174,6 +1295,8 @@ class IntellijCommunitySmokeTest {
         assertTrue(parityBody.contains("pair.primaryFrameStripInputsMatch != false && pair.selectionDistance <= IntellijParityPairDistanceTarget"), parityBody)
         assertTrue(parityBody.contains("robotSvgDistance = fullImageDistance(actual.robot.image, composedSvgCapture.image)"), parityBody)
         assertTrue(parityBody.contains("intellijRobotSvgCaptureIsAcceptable(bestPair.robotSvgDistance)"), parityBody)
+        assertTrue(parityBody.contains("bestPair.selectionDistance <= IntellijParityPairDistanceTarget"), parityBody)
+        assertTrue(parityBody.contains("bestPair.primaryFrameStripInputsMatch"), parityBody)
         assertFalse(parityBody.contains("sharedConfig"), parityBody)
         assertFalse(parityBody.contains("cleanIntellijConfigDir()"), parityBody)
         assertTrue(source.contains("""withFileSystemBind(configDir.toString(), "/tmp/idea-config", BindMode.READ_WRITE)"""), source)
@@ -2149,8 +2272,8 @@ class IntellijCommunitySmokeTest {
                 actual = actual,
                 composedSvg = composedSvg,
                 composedSvgCapture = composedSvgCapture,
-                robotDistance = imageDistance(selectedReference.robot.image, actual.robot.image),
-                svgDistance = imageDistance(selectedReference.robot.image, composedSvgCapture.image),
+                robotDistance = intellijStrictImageDistance(selectedReference.robot.image, actual.robot.image),
+                svgDistance = intellijStrictImageDistance(selectedReference.robot.image, composedSvgCapture.image),
                 robotSvgDistance = fullImageDistance(actual.robot.image, composedSvgCapture.image),
                 primaryFrameStripInputsMatch = primaryFrameStripInputsMatch,
             )
@@ -2179,6 +2302,20 @@ class IntellijCommunitySmokeTest {
             "Kotlin Robot and SVG captures must represent the same exact IntelliJ frame; " +
                 "attempt=${bestPair.attempt} distance=${bestPair.robotSvgDistance}",
         )
+
+        assertTrue(
+            bestPair.selectionDistance <= IntellijParityPairDistanceTarget,
+            "Best IntelliJ Xvfb/Kotlin pair exceeded the parity target; " +
+                "attempt=${bestPair.attempt} distance=${bestPair.selectionDistance} " +
+                "target=$IntellijParityPairDistanceTarget",
+        )
+        if (intellijTraceXvfbPutImageEnabled()) {
+            assertEquals(
+                true,
+                bestPair.primaryFrameStripInputsMatch,
+                "Primary IntelliJ frame strip inputs must match Xvfb when tracing is enabled",
+            )
+        }
 
         assertTrue(actual.text.contains("Content window"), actual.text)
         assertIntellijHtmlPreviewHasLargeSurface(actual.html, actual.text)
@@ -2243,8 +2380,23 @@ class IntellijCommunitySmokeTest {
                 )
             }
 
+        val ideaDirectory = export.resolve(".idea")
+        Files.createDirectories(ideaDirectory)
+        Files.writeString(ideaDirectory.resolve("workspace.xml"), intellijProjectWorkspaceSeed())
+
         return export
     }
+
+    private fun intellijProjectWorkspaceSeed(): String =
+        """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <project version="4">
+          <component name="ProjectColorInfo">{
+          &quot;associatedIndex&quot;: $IntellijProjectColorIndex,
+          &quot;fromUser&quot;: false
+        }</component>
+        </project>
+        """.trimIndent()
 
     private fun intellijCacheDir(): Path {
         val root = projectRoot()
@@ -2600,6 +2752,7 @@ class IntellijCommunitySmokeTest {
                     grep -qx "\\[run-intellij\\] launcher=/opt/idea/bin/idea" /tmp/idea-run-xvfb.log
                     grep -q -- "-Dremote.x11.workaround=false" /tmp/idea-extra.vmoptions
                     grep -q 'name="differentiateProjects" value="false"' /tmp/idea-config/options/ui.lnf.xml
+                    grep -q 'associatedIndex.*: $IntellijProjectColorIndex' /workspace/jonnyzzz-x/.idea/workspace.xml
                     """.trimIndent(),
                 )
                 assertEquals(0, result.exitCode, result.stderr + result.stdout)
@@ -2613,6 +2766,7 @@ class IntellijCommunitySmokeTest {
                     "/tmp/idea-config-options-inventory.log" to "intellij-xvfb-config-options-inventory.log",
                     "/tmp/run-intellij-env.log" to "intellij-xvfb-run-intellij-env.log",
                     "/tmp/idea-ui-runtime-diagnostics.log" to "intellij-xvfb-ui-runtime-diagnostics.log",
+                    "/workspace/jonnyzzz-x/.idea/workspace.xml" to "intellij-xvfb-project-workspace.xml",
                     "/tmp/xvfb-putimage-trace.log" to "intellij-xvfb-putimage-trace.log",
                     "/tmp/xvfb-putimage-trace-proxy.log" to "intellij-xvfb-putimage-trace-proxy.log",
                     "/tmp/run-intellij-cksum.log" to "intellij-xvfb-run-intellij-cksum.log",
@@ -2739,6 +2893,7 @@ class IntellijCommunitySmokeTest {
                         grep -qx "\\[run-intellij\\] launcher=/opt/idea/bin/idea" /tmp/idea-run-parity.log
                         grep -q -- "-Dremote.x11.workaround=false" /tmp/idea-extra.vmoptions
                         grep -q 'name="differentiateProjects" value="false"' /tmp/idea-config/options/ui.lnf.xml
+                        grep -q 'associatedIndex.*: $IntellijProjectColorIndex' /workspace/jonnyzzz-x/.idea/workspace.xml
                         """.trimIndent(),
                     )
                     assertEquals(0, startResult.exitCode, startResult.stderr + startResult.stdout)
@@ -2752,6 +2907,7 @@ class IntellijCommunitySmokeTest {
                         "/tmp/idea-config-options-inventory.log" to "intellij-kotlin-config-options-inventory.log",
                         "/tmp/run-intellij-env.log" to "intellij-kotlin-run-intellij-env.log",
                         "/tmp/idea-ui-runtime-diagnostics.log" to "intellij-kotlin-ui-runtime-diagnostics.log",
+                        "/workspace/jonnyzzz-x/.idea/workspace.xml" to "intellij-kotlin-project-workspace.xml",
                         "/tmp/run-intellij-cksum.log" to "intellij-kotlin-run-intellij-cksum.log",
                     )
                     try {
@@ -2829,7 +2985,10 @@ class IntellijCommunitySmokeTest {
                 """.trimIndent(),
             )
             val readiness = intellijParityReadiness(result.stdout)
-            if (result.exitCode == 0 && readiness.ready) return
+            if (result.exitCode == 0 && readiness.ready) {
+                Thread.sleep(IntellijParityPostReadySettleMs)
+                return
+            }
             lastOutput = if (result.exitCode == 0) {
                 "missing=${readiness.missing.joinToString(" ")}\n${result.stdout.lines().takeLast(80).joinToString("\n")}"
             } else {
@@ -2850,11 +3009,25 @@ class IntellijCommunitySmokeTest {
 
     private fun intellijParityReadiness(log: String): IntellijParityReadiness {
         val lines = log.lines()
+        fun isIndexingCompletion(line: String): Boolean =
+            line.contains("UnindexedFilesIndexer - Finished") ||
+                (line.contains("PerProjectIndexingQueue - Finished") && line.contains("No files to index"))
         val projectViewIndex = lines.indexOfFirst { it.contains("Project View initialization completed") }
         val readmeOpenedIndex = lines.indexOfFirst { it.contains("fileOpened README.md") }
         val markdownPreviewIndex = lines.indexOfFirst { it.contains("MarkdownPreviewFileEditor: setHtml finished") }
         val postMarkdownIndexingIndex = if (markdownPreviewIndex >= 0) {
-            lines.indexOfFirstIndexed(markdownPreviewIndex + 1) { it.contains("UnindexedFilesIndexer - Finished") }
+            lines.indexOfFirstIndexed(markdownPreviewIndex + 1, ::isIndexingCompletion)
+        } else {
+            -1
+        }
+        val gradleSyncIndex = lines.indices.firstOrNull { index ->
+            index > 0 &&
+                lines[index].contains("phase = ADDITIONAL_MODEL_PHASE") &&
+                lines[index - 1].contains("Workspace model updated") &&
+                lines[index - 1].contains("The Gradle project sync")
+        } ?: -1
+        val postGradleIndexingIndex = if (gradleSyncIndex >= 0) {
+            lines.indexOfFirstIndexed(gradleSyncIndex + 1, ::isIndexingCompletion)
         } else {
             -1
         }
@@ -2863,6 +3036,8 @@ class IntellijCommunitySmokeTest {
             if (readmeOpenedIndex < 0) add("readme-opened")
             if (markdownPreviewIndex < 0) add("markdown-preview")
             if (markdownPreviewIndex >= 0 && postMarkdownIndexingIndex < 0) add("post-markdown-indexing")
+            if (gradleSyncIndex < 0) add("gradle-sync")
+            if (gradleSyncIndex >= 0 && postGradleIndexingIndex < 0) add("post-gradle-indexing")
         }
         return IntellijParityReadiness(missing.isEmpty(), missing)
     }
@@ -5661,7 +5836,7 @@ class IntellijCommunitySmokeTest {
             .filter { it.startsWith("- band=top ") && " status=crc-match" in it }
             .mapNotNull { Regex("""\bsize=(\d+x\d+)""").find(it)?.groupValues?.get(1) }
             .toSet()
-        return matchingSizes.containsAll(setOf("624x2", "600x2"))
+        return "600x2" in matchingSizes && matchingSizes.any { it != "600x2" && it.endsWith("x2") }
     }
 
     private fun intellijPutImageStripSampleDelta(
@@ -6005,10 +6180,78 @@ class IntellijCommunitySmokeTest {
         actualSvg: VisualCapture,
     ): Double =
         maxOf(
-            imageDistance(reference.image, actualRobot.image),
-            imageDistance(reference.image, actualSvg.image),
-            imageDistance(actualRobot.image, actualSvg.image),
+            intellijStrictImageDistance(reference.image, actualRobot.image),
+            intellijStrictImageDistance(reference.image, actualSvg.image),
+            intellijStrictImageDistance(actualRobot.image, actualSvg.image),
         )
+
+    private fun intellijStrictImageDistance(reference: BufferedImage, actual: BufferedImage): Double =
+        maxOf(
+            fullImageDistance(reference, actual),
+            maxRowAverageRgbDistance(reference, actual) / IntellijParityMaxLineAverageDistanceTarget,
+            maxColumnAverageRgbDistance(reference, actual) / IntellijParityMaxLineAverageDistanceTarget,
+            maxTileAverageRgbDistance(reference, actual) / IntellijParityMaxLineAverageDistanceTarget,
+            maxPixelRgbDistance(reference, actual) / IntellijParityMaxPixelDistanceTarget,
+        )
+
+    private fun maxPixelRgbDistance(reference: BufferedImage, actual: BufferedImage): Double {
+        assertEquals(reference.width, actual.width, "image width should match")
+        assertEquals(reference.height, actual.height, "image height should match")
+        var maximum = 0
+        for (y in 0 until reference.height) {
+            for (x in 0 until reference.width) {
+                maximum = maxOf(maximum, rgbDistance(reference.getRGB(x, y), actual.getRGB(x, y)))
+            }
+        }
+        return maximum.toDouble()
+    }
+
+    private fun maxRowAverageRgbDistance(reference: BufferedImage, actual: BufferedImage): Double {
+        assertEquals(reference.width, actual.width, "image width should match")
+        assertEquals(reference.height, actual.height, "image height should match")
+        var maximum = 0.0
+        for (y in 0 until reference.height) {
+            var rowTotal = 0L
+            for (x in 0 until reference.width) {
+                rowTotal += rgbDistance(reference.getRGB(x, y), actual.getRGB(x, y))
+            }
+            maximum = maxOf(maximum, rowTotal.toDouble() / reference.width.toDouble())
+        }
+        return maximum
+    }
+
+    private fun maxColumnAverageRgbDistance(reference: BufferedImage, actual: BufferedImage): Double {
+        assertEquals(reference.width, actual.width, "image width should match")
+        assertEquals(reference.height, actual.height, "image height should match")
+        var maximum = 0.0
+        for (x in 0 until reference.width) {
+            var columnTotal = 0L
+            for (y in 0 until reference.height) {
+                columnTotal += rgbDistance(reference.getRGB(x, y), actual.getRGB(x, y))
+            }
+            maximum = maxOf(maximum, columnTotal.toDouble() / reference.height.toDouble())
+        }
+        return maximum
+    }
+
+    private fun maxTileAverageRgbDistance(reference: BufferedImage, actual: BufferedImage): Double {
+        assertEquals(reference.width, actual.width, "image width should match")
+        assertEquals(reference.height, actual.height, "image height should match")
+        var maximum = 0.0
+        for (tileY in 0 until reference.height step IntellijParityLocalTileSize) {
+            for (tileX in 0 until reference.width step IntellijParityLocalTileSize) {
+                var tileTotal = 0L
+                for (y in tileY until minOf(tileY + IntellijParityLocalTileSize, reference.height)) {
+                    for (x in tileX until minOf(tileX + IntellijParityLocalTileSize, reference.width)) {
+                        tileTotal += rgbDistance(reference.getRGB(x, y), actual.getRGB(x, y))
+                    }
+                }
+                val fullTilePixels = IntellijParityLocalTileSize * IntellijParityLocalTileSize
+                maximum = maxOf(maximum, tileTotal.toDouble() / fullTilePixels.toDouble())
+            }
+        }
+        return maximum
+    }
 
     private fun IntellijReferenceCapture.withClosestRobotTo(
         actualRobot: VisualCapture,
@@ -7711,8 +7954,10 @@ class IntellijCommunitySmokeTest {
     private companion object {
         const val IntellijCaptureWidth = 1280
         const val IntellijCaptureHeight = 900
+        const val IntellijProjectColorIndex = 0
         const val IntellijOpenWaitSeconds = 300
         const val IntellijParityReadyWaitSeconds = 240
+        const val IntellijParityPostReadySettleMs = 2_000L
         const val IntellijContainerCommandTimeoutSeconds = 900
         const val IntellijRobotSvgCaptureAttempts = 4
         const val IntellijRobotSvgPostCaptureSamples = 12
@@ -7722,5 +7967,8 @@ class IntellijCommunitySmokeTest {
         const val IntellijXvfbRobotCaptureSampleDelayMs = 50L
         const val IntellijParityPairAttempts = 2
         const val IntellijParityPairDistanceTarget = 1.0
+        const val IntellijParityMaxLineAverageDistanceTarget = 48.0
+        const val IntellijParityMaxPixelDistanceTarget = 64.0
+        const val IntellijParityLocalTileSize = 8
     }
 }

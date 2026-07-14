@@ -394,13 +394,20 @@ diagnose_run() {
 terminate_run() {
   local run_dir="$1"
   local pid="$2"
-  local pids
+  local pids process_group
   echo "  terminating stale PID $pid for $run_dir" | tee -a "$LOG"
   WATCH_TERMINATED_COUNT=$((WATCH_TERMINATED_COUNT + 1))
+  process_group="$(run_info_value "$run_dir" PROCESS_GROUP)"
+  if [ "$process_group" = "1" ]; then
+    kill -TERM -- "-$pid" 2>/dev/null || true
+  fi
   pids="$(descendant_pids "$pid" | awk 'NF { print }' || true)"
   # shellcheck disable=SC2086
   kill -TERM $pids "$pid" 2>/dev/null || true
   sleep 5
+  if [ "$process_group" = "1" ]; then
+    kill -KILL -- "-$pid" 2>/dev/null || true
+  fi
   pids="$(descendant_pids "$pid" | awk 'NF { print }' || true)"
   # shellcheck disable=SC2086
   kill -KILL $pids "$pid" 2>/dev/null || true

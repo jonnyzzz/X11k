@@ -1,3 +1,5 @@
+import java.time.Duration
+
 plugins {
     kotlin("jvm") version "2.4.0"
     application
@@ -81,4 +83,15 @@ tasks.register("dockerBuildX11Images") {
     group = "verification"
     description = "Builds all local Docker images used by the X11 integration tests."
     dependsOn("dockerBuildX11Client", "dockerBuildX11Reference")
+}
+
+tasks.register<Exec>("testRunAgentProcessGroup") {
+    group = "verification"
+    description = "Verifies timeout cleanup for reparented run-agent workers."
+    timeout.set(Duration.ofMinutes(2))
+    commandLine("scripts/test-run-agent-process-group.sh")
+}
+
+tasks.named("check") {
+    dependsOn("testRunAgentProcessGroup")
 }
