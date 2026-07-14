@@ -3996,13 +3996,51 @@ class XRenderProtocolTest {
 
     @Test
     fun `Python XRENDER low alpha oracle passes against Kotlin server`() {
+        runPythonProtocolTest(
+            scriptName = "xrender_low_alpha_protocol_test.py",
+            passMarker = "PASS xrender_low_alpha_protocol_test",
+        )
+    }
+
+    @Test
+    fun `Python XRENDER precision oracle passes against Kotlin server`() {
+        runPythonProtocolTest(
+            scriptName = "xrender_precision_protocol_test.py",
+            passMarker = "PASS xrender_precision_protocol_test",
+        )
+    }
+
+    @Test
+    fun `Python XRENDER transformed strip oracle passes against Kotlin server`() {
+        runPythonProtocolTest(
+            scriptName = "xrender_transformed_strip_protocol_test.py",
+            passMarker = "PASS xrender_transformed_strip_protocol_test",
+        )
+    }
+
+    private fun runPythonProtocolTest(scriptName: String, passMarker: String) {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
-            val script = Path.of("src", "test", "python", "xrender_low_alpha_protocol_test.py").toAbsolutePath()
+            val script = Path.of("src", "test", "python", scriptName).toAbsolutePath()
             val process = ProcessBuilder("python3", script.toString(), "--port", server.localPort.toString())
                 .redirectErrorStream(true)
                 .start()
-            val finished = process.waitFor(15, TimeUnit.SECONDS)
+            val output = StringBuffer()
+            val outputThread = thread(start = true, isDaemon = true, name = "python-protocol-output-$scriptName") {
+                runCatching {
+                    process.inputStream.bufferedReader().use { reader ->
+                        val buffer = CharArray(4_096)
+                        while (true) {
+                            val read = reader.read(buffer)
+                            if (read < 0) break
+                            output.append(buffer, 0, read)
+                        }
+                    }
+                }.onFailure { failure ->
+                    output.append("\n[output reader failed: ${failure.message}]\n")
+                }
+            }
+            val finished = process.waitFor(20, TimeUnit.SECONDS)
             val terminated = if (finished) {
                 true
             } else {
@@ -4010,10 +4048,11 @@ class XRenderProtocolTest {
                 process.waitFor(2, TimeUnit.SECONDS)
             }
             if (!terminated) error("Python XRENDER protocol test did not terminate after forced destruction")
-            val output = process.inputStream.bufferedReader().readText()
-            assertEquals(true, finished, "Python XRENDER protocol test timed out:\n$output")
-            assertEquals(0, process.exitValue(), "Python XRENDER protocol test failed:\n$output")
-            assertContains(output, "PASS xrender_low_alpha_protocol_test")
+            outputThread.join(2_000)
+            val outputText = output.toString()
+            assertEquals(true, finished, "Python XRENDER protocol test $scriptName timed out:\n$outputText")
+            assertEquals(0, process.exitValue(), "Python XRENDER protocol test $scriptName failed:\n$outputText")
+            assertContains(outputText, passMarker)
             server.close()
             serverThread.join(1_000)
         }

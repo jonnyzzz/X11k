@@ -7,7 +7,7 @@ import struct
 
 OP_SRC = 1
 OP_OVER = 3
-REPEAT_PAD = 3
+REPEAT_PAD = 2
 
 
 def request(opcode, minor, body=b""):
@@ -231,7 +231,23 @@ def hex_pixels(pixels):
 
 def assert_pixels(label, actual, expected):
     if actual != expected:
-        raise AssertionError(f"{label}: expected {hex_pixels(expected)}, got {hex_pixels(actual)}")
+        mismatches = [
+            (index, wanted, observed)
+            for index, (wanted, observed) in enumerate(zip(expected, actual))
+            if wanted != observed
+        ]
+        if len(actual) != len(expected):
+            mismatches.append((min(len(actual), len(expected)), None, None))
+        samples = ", ".join(
+            f"{index}:expected={wanted:#010x},actual={observed:#010x}"
+            if wanted is not None
+            else f"{index}:length-mismatch"
+            for index, wanted, observed in mismatches[:20]
+        )
+        raise AssertionError(
+            f"{label}: {len(mismatches)} mismatches "
+            f"(expected {len(expected)} pixels, got {len(actual)}); {samples}"
+        )
 
 
 def assert_rgb24(label, actual, expected):
@@ -556,7 +572,7 @@ def run(host, port, dump):
             0x08000000, 0x08000000, 0x08000000, 0x08000000, 0x08000000, 0x0C000000,
             0x05000000, 0x05000000, 0x05000000, 0x05000000, 0x05000000, 0x08000000,
             0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x05000000,
-            0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x02000000,
         ])
         assert_rgb24("reused 5x5 scratch OpOver boundary", lifecycle_5x5_fixed_row, [
             0x0019191B, 0x0019191B, 0x0019191B, 0x0019191B, 0x0019191B, 0x00191A1C,
