@@ -2,6 +2,8 @@ package org.jonnyzzz.xserver
 
 import java.io.InputStream
 import java.net.Socket
+import java.nio.file.Path
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -3947,6 +3949,71 @@ class XRenderProtocolTest {
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xff87_8743.toInt(), u32le(image, 32))
             }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER masked OpSrc scales premultiplied ARGB32 drawable channels`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 1, height = 1))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
+                out.write(putImage8Request(MaskPixmapId, width = 1, height = 1, alphas = byteArrayOf(0x80.toByte())))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 1, height = 1))
+                out.write(createGcRequest(PutImageGcId + 1, PixmapId))
+                out.write(putImage32OnlyRequest(PixmapId, width = 1, height = 1, pixels = intArrayOf(0x8014_6e2d.toInt()), gc = PutImageGcId + 1))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(createPixmapRequest(ComponentMaskPixmapId, depth = 32, width = 1, height = 1))
+                out.write(renderCreatePicture(ComponentMaskPictureId, ComponentMaskPixmapId, XRender.Argb32Format))
+                out.write(
+                    renderComposite(
+                        PixmapPictureId,
+                        ComponentMaskPictureId,
+                        mask = MaskPictureId,
+                        width = 1,
+                        height = 1,
+                        operation = XRender.OpSrc,
+                        destinationX = 0,
+                        destinationY = 0,
+                    ),
+                )
+                out.write(getImageRequest(ComponentMaskPixmapId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0x400a_3717, u32le(image, 32))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `Python XRENDER low alpha oracle passes against Kotlin server`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            val script = Path.of("src", "test", "python", "xrender_low_alpha_protocol_test.py").toAbsolutePath()
+            val process = ProcessBuilder("python3", script.toString(), "--port", server.localPort.toString())
+                .redirectErrorStream(true)
+                .start()
+            val finished = process.waitFor(15, TimeUnit.SECONDS)
+            val terminated = if (finished) {
+                true
+            } else {
+                process.destroyForcibly()
+                process.waitFor(2, TimeUnit.SECONDS)
+            }
+            if (!terminated) error("Python XRENDER protocol test did not terminate after forced destruction")
+            val output = process.inputStream.bufferedReader().readText()
+            assertEquals(true, finished, "Python XRENDER protocol test timed out:\n$output")
+            assertEquals(0, process.exitValue(), "Python XRENDER protocol test failed:\n$output")
+            assertContains(output, "PASS xrender_low_alpha_protocol_test")
             server.close()
             serverThread.join(1_000)
         }

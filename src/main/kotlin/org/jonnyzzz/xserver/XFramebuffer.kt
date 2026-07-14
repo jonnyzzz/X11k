@@ -3057,7 +3057,11 @@ internal class XFramebuffer(
     ): Int =
         when (operation) {
             XRender.OpClear, XRender.OpDisjointClear, XRender.OpConjointClear -> clearWithMask(destination, maskAlpha)
-            XRender.OpSrc, XRender.OpDisjointSrc, XRender.OpConjointSrc -> if (maskAlpha >= 255) source else withMask(source, maskAlpha)
+            XRender.OpSrc, XRender.OpDisjointSrc, XRender.OpConjointSrc -> when {
+                maskAlpha >= 255 -> source
+                sourcePremultiplied -> withPremultipliedMask(source, maskAlpha)
+                else -> withMask(source, maskAlpha)
+            }
             XRender.OpDst, XRender.OpDisjointDst, XRender.OpConjointDst -> destination
             XRender.OpOver -> over(source, destination, maskAlpha, sourcePremultiplied)
             XRender.OpDisjointOver -> disjointOverOperator(source, destination, maskAlpha)
@@ -5762,6 +5766,12 @@ internal class XFramebuffer(
             if (maskAlpha >= 255) return source
             val alpha = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
             return (alpha shl 24) or (source and 0x00ff_ffff)
+        }
+
+        private fun withPremultipliedMask(source: Int, maskAlpha: Int): Int {
+            fun channel(shift: Int): Int =
+                (((source ushr shift) and 0xff) * maskAlpha + 127) / 255
+            return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
         }
 
         fun imageDataUri(image: XImagePixels): String {
