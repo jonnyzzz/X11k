@@ -17,7 +17,7 @@ if [[ "$RUN_PARITY" == "1" ]]; then
     "$ROOT/scripts/run-supervised.sh" \
     gradle \
     test \
-    --tests "org.jonnyzzz.xserver.VSCodeSmokeTest.vscode robot and svg roughly match xvfb reference" \
+    --tests "org.jonnyzzz.xserver.VSCodeSmokeTest.vscode robot and svg stay within bounded full pixel xvfb parity" \
     -Dx.vscodeParity=true \
     --rerun-tasks \
     --console=plain

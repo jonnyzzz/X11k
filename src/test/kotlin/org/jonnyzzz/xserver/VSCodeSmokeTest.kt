@@ -30,6 +30,10 @@ class VSCodeSmokeTest {
         const val VSCodeCaptureWidth = 1280
         const val VSCodeCaptureHeight = 900
         const val VSCodeContainerCommandTimeoutSeconds = 180
+        const val VSCodeParityWorstLimitRatioLimit = 1.0
+        const val VSCodeParityMaxLineMeanRgbL1Limit = 48.0
+        const val VSCodeParityMaxPixelRgbL1Limit = 64.0
+        const val VSCodeParityLocalWindowSize = 8
     }
 
     @Test
@@ -231,6 +235,90 @@ class VSCodeSmokeTest {
     }
 
     @Test
+    fun `vscode strict parity catches off sample grid pixels`() {
+        val reference = solidImage(6, 6, 0xff22_3344.toInt())
+        val changed = solidImage(6, 6, 0xff22_3344.toInt()).also { it.setRGB(1, 1, 0xff88_3344.toInt()) }
+
+        assertEquals(0.0, imageDistance(reference, changed), "The legacy five-pixel diagnostic sample should miss this pixel")
+        assertTrue(
+            vscodeFullPixelParityScore(reference, changed).worstLimitRatio > 0.0,
+            "Strict VSCode parity must inspect every pixel",
+        )
+    }
+
+    @Test
+    fun `vscode strict parity rejects a diluted full width pixel strip`() {
+        val reference = solidImage(VSCodeCaptureWidth, VSCodeCaptureHeight, 0xff00_0000.toInt())
+        val changed = solidImage(VSCodeCaptureWidth, VSCodeCaptureHeight, 0xff00_0000.toInt()).also { image ->
+            for (x in 0 until image.width) image.setRGB(x, 1, 0xff40_0000.toInt())
+        }
+        val score = vscodeFullPixelParityScore(reference, changed)
+
+        assertTrue(score.fullFrameMeanRgbL1 < VSCodeParityWorstLimitRatioLimit)
+        assertTrue(score.maxPixelRgbL1 <= VSCodeParityMaxPixelRgbL1Limit)
+        assertTrue(score.max8x8WindowMeanRgbL1 < VSCodeParityMaxLineMeanRgbL1Limit)
+        assertTrue(score.worstLimitRatio > VSCodeParityWorstLimitRatioLimit, "Worst-row scoring must reject a one-pixel horizontal strip: $score")
+    }
+
+    @Test
+    fun `vscode strict parity rejects a diluted full height pixel column`() {
+        val reference = solidImage(VSCodeCaptureWidth, VSCodeCaptureHeight, 0xff00_0000.toInt())
+        val changed = solidImage(VSCodeCaptureWidth, VSCodeCaptureHeight, 0xff00_0000.toInt()).also { image ->
+            for (y in 0 until image.height) image.setRGB(1, y, 0xff40_0000.toInt())
+        }
+        val score = vscodeFullPixelParityScore(reference, changed)
+
+        assertTrue(score.fullFrameMeanRgbL1 < VSCodeParityWorstLimitRatioLimit)
+        assertTrue(score.maxPixelRgbL1 <= VSCodeParityMaxPixelRgbL1Limit)
+        assertTrue(score.max8x8WindowMeanRgbL1 < VSCodeParityMaxLineMeanRgbL1Limit)
+        assertTrue(score.worstLimitRatio > VSCodeParityWorstLimitRatioLimit, "Worst-column scoring must reject a one-pixel vertical strip: $score")
+    }
+
+    @Test
+    fun `vscode strict parity rejects a localized 80 pixel line`() {
+        val reference = solidImage(VSCodeCaptureWidth, VSCodeCaptureHeight, 0xff00_0000.toInt())
+        val changed = solidImage(VSCodeCaptureWidth, VSCodeCaptureHeight, 0xff00_0000.toInt()).also { image ->
+            for (x in 100 until 180) image.setRGB(x, 100, 0xffff_ffff.toInt())
+        }
+        val score = vscodeFullPixelParityScore(reference, changed)
+
+        assertTrue(score.fullFrameMeanRgbL1 < VSCodeParityWorstLimitRatioLimit)
+        assertTrue(score.maxRowMeanRgbL1 < VSCodeParityMaxLineMeanRgbL1Limit)
+        assertTrue(score.worstLimitRatio > VSCodeParityWorstLimitRatioLimit, "Local-window scoring must reject a compact visible line: $score")
+    }
+
+    @Test
+    fun `vscode strict parity isolates a local 8 by 8 window defect`() {
+        val reference = solidImage(VSCodeCaptureWidth, VSCodeCaptureHeight, 0xff00_0000.toInt())
+        val changed = solidImage(VSCodeCaptureWidth, VSCodeCaptureHeight, 0xff00_0000.toInt()).also { image ->
+            for (y in 7 until 15) {
+                for (x in 7 until 15) image.setRGB(x, y, 0xff40_0000.toInt())
+            }
+        }
+        val score = vscodeFullPixelParityScore(reference, changed)
+
+        assertTrue(score.fullFrameMeanRgbL1 < VSCodeParityWorstLimitRatioLimit)
+        assertTrue(score.maxRowMeanRgbL1 < VSCodeParityMaxLineMeanRgbL1Limit)
+        assertTrue(score.maxColumnMeanRgbL1 < VSCodeParityMaxLineMeanRgbL1Limit)
+        assertTrue(score.maxPixelRgbL1 <= VSCodeParityMaxPixelRgbL1Limit)
+        assertTrue(score.worstLimitRatio > VSCodeParityWorstLimitRatioLimit, "Sliding local-window scoring must reject a boundary-straddling 8x8 defect: $score")
+    }
+
+    @Test
+    fun `vscode strict parity rejects a compact block across tile boundaries`() {
+        val reference = solidImage(VSCodeCaptureWidth, VSCodeCaptureHeight, 0xff00_0000.toInt())
+        val changed = solidImage(VSCodeCaptureWidth, VSCodeCaptureHeight, 0xff00_0000.toInt()).also { image ->
+            for (y in 7..8) {
+                for (x in 7..8) image.setRGB(x, y, 0xffff_ffff.toInt())
+            }
+        }
+        val score = vscodeFullPixelParityScore(reference, changed)
+
+        assertTrue(score.max8x8WindowMeanRgbL1 < VSCodeParityMaxLineMeanRgbL1Limit)
+        assertTrue(score.worstLimitRatio > VSCodeParityWorstLimitRatioLimit, "Maximum-pixel scoring must reject compact defects at window boundaries: $score")
+    }
+
+    @Test
     fun `vscode from official tarball starts against kotlin x server`() {
         assumeTrue(
             System.getProperty("x.vscodeSmoke") == "true" || System.getenv("X_VSCODE_SMOKE") == "true",
@@ -304,7 +392,7 @@ class VSCodeSmokeTest {
     }
 
     @Test
-    fun `vscode robot and svg roughly match xvfb reference`() {
+    fun `vscode robot and svg stay within bounded full pixel xvfb parity`() {
         assumeTrue(
             System.getProperty("x.vscodeParity") == "true" || System.getenv("X_VSCODE_PARITY") == "true",
             "Set -Dx.vscodeParity=true or X_VSCODE_PARITY=true to run the heavyweight VSCode Xvfb parity probe",
@@ -337,6 +425,7 @@ class VSCodeSmokeTest {
         assertNoVSCodeUnsupportedRequests(actual.text, label = "VSCode parity")
         assertVSCodeVisualClose(reference.robot, actual.robot, "Kotlin Robot VSCode capture")
         assertVSCodeVisualClose(reference.robot, composedSvgCapture, "Kotlin SVG-composed VSCode framebuffer")
+        assertVSCodeVisualClose(actual.robot, composedSvgCapture, "Kotlin Robot vs SVG-composed VSCode capture")
     }
 
     private fun projectRoot(): Path =
@@ -946,6 +1035,9 @@ class VSCodeSmokeTest {
                 appendLine("svgAverageRgbDelta=${abs(composedSvgCapture.averageRgb - reference.robot.averageRgb)}")
                 appendLine("robotSampledDistance=${imageDistance(reference.robot.image, actual.robot.image)}")
                 appendLine("svgSampledDistance=${imageDistance(reference.robot.image, composedSvgCapture.image)}")
+                appendLine("robotFullPixelParityScore=${vscodeFullPixelParityScore(reference.robot.image, actual.robot.image)}")
+                appendLine("svgFullPixelParityScore=${vscodeFullPixelParityScore(reference.robot.image, composedSvgCapture.image)}")
+                appendLine("robotVsSvgFullPixelParityScore=${vscodeFullPixelParityScore(actual.robot.image, composedSvgCapture.image)}")
             },
         )
     }
@@ -1078,6 +1170,7 @@ class VSCodeSmokeTest {
                 appendLine("coverageRatio=${ratio(actual.nonWhitePixels, expected.nonWhitePixels)}")
                 appendLine("averageRgbDelta=${abs(actual.averageRgb - expected.averageRgb)}")
                 appendLine("sampledDistance=${imageDistance(expected.image, actual.image)}")
+                appendLine("fullPixelParityScore=${vscodeFullPixelParityScore(expected.image, actual.image)}")
             },
         )
     }
@@ -1376,10 +1469,10 @@ class VSCodeSmokeTest {
             tolerance = 0.16,
             message = "$label should expose similar average RGB to Xvfb; reference=$expected actual=$actual",
         )
-        val distance = imageDistance(expected.image, actual.image)
+        val score = vscodeFullPixelParityScore(expected.image, actual.image)
         assertTrue(
-            distance <= 125.0,
-            "$label should stay roughly close to Xvfb reference; distance=$distance\nreference=$expected\nactual=$actual",
+            score.worstLimitRatio <= VSCodeParityWorstLimitRatioLimit,
+            "$label should stay within bounded full-pixel parity thresholds; score=$score\nreference=$expected\nactual=$actual",
         )
     }
 
@@ -1404,6 +1497,54 @@ class VSCodeSmokeTest {
         return total.toDouble() / samples.toDouble()
     }
 
+    private fun vscodeFullPixelParityScore(reference: BufferedImage, actual: BufferedImage): VSCodeFullPixelParityScore {
+        assertEquals(reference.width, actual.width, "image width should match")
+        assertEquals(reference.height, actual.height, "image height should match")
+        var fullTotal = 0L
+        var maxPixel = 0
+        var maxRowMean = 0.0
+        val columnTotals = LongArray(reference.width)
+        val summedAreaStride = reference.width + 1
+        val summedArea = LongArray((reference.height + 1) * summedAreaStride)
+        for (y in 0 until reference.height) {
+            var rowTotal = 0L
+            for (x in 0 until reference.width) {
+                val distance = rgbDistance(reference.getRGB(x, y), actual.getRGB(x, y))
+                fullTotal += distance
+                rowTotal += distance
+                columnTotals[x] += distance.toLong()
+                maxPixel = maxOf(maxPixel, distance)
+                summedArea[(y + 1) * summedAreaStride + x + 1] =
+                    summedArea[y * summedAreaStride + x + 1] + rowTotal
+            }
+            maxRowMean = maxOf(maxRowMean, rowTotal.toDouble() / reference.width.toDouble())
+        }
+        val maxColumnMean = columnTotals.maxOf { it.toDouble() / reference.height.toDouble() }
+        val windowWidth = minOf(VSCodeParityLocalWindowSize, reference.width)
+        val windowHeight = minOf(VSCodeParityLocalWindowSize, reference.height)
+        val windowPixels = windowWidth * windowHeight
+        var maxWindowMean = 0.0
+        for (windowY in 0..reference.height - windowHeight) {
+            for (windowX in 0..reference.width - windowWidth) {
+                val right = windowX + windowWidth
+                val bottom = windowY + windowHeight
+                val windowTotal =
+                    summedArea[bottom * summedAreaStride + right] -
+                        summedArea[windowY * summedAreaStride + right] -
+                        summedArea[bottom * summedAreaStride + windowX] +
+                        summedArea[windowY * summedAreaStride + windowX]
+                maxWindowMean = maxOf(maxWindowMean, windowTotal.toDouble() / windowPixels.toDouble())
+            }
+        }
+        return VSCodeFullPixelParityScore(
+            fullFrameMeanRgbL1 = fullTotal.toDouble() / (reference.width * reference.height).toDouble(),
+            maxRowMeanRgbL1 = maxRowMean,
+            maxColumnMeanRgbL1 = maxColumnMean,
+            max8x8WindowMeanRgbL1 = maxWindowMean,
+            maxPixelRgbL1 = maxPixel.toDouble(),
+        )
+    }
+
     private fun rgbDistance(left: Int, right: Int): Int =
         abs(((left ushr 16) and 0xff) - ((right ushr 16) and 0xff)) +
             abs(((left ushr 8) and 0xff) - ((right ushr 8) and 0xff)) +
@@ -1413,6 +1554,27 @@ class VSCodeSmokeTest {
         val id: String,
         val bytes: ByteArray,
     )
+
+    private data class VSCodeFullPixelParityScore(
+        val fullFrameMeanRgbL1: Double,
+        val maxRowMeanRgbL1: Double,
+        val maxColumnMeanRgbL1: Double,
+        val max8x8WindowMeanRgbL1: Double,
+        val maxPixelRgbL1: Double,
+    ) {
+        val worstLimitRatio: Double = maxOf(
+            fullFrameMeanRgbL1,
+            maxRowMeanRgbL1 / VSCodeParityMaxLineMeanRgbL1Limit,
+            maxColumnMeanRgbL1 / VSCodeParityMaxLineMeanRgbL1Limit,
+            max8x8WindowMeanRgbL1 / VSCodeParityMaxLineMeanRgbL1Limit,
+            maxPixelRgbL1 / VSCodeParityMaxPixelRgbL1Limit,
+        )
+
+        override fun toString(): String =
+            "VSCodeFullPixelParityScore(fullFrameMeanRgbL1=$fullFrameMeanRgbL1, maxRowMeanRgbL1=$maxRowMeanRgbL1, " +
+                "maxColumnMeanRgbL1=$maxColumnMeanRgbL1, max8x8WindowMeanRgbL1=$max8x8WindowMeanRgbL1, " +
+                "maxPixelRgbL1=$maxPixelRgbL1, worstLimitRatio=$worstLimitRatio)"
+    }
 
     private data class VSCodeVisualSnapshot(
         val stats: List<VSCodeImageStats>,

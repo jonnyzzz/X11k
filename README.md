@@ -26,7 +26,7 @@ It can run the first Docker smoke matrix against real X clients:
 - `xterm`
 - `twm` with overlapping app windows
 - IntelliJ IDEA Community from GitHub releases in opt-in heavyweight smoke and rough Xvfb parity probes
-- VSCode from the official update service in opt-in heavyweight Electron smoke and rough Xvfb parity probes
+- VSCode from the official update service in opt-in heavyweight Electron smoke and bounded full-pixel Xvfb parity probes
 
 The graphical apps are still compatibility smoke tests rather than full visual conformance tests. Rendering now includes the maintained window model, mapped child-window borders, fixed-font core text, `PutImage` pixel data, XRender fills/composites/glyphs, painted pixmap/offscreen surfaces in SVG previews, and automated Xvfb-vs-Kotlin Robot parity coverage for deterministic Java2D/AWT primitives, overlapping Swing windows, owned popup/dialog windows, heavyweight popup menus, menu dropdown popups, combo-box dropdowns, Swing tooltips, dense Swing scroll-pane content, standard Swing form controls, tabbed split-pane layouts, desktop-pane internal-frame layouts, layered/glass-pane overlays, `xlogo`, `xclock`, `xeyes`, `xcalc`, `xterm`, `twm`-managed `xlogo`/`xclock` overlap, IntelliJ IDEA Community, and VSCode/Electron. The single-window primitive, dense Swing, form-controls, tabbed split-pane, desktop-pane, layered-overlay, `xlogo`, `xclock`, `xeyes`, `xcalc`, `xterm`, `twm`, IntelliJ, and VSCode probes also compare the Kotlin server's SVG-exported or composed SVG framebuffer output against the Xvfb reference, and the overlapping/popup probes compare the composed SVG framebuffer stack against the Xvfb reference. AWT probe diagnostics are retained under `build/tmp/awt-primitive-docker/`, and real xclient parity diagnostics are retained under `build/tmp/xvfb-container-test/`. More X drawing semantics are still pending, especially real GL/JCEF-backed rendering paths and broader app-managed surface presentation.
 
@@ -219,7 +219,8 @@ scripts/run-supervised.sh gradle test --tests org.jonnyzzz.xserver.VSCodeSmokeTe
 For direct Gradle runs, the VSCode parity probe writes its current Xvfb reference, Kotlin Robot capture,
 Kotlin SVG-composed capture, raw `/screen.svg`, `/text.txt`, raw `/` HTML,
 SVG layer inventory, HTML per-window preview inventory, visual diffs,
-full-screen metrics, visual region metrics, extension/GLX diagnostics, and
+full-screen RGB-L1 metrics with full-frame, worst-row, worst-column, sliding
+8x8-window, and maximum-pixel limits, visual region metrics, extension/GLX diagnostics, and
 VSCode logs under `build/tmp/vscode-smoke/`; supervised runs use the retained
 per-run location described above.
 
