@@ -2,8 +2,6 @@ package org.jonnyzzz.xserver
 
 import java.io.InputStream
 import java.net.Socket
-import java.nio.file.Path
-import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -5552,6 +5550,17 @@ class XXkbProtocolTest {
             out.write(getIndicatorStateRequest())
             out.write(getIndicatorMapRequest(which = 0x0000_0004))
             out.write(getNamedIndicatorRequest(indicatorAtom))
+            out.write(
+                getDeviceInfoRequest(
+                    wanted = XXkb.XiFeatureIndicators,
+                    allButtons = false,
+                    firstButton = 0,
+                    nButtons = 0,
+                    ledClass = XXkb.AllXIClasses,
+                    ledId = XXkb.AllXIIds,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                ),
+            )
             out.flush()
 
             val state = readReply(socket.getInputStream())
@@ -5571,6 +5580,19 @@ class XXkbProtocolTest {
             assertEquals(1, named[13].toInt() and 0xff)
             assertEquals(2, named[15].toInt() and 0xff)
             assertEquals(map.toList(), named.copyOfRange(16, 28).toList())
+
+            val deviceInfo = readReply(socket.getInputStream())
+            assertEquals(5, u16le(deviceInfo, 2))
+            assertEquals(XXkb.XiFeatureIndicators, u16le(deviceInfo, 8))
+            assertEquals(1, u16le(deviceInfo, 14))
+            assertEquals(XXkb.KbdFeedbackClass, u16le(deviceInfo, 36))
+            assertEquals(0, u16le(deviceInfo, 38))
+            assertEquals(0x0000_0004, u32le(deviceInfo, 40))
+            assertEquals(0x0000_0004, u32le(deviceInfo, 44))
+            assertEquals(0x0000_07ff, u32le(deviceInfo, 48))
+            assertEquals(0x0000_0004, u32le(deviceInfo, 52))
+            assertEquals(indicatorAtom, u32le(deviceInfo, 56))
+            assertEquals(map.toList(), deviceInfo.copyOfRange(60, 72).toList())
         }
     }
 
@@ -5654,27 +5676,91 @@ class XXkbProtocolTest {
     }
 
     @Test
-    fun `Python XKEYBOARD DeviceInfo protocol test passes against Kotlin server`() {
-        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
-            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
-            val script = Path.of("src", "test", "python", "xkb_device_info_protocol_test.py").toAbsolutePath()
-            val process = ProcessBuilder("python3", script.toString(), "--port", server.localPort.toString())
-                .redirectErrorStream(true)
-                .start()
-            val finished = process.waitFor(10, TimeUnit.SECONDS)
-            val terminated = if (finished) {
-                true
-            } else {
-                process.destroyForcibly()
-                process.waitFor(2, TimeUnit.SECONDS)
+    fun `XKEYBOARD DeviceInfo selector matrix matches wire oracle`() {
+        withServer { socket, _ ->
+            val input = socket.getInputStream()
+            val out = socket.getOutputStream()
+            fun setIndicatorState(deviceSpec: Int, ledClass: Int, ledId: Int): ByteArray =
+                setDeviceInfoRequest(
+                    nButtons = 0,
+                    nDeviceLedFeedbacks = 1,
+                    change = XXkb.XiFeatureIndicatorState,
+                    ledNamesPresent = 0,
+                    ledMapsPresent = 0,
+                    ledState = 1,
+                    ledClass = ledClass,
+                    ledId = ledId,
+                    deviceSpec = deviceSpec,
+                )
+            fun send(request: ByteArray) {
+                out.write(request)
+                out.flush()
             }
-            if (!terminated) error("Python protocol test did not terminate after forced destruction")
-            val output = process.inputStream.bufferedReader().readText()
-            assertEquals(true, finished, "Python protocol test timed out:\n$output")
-            assertEquals(0, process.exitValue(), "Python protocol test failed:\n$output")
-            assertContains(output, "PASS xkb_device_info_protocol_test")
-            server.close()
-            serverThread.join(1_000)
+
+            send(useExtensionRequest())
+            val version = readReply(input)
+            assertEquals(1, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+
+            send(
+                getDeviceInfoRequest(
+                    wanted = XXkb.XiFeatureIndicators,
+                    allButtons = false,
+                    firstButton = 0,
+                    nButtons = 0,
+                    ledClass = XXkb.AllXIClasses,
+                    ledId = XXkb.AllXIIds,
+                    deviceSpec = XXkb.DeviceSpecUseCorePointer,
+                ),
+            )
+            val pointer = readReply(input)
+            assertEquals(2, u16le(pointer, 2))
+            assertEquals(0, u16le(pointer, 8))
+            assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(pointer, 10))
+            assertEquals(0, u16le(pointer, 14))
+
+            send(getDeviceInfoRequest(XXkb.XiFeatureIndicators, false, 0, 0, ledClass = 0x0700, ledId = XXkb.AllXIIds, deviceSpec = XXkb.DeviceSpecUseCorePointer))
+            assertError(input, error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 3, minorOpcode = XXkb.GetDeviceInfo)
+            send(getDeviceInfoRequest(XXkb.XiFeatureIndicators, false, 0, 0, ledClass = XXkb.DfltXIClass, ledId = XXkb.DfltXIId, deviceSpec = XXkb.DeviceSpecUseCorePointer))
+            assertError(input, error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.GetDeviceInfo)
+
+            send(
+                getDeviceInfoRequest(
+                    wanted = XXkb.XiFeatureIndicators,
+                    allButtons = false,
+                    firstButton = 0,
+                    nButtons = 0,
+                    ledClass = XXkb.AllXIClasses,
+                    ledId = XXkb.AllXIIds,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                ),
+            )
+            val keyboard = readReply(input)
+            assertEquals(5, u16le(keyboard, 2))
+            assertEquals(1, u16le(keyboard, 14))
+            assertEquals(XXkb.KbdFeedbackClass, u16le(keyboard, 36))
+            assertEquals(0, u16le(keyboard, 38))
+            assertEquals(0x0000_07ff, u32le(keyboard, 48))
+
+            send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, XXkb.DfltXIClass, XXkb.DfltXIId))
+            send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, XXkb.KbdFeedbackClass, 0))
+            send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, XXkb.KbdFeedbackClass, 1))
+            assertError(input, error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 8, minorOpcode = XXkb.SetDeviceInfo)
+            send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, XXkb.KbdFeedbackClass, 7))
+            assertError(input, error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 9, minorOpcode = XXkb.SetDeviceInfo)
+            send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, XXkb.LedFeedbackClass, 0))
+            assertError(input, error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 10, minorOpcode = XXkb.SetDeviceInfo)
+            send(setIndicatorState(XXkb.DeviceSpecUseCorePointer, XXkb.KbdFeedbackClass, 0))
+            assertError(input, error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 11, minorOpcode = XXkb.SetDeviceInfo)
+            send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, XXkb.KbdFeedbackClass, 0x0700))
+            assertError(input, error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 12, minorOpcode = XXkb.SetDeviceInfo)
+            send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, 0x0700, XXkb.DfltXIId))
+            assertError(input, error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 13, minorOpcode = XXkb.SetDeviceInfo)
+
+            send(useExtensionRequest())
+            val recovered = readReply(input)
+            assertEquals(14, u16le(recovered, 2))
+            assertEquals(1, recovered[1].toInt() and 0xff)
         }
     }
 

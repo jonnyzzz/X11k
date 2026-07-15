@@ -2,8 +2,7 @@ package org.jonnyzzz.xserver
 
 import java.io.InputStream
 import java.net.Socket
-import java.nio.file.Path
-import java.util.concurrent.TimeUnit
+import java.util.zip.CRC32
 import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -3995,72 +3994,329 @@ class XRenderProtocolTest {
     }
 
     @Test
-    fun `Python XRENDER low alpha oracle passes against Kotlin server`() {
-        runPythonProtocolTest(
-            scriptName = "xrender_low_alpha_protocol_test.py",
-            passMarker = "PASS xrender_low_alpha_protocol_test",
-        )
-    }
-
-    @Test
-    fun `Python XRENDER precision oracle passes against Kotlin server`() {
-        runPythonProtocolTest(
-            scriptName = "xrender_precision_protocol_test.py",
-            passMarker = "PASS xrender_precision_protocol_test",
-        )
-    }
-
-    @Test
-    fun `Python XRENDER transformed strip oracle passes against Kotlin server`() {
-        runPythonProtocolTest(
-            scriptName = "xrender_transformed_strip_protocol_test.py",
-            passMarker = "PASS xrender_transformed_strip_protocol_test",
-        )
-    }
-
-    @Test
-    fun `Python XRENDER bottom band oracle passes against Kotlin server`() {
-        runPythonProtocolTest(
-            scriptName = "xrender_bottom_band_protocol_test.py",
-            passMarker = "PASS xrender_bottom_band_protocol_test",
-        )
-    }
-
-    private fun runPythonProtocolTest(scriptName: String, passMarker: String) {
+    fun `RENDER low alpha notification lifecycle matches Xvfb wire oracle`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
-            val script = Path.of("src", "test", "python", scriptName).toAbsolutePath()
-            val process = ProcessBuilder("python3", script.toString(), "--port", server.localPort.toString())
-                .redirectErrorStream(true)
-                .start()
-            val output = StringBuffer()
-            val outputThread = thread(start = true, isDaemon = true, name = "python-protocol-output-$scriptName") {
-                runCatching {
-                    process.inputStream.bufferedReader().use { reader ->
-                        val buffer = CharArray(4_096)
-                        while (true) {
-                            val read = reader.read(buffer)
-                            if (read < 0) break
-                            output.append(buffer, 0, read)
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                var nextId = 0x0020_5000
+                fun id(): Int = nextId++
+                fun pixels(image: ByteArray, width: Int, height: Int): List<Int> =
+                    List(width * height) { index -> u32le(image, 32 + index * 4) }
+                fun rgb24(image: ByteArray, width: Int, height: Int): List<Int> =
+                    pixels(image, width, height).map { it and 0x00ff_ffff }
+
+                val sourcePixmap = id()
+                val destinationPixmap = id()
+                val maskPixmap = id()
+                val sourceGc = id()
+                val destinationGc = id()
+                val sourcePicture = id()
+                val destinationPicture = id()
+                val maskPicture = id()
+                val gradientPicture = id()
+                val gradientPixmap = id()
+                val gradientGc = id()
+                val gradientDestinationPicture = id()
+                val fillPixmap = id()
+                val fillPicture = id()
+                val lifecycleDestinationPixmap = id()
+                val lifecycleDestinationPicture = id()
+                val gradientWidth = 5
+                val sources = intArrayOf(0x0f00_0000, 0x0800_0000, 0x0500_0000, 0x0200_0000, 0x8014_6e2d.toInt())
+                val destinations = intArrayOf(0xff19_1a1c.toInt(), 0xff19_1a1c.toInt(), 0xff19_1a1c.toInt(), 0xff19_1a1c.toInt(), 0xffe6_322c.toInt())
+                val masks = byteArrayOf(0xff.toByte(), 0x80.toByte(), 0x80.toByte(), 0x40, 0x80.toByte())
+
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(sourcePixmap, depth = 32, width = sources.size, height = 1))
+                out.write(createPixmapRequest(destinationPixmap, depth = 32, width = sources.size, height = 1))
+                out.write(createPixmapRequest(maskPixmap, depth = 8, width = sources.size, height = 1))
+                out.write(createGcRequest(sourceGc, sourcePixmap))
+                out.write(createGcRequest(destinationGc, destinationPixmap))
+                out.write(putImage32OnlyRequest(sourcePixmap, sources.size, 1, sources, gc = sourceGc))
+                out.write(putImage8Request(maskPixmap, sources.size, 1, masks))
+                out.write(renderCreatePicture(sourcePicture, sourcePixmap, XRender.Argb32Format))
+                out.write(renderCreatePicture(destinationPicture, destinationPixmap, XRender.Argb32Format))
+                out.write(renderCreatePicture(maskPicture, maskPixmap, XRender.A8Format))
+
+                out.write(createPixmapRequest(fillPixmap, depth = 24, width = 1, height = gradientWidth + 1))
+                out.write(renderCreatePicture(fillPicture, fillPixmap, XRender.Rgb24Format))
+                out.write(renderFillRectangles(fillPicture, x = 0, y = 0, width = 1, height = gradientWidth + 1, red = 0x19ff, green = 0x1aff, blue = 0x1cff, alpha = 0xffff))
+                out.write(getImageRequest(fillPixmap, 0, 0, 1, 1))
+
+                out.write(putImage32OnlyRequest(destinationPixmap, sources.size, 1, destinations, gc = destinationGc))
+                out.write(renderComposite(sourcePicture, destinationPicture, operation = XRender.OpOver, destinationX = 0, destinationY = 0, width = sources.size, height = 1))
+                out.write(getImageRequest(destinationPixmap, 0, 0, sources.size, 1))
+
+                out.write(putImage32OnlyRequest(destinationPixmap, sources.size, 1, destinations, gc = destinationGc))
+                out.write(renderComposite(sourcePicture, destinationPicture, mask = maskPicture, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = sources.size, height = 1))
+                out.write(getImageRequest(destinationPixmap, 0, 0, sources.size, 1))
+
+                out.write(createPixmapRequest(gradientPixmap, depth = 32, width = 256, height = 256))
+                out.write(createGcRequest(gradientGc, gradientPixmap))
+                out.write(renderCreatePicture(gradientDestinationPicture, gradientPixmap, XRender.Argb32Format))
+                out.write(createPixmapRequest(lifecycleDestinationPixmap, depth = 24, width = 256, height = gradientWidth + 1))
+                out.write(renderCreatePicture(lifecycleDestinationPicture, lifecycleDestinationPixmap, XRender.Rgb24Format))
+                out.write(
+                    renderCreateLinearGradient(
+                        gradientPicture,
+                        p1 = 5 to 108,
+                        p2 = 5 to 113,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0x00ff, green = 0x00ff, blue = 0x00ff, alpha = 0x10ff),
+                            RenderColor(red = 0x00ff, green = 0x00ff, blue = 0x00ff, alpha = 0x0000),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(gradientPicture, repeat = XRender.RepeatPad))
+                out.write(renderSetPictureTransform(gradientPicture, listOf(0x0001_0000, 0, -0x034a_0000, 0, 0x0001_0000, -0x02cf_0000, 0, 0, 0x0001_0000)))
+                out.write(putImage32OnlyRequest(gradientPixmap, 1, gradientWidth, destinations, gc = gradientGc))
+                out.write(renderComposite(gradientPicture, gradientDestinationPicture, operation = XRender.OpSrc, sourceX = 847, sourceY = 827, destinationX = 0, destinationY = 0, width = 1, height = gradientWidth))
+                out.write(getImageRequest(gradientPixmap, 0, 0, 1, gradientWidth))
+
+                out.write(renderComposite(gradientDestinationPicture, fillPicture, operation = XRender.OpOver, destinationX = 0, destinationY = 0, width = 1, height = gradientWidth))
+                out.write(getImageRequest(fillPixmap, 0, 0, 1, gradientWidth))
+
+                out.write(renderFillRectangles(fillPicture, x = 0, y = 0, width = 1, height = gradientWidth + 1, red = 0x19ff, green = 0x1aff, blue = 0x1cff, alpha = 0xffff))
+                out.write(renderComposite(gradientDestinationPicture, fillPicture, operation = XRender.OpOver, destinationX = 0, destinationY = 1, width = 1, height = gradientWidth))
+                out.write(getImageRequest(fillPixmap, 0, 3, 1, 1))
+
+                out.write(putImage32OnlyRequest(gradientPixmap, 1, gradientWidth, IntArray(gradientWidth) { 0xff19_1a1c.toInt() }, gc = gradientGc))
+                out.write(renderComposite(gradientPicture, gradientDestinationPicture, operation = XRender.OpOver, sourceX = 847, sourceY = 827, destinationX = 0, destinationY = 0, width = 1, height = gradientWidth))
+                out.write(getImageRequest(gradientPixmap, 0, 0, 1, gradientWidth))
+
+                out.write(renderFillRectangles(fillPicture, x = 0, y = 0, width = 1, height = gradientWidth, red = 0x19ff, green = 0x1aff, blue = 0x1cff, alpha = 0xffff))
+                out.write(renderComposite(gradientPicture, fillPicture, operation = XRender.OpOver, sourceX = 847, sourceY = 827, destinationX = 0, destinationY = 0, width = 1, height = gradientWidth))
+                out.write(getImageRequest(fillPixmap, 0, 0, 1, gradientWidth))
+
+                out.write(renderComposite(gradientPicture, gradientDestinationPicture, operation = XRender.OpSrc, sourceX = 847, sourceY = 827, destinationX = 0, destinationY = 0, width = 256, height = gradientWidth))
+                out.write(getImageRequest(gradientPixmap, 0, 0, 1, gradientWidth))
+                out.write(getImageRequest(gradientPixmap, 255, 0, 1, gradientWidth))
+
+                out.write(renderFillRectangles(lifecycleDestinationPicture, x = 0, y = 0, width = 256, height = gradientWidth + 1, red = 0x19ff, green = 0x1aff, blue = 0x1cff, alpha = 0xffff))
+                out.write(renderComposite(gradientDestinationPicture, lifecycleDestinationPicture, operation = XRender.OpOver, destinationX = 0, destinationY = 0, width = 256, height = gradientWidth))
+                out.write(getImageRequest(lifecycleDestinationPixmap, 17, 3, 1, 1))
+
+                out.write(renderFillRectangles(lifecycleDestinationPicture, x = 0, y = 0, width = 256, height = gradientWidth + 1, red = 0x19ff, green = 0x1aff, blue = 0x1cff, alpha = 0xffff))
+                out.write(renderComposite(gradientDestinationPicture, lifecycleDestinationPicture, operation = XRender.OpOver, destinationX = 0, destinationY = 1, width = 256, height = gradientWidth))
+                out.write(getImageRequest(lifecycleDestinationPixmap, 17, 3, 1, 1))
+
+                out.write(renderComposite(gradientPicture, gradientDestinationPicture, operation = XRender.OpSrc, sourceX = 847, sourceY = 828, destinationX = 0, destinationY = 0, width = 5, height = gradientWidth))
+                out.write(getImageRequest(gradientPixmap, 0, 0, 6, gradientWidth))
+
+                out.write(renderFillRectangles(lifecycleDestinationPicture, x = 0, y = 0, width = 256, height = gradientWidth + 1, red = 0x19ff, green = 0x1aff, blue = 0x1cff, alpha = 0xffff))
+                out.write(renderComposite(gradientDestinationPicture, lifecycleDestinationPicture, operation = XRender.OpOver, destinationX = 0, destinationY = 1, width = 5, height = gradientWidth))
+                out.write(getImageRequest(lifecycleDestinationPixmap, 0, 3, 6, 1))
+                out.flush()
+
+                assertEquals(listOf(0x0019_1a1c), rgb24(readReply(socket.getInputStream()), 1, 1))
+                assertEquals(listOf(0xff18_181a.toInt(), 0xff18_191b.toInt(), 0xff19_191b.toInt(), 0xff19_1a1c.toInt(), 0xff87_8743.toInt()), pixels(readReply(socket.getInputStream()), sources.size, 1))
+                assertEquals(listOf(0x0f00_0000, 0x0400_0000, 0x0300_0000, 0x0100_0000, 0x400a_3717), pixels(readReply(socket.getInputStream()), sources.size, 1))
+                assertEquals(listOf(0x0f00_0000, 0x0c00_0000, 0x0800_0000, 0x0500_0000, 0x0200_0000), pixels(readReply(socket.getInputStream()), 1, gradientWidth))
+                assertEquals(listOf(0x0018_181a, 0x0018_191b, 0x0018_191b, 0x0019_191b, 0x0019_1a1c), rgb24(readReply(socket.getInputStream()), 1, gradientWidth))
+                assertEquals(listOf(0x0018_191b), rgb24(readReply(socket.getInputStream()), 1, 1))
+                assertEquals(listOf(0xff18_181a.toInt(), 0xff18_191b.toInt(), 0xff18_191b.toInt(), 0xff19_191b.toInt(), 0xff19_1a1c.toInt()), pixels(readReply(socket.getInputStream()), 1, gradientWidth))
+                assertEquals(listOf(0x0018_181a, 0x0018_191b, 0x0018_191b, 0x0019_191b, 0x0019_1a1c), rgb24(readReply(socket.getInputStream()), 1, gradientWidth))
+                assertEquals(listOf(0x0f00_0000, 0x0c00_0000, 0x0800_0000, 0x0500_0000, 0x0200_0000), pixels(readReply(socket.getInputStream()), 1, gradientWidth))
+                assertEquals(listOf(0x0f00_0000, 0x0c00_0000, 0x0800_0000, 0x0500_0000, 0x0200_0000), pixels(readReply(socket.getInputStream()), 1, gradientWidth))
+                assertEquals(listOf(0x0019_191b), rgb24(readReply(socket.getInputStream()), 1, 1))
+                assertEquals(listOf(0x0018_191b), rgb24(readReply(socket.getInputStream()), 1, 1))
+                assertEquals(
+                    listOf(
+                        0x0c00_0000, 0x0c00_0000, 0x0c00_0000, 0x0c00_0000, 0x0c00_0000, 0x0f00_0000,
+                        0x0800_0000, 0x0800_0000, 0x0800_0000, 0x0800_0000, 0x0800_0000, 0x0c00_0000,
+                        0x0500_0000, 0x0500_0000, 0x0500_0000, 0x0500_0000, 0x0500_0000, 0x0800_0000,
+                        0x0200_0000, 0x0200_0000, 0x0200_0000, 0x0200_0000, 0x0200_0000, 0x0500_0000,
+                        0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0200_0000,
+                    ),
+                    pixels(readReply(socket.getInputStream()), 6, gradientWidth),
+                )
+                assertEquals(listOf(0x0019_191b, 0x0019_191b, 0x0019_191b, 0x0019_191b, 0x0019_191b, 0x0019_1a1c), rgb24(readReply(socket.getInputStream()), 6, 1))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER exhaustive precision vectors match Xvfb wire oracles`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                var nextId = 0x0020_5100
+                fun id(): Int = nextId++
+                fun assertPixels(label: String, image: ByteArray, expected: IntArray) {
+                    assertEquals(32 + expected.size * 4, image.size, "$label payload size")
+                    expected.forEachIndexed { index, pixel ->
+                        assertEquals(pixel, u32le(image, 32 + index * 4), "$label pixel $index")
+                    }
+                }
+                fun div255(value: Int): Int {
+                    val biased = value + 0x80
+                    return (biased + (biased ushr 8)) ushr 8
+                }
+                fun channel(pixel: Int, shift: Int): Int = (pixel ushr shift) and 0xff
+                fun over(source: Int, destination: Int): Int {
+                    val inverseAlpha = 255 - channel(source, 24)
+                    var output = channel(source, 24) + div255(channel(destination, 24) * inverseAlpha)
+                    for (shift in intArrayOf(16, 8, 0)) {
+                        output = (output shl 8) or minOf(255, channel(source, shift) + div255(channel(destination, shift) * inverseAlpha))
+                    }
+                    return output
+                }
+                fun pixmanChannel(rawStart: Int, rawEnd: Int, fixedPosition: Int): Int {
+                    val left = rawStart.toFloat() * (1.0f / 257.0f)
+                    val right = rawEnd.toFloat() * (1.0f / 257.0f)
+                    val reciprocal = 1.0f / (1.0f - 0.0f)
+                    val bias = ((left * 1.0f - right * 0.0f) * reciprocal) * (1.0f / 255.0f)
+                    val slope = ((right - left) * reciprocal) * (1.0f / 255.0f)
+                    val position = fixedPosition.toFloat() * (1.0f / 65_536.0f)
+                    val value = 255.0f * (slope * position + bias)
+                    return (value + 0.5f).toInt().coerceIn(0, 255)
+                }
+                fun awtGradientPixel(x: Int, y: Int): Int {
+                    val fixed = 1L shl 16
+                    val dx = 276L * fixed
+                    val dy = 55L * fixed
+                    val length = dx * dx + dy * dy
+                    val sampleX = 24L * fixed + fixed / 2
+                    val sampleY = (205L + y) * fixed + fixed / 2
+                    val originProjection = dx * (24L * fixed) + dy * (205L * fixed)
+                    val numerator = dx * sampleX + dy * sampleY - originProjection
+                    val inverseDenominator = fixed.toDouble() / length.toDouble()
+                    val firstPosition = (numerator.toDouble() * inverseDenominator).toInt()
+                    val increment = (dx * fixed).toDouble() * inverseDenominator
+                    val position = (firstPosition + (increment * x).toInt()).coerceIn(0, fixed.toInt())
+                    val red = pixmanChannel(0xffff, 0x28ff, position)
+                    val green = pixmanChannel(0xd2ff, 0xa0ff, position)
+                    val blue = pixmanChannel(0x28ff, 0xffff, position)
+                    return 0xff00_0000.toInt() or (red shl 16) or (green shl 8) or blue
+                }
+
+                val spreadPixmap = id()
+                val spreadDestination = id()
+                val spreadGradient = id()
+                val sourcePixmap = id()
+                val destinationPixmap = id()
+                val sourceGc = id()
+                val destinationGc = id()
+                val sourcePicture = id()
+                val destinationPicture = id()
+                val precisionPixmap = id()
+                val precisionDestination = id()
+                val precisionGradient = id()
+                val awtPixmap = id()
+                val awtDestination = id()
+                val awtGradient = id()
+
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(spreadPixmap, depth = 32, width = 4, height = 1))
+                out.write(renderCreatePicture(spreadDestination, spreadPixmap, XRender.Argb32Format))
+                out.write(
+                    renderCreateLinearGradient(
+                        spreadGradient,
+                        p1 = 0 to 0,
+                        p2 = 10 to 0,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0, blue = 0, alpha = 0xffff),
+                            RenderColor(red = 0, green = 0, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderComposite(spreadGradient, spreadDestination, operation = XRender.OpSrc, sourceX = 12, destinationX = 0, destinationY = 0, width = 1, height = 1))
+                listOf(XRender.RepeatPad, XRender.RepeatNormal, XRender.RepeatReflect).forEachIndexed { index, repeat ->
+                    out.write(renderChangePicture(spreadGradient, repeat = repeat))
+                    out.write(renderComposite(spreadGradient, spreadDestination, operation = XRender.OpSrc, sourceX = 12, destinationX = index + 1, destinationY = 0, width = 1, height = 1))
+                }
+                out.write(getImageRequest(spreadPixmap, 0, 0, 4, 1))
+
+                val cases = buildList {
+                    val destinationColors = intArrayOf(0xff26_282c.toInt(), 0xff27_292f.toInt(), 0xff28_2b32.toInt(), 0xff29_2c36.toInt())
+                    val straightColors = arrayOf(intArrayOf(0x21, 0x23, 0x26), intArrayOf(0x11, 0x12, 0x13), intArrayOf(0x38, 0x3a, 0x40))
+                    for (destination in destinationColors) {
+                        for ((red, green, blue) in straightColors) {
+                            for (alpha in 0..255) {
+                                val source = (alpha shl 24) or
+                                    (((red * alpha + 127) / 255) shl 16) or
+                                    (((green * alpha + 127) / 255) shl 8) or
+                                    ((blue * alpha + 127) / 255)
+                                add(source to destination)
+                            }
                         }
                     }
-                }.onFailure { failure ->
-                    output.append("\n[output reader failed: ${failure.message}]\n")
                 }
+                out.write(createPixmapRequest(sourcePixmap, depth = 32, width = cases.size, height = 1))
+                out.write(createPixmapRequest(destinationPixmap, depth = 32, width = cases.size, height = 1))
+                out.write(createGcRequest(sourceGc, sourcePixmap))
+                out.write(createGcRequest(destinationGc, destinationPixmap))
+                out.write(putImage32OnlyRequest(sourcePixmap, cases.size, 1, cases.map { it.first }.toIntArray(), gc = sourceGc))
+                out.write(putImage32OnlyRequest(destinationPixmap, cases.size, 1, cases.map { it.second }.toIntArray(), gc = destinationGc))
+                out.write(renderCreatePicture(sourcePicture, sourcePixmap, XRender.Argb32Format))
+                out.write(renderCreatePicture(destinationPicture, destinationPixmap, XRender.Argb32Format))
+                out.write(renderComposite(sourcePicture, destinationPicture, operation = XRender.OpOver, destinationX = 0, destinationY = 0, width = cases.size, height = 1))
+                out.write(getImageRequest(destinationPixmap, 0, 0, cases.size, 1))
+
+                val gradientHeight = 34
+                out.write(createPixmapRequest(precisionPixmap, depth = 32, width = 1, height = gradientHeight))
+                out.write(renderCreatePicture(precisionDestination, precisionPixmap, XRender.Argb32Format))
+                out.write(
+                    renderCreateLinearGradient(
+                        precisionGradient,
+                        p1 = 0 to 0,
+                        p2 = 0 to 300,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0x26ff, green = 0x28ff, blue = 0x2cff, alpha = 0),
+                            RenderColor(red = 0x26ff, green = 0x28ff, blue = 0x2cff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(precisionGradient, repeat = XRender.RepeatPad))
+                out.write(renderComposite(precisionGradient, precisionDestination, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 1, height = gradientHeight))
+                out.write(getImageRequest(precisionPixmap, 0, 0, 1, gradientHeight))
+
+                val awtWidth = 304
+                val awtHeight = 34
+                out.write(createPixmapRequest(awtPixmap, depth = 32, width = awtWidth, height = awtHeight))
+                out.write(renderCreatePicture(awtDestination, awtPixmap, XRender.Argb32Format))
+                out.write(
+                    renderCreateLinearGradient(
+                        awtGradient,
+                        p1 = 24 to 205,
+                        p2 = 300 to 260,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0xd2ff, blue = 0x28ff, alpha = 0xffff),
+                            RenderColor(red = 0x28ff, green = 0xa0ff, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(awtGradient, repeat = XRender.RepeatPad))
+                out.write(renderComposite(awtGradient, awtDestination, operation = XRender.OpSrc, sourceX = 24, sourceY = 205, destinationX = 0, destinationY = 0, width = awtWidth, height = awtHeight))
+                out.write(getImageRequest(awtPixmap, 0, 0, awtWidth, awtHeight))
+                out.flush()
+
+                assertPixels("linear gradient spread modes", readReply(socket.getInputStream()), intArrayOf(0x0000_0000, 0xff00_00ff.toInt(), 0xffbf_0040.toInt(), 0xff40_00bf.toInt()))
+                assertPixels("premultiplied OpOver matrix", readReply(socket.getInputStream()), cases.map { (source, destination) -> over(source, destination) }.toIntArray())
+                val precisionExpected = IntArray(gradientHeight) { y ->
+                    val alpha16 = 0xffff * ((y + 0.5) / 300.0)
+                    val alpha = (alpha16 / 257.0 + 0.5).toInt()
+                    val red = (0x26ff * alpha16 / 0xffff / 257.0 + 0.5).toInt()
+                    val green = (0x28ff * alpha16 / 0xffff / 257.0 + 0.5).toInt()
+                    val blue = (0x2cff * alpha16 / 0xffff / 257.0 + 0.5).toInt()
+                    (alpha shl 24) or (red shl 16) or (green shl 8) or blue
+                }
+                assertPixels("16-bit gradient premultiplication", readReply(socket.getInputStream()), precisionExpected)
+                val awtExpected = IntArray(awtWidth * awtHeight) { index -> awtGradientPixel(index % awtWidth, index / awtWidth) }
+                assertPixels("AWT linear gradient", readReply(socket.getInputStream()), awtExpected)
             }
-            val finished = process.waitFor(20, TimeUnit.SECONDS)
-            val terminated = if (finished) {
-                true
-            } else {
-                process.destroyForcibly()
-                process.waitFor(2, TimeUnit.SECONDS)
-            }
-            if (!terminated) error("Python XRENDER protocol test did not terminate after forced destruction")
-            outputThread.join(2_000)
-            val outputText = output.toString()
-            assertEquals(true, finished, "Python XRENDER protocol test $scriptName timed out:\n$outputText")
-            assertEquals(0, process.exitValue(), "Python XRENDER protocol test $scriptName failed:\n$outputText")
-            assertContains(outputText, passMarker)
             server.close()
             serverThread.join(1_000)
         }
@@ -12676,10 +12932,24 @@ class XRenderProtocolTest {
                         height = bandHeight,
                     ),
                 )
+                out.write(getImageRequest(tempPixmap, x = 0, y = 0, width = bandWidth, height = bandHeight))
                 out.write(
                     renderComposite(
                         framePicture,
                         PictureId,
+                        operation = XRender.OpSrc,
+                        sourceX = frameX,
+                        sourceY = frameY,
+                        destinationX = 0,
+                        destinationY = 0,
+                        width = bandWidth,
+                        height = bandHeight,
+                    ),
+                )
+                out.write(
+                    renderComposite(
+                        framePicture,
+                        tempPicture,
                         operation = XRender.OpSrc,
                         sourceX = frameX,
                         sourceY = frameY,
@@ -12694,7 +12964,8 @@ class XRenderProtocolTest {
                 out.write(getImageRequest(WindowId, x = 0, y = 0, width = bandWidth, height = bandHeight))
                 out.flush()
 
-                val tempImage = readReply(socket.getInputStream())
+                val gradientImage = readReply(socket.getInputStream())
+                val copiedTempImage = readReply(socket.getInputStream())
                 val frameImage = readReply(socket.getInputStream())
                 val windowImage = readReply(socket.getInputStream())
                 val xvfbOracleFirstPixels = listOf(
@@ -12715,11 +12986,18 @@ class XRenderProtocolTest {
                     0xff10_1010.toInt(),
                     0xff84_acf8.toInt(),
                 )
+                fun payloadCrc32(image: ByteArray): Long = CRC32().apply {
+                    update(image, 32, bandWidth * bandHeight * 4)
+                }.value
                 assertPixelRow(frameImage, imageWidth = bandWidth, y = 0, expected = xvfbOracleFirstPixels)
                 assertPixelRow(windowImage, imageWidth = bandWidth, y = 0, expected = xvfbOracleFirstPixels)
-                assertTrue(pixelAt(tempImage, bandWidth, 0, 0) != pixelAt(tempImage, bandWidth, bandWidth - 1, 0), "gradient should vary across the bottom-band source range")
+                assertPixelRow(copiedTempImage, imageWidth = bandWidth, y = 0, expected = xvfbOracleFirstPixels)
+                assertEquals(0x54a5_3753L, payloadCrc32(copiedTempImage), "copied scratch CRC32")
+                assertEquals(0x54a5_3753L, payloadCrc32(frameImage), "offset frame CRC32")
+                assertEquals(0x54a5_3753L, payloadCrc32(windowImage), "window CRC32")
+                assertTrue(pixelAt(gradientImage, bandWidth, 0, 0) != pixelAt(gradientImage, bandWidth, bandWidth - 1, 0), "gradient should vary across the bottom-band source range")
                 listOf(0, 4, 8, 12).forEach { x ->
-                    assertEquals(pixelAt(tempImage, bandWidth, x, 0), pixelAt(frameImage, bandWidth, x, 0), "full mask should copy source at $x,0 into the frame band")
+                    assertEquals(pixelAt(gradientImage, bandWidth, x, 0), pixelAt(frameImage, bandWidth, x, 0), "full mask should copy source at $x,0 into the frame band")
                     assertEquals(pixelAt(frameImage, bandWidth, x, 0), pixelAt(windowImage, bandWidth, x, 0), "window should expose frame pixel at $x,0")
                 }
                 listOf(2, 6, 10, 14).forEach { x ->
@@ -12728,7 +13006,7 @@ class XRenderProtocolTest {
                 }
                 listOf(1, 5, 9, 13).forEach { x ->
                     assertTrue(pixelAt(frameImage, bandWidth, x, 0) != baseline, "half mask should blend away from baseline at $x,0")
-                    assertTrue(pixelAt(frameImage, bandWidth, x, 0) != pixelAt(tempImage, bandWidth, x, 0), "half mask should not copy source fully at $x,0")
+                    assertTrue(pixelAt(frameImage, bandWidth, x, 0) != pixelAt(gradientImage, bandWidth, x, 0), "half mask should not copy source fully at $x,0")
                     assertEquals(pixelAt(frameImage, bandWidth, x, 0), pixelAt(windowImage, bandWidth, x, 0), "window should expose half-mask frame pixel at $x,0")
                 }
 
