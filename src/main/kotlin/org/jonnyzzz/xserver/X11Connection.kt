@@ -4646,6 +4646,11 @@ internal class X11Connection(
                 foreground = 0,
                 points = listOf(XPoint(byteOrder.i16(body, 20), byteOrder.i16(body, 22))),
                 text = "RENDER.${XRender.operationName(minorOpcode)} glyphs=${body.size - 24}",
+                textOrigin = when (minorOpcode) {
+                    23 -> XTextOrigin.RenderCompositeGlyphs8
+                    24 -> XTextOrigin.RenderCompositeGlyphs16
+                    else -> XTextOrigin.RenderCompositeGlyphs32
+                },
                 framebufferBacked = painted,
                 rawDrawablePixels = false,
             ),
@@ -8280,6 +8285,7 @@ internal class X11Connection(
                 background = gc.background,
                 points = runs.map { XPoint(it.x, it.y) },
                 text = runs.joinToString("") { state.textForFont(it.fontId, it.text) },
+                textOrigin = if (is16Bit) XTextOrigin.CorePolyText16 else XTextOrigin.CorePolyText8,
                 framebufferBacked = true,
                 framebufferPainted = painted,
             ),
@@ -8323,6 +8329,7 @@ internal class X11Connection(
                 background = gc.background,
                 points = listOf(XPoint(x, y)),
                 text = text,
+                textOrigin = if (is16Bit) XTextOrigin.CoreImageText16 else XTextOrigin.CoreImageText8,
                 framebufferBacked = true,
                 framebufferPainted = painted,
             ),

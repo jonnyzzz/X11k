@@ -549,18 +549,26 @@ class IntellijCommunitySmokeTest {
             - region=10,784 1260x96 window=0x200003
             - None.
 
+            Recent core text commands:
+            - drawable=0x200003 baselines=[12:34] painted=true origin=CoreImageText8 text="boundary"
+
             Recent PutImage commands:
             - None.
             """.trimIndent()
 
         val top = intellijRenderBandSection(text, "top")
         val right = intellijRenderBandSection(text, "right")
+        val bottom = intellijRenderBandSection(text, "bottom")
         val missing = intellijRenderBandSection(text, "left")
 
         assertTrue(top.startsWith("RENDER operations intersecting top mapped root-child band:"), top)
         assertTrue(top.contains("sourcePopulation=0x400120#1"), top)
         assertFalse(top.contains("right mapped root-child band"), top)
         assertTrue(right.contains("region=1174,20 96x860"), right)
+        assertTrue(bottom.contains("region=10,784 1260x96"), bottom)
+        assertFalse(bottom.contains("Recent core text commands"), bottom)
+        assertFalse(bottom.contains("boundary"), bottom)
+        assertFalse(bottom.contains("Recent PutImage commands"), bottom)
         assertEquals("", missing)
     }
 
@@ -7762,7 +7770,10 @@ class IntellijCommunitySmokeTest {
             .find(text, start + header.length)
             ?.range
             ?.first
-        val nextSection = text.indexOf("\nRecent PutImage commands:", start).takeIf { it >= 0 }
+        val nextSection = Regex("""\nRecent (?:core text|PutImage) commands:""")
+            .find(text, start + header.length)
+            ?.range
+            ?.first
         val end = listOfNotNull(nextBand, nextSection).minOrNull() ?: text.length
         return text.substring(start, end).trimEnd() + "\n"
     }

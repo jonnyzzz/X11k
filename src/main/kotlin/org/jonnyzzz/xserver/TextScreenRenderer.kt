@@ -395,6 +395,32 @@ internal object TextScreenRenderer {
             appendLine()
             appendMappedRootChildRenderBands(snapshot)
             appendLine()
+            appendLine("Recent core text commands:")
+            val coreText = snapshot.drawings
+                .filter { it.kind == XDrawingKind.Text && it.text.isNotEmpty() && it.textOrigin?.decodedApplicationText == true }
+                .takeLast(30)
+                .asReversed()
+            if (coreText.isEmpty()) {
+                appendLine("- None.")
+            } else {
+                for (drawing in coreText) {
+                    append("- drawable=0x")
+                    append(drawing.drawableId.toUInt().toString(16))
+                    append(" baselines=")
+                    append(drawing.points.joinToString(",", prefix = "[", postfix = "]") { "${it.x}:${it.y}" })
+                    append(" painted=")
+                    append(drawing.framebufferPainted)
+                    append(" origin=")
+                    append(drawing.textOrigin?.name ?: "unknown")
+                    drawing.drawableGeneration?.let { append(" generation=").append(it) }
+                    drawing.sourceDrawableId?.let { append(" source=0x").append(it.toUInt().toString(16)) }
+                    drawing.sourceDrawableGeneration?.let { append(" sourceGeneration=").append(it) }
+                    append(" text=")
+                    append(reportString(drawing.text))
+                    appendLine()
+                }
+            }
+            appendLine()
             appendLine("Recent PutImage commands:")
             val putImages = snapshot.drawings.filter { it.putImage != null }.takeLast(30).asReversed()
             if (putImages.isEmpty()) {
@@ -970,6 +996,27 @@ internal object TextScreenRenderer {
     }
 
     private fun pixelHex(pixel: Int): String = "0x${pixel.toUInt().toString(16).padStart(8, '0')}"
+
+    private fun reportString(value: String): String =
+        buildString {
+            append('"')
+            for (character in value) {
+                when (character) {
+                    '\\' -> append("\\\\")
+                    '"' -> append("\\\"")
+                    '\n' -> append("\\n")
+                    '\r' -> append("\\r")
+                    '\t' -> append("\\t")
+                    else -> if (character.code < 0x20) {
+                        append("\\u")
+                        append(character.code.toString(16).padStart(4, '0'))
+                    } else {
+                        append(character)
+                    }
+                }
+            }
+            append('"')
+        }
 
     private fun StringBuilder.appendCoreDrawingPaintSummary(paint: XCoreDrawablePaintSnapshot) {
         append(paint.kind.name)

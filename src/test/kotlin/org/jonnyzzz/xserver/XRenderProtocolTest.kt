@@ -503,6 +503,8 @@ class XRenderProtocolTest {
                 assertContains(bottom, "Composite minor=8 root=20,210 8x8 local=10,200 8x8")
                 assertFalse(bottom.contains("Composite minor=8 root=20,20 8x8 local=10,10 8x8"), bottom)
                 assertFalse(bottom.contains("Composite minor=8 root=160,150 8x8 local=150,140 8x8"), bottom)
+                assertFalse(bottom.contains("Recent core text commands:"), bottom)
+                assertFalse(bottom.contains("Recent PutImage commands:"), bottom)
                 val stateJson = httpGet(server.localPort, "/state.json")
                 assertContains(stateJson, """"destinationRegion":{"x":10,"y":200,"width":8,"height":8}""")
             }
@@ -15656,8 +15658,16 @@ class XRenderProtocolTest {
                 assertEquals(WindowId, u32le(expose, 4))
                 val svg = httpGet(server.localPort, "/screen.svg")
                 assertContains(svg, """class="framebuffer-image"""")
-                assertFalse(svg.contains("RENDER.CompositeGlyphs32"), "Framebuffer-backed glyph rendering must not be double-rendered as a synthetic SVG text overlay")
-                assertContains(httpGet(server.localPort, "/text.txt"), "CompositeGlyphs32")
+                assertFalse(
+                    Regex("""<text\b[^>]*>RENDER\.CompositeGlyphs32(?:\s|<)""").containsMatchIn(svg),
+                    "Framebuffer-backed glyph rendering must not be double-rendered as a visible synthetic SVG text overlay",
+                )
+                assertFalse(svg.contains("text-drawing-semantic-export"), "RENDER glyph diagnostics must not be exposed as decoded application text")
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"textOrigin":"RenderCompositeGlyphs32","text":null,"detail":"RENDER.CompositeGlyphs32 glyphs=""")
+                val textReport = httpGet(server.localPort, "/text.txt")
+                assertContains(textReport, "CompositeGlyphs32")
+                assertContains(textReport, "Recent core text commands:\n- None.")
             }
             server.close()
             serverThread.join(1_000)
@@ -18443,7 +18453,10 @@ class XRenderProtocolTest {
             .find(text, start + header.length)
             ?.range
             ?.first
-        val nextSection = text.indexOf("\nRecent PutImage commands:", start).takeIf { it >= 0 }
+        val nextSection = Regex("""\nRecent (?:core text|PutImage) commands:""")
+            .find(text, start + header.length)
+            ?.range
+            ?.first
         val end = listOfNotNull(nextBand, nextSection).minOrNull() ?: text.length
         return text.substring(start, end)
     }

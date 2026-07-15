@@ -11,11 +11,11 @@ Extension work remains governed by `workflow/extension-scope.md`.
   test sources.
 - The default suite contains 1,373 JUnit tests (4 heavyweight opt-in tests are
   skipped by default). Full `check` passed in
-  `runs/gradle-bounded/run_20260715-140044-33773`.
+  `runs/gradle-bounded/run_20260715-183535-56390`.
 - IntelliJ deterministic project-open parity is pixel-exact for the Xvfb Robot,
-  Kotlin Robot, and Kotlin SVG-composed captures. The traced run
-  `runs/gradle-bounded/run_20260714-215744-71496` reports all three distances as
-  `0.0`, matching primary strip inputs, and no unsupported requests.
+  Kotlin Robot, and Kotlin SVG-composed captures. The parity run
+  `runs/gradle-bounded/run_20260715-182804-48054` reports all three distances as
+  `0.0`, no mismatch bounds, and no unsupported requests.
 - VSCode deterministic parity is pixel-exact for Robot and SVG-composed output
   against Xvfb. Run `runs/gradle-bounded/run_20260714-163212-60447` reports both
   distances as `0.0` and no unsupported requests.
@@ -32,7 +32,9 @@ Extension work remains governed by `workflow/extension-scope.md`.
   input, and hierarchy/stacking state.
 - Framebuffer-backed core drawing, images, text, pixmap copies, and the
   target-evidenced RENDER surface, with semantic producer/provenance details
-  retained for HTTP observation.
+  retained for HTTP observation. Core text commands retain their decoded text,
+  protocol origin, baselines, paint result, and drawable generations without
+  misclassifying RENDER glyph diagnostics as decoded application text.
 - Same-port HTTP/HTML, SVG, text, JSON, and input endpoints derived from the
   maintained server state rather than a separate visual model.
 - Differential Docker coverage for X11 tools, classic clients, AWT/Swing,

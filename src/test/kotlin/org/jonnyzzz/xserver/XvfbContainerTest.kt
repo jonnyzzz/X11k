@@ -271,6 +271,12 @@ class XvfbContainerTest {
             actual.text,
         )
         assertTrue(actual.svg.hasSvgClass("framebuffer-image"), "Expected xterm SVG export to retain framebuffer images\n${actual.svg}\n${actual.text}")
+        assertTrue(actual.svg.hasSvgClass("text-drawing-semantic-export"), "Expected xterm SVG export to retain decoded text semantics\n${actual.svg}")
+        assertTrue(actual.svg.contains("data-text-origin=\"CoreImageText8\""), "Expected xterm SVG export to identify the core text request type\n${actual.svg}")
+        for (expectedText in listOf("Kotlin X11", "xterm parity", "0123456789")) {
+            assertTrue(actual.svg.contains("data-text=\"$expectedText\""), "Expected xterm semantic text '$expectedText'\n${actual.svg}")
+            assertTrue(actual.text.contains(expectedText), "Expected xterm text report to retain '$expectedText'\n${actual.text}")
+        }
         assertVisualCaptureClose(
             expected = reference,
             actual = actual.robot,

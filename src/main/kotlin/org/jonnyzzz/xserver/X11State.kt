@@ -11962,6 +11962,16 @@ internal enum class XDrawingKind {
     CopyPlane,
 }
 
+internal enum class XTextOrigin(val decodedApplicationText: Boolean) {
+    CorePolyText8(true),
+    CorePolyText16(true),
+    CoreImageText8(true),
+    CoreImageText16(true),
+    RenderCompositeGlyphs8(false),
+    RenderCompositeGlyphs16(false),
+    RenderCompositeGlyphs32(false),
+}
+
 internal data class XPoint(
     val x: Int,
     val y: Int,
@@ -11989,6 +11999,7 @@ internal data class XDrawingCommand(
     val rectangles: List<XRectangleCommand> = emptyList(),
     val arcs: List<XArcCommand> = emptyList(),
     val text: String = "",
+    val textOrigin: XTextOrigin? = null,
     val imageDataUri: String? = null,
     val sourceDrawableId: Int? = null,
     val drawableGeneration: Long? = null,

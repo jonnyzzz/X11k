@@ -210,6 +210,24 @@ internal object SvgScreenRenderer {
                     """"drawable":"0x${drawing.drawableId.toUInt().toString(16)}","kind":"${drawing.kind.name}","framebufferBacked":${drawing.framebufferBacked},"sourceDrawable":""",
                 )
                 drawing.sourceDrawableId?.let { append("\"0x${it.toUInt().toString(16)}\"") } ?: append("null")
+                append(""","framebufferPainted":${drawing.framebufferPainted},"textOrigin":""")
+                drawing.textOrigin?.let { append('"').append(it.name).append('"') } ?: append("null")
+                append(""","text":""")
+                if (drawing.textOrigin?.decodedApplicationText == true) {
+                    append('"').append(escapeJson(drawing.text)).append('"')
+                } else {
+                    append("null")
+                }
+                append(""","detail":""")
+                if (drawing.text.isNotEmpty() && drawing.textOrigin?.decodedApplicationText != true) {
+                    append('"').append(escapeJson(drawing.text)).append('"')
+                } else {
+                    append("null")
+                }
+                append(""","drawableGeneration":""")
+                drawing.drawableGeneration?.let { append(it) } ?: append("null")
+                append(""","sourceDrawableGeneration":""")
+                drawing.sourceDrawableGeneration?.let { append(it) } ?: append("null")
                 append(
                     ""","foreground":"0x${drawing.foreground.toUInt().toString(16)}","background":"0x${drawing.background.toUInt().toString(16)}","lineWidth":${drawing.lineWidth},"lineStyle":${drawing.lineStyle},"capStyle":${drawing.capStyle},"joinStyle":${drawing.joinStyle},"dashOffset":${drawing.dashOffset},"dashes":[""",
                 )
@@ -673,6 +691,7 @@ internal object SvgScreenRenderer {
             }
             svgElement("g", "class" to "semantic-window-layers", "visibility" to "hidden", "aria-hidden" to "true") {
                 renderWindowSemanticExports(this, snapshot)
+                renderDrawingSemanticExports(this, snapshot)
                 renderRawWindowFramebufferExports(this, snapshot)
                 renderSvgContent(this, snapshot)
             }
@@ -705,6 +724,30 @@ internal object SvgScreenRenderer {
                     "data-visible-h" to window.visibleHeight,
                 ) {
                     text(window.label)
+                }
+            }
+        }
+    }
+
+    private fun renderDrawingSemanticExports(builder: XmlDom, snapshot: XScreenSnapshot) {
+        with(builder) {
+            for (drawing in snapshot.drawings) {
+                if (drawing.kind != XDrawingKind.Text || drawing.text.isEmpty() || drawing.textOrigin?.decodedApplicationText != true) continue
+                svgElement(
+                    "g",
+                    "class" to "drawing-semantic-export text-drawing-semantic-export",
+                    "data-drawable-id" to "0x${drawing.drawableId.toUInt().toString(16)}",
+                    "data-kind" to drawing.kind.name,
+                    "data-text-origin" to drawing.textOrigin.name,
+                    "data-framebuffer-backed" to drawing.framebufferBacked,
+                    "data-framebuffer-painted" to drawing.framebufferPainted,
+                    "data-drawable-generation" to drawing.drawableGeneration,
+                    "data-source-drawable-id" to drawing.sourceDrawableId?.let { "0x${it.toUInt().toString(16)}" },
+                    "data-source-drawable-generation" to drawing.sourceDrawableGeneration,
+                    "data-baselines" to drawing.points.joinToString(" ") { "${it.x},${it.y}" },
+                    "data-text" to drawing.text,
+                ) {
+                    text(drawing.text)
                 }
             }
         }
