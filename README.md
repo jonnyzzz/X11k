@@ -28,7 +28,7 @@ It can run the first Docker smoke matrix against real X clients:
 - IntelliJ IDEA Community from GitHub releases in opt-in heavyweight smoke and deterministic full-pixel Xvfb parity probes
 - VSCode from the official update service in opt-in heavyweight Electron smoke and bounded full-pixel Xvfb parity probes
 
-The graphical apps are still compatibility smoke tests rather than full visual conformance tests. Rendering now includes the maintained window model, mapped child-window borders, fixed-font core text, `PutImage` pixel data, XRender fills/composites/glyphs, painted pixmap/offscreen surfaces in SVG previews, and automated Xvfb-vs-Kotlin Robot parity coverage for deterministic Java2D/AWT primitives, overlapping Swing windows, owned popup/dialog windows, heavyweight popup menus, menu dropdown popups, combo-box dropdowns, Swing tooltips, dense Swing scroll-pane content, standard Swing form controls, tabbed split-pane layouts, desktop-pane internal-frame layouts, layered/glass-pane overlays, `xlogo`, `xclock`, `xeyes`, `xcalc`, `xterm`, `twm`-managed `xlogo`/`xclock` overlap, IntelliJ IDEA Community, and VSCode/Electron. The single-window primitive, dense Swing, form-controls, tabbed split-pane, desktop-pane, layered-overlay, `xlogo`, `xclock`, `xeyes`, `xcalc`, `xterm`, `twm`, IntelliJ, and VSCode probes also compare the Kotlin server's SVG-exported or composed SVG framebuffer output against the Xvfb reference, and the overlapping/popup probes compare the composed SVG framebuffer stack against the Xvfb reference. AWT probe diagnostics are retained under `build/tmp/awt-primitive-docker/`, and real xclient parity diagnostics are retained under `build/tmp/xvfb-container-test/`. More X drawing semantics are still pending, especially real GL/JCEF-backed rendering paths and broader app-managed surface presentation.
+The graphical apps are still compatibility smoke tests rather than full visual conformance tests. Rendering now includes the maintained window model, mapped child-window borders, fixed-font core text, `PutImage` pixel data, XRender fills/composites/glyphs, painted pixmap/offscreen surfaces in SVG previews, and automated Xvfb-vs-Kotlin Robot parity coverage for deterministic Java2D/AWT primitives, overlapping Swing windows, owned popup/dialog windows, heavyweight popup menus, menu dropdown popups, combo-box dropdowns, Swing tooltips, dense Swing scroll-pane content, standard Swing form controls, tabbed split-pane layouts, desktop-pane internal-frame layouts, layered/glass-pane overlays, `xlogo`, `xclock`, `xeyes`, `xcalc`, `xterm`, `twm`-managed `xlogo`/`xclock` overlap, IntelliJ IDEA Community, and VSCode/Electron. The single-window primitive, dense Swing, form-controls, tabbed split-pane, desktop-pane, layered-overlay, `xlogo`, `xclock`, `xeyes`, `xcalc`, `xterm`, `twm`, IntelliJ, and VSCode probes also compare the Kotlin server's SVG-exported or composed SVG framebuffer output against the Xvfb reference, and the overlapping/popup probes compare the composed SVG framebuffer stack against the Xvfb reference. AWT probe diagnostics are retained under `build/tmp/awt-primitive-docker/`, and real xclient parity diagnostics are retained under `build/tmp/xvfb-container-test/`. JCEF initializes and accepts the Markdown fixture's `setHtml` call, but the accepted capture still reports that the embedded browser is suspended; browser pixels, real GL rendering, and broader app-managed surface presentation remain pending.
 
 The same TCP port also serves HTTP for agent observation:
 
@@ -46,7 +46,8 @@ The HTML/SVG view is also an input surface: moving or clicking over the window m
 
 ![IntelliJ IDEA Community rendered through the X server HTTP/SVG view](docs/images/intellij-demo-renderer.png)
 
-Refresh this screenshot after visible renderer changes so the README tracks the current IntelliJ parity state:
+Refresh this HTTP/SVG demo screenshot after visible renderer changes. Xvfb parity
+is recorded separately by the retained IntelliJ parity artifacts:
 
 ```bash
 ALLOW_NPX_PLAYWRIGHT=1 scripts/run-supervised.sh experiment -- scripts/update-intellij-readme-screenshot.sh
@@ -106,6 +107,10 @@ Recent VSCode/Electron SVG-composition parity sample:
 | --- | --- |
 | ![VSCode Xvfb reference](docs/images/vscode-xvfb-reference.png) | ![VSCode Kotlin SVG-composed framebuffer](docs/images/vscode-kotlin-svg.png) |
 
+The latest deterministic VSCode run reports zero full-pixel distance for the
+Xvfb/Robot, Xvfb/SVG, and Robot/SVG comparisons, including worst-row,
+worst-column, sliding-window, and maximum-pixel metrics.
+
 Refresh these screenshots after visible VSCode/Electron renderer changes:
 
 ```bash
@@ -118,6 +123,19 @@ The test suite starts with:
 - a Testcontainers/Xvfb smoke test that proves the Docker compatibility harness can run real X clients,
 - a Testcontainers smoke test that runs real X11 tools and simple apps against the Kotlin server,
 - a Docker/Xvfb visual parity probe that compares Java2D Robot screenshots and the Kotlin server's SVG-exported framebuffer against the reference server.
+
+All tracked protocol clients and reduced Xvfb oracles are native Kotlin/JUnit
+tests under `src/test/kotlin`; no tracked Python test sources remain. Gradle
+`check` enforces this with `verifyKotlinTestSources`. The latest full check ran
+1,370 tests (1,366 passed and 4 heavyweight opt-in cases skipped) in
+`runs/gradle-bounded/run_20260715-120203-8180`.
+
+The latest deterministic IntelliJ traced parity run
+`runs/gradle-bounded/run_20260714-215744-71496` and VSCode parity run
+`runs/gradle-bounded/run_20260714-163212-60447` are pixel-exact against their
+Xvfb references. The requested Java AWS application is not yet represented by a
+tracked artifact or smoke fixture, so its harness is the next compatibility
+milestone rather than a reason to speculate about additional extensions.
 
 ## Development
 
@@ -274,7 +292,7 @@ curl -fsS -X POST http://127.0.0.1:16000/input/key \
 
 `button` accepts `left`, `middle`, `right`, `wheel-up`, `wheel-down`, or the raw X11 button number `1..255`.
 
-Current IntelliJ demo status: the mounted project opens and JetBrains Runtime paints the IDE through XRender-backed windows and retained offscreen pixmap/picture surfaces. For the deterministic heavyweight fixture, the Xvfb Robot reference, Kotlin-server Robot capture, and Kotlin SVG-composed framebuffer now match exactly across every pixel. Broader work remains for real GL/JCEF-backed rendering paths and additional app-managed surface workflows. The server exposes a minimal GLX probe surface for discovery requests (`QueryVersion`, server strings, visual configs, FBConfigs, and context creation), and the HTTP text report logs recent GLX operations including decoded client GLX extension strings from `ClientInfo`/`SetClientInfo*` requests. Real GLX context rendering is not implemented yet. The HTTP state report also logs every input operation so click-through attempts can be replayed and refined.
+Current IntelliJ demo status: the mounted project opens and JetBrains Runtime paints the IDE through XRender-backed windows and retained offscreen pixmap/picture surfaces. JCEF initializes and the Markdown fixture reaches `setHtml`, but the accepted capture still shows the embedded browser suspended rather than browser-rendered Markdown pixels. For the deterministic heavyweight fixture, the Xvfb Robot reference, Kotlin-server Robot capture, and Kotlin SVG-composed framebuffer now match exactly across every pixel. The server exposes a minimal GLX probe surface for discovery requests (`QueryVersion`, server strings, visual configs, FBConfigs, and context creation), and the HTTP text report logs recent GLX operations including decoded client GLX extension strings from `ClientInfo`/`SetClientInfo*` requests. Real GLX context rendering is not implemented. The HTTP state report also logs every input operation so click-through attempts can be replayed and refined.
 
 Run simpler X11 demo clients against an already running server:
 
@@ -284,15 +302,13 @@ docker run --rm jonnyzzz-x/x11-client:latest run-x11-apps
 
 ## Roadmap
 
-The first compatibility milestone is deliberately smaller than full Xvfb parity:
-
-1. X11 setup handshake, endian handling, sequence numbers, request length validation, replies, errors, and connection close.
-2. One-screen server model with root window, fixed true-color visual/depth, atoms/properties, resource IDs, and basic window tree operations.
-3. Events and hierarchy snapshots before broad rendering, because clients often fail early on event semantics.
-4. Framebuffer, pixmaps, graphics contexts, `PutImage`, `GetImage`, `ClearArea`, and `CopyArea`.
-5. Dockerized differential tests against Xvfb for `xdpyinfo`, `xprop`, `xwininfo`, `xset q`, `xlogo`, `xclock`, `xeyes`, `xcalc`, `xterm`, and then JBR/IntelliJ smoke tests.
-
-See `workflow/roadmap.md` and `workflow/test-matrix.md`.
+The current gate is matching visible and semantic compatibility for IntelliJ
+IDEA, VSCode, and the Java AWS application. The latest retained IntelliJ and
+VSCode fixtures are exact, while their automated Xvfb gates remain bounded; the
+Java AWS artifact and harness are the next P0 item. Only trace-proven protocol
+or rendering gaps should expand the implementation.
+See `workflow/roadmap.md`, `workflow/test-matrix.md`, and
+`workflow/extension-scope.md`.
 
 ## License
 

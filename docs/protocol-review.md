@@ -1,6 +1,6 @@
 # X11 Protocol Review For The Kotlin Server
 
-This review is implementation guidance for `jonnyzzz/x`, not a replacement for the X11 protocol specification. The vendored spec lives at `docs/spec/x11protocol.html`.
+This review records the original implementation guidance for `jonnyzzz/x`, not a replacement for the X11 protocol specification. Most foundational items below are now implemented; current priorities and acceptance evidence live in `workflow/roadmap.md`. The vendored spec lives at `docs/spec/x11protocol.html`.
 
 ## Server Boundary
 
@@ -16,11 +16,11 @@ The first bytes sent by a client establish byte order and the requested protocol
 - advertise one screen, supported pixmap formats, depths, and visuals,
 - assign a per-client resource-id base and mask.
 
-The current prototype implements the setup success path with one root window and one fixed true-color visual.
+The server implements setup in both byte orders with one root window and the visual/depth inventory required by the maintained target clients.
 
 ## Request Dispatcher
 
-The implementation now includes an early request loop. Continue hardening it with:
+The request loop implements the maintained core surface, including:
 
 - 16-bit sequence numbers per client,
 - request length validation before side effects,
@@ -31,7 +31,7 @@ The implementation now includes an early request loop. Continue hardening it wit
 
 ## Minimal Core Model
 
-Implement these before broad rendering:
+The maintained server model includes:
 
 - one screen and root window,
 - resource table scoped by client,
@@ -52,18 +52,11 @@ Initial drawing operations:
 - filled rectangles,
 - simple points and lines as clients require them.
 
-The server currently accepts many drawing and text requests as no-ops so smoke apps can run. Replace these no-ops with deterministic framebuffer mutations as the renderer lands. Text/font behavior is legacy-heavy and should be implemented behind a small deterministic font facade.
+The target-evidenced drawing and text paths mutate deterministic framebuffer state. Unimplemented operations must be selected from target traces rather than accepted as broad speculative work.
 
 ## Extension Strategy
 
-Start by returning "not present" from `QueryExtension` for most extensions. Add extensions only when a real client in the test matrix requires them.
-
-Likely order:
-
-1. `BIG-REQUESTS`
-2. query-only `MIT-SHM` or clean unsupported behavior
-3. `XKB` compatibility responses for toolkits
-4. `RENDER` when modern GUI clients become a milestone
+Unmaintained extensions remain absent from `QueryExtension`. The implemented inventory and evidence gate are documented in `workflow/extension-scope.md`; new work requires an IntelliJ, VSCode, established Java AWS, or existing matrix trace.
 
 ## AI Observation
 

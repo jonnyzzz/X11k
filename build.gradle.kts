@@ -43,6 +43,7 @@ tasks.test {
         "x.intellijImage",
         "x.intellijReferenceImage",
         "x.guiArtifactsDir",
+        "x.intellijXvfbExtraArgs",
         "x.vscodeSmoke",
         "x.vscodeParity",
         "x.vscodeUrl",
@@ -92,6 +93,23 @@ tasks.register<Exec>("testRunAgentProcessGroup") {
     commandLine("scripts/test-run-agent-process-group.sh")
 }
 
+val verifyKotlinTestSources by tasks.registering {
+    group = "verification"
+    description = "Rejects Python test sources; protocol and oracle tests must be native Kotlin/JUnit tests."
+    val testSources = layout.projectDirectory.dir("src/test")
+    inputs.dir(testSources)
+    doLast {
+        val pythonSources = fileTree(testSources) {
+            include("**/*.py", "**/*.pyw")
+        }.files.sortedBy { it.invariantSeparatorsPath }
+        check(pythonSources.isEmpty()) {
+            "Python test sources are not allowed; port these files to Kotlin/JUnit:\n" +
+                pythonSources.joinToString("\n") { "- ${it.relativeTo(projectDir).invariantSeparatorsPath}" }
+        }
+    }
+}
+
 tasks.named("check") {
     dependsOn("testRunAgentProcessGroup")
+    dependsOn(verifyKotlinTestSources)
 }

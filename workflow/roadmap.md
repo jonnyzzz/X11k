@@ -1,55 +1,89 @@
 # Roadmap
 
-## Milestone 0: Repository And Baseline
+Status reviewed on 2026-07-15. The compatibility target is IntelliJ IDEA,
+VSCode, and the Java AWS application, not unrestricted Xvfb feature parity.
+Extension work remains governed by `workflow/extension-scope.md`.
 
-- MIT license, README, Gradle Kotlin JVM build.
-- Vendored X11 core protocol spec in `docs/spec`.
-- Protocol review, implementation survey, AI observation design.
-- Raw setup-handshake tests.
-- Testcontainers/Xvfb baseline smoke test.
+## Current Baseline
 
-## Milestone 1: Protocol Skeleton
+- Production and tracked protocol/oracle tests are pure Kotlin/JVM. All tests
+  under `src/test` are Kotlin/JUnit; `check` rejects new Python test sources.
+- The default suite contains 1,370 JUnit tests (4 heavyweight opt-in tests are
+  skipped by default). Full `check` passed in
+  `runs/gradle-bounded/run_20260715-120203-8180`.
+- IntelliJ deterministic project-open parity is pixel-exact for the Xvfb Robot,
+  Kotlin Robot, and Kotlin SVG-composed captures. The traced run
+  `runs/gradle-bounded/run_20260714-215744-71496` reports all three distances as
+  `0.0`, matching primary strip inputs, and no unsupported requests.
+- VSCode deterministic parity is pixel-exact for Robot and SVG-composed output
+  against Xvfb. Run `runs/gradle-bounded/run_20260714-163212-60447` reports both
+  distances as `0.0` and no unsupported requests.
+- No Java AWS application artifact, source fixture, launch command, or expected
+  visual state is tracked in this repository. Its compatibility is therefore
+  not yet measurable and must not be inferred from the IntelliJ/VSCode results.
 
-- Request loop and opcode table. Done for the first core subset.
-- Sequence numbers and basic error packets. Started.
-- Request length validation. Started.
-- Unsupported core request behavior. Started.
-- Protocol trace hooks. Started with `-Dx.trace=true`.
+## Completed Foundations
 
-## Milestone 2: Minimal Server Model
+- Kotlin/JVM build, vendored X11 specifications, setup handshake, both byte
+  orders, request framing, sequence/error behavior, and protocol tracing.
+- One-screen server model with resource ownership, windows, pixmaps, graphics
+  contexts, fonts, cursors, colormaps, atoms/properties, events, focus, grabs,
+  input, and hierarchy/stacking state.
+- Framebuffer-backed core drawing, images, text, pixmap copies, and the
+  target-evidenced RENDER surface, with semantic producer/provenance details
+  retained for HTTP observation.
+- Same-port HTTP/HTML, SVG, text, JSON, and input endpoints derived from the
+  maintained server state rather than a separate visual model.
+- Differential Docker coverage for X11 tools, classic clients, AWT/Swing,
+  IntelliJ IDEA Community, and VSCode/Electron.
+- Advertised and maintained extension inventory: BIG-REQUESTS, RENDER, MIT-SHM,
+  XFIXES, SHAPE, XKEYBOARD, RANDR, SYNC, DOUBLE-BUFFER, XC-MISC, XINERAMA,
+  MIT-SCREEN-SAVER, Generic Event Extension, minimal GLX, minimal
+  XInputExtension, XTEST, and MIT-SUNDRY-NONSTANDARD. Deeper work still needs
+  target evidence.
 
-- One screen and root window. Done.
-- Shared early resource table for windows, pixmaps, GCs, fonts, cursors, and colormaps. Started.
-- Atoms/properties. Started.
-- Windows and map/unmap/configure/query requests. Started.
-- Event masks and structure/property/expose events. Started with basic map/expose.
-- Hierarchy snapshots for AI observation. Started via HTTP SVG/text/state endpoints.
+## Remaining Acceptance Work
 
-## Milestone 3: Framebuffer And Drawing
+### P0: Establish The Java AWS Fixture
 
-- ARGB framebuffer.
-- Pixmaps and graphics contexts.
-- `PutImage`, `GetImage`, `ClearArea`, `CopyArea`.
-- Deterministic pixel snapshots and frame diffs.
+1. Add or identify the exact application artifact and a reproducible bounded
+   launch command.
+2. Define the deterministic ready state, required interactions, Xvfb reference
+   capture, Kotlin Robot capture, SVG-composed capture, logs, and timeout.
+3. Add an opt-in Kotlin/Testcontainers smoke and parity test. Do not add
+   protocol behavior before the fixture supplies trace evidence.
 
-Current drawing behavior accepts many core drawing and text opcodes as no-ops so simple apps can stay alive. Replace those no-ops with framebuffer mutations in this milestone.
+### P1: Keep Target Evidence Fresh
 
-## Milestone 3a: HTTP Observation
+1. Re-run focused IntelliJ and VSCode parity after any rendering, input,
+   extension, setup, or visual metadata change.
+2. Fail on unsupported requests, disconnects, missing semantic state, or visible
+   capture drift. Retain bounded traces and visual artifacts with the run.
+3. Refresh README screenshots only when visible target output changes.
 
-- Same-port HTTP routing alongside X11 setup. Done.
-- SVG screen view derived from X server state. Done.
-- Textual explanation of windows, focus, stacking, and overlaps. Done.
-- JSON snapshot for agents/tools. Started.
+### P2: Implement Only Proven Gaps
 
-## Milestone 4: Compatibility Matrix
+1. Select the smallest failing request, event, renderer primitive, or semantic
+   state transition from a target trace.
+2. Add a focused Kotlin protocol regression and, where relevant, a reduced Xvfb
+   differential oracle before changing production behavior.
+3. Preserve drawable/picture/window provenance and operation context in the
+   state and diagnostics APIs.
+4. Run focused tests, full `check`, IntelliJ IDE compilation, target parity, and
+   the required review quorum before committing and pushing.
 
-- `xdpyinfo`, `xprop`, `xwininfo`.
-- `xlogo`, `xclock`, `xeyes`.
-- `xterm`, `xcalc`.
-- Differential runs against Xvfb.
+## Parked Work
 
-## Milestone 5: Toolkit Smoke
+Composite, DAMAGE, Present, DRI2/DRI3, broad XI2 behavior, desktop-specific
+extensions, and real GLX rendering remain parked until one of the three target
+applications proves they are required. General protocol completeness is useful
+only after the target acceptance gates above stay green.
 
-- JBR/AWT/Swing smoke in Docker with required X client libraries and fonts.
-- IntelliJ startup smoke once extension probing and basic rendering are sufficient.
-- Add or deepen extensions only when IntelliJ IDEA, VSCode, or the existing smoke matrix proves they are needed. See `workflow/extension-scope.md`.
+## Compatibility Completion Gate
+
+The current goal is complete when IntelliJ IDEA, VSCode, and the Java AWS
+fixture all reach their deterministic ready states without unsupported requests
+or disconnects; Kotlin Robot and SVG-composed pixels match the corresponding
+Xvfb reference with no visible side effects; relevant semantic resources and
+operation provenance remain available through observation APIs; and focused,
+full-suite, IDE-build, and review gates pass from a clean tracked tree.
