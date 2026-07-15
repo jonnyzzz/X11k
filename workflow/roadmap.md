@@ -8,9 +8,9 @@ Extension work remains governed by `workflow/extension-scope.md`.
 
 - Production and tracked protocol/oracle tests are pure Kotlin/JVM. All tests
   under `src/test` are Kotlin/JUnit; `check` rejects new Python test sources.
-- The default suite contains 1,370 JUnit tests (4 heavyweight opt-in tests are
+- The default suite contains 1,371 JUnit tests (4 heavyweight opt-in tests are
   skipped by default). Full `check` passed in
-  `runs/gradle-bounded/run_20260715-120203-8180`.
+  `runs/gradle-bounded/run_20260715-123357-45212`.
 - IntelliJ deterministic project-open parity is pixel-exact for the Xvfb Robot,
   Kotlin Robot, and Kotlin SVG-composed captures. The traced run
   `runs/gradle-bounded/run_20260714-215744-71496` reports all three distances as

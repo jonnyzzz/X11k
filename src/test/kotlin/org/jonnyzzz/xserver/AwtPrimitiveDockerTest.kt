@@ -1,6 +1,7 @@
 package org.jonnyzzz.xserver
 
 import org.junit.jupiter.api.Assumptions.assumeTrue
+import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.testcontainers.DockerClientFactory
 import org.testcontainers.containers.GenericContainer
@@ -20,11 +21,35 @@ import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 private const val DockerExecTimeoutSeconds = 45L
 
+private fun awtArtifactsDirectoryFile(): File {
+    val retainedRoot = System.getProperty("x.guiArtifactsDir") ?: System.getenv("X_GUI_ARTIFACTS_DIR")
+    return if (retainedRoot.isNullOrBlank()) {
+        File("build/tmp/awt-primitive-docker")
+    } else {
+        File(retainedRoot, "awt-primitive-docker")
+    }
+}
+
+private fun String.countOccurrences(value: String): Int = split(value).size - 1
+
 class AwtPrimitiveDockerTest {
+    @Test
+    fun `unsupported request guard rejects mixed inventory`() {
+        val failure = assertFailsWith<AssertionError> {
+            assertNoUnsupportedRequests(
+                "Unsupported requests:\n- None.\n- opcode=127 minor=3\n\nRENDER operations:\n- None.",
+                "fixture",
+            )
+        }
+
+        assertContains(failure.message.orEmpty(), "opcode=127")
+    }
+
     @Test
     fun `svg framebuffer parser keeps image geometry distinct from visible bounds`() {
         val png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
@@ -128,7 +153,7 @@ class AwtPrimitiveDockerTest {
     }
 
     @Test
-    fun `awt robot screenshot roughly matches xvfb reference`() {
+    fun `awt robot screenshot exactly matches xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runRobotProbeAgainstXvfb(
@@ -153,7 +178,7 @@ class AwtPrimitiveDockerTest {
         )
         val exportedFramebuffer = actual.exportedFramebuffers
             .filter { it.width == reference.width && it.height == reference.height }
-            .minByOrNull { imageDistance(reference.image, it.image) }
+            .minByOrNull { pixelMismatchCount(reference.image, it.image) }
             ?: error("Kotlin SVG export did not contain a framebuffer matching the Xvfb capture dimensions ${reference.width}x${reference.height}; exported=${actual.exportedFramebuffers}\n${actual.text}")
         assertVisualCaptureClose(
             expected = reference,
@@ -163,7 +188,7 @@ class AwtPrimitiveDockerTest {
     }
 
     @Test
-    fun `awt overlapping windows robot screenshot roughly matches xvfb reference`() {
+    fun `awt overlapping windows robot screenshot exactly matches xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runRobotProbeAgainstXvfb(
@@ -201,7 +226,7 @@ class AwtPrimitiveDockerTest {
     }
 
     @Test
-    fun `awt owned popup robot screenshot roughly matches xvfb reference`() {
+    fun `awt owned popup robot screenshot exactly matches xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runRobotProbeAgainstXvfb(
@@ -238,7 +263,7 @@ class AwtPrimitiveDockerTest {
     }
 
     @Test
-    fun `awt owned dialog robot screenshot roughly matches xvfb reference`() {
+    fun `awt owned dialog robot screenshot exactly matches xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runRobotProbeAgainstXvfb(
@@ -275,7 +300,7 @@ class AwtPrimitiveDockerTest {
     }
 
     @Test
-    fun `awt heavyweight popup menu robot screenshot roughly matches xvfb reference`() {
+    fun `awt heavyweight popup menu robot screenshot exactly matches xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runRobotProbeAgainstXvfb(
@@ -312,7 +337,7 @@ class AwtPrimitiveDockerTest {
     }
 
     @Test
-    fun `awt menu dropdown robot screenshot roughly matches xvfb reference`() {
+    fun `awt menu dropdown robot screenshot exactly matches xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runRobotProbeAgainstXvfb(
@@ -349,7 +374,7 @@ class AwtPrimitiveDockerTest {
     }
 
     @Test
-    fun `awt combo dropdown robot screenshot roughly matches xvfb reference`() {
+    fun `awt combo dropdown robot screenshot exactly matches xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runRobotProbeAgainstXvfb(
@@ -387,7 +412,7 @@ class AwtPrimitiveDockerTest {
     }
 
     @Test
-    fun `awt tooltip popup robot screenshot roughly matches xvfb reference`() {
+    fun `awt tooltip popup robot screenshot exactly matches xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runRobotProbeAgainstXvfb(
@@ -425,7 +450,7 @@ class AwtPrimitiveDockerTest {
     }
 
     @Test
-    fun `awt dense swing content robot screenshot roughly matches xvfb reference`() {
+    fun `awt dense swing content robot screenshot exactly matches xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runRobotProbeAgainstXvfb(
@@ -459,7 +484,7 @@ class AwtPrimitiveDockerTest {
     }
 
     @Test
-    fun `awt swing form controls robot screenshot roughly matches xvfb reference`() {
+    fun `awt swing form controls robot screenshot exactly matches xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runRobotProbeAgainstXvfb(
@@ -493,7 +518,7 @@ class AwtPrimitiveDockerTest {
     }
 
     @Test
-    fun `awt tabbed split pane robot screenshot roughly matches xvfb reference`() {
+    fun `awt tabbed split pane robot screenshot exactly matches xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runRobotProbeAgainstXvfb(
@@ -527,7 +552,7 @@ class AwtPrimitiveDockerTest {
     }
 
     @Test
-    fun `awt desktop pane internal frames robot screenshot roughly matches xvfb reference`() {
+    fun `awt desktop pane internal frames robot screenshot exactly matches xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runRobotProbeAgainstXvfb(
@@ -561,7 +586,7 @@ class AwtPrimitiveDockerTest {
     }
 
     @Test
-    fun `awt layered pane glass overlay robot screenshot roughly matches xvfb reference`() {
+    fun `awt layered pane glass overlay robot screenshot exactly matches xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runRobotProbeAgainstXvfb(
@@ -602,30 +627,11 @@ class AwtPrimitiveDockerTest {
         dumpAwtVisualCapturePair(label, expected, actual)
         assertEquals(expected.width, actual.width, "$label content width should match Xvfb reference")
         assertEquals(expected.height, actual.height, "$label content height should match Xvfb reference")
-        assertClose(
-            expected = expected.nonBackgroundPixels,
-            actual = actual.nonBackgroundPixels,
-            tolerance = 0.12,
-            message = "$label should expose similar non-background coverage to Xvfb; reference=$expected actual=$actual",
-        )
-        assertClose(
-            expected = expected.averageRgb,
-            actual = actual.averageRgb,
-            tolerance = 0.08,
-            message = "$label should expose similar average RGB to Xvfb; reference=$expected actual=$actual",
-        )
-        val sampleTolerance = 36
-        for (point in VisualProbeSamplePoints) {
-            val referencePixel = expected.sampleArgb.getValue(point)
-            val actualPixel = actual.sampleArgb.getValue(point)
-            assertTrue(
-                rgbDistance(referencePixel, actualPixel) <= sampleTolerance,
-                "$label sample $point differs too much from Xvfb: reference=${referencePixel.hexArgb()} actual=${actualPixel.hexArgb()}\nreference=$expected\nactual=$actual",
-            )
-        }
-        assertTrue(
-            imageDistance(expected.image, actual.image) <= 18.0,
-            "$label should stay visually close to Xvfb reference\nreference=$expected\nactual=$actual",
+        assertEquals(
+            0L,
+            pixelMismatchCount(expected.image, actual.image),
+            "$label must match every Xvfb pixel; mismatchBounds=${mismatchBounds(expected.image, actual.image).toMetricString()} " +
+                "sampledDistance=${imageDistance(expected.image, actual.image)}\nreference=$expected\nactual=$actual",
         )
     }
 
@@ -676,6 +682,7 @@ class AwtPrimitiveDockerTest {
         val safeLabel = safeArtifactLabel(title)
         val directory = awtArtifactsDirectory()
         File(directory, "$safeLabel-text.txt").writeText(result.text)
+        File(directory, "$safeLabel-final-text.txt").writeText(result.finalText)
         File(directory, "$safeLabel-screen.svg").writeText(result.svg)
         File(directory, "$safeLabel-svg-layers.txt").writeText(embeddedPngInventory(result.embeddedFramebuffers))
         ImageIO.write(result.robot.image, "png", File(directory, "$safeLabel-kotlin-robot.png"))
@@ -700,6 +707,7 @@ class AwtPrimitiveDockerTest {
                 appendLine("coverageRatio=${ratio(actual.nonBackgroundPixels, expected.nonBackgroundPixels)}")
                 appendLine("averageRgbDelta=${abs(actual.averageRgb - expected.averageRgb)}")
                 appendLine("sampledDistance=${imageDistance(expected.image, actual.image)}")
+                appendLine("mismatchPixels=${pixelMismatchCount(expected.image, actual.image)}")
                 appendLine("mismatchBounds=${mismatchBounds(expected.image, actual.image).toMetricString()}")
                 appendLine("mismatchSamples=${mismatchSamples(expected.image, actual.image)}")
             },
@@ -720,7 +728,7 @@ class AwtPrimitiveDockerTest {
         }
 
     private fun awtArtifactsDirectory(): File =
-        File("build/tmp/awt-primitive-docker").also { it.mkdirs() }
+        awtArtifactsDirectoryFile().also { it.mkdirs() }
 
     private fun safeArtifactLabel(label: String): String =
         label.lowercase().replace(Regex("""[^a-z0-9]+"""), "-").trim('-')
@@ -739,7 +747,7 @@ class AwtPrimitiveDockerTest {
     ) {
         val exportedFramebuffer = exportedFramebuffers
             .filter { it.width == expected.width && it.height == expected.height }
-            .minByOrNull { imageDistance(expected.image, it.image) }
+            .minByOrNull { pixelMismatchCount(expected.image, it.image) }
             ?: error("$label did not include a framebuffer matching the Xvfb capture dimensions ${expected.width}x${expected.height}; exported=$exportedFramebuffers")
         assertVisualCaptureClose(
             expected = expected,
@@ -832,13 +840,35 @@ class AwtPrimitiveDockerTest {
                     val svg = httpGet(port, "/screen.svg")
                     val html = httpGet(port, "/")
                     assertContains(text, title)
+                    assertNoUnsupportedRequests(text, title)
 
                     val images = pngDataUris(svg)
                     assertTrue(images.isNotEmpty(), "Expected an embedded framebuffer PNG in SVG")
                     val stats = images.map { imageStats(it.id, it.bytes) }
 
-                    val logResult = container.execInContainerBounded("sh", "-lc", "kill $(cat /tmp/awt-primitive.pid) 2>/dev/null || true; cat /tmp/awt-primitive.log")
+                    val logResult = container.execInContainerBounded(
+                        "sh",
+                        "-lc",
+                        """
+                        pid=${'$'}(cat /tmp/awt-primitive.pid)
+                        kill "${'$'}pid" 2>/dev/null || true
+                        for _ in ${'$'}(seq 1 40); do
+                          state=${'$'}(awk '{print ${'$'}3}' "/proc/${'$'}pid/stat" 2>/dev/null || true)
+                          if [ -z "${'$'}state" ] || [ "${'$'}state" = Z ]; then
+                            cat /tmp/awt-primitive.log
+                            exit 0
+                          fi
+                          sleep 0.05
+                        done
+                        echo "AWT probe did not stop after TERM" >&2
+                        exit 1
+                        """.trimIndent(),
+                    )
+                    assertEquals(0, logResult.exitCode, logResult.stderr + logResult.stdout)
                     val log = logResult.stdout + logResult.stderr
+                    val finalText = httpGet(port, "/text.txt")
+                    assertNoUnsupportedRequests(finalText, title)
+                    File(awtArtifactsDirectory(), "${safeArtifactLabel(title)}-final-text.txt").writeText(finalText)
                     dumpAwtProbeArtifacts(title, text, svg, html, stats, log)
                     server.close()
                     serverThread.join(1_000)
@@ -874,7 +904,9 @@ class AwtPrimitiveDockerTest {
                     """.trimIndent(),
                 )
                 assertEquals(0, result.exitCode, result.stderr + result.stdout)
-                return visualProbeCapture(result.stdout)
+                return visualProbeCapture(result.stdout).also { capture ->
+                    assertValidReferenceCapture(capture, mainClass)
+                }
             }
     }
 
@@ -938,12 +970,24 @@ class AwtPrimitiveDockerTest {
                         fi
                         cat /tmp/visual-parity.log
                         kill "${'$'}pid" 2>/dev/null || true
+                        for _ in ${'$'}(seq 1 40); do
+                          state=${'$'}(awk '{print ${'$'}3}' "/proc/${'$'}pid/stat" 2>/dev/null || true)
+                          if [ -z "${'$'}state" ] || [ "${'$'}state" = Z ]; then
+                            exit 0
+                          fi
+                          sleep 0.05
+                        done
+                        echo "VisualParityProbe did not stop after TERM" >&2
+                        exit 1
                         """.trimIndent(),
                     )
                     assertEquals(0, log.exitCode, log.stderr + log.stdout)
+                    val finalText = httpGet(port, "/text.txt")
+                    assertNoUnsupportedRequests(finalText, title)
                     val result = KotlinVisualProbeResult(
                         robot = visualProbeCapture(log.stdout),
                         text = text,
+                        finalText = finalText,
                         svg = svg,
                         exportedFramebuffers = pngDataUris(svg).mapNotNull { embeddedPng ->
                             ImageIO.read(ByteArrayInputStream(embeddedPng.bytes))?.let(::visualProbeCapture)
@@ -959,7 +1003,10 @@ class AwtPrimitiveDockerTest {
     }
 
     private fun compileProbe(container: GenericContainer<*>, mainClass: String, source: String) {
-        val sourceResult = container.execInContainerBounded("sh", "-lc", "cat > /tmp/$mainClass.java <<'JAVA'\n$source\nJAVA\njavac /tmp/$mainClass.java")
+        val captureCall = "new Robot().createScreenCapture("
+        check(source.countOccurrences(captureCall) == 1) { "$mainClass must contain exactly one Robot capture call" }
+        val stableSource = source.replace(captureCall, "StableRobotCapture.capture(new Robot(), ") + StableRobotCaptureSource
+        val sourceResult = container.execInContainerBounded("sh", "-lc", "cat > /tmp/$mainClass.java <<'JAVA'\n$stableSource\nJAVA\njavac /tmp/$mainClass.java")
         assertEquals(0, sourceResult.exitCode, sourceResult.stderr + sourceResult.stdout)
     }
 
@@ -1120,13 +1167,29 @@ class AwtPrimitiveDockerTest {
         )
     }
 
-    private fun assertClose(expected: Int, actual: Int, tolerance: Double, message: String) {
-        val allowed = (expected * tolerance).toInt().coerceAtLeast(1)
-        assertTrue(abs(expected - actual) <= allowed, message)
+    private fun assertNoUnsupportedRequests(text: String, label: String) {
+        val marker = "Unsupported requests:\n"
+        val markerOffset = text.indexOf(marker)
+        assertTrue(markerOffset >= 0, "$label must expose an unsupported-request inventory")
+        val entries = text
+            .substring(markerOffset + marker.length)
+            .substringBefore("\n\n")
+            .lineSequence()
+            .filter { it.isNotBlank() }
+            .toList()
+        assertEquals(listOf("- None."), entries, "$label must not issue unsupported X11 requests; inventory=$entries")
     }
 
-    private fun assertClose(expected: Double, actual: Double, tolerance: Double, message: String) {
-        assertTrue(abs(expected - actual) <= tolerance, message)
+    private fun assertValidReferenceCapture(capture: VisualProbeCapture, label: String) {
+        val minimumPaintedPixels = capture.width * capture.height / 4
+        assertTrue(
+            capture.nonBackgroundPixels >= minimumPaintedPixels,
+            "$label Xvfb reference is blank or partial: painted=${capture.nonBackgroundPixels} minimum=$minimumPaintedPixels capture=$capture",
+        )
+        assertTrue(
+            capture.sampleArgb.values.toSet().size >= 2,
+            "$label Xvfb reference must retain at least two sampled colors: $capture",
+        )
     }
 
     private fun imageDistance(reference: BufferedImage, actual: BufferedImage): Double {
@@ -1142,6 +1205,20 @@ class AwtPrimitiveDockerTest {
             }
         }
         return total.toDouble() / samples.toDouble()
+    }
+
+    private fun pixelMismatchCount(expected: BufferedImage, actual: BufferedImage): Long {
+        val width = maxOf(expected.width, actual.width)
+        val height = maxOf(expected.height, actual.height)
+        var mismatches = 0L
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val expectedArgb = if (x < expected.width && y < expected.height) expected.getRGB(x, y) else null
+                val actualArgb = if (x < actual.width && y < actual.height) actual.getRGB(x, y) else null
+                if (expectedArgb != actualArgb) mismatches++
+            }
+        }
+        return mismatches
     }
 
     private fun mismatchBounds(expected: BufferedImage, actual: BufferedImage): Rectangle? {
@@ -1260,6 +1337,7 @@ class AwtPrimitiveDockerTest {
     private data class KotlinVisualProbeResult(
         val robot: VisualProbeCapture,
         val text: String,
+        val finalText: String,
         val svg: String,
         val exportedFramebuffers: List<VisualProbeCapture>,
         val embeddedFramebuffers: List<EmbeddedPng>,
@@ -1333,6 +1411,47 @@ class AwtPrimitiveDockerTest {
     }
 
     private companion object {
+        @JvmStatic
+        @BeforeAll
+        fun clearAwtArtifacts() {
+            awtArtifactsDirectoryFile().deleteRecursively()
+        }
+
+        private val StableRobotCaptureSource =
+            """
+
+            final class StableRobotCapture {
+              static java.awt.image.BufferedImage capture(java.awt.Robot robot, java.awt.Rectangle bounds) throws Exception {
+                robot.waitForIdle();
+                java.awt.image.BufferedImage previous = robot.createScreenCapture(bounds);
+                int stablePairs = 0;
+                for (int attempt = 0; attempt < 20; attempt++) {
+                  Thread.sleep(50);
+                  robot.waitForIdle();
+                  java.awt.image.BufferedImage current = robot.createScreenCapture(bounds);
+                  if (samePixels(previous, current)) {
+                    stablePairs++;
+                    if (stablePairs >= 2) return current;
+                  } else {
+                    stablePairs = 0;
+                  }
+                  previous = current;
+                }
+                throw new IllegalStateException("Robot capture did not stabilize for " + bounds);
+              }
+
+              private static boolean samePixels(java.awt.image.BufferedImage left, java.awt.image.BufferedImage right) {
+                if (left.getWidth() != right.getWidth() || left.getHeight() != right.getHeight()) return false;
+                for (int y = 0; y < left.getHeight(); y++) {
+                  for (int x = 0; x < left.getWidth(); x++) {
+                    if (left.getRGB(x, y) != right.getRGB(x, y)) return false;
+                  }
+                }
+                return true;
+              }
+            }
+            """.trimIndent()
+
         const val CLIENT_IMAGE = "jonnyzzz-x/x11-client:latest"
         const val REFERENCE_IMAGE = "jonnyzzz-x/x11-reference:latest"
         const val VisualProbeBackground = 0xff14_1e32.toInt()

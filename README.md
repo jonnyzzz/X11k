@@ -124,11 +124,17 @@ The test suite starts with:
 - a Testcontainers smoke test that runs real X11 tools and simple apps against the Kotlin server,
 - a Docker/Xvfb visual parity probe that compares Java2D Robot screenshots and the Kotlin server's SVG-exported framebuffer against the reference server.
 
+The deterministic AWT/Swing matrix requires full-pixel equality for every Robot
+and SVG/composed capture and fails if the JVM issues any unsupported X11
+request. The latest full check reports zero mismatched pixels for all 26 visual
+comparisons and retains the final unsupported-request inventories under
+`runs/gradle-bounded/run_20260715-123357-45212/gui-artifacts/awt-primitive-docker/`.
+
 All tracked protocol clients and reduced Xvfb oracles are native Kotlin/JUnit
 tests under `src/test/kotlin`; no tracked Python test sources remain. Gradle
 `check` enforces this with `verifyKotlinTestSources`. The latest full check ran
-1,370 tests (1,366 passed and 4 heavyweight opt-in cases skipped) in
-`runs/gradle-bounded/run_20260715-120203-8180`.
+1,371 tests (1,367 passed and 4 heavyweight opt-in cases skipped) in
+`runs/gradle-bounded/run_20260715-123357-45212`.
 
 The latest deterministic IntelliJ traced parity run
 `runs/gradle-bounded/run_20260714-215744-71496` and VSCode parity run
