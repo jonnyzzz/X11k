@@ -504,7 +504,7 @@ internal class X11Connection(
             20 -> renderAddGlyphs(body)
             21 -> renderAddGlyphsFromPicture(body)
             22 -> renderFreeGlyphs(body)
-            23, 24, 25 -> renderCompositeGlyphs(minorOpcode, body)
+            23, 24, 25 -> renderCompositeGlyphs(minorOpcode, body, operationId)
             26 -> renderFillRectangles(body, operationId)
             27 -> renderCreateCursor(body)
             28 -> renderSetPictureTransform(body)
@@ -4600,7 +4600,7 @@ internal class X11Connection(
         }
     }
 
-    private fun renderCompositeGlyphs(minorOpcode: Int, body: ByteArray) {
+    private fun renderCompositeGlyphs(minorOpcode: Int, body: ByteArray, operationId: Int) {
         if (body.size < 24) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
         val operation = body[0].toInt() and 0xff
         if (!XRender.isValidOperator(operation)) {
@@ -4628,15 +4628,26 @@ internal class X11Connection(
             return writeError(error = it.error, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = it.badValue)
         }
         val placementsByGlyphSet = parseResult.placements
-        val origin = placementsByGlyphSet.values.firstOrNull()?.firstOrNull() ?: return
+        val placementSnapshots = parseResult.placementSnapshots
+        val glyphSetIds = placementSnapshots.map { it.glyphSetId }.distinct()
+        state.updateRenderOperationDetail(
+            operationId,
+            renderCompositeGlyphOperationDetail(
+                operation = operation,
+                sourceId = sourceId,
+                destinationId = destinationId,
+                maskFormat = maskFormat,
+                initialGlyphSetId = glyphSetId,
+                sourceX = sourceX,
+                sourceY = sourceY,
+                placements = placementSnapshots,
+            ),
+        )
+        val origin = placementSnapshots.firstOrNull() ?: return
         val painted = if (maskFormat == 0) {
-            var directPainted = false
-            for ((glyphSetId, placements) in placementsByGlyphSet) {
-                directPainted = state.compositeGlyphs(operation, source, destination, glyphSetId, sourceX, sourceY, origin.x, origin.y, placements) || directPainted
-            }
-            directPainted
+            state.compositeGlyphsInOrder(operation, source, destination, sourceX, sourceY, origin.penX, origin.penY, placementSnapshots)
         } else {
-            state.compositeGlyphsWithMask(operation, source, destination, sourceX, sourceY, origin.x, origin.y, maskFormat, placementsByGlyphSet)
+            state.compositeGlyphsWithMask(operation, source, destination, sourceX, sourceY, origin.penX, origin.penY, maskFormat, placementsByGlyphSet)
         }
         state.draw(
             XDrawingCommand(
@@ -4645,13 +4656,27 @@ internal class X11Connection(
                 kind = XDrawingKind.Text,
                 foreground = 0,
                 points = listOf(XPoint(byteOrder.i16(body, 20), byteOrder.i16(body, 22))),
-                text = "RENDER.${XRender.operationName(minorOpcode)} glyphs=${body.size - 24}",
+                text = "RENDER.${XRender.operationName(minorOpcode)} glyphs=${placementSnapshots.size} glyphSets=${glyphSetIds.size}",
                 textOrigin = when (minorOpcode) {
                     23 -> XTextOrigin.RenderCompositeGlyphs8
                     24 -> XTextOrigin.RenderCompositeGlyphs16
                     else -> XTextOrigin.RenderCompositeGlyphs32
                 },
-                framebufferBacked = painted,
+                renderGlyphs = XRenderGlyphCommand(
+                    operation = operation,
+                    sourcePictureId = sourceId,
+                    destinationPictureId = destinationId,
+                    maskFormat = maskFormat,
+                    initialGlyphSetId = glyphSetId,
+                    sourceX = sourceX,
+                    sourceY = sourceY,
+                    glyphCount = placementSnapshots.size,
+                    glyphSetCount = glyphSetIds.size,
+                    glyphSetIds = glyphSetIds,
+                    placements = placementSnapshots,
+                ),
+                framebufferBacked = true,
+                framebufferPainted = painted,
                 rawDrawablePixels = false,
             ),
         )
@@ -4668,6 +4693,7 @@ internal class X11Connection(
         var y = 0
         var offset = 24
         val result = linkedMapOf<Int, MutableList<XGlyphPlacement>>()
+        val placementSnapshots = mutableListOf<XRenderGlyphPlacementSnapshot>()
         while (offset < body.size) {
             if (offset + 8 > body.size) return XCompositeGlyphParseResult.badLength()
             val length = body[offset].toInt() and 0xff
@@ -4675,9 +4701,7 @@ internal class X11Connection(
             val deltaY = byteOrder.i16(body, offset + 6)
             if (length == 0xff) {
                 if (offset + 12 > body.size) return XCompositeGlyphParseResult.badLength()
-                x += deltaX
-                y += deltaY
-                val nextGlyphSetId = byteOrder.u32(body, offset + 8)
+                val nextGlyphSetId = ByteOrder.MsbFirst.u32(body, offset + 8)
                 if (!state.hasGlyphSet(nextGlyphSetId)) {
                     return XCompositeGlyphParseResult.error(XRender.GlyphSetError, nextGlyphSetId)
                 }
@@ -4702,12 +4726,26 @@ internal class X11Connection(
                 val glyph = state.glyph(glyphSetId, glyphId)
                     ?: return XCompositeGlyphParseResult.error(XRender.GlyphError, glyphId)
                 result.getOrPut(glyphSetId) { mutableListOf() } += XGlyphPlacement(glyphId, x, y)
+                placementSnapshots += XRenderGlyphPlacementSnapshot(
+                    glyphSetId = glyphSetId,
+                    glyphId = glyphId,
+                    penX = x,
+                    penY = y,
+                    imageX = x - glyph.x,
+                    imageY = y - glyph.y,
+                    width = glyph.width,
+                    height = glyph.height,
+                    glyphX = glyph.x,
+                    glyphY = glyph.y,
+                    xOff = glyph.xOff,
+                    yOff = glyph.yOff,
+                )
                 x += glyph.xOff
                 y += glyph.yOff
             }
             offset += paddedGlyphBytes
         }
-        return XCompositeGlyphParseResult(result)
+        return XCompositeGlyphParseResult(result, placementSnapshots)
     }
 
     private fun renderFillRectangles(body: ByteArray, operationId: Int) {
@@ -14899,6 +14937,41 @@ private object XPropertyDelete {
     const val True = 1
 }
 
+internal fun renderCompositeGlyphOperationDetail(
+    operation: Int,
+    sourceId: Int,
+    destinationId: Int,
+    maskFormat: Int,
+    initialGlyphSetId: Int,
+    sourceX: Int,
+    sourceY: Int,
+    placements: List<XRenderGlyphPlacementSnapshot>,
+): String {
+    fun Int.hex(): String = "0x${toUInt().toString(16)}"
+    val glyphSetIds = placements.map { it.glyphSetId }.distinct()
+    val glyphSetPreview = glyphSetIds.take(MaxRenderGlyphPlacementPreview)
+    val placementPreview = placements.take(MaxRenderGlyphPlacementPreview)
+    return buildString {
+        append("op=").append(operation)
+        append(" src=").append(sourceId.hex())
+        append(" dst=").append(destinationId.hex())
+        append(" maskFormat=").append(maskFormat.hex())
+        append(" initialGlyphSet=").append(initialGlyphSetId.hex())
+        append(" sourceOrigin=").append(sourceX).append(',').append(sourceY)
+        append(" glyphs=").append(placements.size)
+        append(" glyphSets=").append(glyphSetPreview.size).append('/').append(glyphSetIds.size)
+        append(glyphSetPreview.joinToString(",", "[", "]") { it.hex() })
+        append(" placementPreview=").append(placementPreview.size).append('/').append(placements.size)
+        append(placementPreview.joinToString(";", "[", "]") { placement ->
+            "${placement.glyphSetId.hex()}/${placement.glyphId.hex()}@${placement.penX},${placement.penY}" +
+                "->${placement.imageX},${placement.imageY} ${placement.width}x${placement.height}" +
+                " off=${placement.xOff},${placement.yOff}"
+        })
+    }
+}
+
+private const val MaxRenderGlyphPlacementPreview = 32
+
 private object XPropertyType {
     const val Any = 0
 }
@@ -14921,6 +14994,7 @@ private data class XRenderPictureAttributes(
 
 private data class XCompositeGlyphParseResult(
     val placements: Map<Int, List<XGlyphPlacement>> = emptyMap(),
+    val placementSnapshots: List<XRenderGlyphPlacementSnapshot> = emptyList(),
     val error: XCompositeGlyphParseError? = null,
 ) {
     companion object {

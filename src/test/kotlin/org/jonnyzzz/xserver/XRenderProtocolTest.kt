@@ -15664,14 +15664,264 @@ class XRenderProtocolTest {
                 )
                 assertFalse(svg.contains("text-drawing-semantic-export"), "RENDER glyph diagnostics must not be exposed as decoded application text")
                 val json = httpGet(server.localPort, "/state.json")
-                assertContains(json, """"textOrigin":"RenderCompositeGlyphs32","text":null,"detail":"RENDER.CompositeGlyphs32 glyphs=""")
+                assertContains(json, """"textOrigin":"RenderCompositeGlyphs32","text":null,"detail":"RENDER.CompositeGlyphs32 glyphs=2 glyphSets=1""")
+                assertContains(
+                    json,
+                    """"renderGlyphs":{"operation":1,"sourcePicture":"0x201003","destinationPicture":"0x201001","maskFormat":"0x24","initialGlyphSet":"0x203001","sourceOrigin":[2,1],"glyphCount":2,"glyphSetCount":1,"glyphSetsComplete":true,"glyphSets":["0x203001"],"placementsComplete":true,"placementsRetained":2""",
+                )
+                assertContains(
+                    json,
+                    """{"glyphSet":"0x203001","glyph":"0x41","penX":4,"penY":3,"imageX":4,"imageY":3,"width":4,"height":2,"glyphX":0,"glyphY":0,"xOff":4,"yOff":0},{"glyphSet":"0x203001","glyph":"0x41","penX":8,"penY":3,"imageX":8,"imageY":3,"width":4,"height":2,"glyphX":0,"glyphY":0,"xOff":4,"yOff":0}""",
+                )
                 val textReport = httpGet(server.localPort, "/text.txt")
                 assertContains(textReport, "CompositeGlyphs32")
+                assertContains(textReport, "glyphs=2 glyphSets=1/1[0x203001] placementPreview=2/2")
+                assertContains(textReport, "0x203001/0x41@4,3->4,3 4x2 off=4,0")
+                assertFalse(textReport.contains("CompositeGlyphs32 minor=25 op=1 src=0x201003 dst=0x201001 glyphSet=0x203001 bytes="), textReport)
                 assertContains(textReport, "Recent core text commands:\n- None.")
             }
             server.close()
             serverThread.join(1_000)
         }
+    }
+
+    @Test
+    fun `RENDER composite glyph semantics retain ordered placements across glyph sets`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val secondGlyphSet = GlyphSetId + 1
+                val secondGlyph = GlyphId + 1
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 8, height = 7, red = 0x0000, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateGlyphSet(GlyphSetId, XRender.A8Format))
+                out.write(renderAddA8Glyph(GlyphSetId, GlyphId, width = 1, height = 1, xOff = 2, alphas = byteArrayOf(0xff.toByte())))
+                out.write(renderCreateGlyphSet(secondGlyphSet, XRender.A8Format))
+                out.write(renderAddA8Glyph(secondGlyphSet, secondGlyph, width = 2, height = 1, x = 1, y = -1, xOff = 3, yOff = 1, alphas = ByteArray(2) { 0xff.toByte() }))
+
+                val body = compositeGlyphsHeader(
+                    source = SolidPictureId,
+                    destination = PictureId,
+                    glyphSet = GlyphSetId,
+                    operation = XRender.OpSrc,
+                    maskFormat = 0,
+                ).copyOf(84)
+                body[24] = 1
+                put16le(body, 28, 2)
+                put16le(body, 30, 2)
+                put32le(body, 32, GlyphId)
+                body[36] = 0xff.toByte()
+                put16le(body, 40, 1)
+                put16le(body, 42, 0)
+                put32be(body, 44, secondGlyphSet)
+                body[48] = 1
+                put16le(body, 52, 0)
+                put16le(body, 54, 2)
+                put32le(body, 56, secondGlyph)
+                body[60] = 0xff.toByte()
+                put16le(body, 64, Short.MAX_VALUE.toInt())
+                put16le(body, 66, Short.MIN_VALUE.toInt())
+                put32be(body, 68, GlyphSetId)
+                body[72] = 1
+                put16le(body, 76, -4)
+                put16le(body, 78, 0)
+                put32le(body, 80, GlyphId)
+                out.write(renderCompositeGlyphsRaw(25, body))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 7))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, imageWidth = 8, x = 2, y = 2))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 5))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, imageWidth = 8, x = 4, y = 5))
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"detail":"RENDER.CompositeGlyphs32 glyphs=3 glyphSets=2""")
+                assertContains(json, """"glyphCount":3,"glyphSetCount":2,"glyphSetsComplete":true,"glyphSets":["0x203001","0x203002"],"placementsComplete":true,"placementsRetained":3""")
+                assertContains(
+                    json,
+                    """{"glyphSet":"0x203001","glyph":"0x41","penX":2,"penY":2,"imageX":2,"imageY":2,"width":1,"height":1,"glyphX":0,"glyphY":0,"xOff":2,"yOff":0},{"glyphSet":"0x203002","glyph":"0x42","penX":4,"penY":4,"imageX":3,"imageY":5,"width":2,"height":1,"glyphX":1,"glyphY":-1,"xOff":3,"yOff":1},{"glyphSet":"0x203001","glyph":"0x41","penX":3,"penY":5,"imageX":3,"imageY":5,"width":1,"height":1,"glyphX":0,"glyphY":0,"xOff":2,"yOff":0}""",
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER direct composite glyphs preserve A B A wire order`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val secondGlyphSet = GlyphSetId + 1
+                val secondGlyph = GlyphId + 1
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 5, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderCreateGlyphSet(GlyphSetId, XRender.A8Format))
+                out.write(renderAddA8Glyph(GlyphSetId, GlyphId, width = 1, height = 1, xOff = 0, alphas = byteArrayOf(0x40)))
+                out.write(renderCreateGlyphSet(secondGlyphSet, XRender.A8Format))
+                out.write(renderAddA8Glyph(secondGlyphSet, secondGlyph, width = 1, height = 1, xOff = 0, alphas = byteArrayOf(0xc0.toByte())))
+
+                out.write(
+                    renderCompositeGlyphs32Runs(
+                        source = SolidPictureId,
+                        destination = PictureId,
+                        initialGlyphSet = GlyphSetId,
+                        runs = listOf(
+                            RenderGlyphRun(GlyphSetId, deltaX = 1, glyphIds = listOf(GlyphId)),
+                            RenderGlyphRun(secondGlyphSet, glyphIds = listOf(secondGlyph)),
+                            RenderGlyphRun(GlyphSetId, glyphIds = listOf(GlyphId)),
+                        ),
+                        operation = XRender.OpBlendHSLHue,
+                        maskFormat = 0,
+                    ),
+                )
+                for ((glyphSet, glyphId) in listOf(GlyphSetId to GlyphId, secondGlyphSet to secondGlyph, GlyphSetId to GlyphId)) {
+                    out.write(renderCompositeGlyphs32(SolidPictureId, PictureId, glyphSet, sourceX = 0, sourceY = 0, deltaX = 2, deltaY = 0, glyphIds = listOf(glyphId), operation = XRender.OpBlendHSLHue, maskFormat = 0))
+                }
+                for ((glyphSet, glyphId) in listOf(GlyphSetId to GlyphId, GlyphSetId to GlyphId, secondGlyphSet to secondGlyph)) {
+                    out.write(renderCompositeGlyphs32(SolidPictureId, PictureId, glyphSet, sourceX = 0, sourceY = 0, deltaX = 3, deltaY = 0, glyphIds = listOf(glyphId), operation = XRender.OpBlendHSLHue, maskFormat = 0))
+                }
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                val wireOrder = pixelAt(image, imageWidth = 5, x = 1, y = 0)
+                val explicitWireOrder = pixelAt(image, imageWidth = 5, x = 2, y = 0)
+                val groupedOrder = pixelAt(image, imageWidth = 5, x = 3, y = 0)
+                assertEquals(explicitWireOrder, wireOrder)
+                assertFalse(wireOrder == groupedOrder, "A,B,A and A,A,B must produce distinct order-sensitive pixels: 0x${wireOrder.toUInt().toString(16)}")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER no-op composite glyphs remain framebuffer backed without synthetic SVG text`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 4, height = 2, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderCreateGlyphSet(GlyphSetId, XRender.A8Format))
+                out.write(renderAddA8Glyph(GlyphSetId, GlyphId, width = 1, height = 1, xOff = 1, alphas = byteArrayOf(0xff.toByte())))
+                out.write(renderCompositeGlyphs32(SolidPictureId, PictureId, GlyphSetId, sourceX = 0, sourceY = 0, deltaX = 1, deltaY = 1, glyphIds = listOf(GlyphId), operation = XRender.OpDst))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 2))
+                out.write(mapWindowRequest(WindowId))
+                out.flush()
+
+                val image = readReply(input)
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 1))
+                val expose = input.readExactly(32)
+                assertEquals(12, expose[0].toInt() and 0xff)
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"framebufferBacked":true,"sourceDrawable":null,"framebufferPainted":false,"textOrigin":"RenderCompositeGlyphs32""")
+                val svg = httpGet(server.localPort, "/screen.svg")
+                assertFalse(Regex("""<text\b[^>]*>RENDER\.CompositeGlyphs32(?:\s|<)""").containsMatchIn(svg), svg)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER glyph semantic retention evicts complete placements but preserves counts`() {
+        val retainedBudgetPlusOne = 100_001
+        val placement = XRenderGlyphPlacementSnapshot(
+            glyphSetId = GlyphSetId,
+            glyphId = GlyphId,
+            penX = 1,
+            penY = 2,
+            imageX = 1,
+            imageY = 2,
+            width = 1,
+            height = 1,
+            glyphX = 0,
+            glyphY = 0,
+            xOff = 1,
+            yOff = 0,
+        )
+        val state = X11State(width = 4, height = 4)
+        state.draw(
+            XDrawingCommand(
+                drawableId = X11Ids.RootWindow,
+                kind = XDrawingKind.Text,
+                foreground = 0,
+                text = "RENDER.CompositeGlyphs32 glyphs=$retainedBudgetPlusOne glyphSets=1",
+                textOrigin = XTextOrigin.RenderCompositeGlyphs32,
+                renderGlyphs = XRenderGlyphCommand(
+                    operation = XRender.OpSrc,
+                    sourcePictureId = SolidPictureId,
+                    destinationPictureId = PictureId,
+                    maskFormat = XRender.A8Format,
+                    initialGlyphSetId = GlyphSetId,
+                    sourceX = 0,
+                    sourceY = 0,
+                    glyphCount = retainedBudgetPlusOne,
+                    glyphSetCount = 1,
+                    glyphSetIds = listOf(GlyphSetId),
+                    placements = List(retainedBudgetPlusOne) { placement },
+                ),
+                framebufferBacked = true,
+            ),
+        )
+
+        val retained = state.snapshot().drawings.single().renderGlyphs ?: error("Missing retained glyph summary")
+        assertEquals(retainedBudgetPlusOne, retained.glyphCount)
+        assertEquals(1, retained.glyphSetCount)
+        assertTrue(retained.glyphSetIds.isEmpty())
+        assertTrue(retained.placements.isEmpty())
+        val json = SvgScreenRenderer.json(state.snapshot())
+        assertContains(json, """"glyphCount":100001,"glyphSetCount":1,"glyphSetsComplete":false,"glyphSets":[],"placementsComplete":false,"placementsRetained":0,"placements":[]""")
+    }
+
+    @Test
+    fun `RENDER composite glyph diagnostics cap glyph set and placement previews`() {
+        val placements = (0 until 33).map { index ->
+            XRenderGlyphPlacementSnapshot(
+                glyphSetId = GlyphSetId + index,
+                glyphId = GlyphId + index,
+                penX = index,
+                penY = -index,
+                imageX = index,
+                imageY = -index,
+                width = 1,
+                height = 1,
+                glyphX = 0,
+                glyphY = 0,
+                xOff = 1,
+                yOff = 0,
+            )
+        }
+
+        val detail = renderCompositeGlyphOperationDetail(
+            operation = XRender.OpSrc,
+            sourceId = SolidPictureId,
+            destinationId = PictureId,
+            maskFormat = 0,
+            initialGlyphSetId = GlyphSetId,
+            sourceX = 3,
+            sourceY = 4,
+            placements = placements,
+        )
+
+        assertContains(detail, "glyphs=33 glyphSets=32/33[")
+        assertContains(detail, "0x203020/0x60@31,-31->31,-31 1x1 off=1,0")
+        assertContains(detail, "placementPreview=32/33[")
+        assertFalse(detail.contains("0x203021"), detail)
     }
 
     @Test
@@ -16772,7 +17022,7 @@ class XRenderProtocolTest {
                         25,
                         compositeGlyphsHeader(SolidPictureId, PictureId, GlyphSetId) + ByteArray(12).also {
                             it[0] = 0xff.toByte()
-                            put32le(it, 8, missingGlyphSet)
+                            put32be(it, 8, missingGlyphSet)
                         },
                     ),
                 )
@@ -17780,6 +18030,46 @@ class XRenderProtocolTest {
         return request(XRender.MajorOpcode, 25, body)
     }
 
+    private data class RenderGlyphRun(
+        val glyphSet: Int,
+        val deltaX: Int = 0,
+        val deltaY: Int = 0,
+        val glyphIds: List<Int>,
+    )
+
+    private fun renderCompositeGlyphs32Runs(
+        source: Int,
+        destination: Int,
+        initialGlyphSet: Int,
+        runs: List<RenderGlyphRun>,
+        operation: Int,
+        maskFormat: Int,
+    ): ByteArray {
+        var currentGlyphSet = initialGlyphSet
+        val bodySize = 24 + runs.sumOf { run ->
+            val switchBytes = if (run.glyphSet == currentGlyphSet) 0 else 12
+            currentGlyphSet = run.glyphSet
+            switchBytes + 8 + ((run.glyphIds.size * 4 + 3) and -4)
+        }
+        val body = compositeGlyphsHeader(source, destination, initialGlyphSet, operation, maskFormat).copyOf(bodySize)
+        currentGlyphSet = initialGlyphSet
+        var offset = 24
+        for (run in runs) {
+            if (run.glyphSet != currentGlyphSet) {
+                body[offset] = 0xff.toByte()
+                put32be(body, offset + 8, run.glyphSet)
+                currentGlyphSet = run.glyphSet
+                offset += 12
+            }
+            body[offset] = run.glyphIds.size.toByte()
+            put16le(body, offset + 4, run.deltaX)
+            put16le(body, offset + 6, run.deltaY)
+            run.glyphIds.forEachIndexed { index, glyphId -> put32le(body, offset + 8 + index * 4, glyphId) }
+            offset += 8 + ((run.glyphIds.size * 4 + 3) and -4)
+        }
+        return request(XRender.MajorOpcode, 25, body)
+    }
+
     private fun renderCompositeGlyphsRaw(minorOpcode: Int, body: ByteArray): ByteArray =
         request(XRender.MajorOpcode, minorOpcode, body)
 
@@ -18431,6 +18721,13 @@ class XRenderProtocolTest {
         bytes[offset + 1] = (value ushr 8).toByte()
         bytes[offset + 2] = (value ushr 16).toByte()
         bytes[offset + 3] = (value ushr 24).toByte()
+    }
+
+    private fun put32be(bytes: ByteArray, offset: Int, value: Int) {
+        bytes[offset] = (value ushr 24).toByte()
+        bytes[offset + 1] = (value ushr 16).toByte()
+        bytes[offset + 2] = (value ushr 8).toByte()
+        bytes[offset + 3] = value.toByte()
     }
 
     private fun u16le(bytes: ByteArray, offset: Int): Int =

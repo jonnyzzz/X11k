@@ -224,6 +224,21 @@ internal object SvgScreenRenderer {
                 } else {
                     append("null")
                 }
+                append(""","renderGlyphs":""")
+                drawing.renderGlyphs?.let { glyphs ->
+                    append('{')
+                    append(""""operation":${glyphs.operation},"sourcePicture":"0x${glyphs.sourcePictureId.toUInt().toString(16)}","destinationPicture":"0x${glyphs.destinationPictureId.toUInt().toString(16)}","maskFormat":"0x${glyphs.maskFormat.toUInt().toString(16)}","initialGlyphSet":"0x${glyphs.initialGlyphSetId.toUInt().toString(16)}","sourceOrigin":[${glyphs.sourceX},${glyphs.sourceY}],"glyphCount":${glyphs.glyphCount},"glyphSetCount":${glyphs.glyphSetCount},"glyphSetsComplete":${glyphs.glyphSetIds.size == glyphs.glyphSetCount},"glyphSets":[""")
+                    glyphs.glyphSetIds.forEachIndexed { glyphSetIndex, glyphSetId ->
+                        if (glyphSetIndex > 0) append(',')
+                        append('"').append("0x${glyphSetId.toUInt().toString(16)}").append('"')
+                    }
+                    append("""],"placementsComplete":${glyphs.placements.size == glyphs.glyphCount},"placementsRetained":${glyphs.placements.size},"placements":[""")
+                    glyphs.placements.forEachIndexed { placementIndex, placement ->
+                        if (placementIndex > 0) append(',')
+                        append("""{"glyphSet":"0x${placement.glyphSetId.toUInt().toString(16)}","glyph":"0x${placement.glyphId.toUInt().toString(16)}","penX":${placement.penX},"penY":${placement.penY},"imageX":${placement.imageX},"imageY":${placement.imageY},"width":${placement.width},"height":${placement.height},"glyphX":${placement.glyphX},"glyphY":${placement.glyphY},"xOff":${placement.xOff},"yOff":${placement.yOff}}""")
+                    }
+                    append("]}")
+                } ?: append("null")
                 append(""","drawableGeneration":""")
                 drawing.drawableGeneration?.let { append(it) } ?: append("null")
                 append(""","sourceDrawableGeneration":""")

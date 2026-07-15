@@ -5096,6 +5096,14 @@ internal class X11State(
         }
     }
 
+    @Synchronized
+    fun updateRenderOperationDetail(id: Int, detail: String) {
+        val index = renderOperations.indexOfFirst { it.id == id }
+        if (index >= 0) {
+            renderOperations[index] = renderOperations[index].copy(detail = detail)
+        }
+    }
+
     private fun rememberRenderPaint(destination: XRenderPictureSnapshot?, operation: XRenderOperation) {
         val drawableId = destination?.drawableId ?: return
         val destinationPicture = pictures[destination.id]
@@ -9327,9 +9335,49 @@ internal class X11State(
         originY: Int,
         placements: List<XGlyphPlacement>,
     ): Boolean {
+        val glyphSet = glyphSets[glyphSetId] ?: return false
+        val placementSnapshots = placements.mapNotNull { placement ->
+            val glyph = glyphSet.glyphs[placement.glyphId] ?: return@mapNotNull null
+            XRenderGlyphPlacementSnapshot(
+                glyphSetId = glyphSetId,
+                glyphId = placement.glyphId,
+                penX = placement.x,
+                penY = placement.y,
+                imageX = placement.x - glyph.x,
+                imageY = placement.y - glyph.y,
+                width = glyph.width,
+                height = glyph.height,
+                glyphX = glyph.x,
+                glyphY = glyph.y,
+                xOff = glyph.xOff,
+                yOff = glyph.yOff,
+            )
+        }
+        return compositeGlyphsInOrder(
+            operation = operation,
+            source = source,
+            destination = destination,
+            sourceX = sourceX,
+            sourceY = sourceY,
+            originX = originX,
+            originY = originY,
+            placements = placementSnapshots,
+        )
+    }
+
+    @Synchronized
+    fun compositeGlyphsInOrder(
+        operation: Int,
+        source: XPicture,
+        destination: XPicture,
+        sourceX: Int,
+        sourceY: Int,
+        originX: Int,
+        originY: Int,
+        placements: List<XRenderGlyphPlacementSnapshot>,
+    ): Boolean {
         val destinationDrawableId = destination.drawableId ?: return false
         val destinationFramebuffer = destination.drawableFramebuffer() ?: return false
-        val glyphSet = glyphSets[glyphSetId] ?: return false
         val destinationClipMask = destination.clipMaskPredicate()
         val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0) {
             source.compositeSourcePixelSamplerOptional(destinationDrawableId)
@@ -9341,17 +9389,16 @@ internal class X11State(
         return destinationFramebuffer.changedByRender {
             var painted = false
             for (placement in placements) {
+                val glyphSet = glyphSets[placement.glyphSetId] ?: continue
                 val glyph = glyphSet.glyphs[placement.glyphId] ?: continue
                 val mask = glyph.mask ?: continue
-                val destinationX = placement.x - glyph.x
-                val destinationY = placement.y - glyph.y
                 painted = compositeSourceOverMask(
                     sourceX = sourceX,
                     sourceY = sourceY,
                     originX = originX,
                     originY = originY,
-                    destinationX = destinationX,
-                    destinationY = destinationY,
+                    destinationX = placement.imageX,
+                    destinationY = placement.imageY,
                     width = glyph.width,
                     height = glyph.height,
                     operation = operation,
@@ -9721,12 +9768,28 @@ internal class X11State(
         if (command.framebufferPainted && paintedWindowId != null && windows[paintedWindowId]?.generation == resolvedDrawableGeneration) {
             windows[paintedWindowId]?.framebufferClientPainted = true
         }
-        drawings += command.copy(
+        val retainedCommand = command.copy(
             drawableGeneration = resolvedDrawableGeneration,
             sourceDrawableGeneration = resolvedSourceDrawableGeneration,
         )
+        drawings += retainedCommand
+        retainedRenderGlyphPlacements += retainedCommand.renderGlyphs?.placements?.size ?: 0
         if (drawings.size > MaxDrawingCommands) {
-            drawings.removeAt(0)
+            val removed = drawings.removeAt(0)
+            retainedRenderGlyphPlacements -= removed.renderGlyphs?.placements?.size ?: 0
+        }
+        while (retainedRenderGlyphPlacements > MaxRetainedRenderGlyphPlacements) {
+            val index = drawings.indexOfFirst { it.renderGlyphs?.placements?.isNotEmpty() == true }
+            if (index < 0) break
+            val drawing = drawings[index]
+            val glyphs = drawing.renderGlyphs ?: continue
+            retainedRenderGlyphPlacements -= glyphs.placements.size
+            drawings[index] = drawing.copy(
+                renderGlyphs = glyphs.copy(
+                    glyphSetIds = emptyList(),
+                    placements = emptyList(),
+                ),
+            )
         }
     }
 
@@ -10277,6 +10340,7 @@ internal class X11State(
         private const val AnyModifier = 0x8000
         private const val KeyModifierMask = 0x00ff
         private const val MaxDrawingCommands = 10_000
+        private const val MaxRetainedRenderGlyphPlacements = 100_000
         private const val MaxMotionHistory = 256
         private const val MaxInputOperations = 200
         private const val MaxGlxOperations = 200
@@ -11127,6 +11191,7 @@ internal class X11State(
     }
 
     private val drawings = mutableListOf<XDrawingCommand>()
+    private var retainedRenderGlyphPlacements = 0
 
     private data class XRectangle(
         val x: Int,
@@ -11947,6 +12012,35 @@ internal data class XGlyphPlacement(
     val y: Int,
 )
 
+internal data class XRenderGlyphPlacementSnapshot(
+    val glyphSetId: Int,
+    val glyphId: Int,
+    val penX: Int,
+    val penY: Int,
+    val imageX: Int,
+    val imageY: Int,
+    val width: Int,
+    val height: Int,
+    val glyphX: Int,
+    val glyphY: Int,
+    val xOff: Int,
+    val yOff: Int,
+)
+
+internal data class XRenderGlyphCommand(
+    val operation: Int,
+    val sourcePictureId: Int,
+    val destinationPictureId: Int,
+    val maskFormat: Int,
+    val initialGlyphSetId: Int,
+    val sourceX: Int,
+    val sourceY: Int,
+    val glyphCount: Int,
+    val glyphSetCount: Int,
+    val glyphSetIds: List<Int>,
+    val placements: List<XRenderGlyphPlacementSnapshot>,
+)
+
 internal enum class XDrawingKind {
     Clear,
     Line,
@@ -12000,6 +12094,7 @@ internal data class XDrawingCommand(
     val arcs: List<XArcCommand> = emptyList(),
     val text: String = "",
     val textOrigin: XTextOrigin? = null,
+    val renderGlyphs: XRenderGlyphCommand? = null,
     val imageDataUri: String? = null,
     val sourceDrawableId: Int? = null,
     val drawableGeneration: Long? = null,
