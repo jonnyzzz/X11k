@@ -95,16 +95,16 @@ tasks.register<Exec>("testRunAgentProcessGroup") {
 
 val verifyKotlinTestSources by tasks.registering {
     group = "verification"
-    description = "Rejects Python test sources; protocol and oracle tests must be native Kotlin/JUnit tests."
+    description = "Rejects non-Kotlin JVM and Python test sources; tests must be native Kotlin/JUnit."
     val testSources = layout.projectDirectory.dir("src/test")
     inputs.dir(testSources)
     doLast {
-        val pythonSources = fileTree(testSources) {
-            include("**/*.py", "**/*.pyw")
+        val nonKotlinSources = fileTree(testSources) {
+            include("**/*.java", "**/*.groovy", "**/*.scala", "**/*.py", "**/*.pyw")
         }.files.sortedBy { it.invariantSeparatorsPath }
-        check(pythonSources.isEmpty()) {
-            "Python test sources are not allowed; port these files to Kotlin/JUnit:\n" +
-                pythonSources.joinToString("\n") { "- ${it.relativeTo(projectDir).invariantSeparatorsPath}" }
+        check(nonKotlinSources.isEmpty()) {
+            "Non-Kotlin test sources are not allowed; port these files to Kotlin/JUnit:\n" +
+                nonKotlinSources.joinToString("\n") { "- ${it.relativeTo(projectDir).invariantSeparatorsPath}" }
         }
     }
 }

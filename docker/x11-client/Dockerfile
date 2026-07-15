@@ -7,6 +7,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         fontconfig \
+        faketime \
         fonts-dejavu \
         git \
         gzip \

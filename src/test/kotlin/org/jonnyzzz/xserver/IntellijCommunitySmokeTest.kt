@@ -2346,10 +2346,7 @@ class IntellijCommunitySmokeTest {
                             text.contains("Download SDK") || text.contains("Download JDK"),
                             "IntelliJ smoke should not render an SDK/JDK modal in the target surface\n$text",
                         )
-                        assertTrue(
-                            text.contains("Unsupported requests:\n- None."),
-                            "IntelliJ smoke should not leave unsupported protocol requests in the target-client trace\n$text",
-                        )
+                        assertNoUnsupportedRequests(text, "IntelliJ smoke")
                         assertTrue(
                             stats.any { it.hasVisibleContent() },
                             "IntelliJ screen SVG should contain non-white rendered pixels, got $stats\n$text",
@@ -2459,7 +2456,7 @@ class IntellijCommunitySmokeTest {
 
         assertTrue(actual.text.contains("Content window"), actual.text)
         assertIntellijHtmlPreviewHasLargeSurface(actual.html, actual.text)
-        assertTrue(actual.text.contains("Unsupported requests:\n- None."), actual.text)
+        assertNoUnsupportedRequests(actual.text, "IntelliJ parity")
         assertFalse(actual.text.contains("Download SDK") || actual.text.contains("Download JDK"), actual.text)
         assertIntellijJcefMarkdownDiagnosticsPresent(reference.logs + actual.logs)
         assertIntellijNormalizedToolWindowDiagnosticsPresent(reference.logs + actual.logs)

@@ -1,7 +1,8 @@
 package org.jonnyzzz.xserver
 
-import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assumptions.assumeTrue
+import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.Test
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.DockerClientFactory
 import org.testcontainers.utility.DockerImageName
@@ -19,11 +20,55 @@ import javax.imageio.ImageIO
 import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 private const val DockerExecTimeoutSeconds = 45L
 
+private fun xvfbClientArtifactsDirectoryFile(): File {
+    val retainedRoot = System.getProperty("x.guiArtifactsDir") ?: System.getenv("X_GUI_ARTIFACTS_DIR")
+    return if (retainedRoot.isNullOrBlank()) {
+        File("build/tmp/xvfb-container-test")
+    } else {
+        File(retainedRoot, "xvfb-container-test")
+    }
+}
+
 class XvfbContainerTest {
+    @Test
+    fun `unsupported request guard rejects mixed inventory`() {
+        val failure = assertFailsWith<AssertionError> {
+            assertNoUnsupportedRequests(
+                "Unsupported requests:\n- None.\n- opcode=127 minor=3\n\nRENDER operations:\n- None.",
+                "fixture",
+            )
+        }
+
+        assertTrue(failure.message.orEmpty().contains("opcode=127"), failure.message)
+    }
+
+    @Test
+    fun `reference validation rejects black root with partial white fragment`() {
+        val image = BufferedImage(RealClientCaptureWidth, RealClientCaptureHeight, BufferedImage.TYPE_INT_ARGB)
+        val graphics = image.createGraphics()
+        try {
+            graphics.color = java.awt.Color.BLACK
+            graphics.fillRect(0, 0, image.width, image.height)
+            graphics.color = java.awt.Color.WHITE
+            graphics.fillRect(0, 0, 160, 90)
+        } finally {
+            graphics.dispose()
+        }
+
+        val capture = visualCapture(image)
+        assertTrue(capture.nonBackgroundPixels >= 12_000)
+        assertTrue(distinctColorCount(image, limit = 2) >= 2)
+        for (fixture in listOf("xterm", "xlogo", "xclock", "xeyes", "xcalc")) {
+            val failure = assertFailsWith<AssertionError> { assertValidReferenceCapture(capture, fixture) }
+            assertTrue(failure.message.orEmpty().contains("reference"), failure.message)
+        }
+    }
+
     @Test
     fun `visual metrics include signed mismatch delta histograms`() {
         val expected = BufferedImage(3, 1, BufferedImage.TYPE_INT_ARGB)
@@ -110,7 +155,7 @@ class XvfbContainerTest {
     }
 
     @Test
-    fun `xlogo robot screenshot and svg framebuffer roughly match xvfb reference`() {
+    fun `xlogo robot screenshot and svg framebuffer exactly match xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runXlogoAgainstXvfb()
@@ -131,7 +176,7 @@ class XvfbContainerTest {
     }
 
     @Test
-    fun `xclock robot screenshot and svg framebuffer roughly match xvfb reference`() {
+    fun `xclock robot screenshot and svg framebuffer exactly match xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runXclockAgainstXvfb()
@@ -145,8 +190,6 @@ class XvfbContainerTest {
             expected = reference,
             actual = actual.robot,
             label = "Kotlin xclock Robot screenshot",
-            coverageTolerance = 0.45,
-            distanceThreshold = 60.0,
         )
         assertComposedSvgClose(
             expected = reference,
@@ -154,13 +197,11 @@ class XvfbContainerTest {
             ownerWidth = RealClientCaptureWidth,
             ownerHeight = RealClientCaptureHeight,
             label = "Kotlin xclock composed SVG framebuffer",
-            coverageTolerance = 0.45,
-            distanceThreshold = 60.0,
         )
     }
 
     @Test
-    fun `xcalc robot screenshot and svg framebuffer roughly match xvfb reference`() {
+    fun `xcalc robot screenshot and svg framebuffer exactly match xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runXcalcAgainstXvfb()
@@ -179,8 +220,6 @@ class XvfbContainerTest {
             expected = reference,
             actual = actual.robot,
             label = "Kotlin xcalc Robot screenshot",
-            coverageTolerance = 0.25,
-            distanceThreshold = 300.0,
         )
         assertComposedSvgClose(
             expected = reference,
@@ -188,13 +227,11 @@ class XvfbContainerTest {
             ownerWidth = RealClientCaptureWidth,
             ownerHeight = RealClientCaptureHeight,
             label = "Kotlin xcalc composed SVG framebuffer",
-            coverageTolerance = 0.25,
-            distanceThreshold = 300.0,
         )
     }
 
     @Test
-    fun `xeyes robot screenshot and svg framebuffer roughly match xvfb reference`() {
+    fun `xeyes robot screenshot and svg framebuffer exactly match xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runXeyesAgainstXvfb()
@@ -208,8 +245,6 @@ class XvfbContainerTest {
             expected = reference,
             actual = actual.robot,
             label = "Kotlin xeyes Robot screenshot",
-            coverageTolerance = 0.25,
-            distanceThreshold = 0.055,
         )
         assertComposedSvgClose(
             expected = reference,
@@ -217,13 +252,11 @@ class XvfbContainerTest {
             ownerWidth = RealClientCaptureWidth,
             ownerHeight = RealClientCaptureHeight,
             label = "Kotlin xeyes composed SVG framebuffer",
-            coverageTolerance = 0.25,
-            distanceThreshold = 0.055,
         )
     }
 
     @Test
-    fun `xterm robot screenshot and svg framebuffer roughly match xvfb reference`() {
+    fun `xterm robot screenshot and svg framebuffer exactly match xvfb reference`() {
         assumeDockerAndImage(CLIENT_IMAGE)
         assumeDockerAndImage(REFERENCE_IMAGE)
         val reference = runXtermAgainstXvfb()
@@ -242,8 +275,6 @@ class XvfbContainerTest {
             expected = reference,
             actual = actual.robot,
             label = "Kotlin xterm Robot screenshot",
-            coverageTolerance = 0.35,
-            distanceThreshold = 220.0,
         )
         assertComposedSvgCaptureClose(
             expected = reference,
@@ -254,8 +285,6 @@ class XvfbContainerTest {
             captureHeight = RealClientCaptureHeight,
             backgroundPixel = 0xff00_0000.toInt(),
             label = "Kotlin xterm composed SVG framebuffer",
-            coverageTolerance = 0.35,
-            distanceThreshold = 220.0,
         )
     }
 
@@ -283,17 +312,11 @@ class XvfbContainerTest {
             expected = reference,
             actual = actual.robot,
             label = "Kotlin twm composed Robot screenshot",
-            coverageTolerance = 0.30,
-            averageTolerance = 0.08,
-            distanceThreshold = 130.0,
         )
         assertVisualCaptureClose(
             expected = reference,
             actual = actualComposedSvg,
             label = "Kotlin twm composed SVG framebuffer",
-            coverageTolerance = 0.30,
-            averageTolerance = 0.08,
-            distanceThreshold = 130.0,
         )
     }
 
@@ -339,7 +362,7 @@ class XvfbContainerTest {
                     """.trimIndent(),
                 )
                 assertEquals(0, result.exitCode, result.stderr + result.stdout)
-                return visualCapture(result.stdout)
+                return visualCapture(result.stdout).also { assertValidReferenceCapture(it, "twm") }
             }
     }
 
@@ -396,14 +419,15 @@ class XvfbContainerTest {
                     )
                     val text = httpGet(port, "/text.txt")
                     val svg = httpGet(port, "/screen.svg")
-                    File("build/tmp/xvfb-container-test").also { it.mkdirs() }.let { directory ->
+                    xvfbContainerArtifactsDirectory().let { directory ->
                         File(directory, "window-manager-actual.txt").writeText(text)
                         File(directory, "window-manager-actual.svg").writeText(svg)
                     }
-                    container.execInContainerBounded(
-                        "sh",
-                        "-lc",
-                        "kill $(cat /tmp/xclock.pid /tmp/xlogo.pid /tmp/twm.pid 2>/dev/null) 2>/dev/null || true",
+                    stopClientProcesses(
+                        container = container,
+                        port = port,
+                        label = "window-manager",
+                        pidFiles = arrayOf("/tmp/xclock.pid", "/tmp/xlogo.pid", "/tmp/twm.pid"),
                     )
                     server.close()
                     serverThread.join(1_000)
@@ -437,14 +461,24 @@ class XvfbContainerTest {
 
     private fun assertWindowManagerAppContentVisible(capture: VisualCapture, label: String) {
         val xlogoDarkPixels = darkPixelsInRootRectangle(capture.image, rootX = 55, rootY = 65, width = 45, height = 80)
+        val xlogoLightPixels = lightPixelsInRootRectangle(capture.image, rootX = 55, rootY = 65, width = 45, height = 80)
         val xclockDarkPixels = darkPixelsInRootRectangle(capture.image, rootX = 130, rootY = 125, width = 120, height = 85)
+        val xclockLightPixels = lightPixelsInRootRectangle(capture.image, rootX = 130, rootY = 125, width = 120, height = 85)
         assertTrue(
             xlogoDarkPixels >= 120,
             "$label should include xlogo line art; darkPixels=$xlogoDarkPixels capture=$capture",
         )
         assertTrue(
+            xlogoLightPixels >= 2_500,
+            "$label should include the light xlogo surface; lightPixels=$xlogoLightPixels capture=$capture",
+        )
+        assertTrue(
             xclockDarkPixels >= 120,
             "$label should include xclock ticks or hands; darkPixels=$xclockDarkPixels capture=$capture",
+        )
+        assertTrue(
+            xclockLightPixels >= 8_000,
+            "$label should include the light xclock surface; lightPixels=$xclockLightPixels capture=$capture",
         )
     }
 
@@ -459,17 +493,21 @@ class XvfbContainerTest {
         val yStart = (rootY - WindowManagerCaptureY).coerceIn(0, image.height)
         val xEnd = (rootX - WindowManagerCaptureX + width).coerceIn(0, image.width)
         val yEnd = (rootY - WindowManagerCaptureY + height).coerceIn(0, image.height)
-        var count = 0
-        for (y in yStart until yEnd) {
-            for (x in xStart until xEnd) {
-                val argb = image.getRGB(x, y)
-                val red = (argb ushr 16) and 0xff
-                val green = (argb ushr 8) and 0xff
-                val blue = argb and 0xff
-                if (red + green + blue < 90) count++
-            }
-        }
-        return count
+        return pixelCount(image, Rectangle(xStart, yStart, xEnd - xStart, yEnd - yStart), PixelTone.DARK)
+    }
+
+    private fun lightPixelsInRootRectangle(
+        image: BufferedImage,
+        rootX: Int,
+        rootY: Int,
+        width: Int,
+        height: Int,
+    ): Int {
+        val xStart = (rootX - WindowManagerCaptureX).coerceIn(0, image.width)
+        val yStart = (rootY - WindowManagerCaptureY).coerceIn(0, image.height)
+        val xEnd = (rootX - WindowManagerCaptureX + width).coerceIn(0, image.width)
+        val yEnd = (rootY - WindowManagerCaptureY + height).coerceIn(0, image.height)
+        return pixelCount(image, Rectangle(xStart, yStart, xEnd - xStart, yEnd - yStart), PixelTone.LIGHT)
     }
 
     private fun assertClientSucceeds(
@@ -524,7 +562,7 @@ class XvfbContainerTest {
                     """.trimIndent(),
                 )
                 assertEquals(0, result.exitCode, result.stderr + result.stdout)
-                return visualCapture(result.stdout)
+                return visualCapture(result.stdout).also { assertValidReferenceCapture(it, "xlogo") }
             }
     }
 
@@ -574,7 +612,7 @@ class XvfbContainerTest {
                     )
                     val text = httpGet(port, "/text.txt")
                     val svg = httpGet(port, "/screen.svg")
-                    container.execInContainerBounded("sh", "-lc", "kill $(cat /tmp/xlogo.pid) 2>/dev/null || true")
+                    stopClientProcesses(container, port, "xlogo", arrayOf("/tmp/xlogo.pid"))
                     server.close()
                     serverThread.join(1_000)
                     assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
@@ -612,7 +650,7 @@ class XvfbContainerTest {
                     """.trimIndent(),
                 )
                 assertEquals(0, result.exitCode, result.stderr + result.stdout)
-                return visualCapture(result.stdout)
+                return visualCapture(result.stdout).also { assertValidReferenceCapture(it, "xclock") }
             }
     }
 
@@ -662,7 +700,7 @@ class XvfbContainerTest {
                     )
                     val text = httpGet(port, "/text.txt")
                     val svg = httpGet(port, "/screen.svg")
-                    container.execInContainerBounded("sh", "-lc", "kill $(cat /tmp/xclock.pid) 2>/dev/null || true")
+                    stopClientProcesses(container, port, "xclock", arrayOf("/tmp/xclock.pid"))
                     server.close()
                     serverThread.join(1_000)
                     assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
@@ -700,7 +738,7 @@ class XvfbContainerTest {
                     """.trimIndent(),
                 )
                 assertEquals(0, result.exitCode, result.stderr + result.stdout)
-                return visualCapture(result.stdout)
+                return visualCapture(result.stdout).also { assertValidReferenceCapture(it, "xcalc") }
             }
     }
 
@@ -750,7 +788,7 @@ class XvfbContainerTest {
                     )
                     val text = httpGet(port, "/text.txt")
                     val svg = httpGet(port, "/screen.svg")
-                    container.execInContainerBounded("sh", "-lc", "kill $(cat /tmp/xcalc.pid) 2>/dev/null || true")
+                    stopClientProcesses(container, port, "xcalc", arrayOf("/tmp/xcalc.pid"))
                     server.close()
                     serverThread.join(1_000)
                     assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
@@ -793,7 +831,7 @@ class XvfbContainerTest {
                     """.trimIndent(),
                 )
                 assertEquals(0, result.exitCode, result.stderr + result.stdout)
-                return visualCapture(result.stdout)
+                return visualCapture(result.stdout).also { assertValidReferenceCapture(it, "xeyes") }
             }
     }
 
@@ -851,11 +889,11 @@ class XvfbContainerTest {
                     )
                     val text = httpGet(port, "/text.txt")
                     val svg = httpGet(port, "/screen.svg")
-                    File("build/tmp/xvfb-container-test").also { it.mkdirs() }.let { directory ->
+                    xvfbContainerArtifactsDirectory().let { directory ->
                         File(directory, "xeyes-actual.txt").writeText(text)
                         File(directory, "xeyes-actual.svg").writeText(svg)
                     }
-                    container.execInContainerBounded("sh", "-lc", "kill $(cat /tmp/xeyes.pid) 2>/dev/null || true")
+                    stopClientProcesses(container, port, "xeyes", arrayOf("/tmp/xeyes.pid"))
                     server.close()
                     serverThread.join(1_000)
                     assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
@@ -898,7 +936,7 @@ class XvfbContainerTest {
                     """.trimIndent(),
                 )
                 assertEquals(0, result.exitCode, result.stderr + result.stdout)
-                return visualCapture(result.stdout)
+                return visualCapture(result.stdout).also { assertValidReferenceCapture(it, "xterm") }
             }
     }
 
@@ -956,11 +994,11 @@ class XvfbContainerTest {
                     )
                     val text = httpGet(port, "/text.txt")
                     val svg = httpGet(port, "/screen.svg")
-                    File("build/tmp/xvfb-container-test").also { it.mkdirs() }.let { directory ->
+                    xvfbContainerArtifactsDirectory().let { directory ->
                         File(directory, "xterm-actual.txt").writeText(text)
                         File(directory, "xterm-actual.svg").writeText(svg)
                     }
-                    container.execInContainerBounded("sh", "-lc", "kill $(cat /tmp/xterm.pid) 2>/dev/null || true")
+                    stopClientProcesses(container, port, "xterm", arrayOf("/tmp/xterm.pid"))
                     server.close()
                     serverThread.join(1_000)
                     assertEquals(0, capture.exitCode, capture.stderr + capture.stdout)
@@ -990,33 +1028,63 @@ class XvfbContainerTest {
         assertEquals(0, result.exitCode, result.stderr + result.stdout)
     }
 
+    private fun stopClientProcesses(
+        container: GenericContainer<*>,
+        port: Int,
+        label: String,
+        pidFiles: Array<String>,
+    ) {
+        val pidFileArguments = pidFiles.joinToString(" ")
+        val result = container.execInContainerBounded(
+            "sh",
+            "-lc",
+            """
+            collect_process_tree() {
+              for child in ${'$'}(pgrep -P "${'$'}1" 2>/dev/null || true); do
+                collect_process_tree "${'$'}child"
+              done
+              printf ' %s' "${'$'}1"
+            }
+            roots=${'$'}(cat $pidFileArguments 2>/dev/null || true)
+            pids=""
+            for root in ${'$'}roots; do
+              pids="${'$'}pids${'$'}(collect_process_tree "${'$'}root")"
+            done
+            [ -z "${'$'}pids" ] || kill ${'$'}pids 2>/dev/null || true
+            for _ in ${'$'}(seq 1 40); do
+              live=""
+              for pid in ${'$'}pids; do
+                state=${'$'}(awk '{print ${'$'}3}' "/proc/${'$'}pid/stat" 2>/dev/null || true)
+                if [ -n "${'$'}state" ] && [ "${'$'}state" != Z ]; then
+                  live="${'$'}live ${'$'}pid:${'$'}state"
+                fi
+              done
+              [ -z "${'$'}live" ] && exit 0
+              sleep 0.05
+            done
+            echo "$label clients did not stop:${'$'}live" >&2
+            exit 1
+            """.trimIndent(),
+        )
+        assertEquals(0, result.exitCode, result.stderr + result.stdout)
+        val finalText = httpGet(port, "/text.txt")
+        File(xvfbContainerArtifactsDirectory(), "${safeArtifactLabel(label)}-final-text.txt").writeText(finalText)
+        assertNoUnsupportedRequests(finalText, label)
+    }
+
     private fun assertVisualCaptureClose(
         expected: VisualCapture,
         actual: VisualCapture,
         label: String,
-        coverageTolerance: Double = 0.08,
-        averageTolerance: Double = 0.04,
-        distanceThreshold: Double = 45.0,
     ) {
         dumpVisualCapturePair(label, expected, actual)
         assertEquals(expected.width, actual.width, "$label width should match Xvfb reference")
         assertEquals(expected.height, actual.height, "$label height should match Xvfb reference")
-        assertClose(
-            expected = expected.nonBackgroundPixels,
-            actual = actual.nonBackgroundPixels,
-            tolerance = coverageTolerance,
-            message = "$label should expose similar non-background coverage to Xvfb; reference=$expected actual=$actual",
-        )
-        assertClose(
-            expected = expected.averageRgb,
-            actual = actual.averageRgb,
-            tolerance = averageTolerance,
-            message = "$label should expose similar average RGB to Xvfb; reference=$expected actual=$actual",
-        )
-        val distance = imageDistance(expected.image, actual.image)
-        assertTrue(
-            distance <= distanceThreshold,
-            "$label should stay visually close to Xvfb reference; distance=$distance\nreference=$expected\nactual=$actual",
+        assertEquals(
+            0L,
+            pixelMismatchCount(expected.image, actual.image),
+            "$label must match every Xvfb pixel; mismatchBounds=${mismatchBounds(expected.image, actual.image).toMetricString()} " +
+                "sampledDistance=${imageDistance(expected.image, actual.image)}\nreference=$expected\nactual=$actual",
         )
     }
 
@@ -1033,6 +1101,7 @@ class XvfbContainerTest {
                 appendLine("coverageRatio=${ratio(actual.nonBackgroundPixels, expected.nonBackgroundPixels)}")
                 appendLine("averageRgbDelta=${abs(actual.averageRgb - expected.averageRgb)}")
                 appendLine("sampledDistance=${imageDistance(expected.image, actual.image)}")
+                appendLine("mismatchPixels=${pixelMismatchCount(expected.image, actual.image)}")
                 appendLine("mismatchBounds=${mismatchBounds(expected.image, actual.image).toMetricString()}")
                 appendLine("mismatchSamples=${mismatchSamples(expected.image, actual.image)}")
                 appendLine("mismatchDeltaHistogram=${mismatchDeltaHistogram(expected.image, actual.image)}")
@@ -1124,7 +1193,7 @@ class XvfbContainerTest {
     }
 
     private fun xvfbContainerArtifactsDirectory(): File =
-        File("build/tmp/xvfb-container-test").also { it.mkdirs() }
+        xvfbClientArtifactsDirectoryFile().also { it.mkdirs() }
 
     private fun safeArtifactLabel(label: String): String =
         label.lowercase().replace(Regex("""[^a-z0-9]+"""), "-").trim('-')
@@ -1142,9 +1211,6 @@ class XvfbContainerTest {
         ownerWidth: Int,
         ownerHeight: Int,
         label: String,
-        coverageTolerance: Double = 0.08,
-        averageTolerance: Double = 0.04,
-        distanceThreshold: Double = 45.0,
     ) {
         val composed = composeEmbeddedFramebuffers(embeddedFramebuffers)
         val owner = embeddedFramebuffers.lastOrNull { it.bytes != null && it.width == ownerWidth && it.height == ownerHeight }
@@ -1172,9 +1238,6 @@ class XvfbContainerTest {
             expected = expected,
             actual = visualCapture(cropped),
             label = label,
-            coverageTolerance = coverageTolerance,
-            averageTolerance = averageTolerance,
-            distanceThreshold = distanceThreshold,
         )
     }
 
@@ -1187,9 +1250,6 @@ class XvfbContainerTest {
         captureHeight: Int,
         backgroundPixel: Int,
         label: String,
-        coverageTolerance: Double = 0.08,
-        averageTolerance: Double = 0.04,
-        distanceThreshold: Double = 45.0,
     ) {
         require(expected.width == captureWidth && expected.height == captureHeight) {
             "$label expected image ${expected.width}x${expected.height} does not match capture ${captureWidth}x$captureHeight"
@@ -1205,9 +1265,6 @@ class XvfbContainerTest {
             expected = expected,
             actual = visualCapture(cropped),
             label = label,
-            coverageTolerance = coverageTolerance,
-            averageTolerance = averageTolerance,
-            distanceThreshold = distanceThreshold,
         )
     }
 
@@ -1401,13 +1458,97 @@ class XvfbContainerTest {
         )
     }
 
-    private fun assertClose(expected: Int, actual: Int, tolerance: Double, message: String) {
-        val allowed = (expected * tolerance).toInt().coerceAtLeast(1)
-        assertTrue(abs(expected - actual) <= allowed, message)
+    private fun assertValidReferenceCapture(capture: VisualCapture, label: String) {
+        val minimumPaintedPixels = when (label) {
+            "xclock" -> 800
+            "xlogo" -> 6_000
+            "xcalc" -> 7_000
+            "xeyes" -> 15_000
+            "xterm" -> 12_000
+            "twm" -> 0
+            else -> error("Missing reference-content anchor for $label")
+        }
+        assertTrue(
+            capture.nonBackgroundPixels >= minimumPaintedPixels,
+            "$label Xvfb reference is blank or partial: painted=${capture.nonBackgroundPixels} minimum=$minimumPaintedPixels capture=$capture",
+        )
+        assertTrue(
+            distinctColorCount(capture.image, limit = 2) >= 2,
+            "$label Xvfb reference must retain at least two colors: $capture",
+        )
+        when (label) {
+            "xterm" -> {
+                assertRegionPixels(capture, label, "terminal body", Rectangle(5, 50, 160, 50), PixelTone.LIGHT, 7_000)
+                assertRegionPixels(capture, label, "three text rows", Rectangle(0, 0, 110, 45), PixelTone.DARK, 300)
+            }
+            "xlogo" -> {
+                assertRegionPixels(capture, label, "upper-left arm", Rectangle(20, 0, 75, 55), PixelTone.DARK, 500, 2_600)
+                assertRegionPixels(capture, label, "upper-right arm", Rectangle(125, 0, 75, 55), PixelTone.DARK, 500, 1_500)
+                assertRegionPixels(capture, label, "lower-left arm", Rectangle(10, 105, 80, 55), PixelTone.DARK, 500, 1_500)
+                assertRegionPixels(capture, label, "lower-right arm", Rectangle(125, 105, 80, 55), PixelTone.DARK, 500, 2_600)
+            }
+            "xclock" -> {
+                assertRegionPixels(capture, label, "upper ticks", Rectangle(55, 0, 110, 35), PixelTone.DARK, 100, 300)
+                assertRegionPixels(capture, label, "left ticks", Rectangle(35, 40, 40, 80), PixelTone.DARK, 30, 150)
+                assertRegionPixels(capture, label, "right ticks", Rectangle(145, 40, 40, 80), PixelTone.DARK, 40, 180)
+                assertRegionPixels(capture, label, "lower ticks", Rectangle(55, 125, 110, 35), PixelTone.DARK, 40, 150)
+                assertRegionPixels(capture, label, "clock hands", Rectangle(75, 50, 80, 65), PixelTone.DARK, 250, 700)
+            }
+            "xeyes" -> {
+                assertRegionPixels(capture, label, "left eye", Rectangle(10, 15, 85, 130), PixelTone.LIGHT, 6_500)
+                assertRegionPixels(capture, label, "right eye", Rectangle(125, 15, 85, 130), PixelTone.LIGHT, 6_500)
+                assertRegionPixels(capture, label, "left pupil", Rectangle(27, 85, 20, 40), PixelTone.DARK, 200)
+                assertRegionPixels(capture, label, "right pupil", Rectangle(142, 85, 20, 40), PixelTone.DARK, 200)
+            }
+            "xcalc" -> {
+                assertRegionPixels(capture, label, "display", Rectangle(4, 2, 212, 20), PixelTone.DARK, 900, 1_700)
+                assertRegionPixels(capture, label, "left keypad", Rectangle(4, 27, 104, 130), PixelTone.DARK, 2_500, 4_000)
+                assertRegionPixels(capture, label, "right keypad", Rectangle(112, 27, 104, 130), PixelTone.DARK, 2_300, 4_000)
+            }
+            "twm" -> assertWindowManagerAppContentVisible(capture, "Xvfb twm reference")
+        }
     }
 
-    private fun assertClose(expected: Double, actual: Double, tolerance: Double, message: String) {
-        assertTrue(abs(expected - actual) <= tolerance, message)
+    private fun assertRegionPixels(
+        capture: VisualCapture,
+        fixture: String,
+        feature: String,
+        region: Rectangle,
+        tone: PixelTone,
+        minimum: Int,
+        maximum: Int = Int.MAX_VALUE,
+    ) {
+        val count = pixelCount(capture.image, region, tone)
+        assertTrue(
+            count in minimum..maximum,
+            "$fixture Xvfb reference must include $feature; ${tone.metricName}Pixels=$count " +
+                "expected=$minimum..$maximum region=$region capture=$capture",
+        )
+    }
+
+    private fun pixelCount(image: BufferedImage, region: Rectangle, tone: PixelTone): Int {
+        val clipped = region.intersection(Rectangle(0, 0, image.width, image.height))
+        if (clipped.isEmpty) return 0
+        var count = 0
+        for (y in clipped.y until clipped.y + clipped.height) {
+            for (x in clipped.x until clipped.x + clipped.width) {
+                val argb = image.getRGB(x, y)
+                val componentSum = ((argb ushr 16) and 0xff) + ((argb ushr 8) and 0xff) + (argb and 0xff)
+                if (tone.matches(componentSum)) count++
+            }
+        }
+        return count
+    }
+
+    private fun distinctColorCount(image: BufferedImage, limit: Int): Int {
+        val colors = hashSetOf<Int>()
+        for (y in 0 until image.height) {
+            for (x in 0 until image.width) {
+                colors += image.getRGB(x, y)
+                if (colors.size >= limit) return colors.size
+            }
+        }
+        return colors.size
     }
 
     private fun imageDistance(reference: BufferedImage, actual: BufferedImage): Double {
@@ -1423,6 +1564,20 @@ class XvfbContainerTest {
             }
         }
         return total.toDouble() / samples.toDouble()
+    }
+
+    private fun pixelMismatchCount(expected: BufferedImage, actual: BufferedImage): Long {
+        val width = maxOf(expected.width, actual.width)
+        val height = maxOf(expected.height, actual.height)
+        var mismatches = 0L
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val expectedArgb = if (x < expected.width && y < expected.height) expected.getRGB(x, y) else null
+                val actualArgb = if (x < actual.width && y < actual.height) actual.getRGB(x, y) else null
+                if (expectedArgb != actualArgb) mismatches++
+            }
+        }
+        return mismatches
     }
 
     private fun mismatchBounds(expected: BufferedImage, actual: BufferedImage): Rectangle? {
@@ -1621,6 +1776,12 @@ class XvfbContainerTest {
     }
 
     private companion object {
+        @JvmStatic
+        @BeforeAll
+        fun clearXvfbClientArtifacts() {
+            xvfbClientArtifactsDirectoryFile().deleteRecursively()
+        }
+
         const val CLIENT_IMAGE = "jonnyzzz-x/x11-client:latest"
         const val REFERENCE_IMAGE = "jonnyzzz-x/x11-reference:latest"
         const val RealClientCaptureX = 20
@@ -1643,7 +1804,7 @@ class XvfbContainerTest {
         const val WindowManagerXlogoGeometry = "180x120+40+40"
 
         fun xclockCommand(): String =
-            "xclock -analog -norender -update 60 -geometry ${RealClientCaptureWidth}x${RealClientCaptureHeight}+${RealClientCaptureX}+${RealClientCaptureY}"
+            "faketime '2020-01-01 10:10:00' xclock -analog -norender -update 60 -geometry ${RealClientCaptureWidth}x${RealClientCaptureHeight}+${RealClientCaptureX}+${RealClientCaptureY}"
 
         fun xcalcCommand(): String =
             "xcalc -geometry ${RealClientCaptureWidth}x${RealClientCaptureHeight}+${RealClientCaptureX}+${RealClientCaptureY}"
@@ -1655,7 +1816,7 @@ class XvfbContainerTest {
             "xterm -T xterm-parity -n xterm-parity -geometry 28x8+${RealClientCaptureX}+${RealClientCaptureY} +sb +bc -fn fixed -bg white -fg black -cr black -e sh -lc 'printf \"Kotlin X11\\\\nxterm parity\\\\n0123456789\\\\n\"; sleep 60'"
 
         fun windowManagerXclockCommand(): String =
-            "xclock -analog -norender -update 60 -geometry 180x120+110+90"
+            "faketime '2020-01-01 10:10:00' xclock -analog -norender -update 60 -geometry 180x120+110+90"
 
         fun robotCaptureSource(
             movePointer: Boolean,
@@ -1682,11 +1843,40 @@ class XvfbContainerTest {
                 Robot robot = new Robot();
                 $pointerMove
                 Thread.sleep(1200);
-                BufferedImage image = robot.createScreenCapture(
-                    new Rectangle($captureX, $captureY, $captureWidth, $captureHeight));
+                BufferedImage image = stableCapture(
+                    robot, new Rectangle($captureX, $captureY, $captureWidth, $captureHeight));
                 ByteArrayOutputStream output = new ByteArrayOutputStream();
                 ImageIO.write(image, "png", output);
                 System.out.println("PNG_BASE64=" + Base64.getEncoder().encodeToString(output.toByteArray()));
+              }
+
+              private static BufferedImage stableCapture(Robot robot, Rectangle bounds) throws Exception {
+                robot.waitForIdle();
+                BufferedImage previous = robot.createScreenCapture(bounds);
+                int stablePairs = 0;
+                for (int attempt = 0; attempt < 20; attempt++) {
+                  Thread.sleep(50);
+                  robot.waitForIdle();
+                  BufferedImage current = robot.createScreenCapture(bounds);
+                  if (samePixels(previous, current)) {
+                    stablePairs++;
+                    if (stablePairs >= 2) return current;
+                  } else {
+                    stablePairs = 0;
+                  }
+                  previous = current;
+                }
+                throw new IllegalStateException("Robot capture did not stabilize for " + bounds);
+              }
+
+              private static boolean samePixels(BufferedImage left, BufferedImage right) {
+                if (left.getWidth() != right.getWidth() || left.getHeight() != right.getHeight()) return false;
+                for (int y = 0; y < left.getHeight(); y++) {
+                  for (int x = 0; x < left.getWidth(); x++) {
+                    if (left.getRGB(x, y) != right.getRGB(x, y)) return false;
+                  }
+                }
+                return true;
               }
             }
             """.trimIndent()
@@ -1713,6 +1903,18 @@ class XvfbContainerTest {
     ) {
         override fun toString(): String =
             "VisualCapture(width=$width, height=$height, nonBackgroundPixels=$nonBackgroundPixels, averageRgb=$averageRgb)"
+    }
+
+    private enum class PixelTone(val metricName: String) {
+        DARK("dark") {
+            override fun matches(componentSum: Int): Boolean = componentSum < 90
+        },
+        LIGHT("light") {
+            override fun matches(componentSum: Int): Boolean = componentSum > 720
+        },
+        ;
+
+        abstract fun matches(componentSum: Int): Boolean
     }
 
     private data class XlogoResult(

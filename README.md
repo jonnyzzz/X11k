@@ -128,13 +128,20 @@ The deterministic AWT/Swing matrix requires full-pixel equality for every Robot
 and SVG/composed capture and fails if the JVM issues any unsupported X11
 request. The latest full check reports zero mismatched pixels for all 26 visual
 comparisons and retains the final unsupported-request inventories under
-`runs/gradle-bounded/run_20260715-123357-45212/gui-artifacts/awt-primitive-docker/`.
+`runs/gradle-bounded/run_20260715-140044-33773/gui-artifacts/awt-primitive-docker/`.
+
+The deterministic classic-client matrix applies the same stable, nonblank,
+full-pixel gate to `xlogo`, `xclock`, `xeyes`, `xcalc`, `xterm`, and the `twm`
+overlap fixture. The latest full check retains 12 zero-mismatch Robot/SVG
+comparisons and six final unsupported-request inventories under
+`runs/gradle-bounded/run_20260715-140044-33773/gui-artifacts/xvfb-container-test/`.
 
 All tracked protocol clients and reduced Xvfb oracles are native Kotlin/JUnit
 tests under `src/test/kotlin`; no tracked Python test sources remain. Gradle
-`check` enforces this with `verifyKotlinTestSources`. The latest full check ran
-1,371 tests (1,367 passed and 4 heavyweight opt-in cases skipped) in
-`runs/gradle-bounded/run_20260715-123357-45212`.
+`check` enforces Kotlin/JUnit as the single JVM test stack with
+`verifyKotlinTestSources`. The latest full check ran
+1,373 tests (1,369 passed and 4 heavyweight opt-in cases skipped) in
+`runs/gradle-bounded/run_20260715-140044-33773`.
 
 The latest deterministic IntelliJ traced parity run
 `runs/gradle-bounded/run_20260714-215744-71496` and VSCode parity run

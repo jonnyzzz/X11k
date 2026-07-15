@@ -7,10 +7,11 @@ Extension work remains governed by `workflow/extension-scope.md`.
 ## Current Baseline
 
 - Production and tracked protocol/oracle tests are pure Kotlin/JVM. All tests
-  under `src/test` are Kotlin/JUnit; `check` rejects new Python test sources.
-- The default suite contains 1,371 JUnit tests (4 heavyweight opt-in tests are
+  under `src/test` are Kotlin/JUnit; `check` rejects non-Kotlin JVM and Python
+  test sources.
+- The default suite contains 1,373 JUnit tests (4 heavyweight opt-in tests are
   skipped by default). Full `check` passed in
-  `runs/gradle-bounded/run_20260715-123357-45212`.
+  `runs/gradle-bounded/run_20260715-140044-33773`.
 - IntelliJ deterministic project-open parity is pixel-exact for the Xvfb Robot,
   Kotlin Robot, and Kotlin SVG-composed captures. The traced run
   `runs/gradle-bounded/run_20260714-215744-71496` reports all three distances as
@@ -50,8 +51,9 @@ Extension work remains governed by `workflow/extension-scope.md`.
    launch command.
 2. Define the deterministic ready state, required interactions, Xvfb reference
    capture, Kotlin Robot capture, SVG-composed capture, logs, and timeout.
-3. Add an opt-in Kotlin/Testcontainers smoke and parity test. Do not add
-   protocol behavior before the fixture supplies trace evidence.
+3. Add a Kotlin/Testcontainers smoke and parity test; decide whether it belongs
+   in the default or opt-in suite only after the artifact and launch model are
+   known. Do not add protocol behavior before the fixture supplies trace evidence.
 
 ### P1: Keep Target Evidence Fresh
 
@@ -60,6 +62,9 @@ Extension work remains governed by `workflow/extension-scope.md`.
 2. Fail on unsupported requests, disconnects, missing semantic state, or visible
    capture drift. Retain bounded traces and visual artifacts with the run.
 3. Refresh README screenshots only when visible target output changes.
+4. Treat the current suspended JCEF browser surface as an explicit known IntelliJ
+   limitation until target acceptance either excludes it or supplies a stable
+   browser-pixel readiness and parity gate.
 
 ### P2: Implement Only Proven Gaps
 
