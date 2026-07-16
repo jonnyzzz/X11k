@@ -45,6 +45,12 @@ internal data class XFramebufferSnapshot(
         }
 }
 
+internal data class XFramebufferMutationMetadata(
+    val painted: Boolean,
+    val rawDrawablePixels: BooleanArray,
+    val cachedDataUri: String?,
+)
+
 private data class XPolygonEdgeTable(
     val yMin: Int,
     val yMax: Int,
@@ -2430,6 +2436,19 @@ internal class XFramebuffer(
         pixelAt(x, y)?.let { (it ushr 24) and 0xff } ?: 0
 
     fun hasPaintedContent(): Boolean = painted
+
+    fun mutationMetadata(): XFramebufferMutationMetadata =
+        XFramebufferMutationMetadata(
+            painted = painted,
+            rawDrawablePixels = rawDrawablePixels.copyOf(),
+            cachedDataUri = cachedDataUri,
+        )
+
+    fun restoreMutationMetadata(metadata: XFramebufferMutationMetadata) {
+        painted = metadata.painted
+        rawDrawablePixels = metadata.rawDrawablePixels.copyOf()
+        cachedDataUri = metadata.cachedDataUri
+    }
 
     fun readsAsRawDrawablePixels(): Boolean =
         rawDrawablePixels.all { it }

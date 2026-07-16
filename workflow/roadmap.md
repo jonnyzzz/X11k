@@ -9,15 +9,15 @@ Extension work remains governed by `workflow/extension-scope.md`.
 - Production and tracked protocol/oracle tests are pure Kotlin/JVM. All tests
   under `src/test` are Kotlin/JUnit; `check` rejects non-Kotlin JVM and Python
   test sources.
-- The default suite contains 1,378 JUnit tests (4 heavyweight opt-in tests are
+- The default suite contains 1,381 JUnit tests (4 heavyweight opt-in tests are
   skipped by default). Full `check` passed in
-  `runs/gradle-bounded/run_20260715-194640-24671`.
+  `runs/gradle-bounded/run_20260715-221207-62803`.
 - IntelliJ deterministic project-open parity is pixel-exact for the Xvfb Robot,
   Kotlin Robot, and Kotlin SVG-composed captures. The parity run
-  `runs/gradle-bounded/run_20260715-193848-16616` reports all three distances as
+  `runs/gradle-bounded/run_20260715-220719-57572` reports all three distances as
   `0.0`, no mismatch bounds, and no unsupported requests.
 - VSCode deterministic parity is pixel-exact for Robot and SVG-composed output
-  against Xvfb. Run `runs/gradle-bounded/run_20260715-194432-22392` reports both
+  against Xvfb. Run `runs/gradle-bounded/run_20260715-221046-61229` reports both
   distances as `0.0` and no unsupported requests.
 - No Java AWS application artifact, source fixture, launch command, or expected
   visual state is tracked in this repository. Its compatibility is therefore
@@ -37,6 +37,13 @@ Extension work remains governed by `workflow/extension-scope.md`.
   misclassifying RENDER glyph diagnostics as decoded application text. RENDER
   glyph commands retain actual counts, ordered glyph-set/ID placements, pen and
   image coordinates, metrics, picture IDs, and bounded completeness metadata.
+  RENDER fill commands retain their operation ID, operator, destination picture
+  and format, original CARD16 RGBA values, quantized ARGB32 color, exact
+  rectangles, generation, and paint result. No-op fills have a separate
+  10,000-command semantic budget, never displace the 10,000 regular drawing
+  commands, and do not enter render-paint history; `/state.json` reports total
+  and retained command/rectangle counts, completeness, and whether retained
+  operation IDs still resolve in the independently bounded provenance ring.
 - Same-port HTTP/HTML, SVG, text, JSON, and input endpoints derived from the
   maintained server state rather than a separate visual model.
 - Differential Docker coverage for X11 tools, classic clients, AWT/Swing,

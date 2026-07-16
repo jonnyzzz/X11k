@@ -598,6 +598,7 @@ class XRenderProtocolTest {
                 out.write(createWindowRequest(WindowId))
                 out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
                 out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 2, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 2, height = 1, red = 0x0001, green = 0x00ff, blue = 0xfffe, alpha = 0xffff, operation = XRender.OpOver))
                 out.write(renderSetPictureClipRectangles(PictureId, rectangles = emptyList()))
                 out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 2, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff, operation = XRender.OpSrc))
                 out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 2, height = 1, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff, operation = XRender.OpClear))
@@ -607,6 +608,41 @@ class XRenderProtocolTest {
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 2, x = 0, y = 0))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 2, x = 1, y = 0))
+
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, "\"drawings\":4")
+                assertEquals(4, Regex(""""renderOperationId":\d+,"renderGlyphs":null,"renderFill":\{""").findAll(json).count())
+                assertEquals(
+                    3,
+                    Regex(""""kind":"FillRectangle","framebufferBacked":true,"sourceDrawable":null,"framebufferPainted":false.*?"renderFill":\{""")
+                        .findAll(json)
+                        .count(),
+                )
+                assertContains(
+                    json,
+                    """"renderFill":{"operation":1,"destinationPicture":"0x201001","destinationFormat":41,"color16":{"red":0,"green":0,"blue":65535,"alpha":65535},"requestedArgb32":"0xff0000ff","rectangleCount":1,"rectanglesRetained":1,"rectanglesComplete":true}""",
+                )
+                assertContains(
+                    json,
+                    """"renderFill":{"operation":3,"destinationPicture":"0x201001","destinationFormat":41,"color16":{"red":1,"green":255,"blue":65534,"alpha":65535},"requestedArgb32":"0xff0000ff","rectangleCount":1,"rectanglesRetained":1,"rectanglesComplete":true}""",
+                )
+                assertContains(
+                    json,
+                    """"renderFill":{"operation":1,"destinationPicture":"0x201001","destinationFormat":41,"color16":{"red":65535,"green":0,"blue":0,"alpha":65535},"requestedArgb32":"0xffff0000","rectangleCount":1,"rectanglesRetained":1,"rectanglesComplete":true}""",
+                )
+                assertContains(
+                    json,
+                    """"renderFill":{"operation":0,"destinationPicture":"0x201001","destinationFormat":41,"color16":{"red":65535,"green":65535,"blue":65535,"alpha":65535},"requestedArgb32":"0xffffffff","rectangleCount":1,"rectanglesRetained":1,"rectanglesComplete":true}""",
+                )
+                val clippedSrcId = Regex(
+                    """"renderOperationId":(\d+),"renderGlyphs":null,"renderFill":\{"operation":1,"destinationPicture":"0x201001","destinationFormat":41,"color16":\{"red":65535,"green":0,"blue":0,"alpha":65535}""",
+                ).find(json)?.groupValues?.get(1) ?: error("Missing clipped RENDER OpSrc drawing in $json")
+                val clippedSrcOperation = json
+                    .substringAfter("""{"id":$clippedSrcId,"minorOpcode":26""")
+                    .substringBefore("""},{"id":""")
+                assertContains(clippedSrcOperation, """"provenance":{"destination":{"id":"0x201001"""")
+                assertFalse(clippedSrcOperation.contains("\"destinationRegion\":"), clippedSrcOperation)
+                assertFalse(clippedSrcOperation.contains("\"result\":"), clippedSrcOperation)
             }
             server.close()
             serverThread.join(1_000)
@@ -5167,6 +5203,14 @@ class XRenderProtocolTest {
                 assertEquals(0x7f00_007f, pixelAt(image, imageWidth = 4, x = 1, y = 0))
                 assertEquals(0x0000_0000, pixelAt(image, imageWidth = 4, x = 2, y = 0))
                 assertEquals(0x7f00_0000, pixelAt(image, imageWidth = 4, x = 3, y = 0))
+
+                val json = httpGet(server.localPort, "/state.json")
+                assertTrue(
+                    Regex(
+                        """"renderFill":\{"operation":16,"destinationPicture":"0x200101","destinationFormat":37,"color16":\{"red":65535,"green":65535,"blue":65535,"alpha":65535\},"requestedArgb32":"0xffffffff","rectangleCount":1,"rectanglesRetained":1,"rectanglesComplete":true\}.*?"foreground":"0x0"""",
+                    ).containsMatchIn(json),
+                    json,
+                )
             }
             server.close()
             serverThread.join(1_000)
@@ -5247,6 +5291,14 @@ class XRenderProtocolTest {
                 assertEquals(0x7f00_007f, pixelAt(image, imageWidth = 4, x = 1, y = 0))
                 assertEquals(0x0000_0000, pixelAt(image, imageWidth = 4, x = 2, y = 0))
                 assertEquals(0x7f00_0000, pixelAt(image, imageWidth = 4, x = 3, y = 0))
+
+                val json = httpGet(server.localPort, "/state.json")
+                assertTrue(
+                    Regex(
+                        """"renderFill":\{"operation":32,"destinationPicture":"0x200101","destinationFormat":37,"color16":\{"red":65535,"green":65535,"blue":65535,"alpha":65535\},"requestedArgb32":"0xffffffff","rectangleCount":1,"rectanglesRetained":1,"rectanglesComplete":true\}.*?"foreground":"0x0"""",
+                    ).containsMatchIn(json),
+                    json,
+                )
             }
             server.close()
             serverThread.join(1_000)
@@ -5487,6 +5539,7 @@ class XRenderProtocolTest {
                 assertEquals(0x8000_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 0))
                 assertEquals(0x8000_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 0))
                 assertEquals(0x8000_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 3, y = 0))
+
             }
             server.close()
             serverThread.join(1_000)
@@ -5567,6 +5620,7 @@ class XRenderProtocolTest {
                 assertEquals(0x8000_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 0))
                 assertEquals(0x8000_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 0))
                 assertEquals(0x8000_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 3, y = 0))
+
             }
             server.close()
             serverThread.join(1_000)
@@ -10828,6 +10882,25 @@ class XRenderProtocolTest {
                 assertEquals(0x8000_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 0))
                 assertEquals(0x8000_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 0))
                 assertEquals(0x8000_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 3, y = 0))
+
+                val pixmapIdHex = PixmapId.toUInt().toString(16)
+                val pictureIdHex = PixmapPictureId.toUInt().toString(16)
+                val json = httpGet(server.localPort, "/state.json")
+                val opDstFill = Regex(
+                    """\{"drawable":"0x$pixmapIdHex","kind":"FillRectangle","framebufferBacked":true,"sourceDrawable":null,"framebufferPainted":false.*?"renderOperationId":(\d+),"renderGlyphs":null,"renderFill":\{"operation":2,"destinationPicture":"0x$pictureIdHex","destinationFormat":37,"color16":\{"red":65535,"green":0,"blue":0,"alpha":65535},"requestedArgb32":"0xffff0000","rectangleCount":1,"rectanglesRetained":1,"rectanglesComplete":true}""",
+                ).find(json) ?: error("Missing retained RENDER OpDst fill in $json")
+                val opDstFillId = opDstFill.groupValues[1]
+                val opDstOperation = json
+                    .substringAfter("""{"id":$opDstFillId,"minorOpcode":26""")
+                    .substringBefore("""},{"id":""")
+                assertContains(opDstOperation, """"provenance":{"destination":{"id":"0x$pictureIdHex"""")
+                assertFalse(opDstOperation.contains("\"destinationRegion\":"), opDstOperation)
+                assertFalse(opDstOperation.contains("\"result\":"), opDstOperation)
+                val pixmapRenderHistory = json.substringAfter("\"pixmaps\":[").substringBefore("],\"cursors\"")
+                assertFalse(
+                    pixmapRenderHistory.contains(""""id":$opDstFillId,"minorOpcode":26"""),
+                    "A successful no-op must have provenance without being classified as a render paint: $pixmapRenderHistory",
+                )
             }
             server.close()
             serverThread.join(1_000)
@@ -15665,6 +15738,7 @@ class XRenderProtocolTest {
                 assertFalse(svg.contains("text-drawing-semantic-export"), "RENDER glyph diagnostics must not be exposed as decoded application text")
                 val json = httpGet(server.localPort, "/state.json")
                 assertContains(json, """"textOrigin":"RenderCompositeGlyphs32","text":null,"detail":"RENDER.CompositeGlyphs32 glyphs=2 glyphSets=1""")
+                assertTrue(Regex(""""renderOperationId":\d+,"renderGlyphs":\{"operation":1""").containsMatchIn(json), json)
                 assertContains(
                     json,
                     """"renderGlyphs":{"operation":1,"sourcePicture":"0x201003","destinationPicture":"0x201001","maskFormat":"0x24","initialGlyphSet":"0x203001","sourceOrigin":[2,1],"glyphCount":2,"glyphSetCount":1,"glyphSetsComplete":true,"glyphSets":["0x203001"],"placementsComplete":true,"placementsRetained":2""",
@@ -15886,6 +15960,163 @@ class XRenderProtocolTest {
         assertTrue(retained.placements.isEmpty())
         val json = SvgScreenRenderer.json(state.snapshot())
         assertContains(json, """"glyphCount":100001,"glyphSetCount":1,"glyphSetsComplete":false,"glyphSets":[],"placementsComplete":false,"placementsRetained":0,"placements":[]""")
+    }
+
+    @Test
+    fun `RENDER fill semantic retention evicts exact rectangles but preserves counts`() {
+        val retainedBudgetPlusOne = 100_001
+        val rectangle = XRectangleCommand(1, -2, 3, 4)
+        val state = X11State(width = 4, height = 4)
+        state.draw(
+            XDrawingCommand(
+                drawableId = X11Ids.RootWindow,
+                kind = XDrawingKind.FillRectangle,
+                foreground = 0xff12_3456.toInt(),
+                rectangles = List(retainedBudgetPlusOne) { rectangle },
+                renderOperationId = 7,
+                renderFill = XRenderFillCommand(
+                    operation = XRender.OpOver,
+                    destinationPictureId = PictureId,
+                    destinationFormat = XRender.Rgb24Format,
+                    requestedColor = XRenderColor(red = 0x1234, green = 0x5678, blue = 0x9abc, alpha = 0xdef0),
+                    rectangleCount = retainedBudgetPlusOne,
+                ),
+                framebufferBacked = true,
+            ),
+        )
+
+        val retained = state.snapshot().drawings.single()
+        assertEquals(retainedBudgetPlusOne, retained.renderFill?.rectangleCount)
+        assertTrue(retained.rectangles.isEmpty())
+        val json = SvgScreenRenderer.json(state.snapshot())
+        assertContains(json, """"rectangleCount":100001,"rectanglesRetained":0,"rectanglesComplete":false""")
+        assertContains(json, """"renderFillRetention":{"totalCommands":1,"retainedCommands":1,"commandsComplete":true,"totalNoOpCommands":0,"retainedNoOpCommands":0,"noOpCommandsComplete":true,"totalRectangles":100001,"retainedRectangles":0,"rectanglesComplete":false""")
+    }
+
+    @Test
+    fun `RENDER unchanged fill preserves pristine pixmap paint and raw pixel metadata`() {
+        val state = X11State(width = 4, height = 4)
+        val pixmap = XPixmap(PixmapId, width = 1, height = 1, depth = 32)
+        state.putPixmap(pixmap)
+        state.putPicture(XPicture(PixmapPictureId, drawableId = PixmapId, format = XRender.Argb32Format))
+        val color = XRenderColor(red = 0, green = 0, blue = 0, alpha = 0xffff)
+        val rectangles = listOf(XRectangleCommand(0, 0, 1, 1))
+
+        val execution = state.renderFillRectangles(
+            operation = XRender.OpSrc,
+            destination = state.picture(PixmapPictureId)!!,
+            pixel = color.argb32Pixel,
+            rectangles = rectangles,
+        )
+        assertFalse(execution.painted)
+        state.draw(
+            XDrawingCommand(
+                drawableId = PixmapId,
+                kind = XDrawingKind.FillRectangle,
+                foreground = color.argb32Pixel,
+                rectangles = rectangles,
+                renderOperationId = 1,
+                renderFill = XRenderFillCommand(
+                    operation = XRender.OpSrc,
+                    destinationPictureId = PixmapPictureId,
+                    destinationFormat = XRender.Argb32Format,
+                    requestedColor = color,
+                    rectangleCount = rectangles.size,
+                ),
+                framebufferBacked = true,
+                framebufferPainted = false,
+                rawDrawablePixels = false,
+            ),
+        )
+
+        assertFalse(pixmap.framebuffer.hasPaintedContent())
+        assertTrue(pixmap.framebuffer.readsAsRawDrawablePixels())
+        val snapshot = state.snapshot().pixmaps.single()
+        assertFalse(snapshot.painted)
+        assertEquals(null, snapshot.framebufferDataUri)
+        assertEquals(0, snapshot.coreDrawingPaintCount)
+        assertTrue(snapshot.renderOperations.isEmpty())
+    }
+
+    @Test
+    fun `RENDER no-op fill retention cannot displace painted commands at drawing cap`() {
+        val state = X11State(width = 4, height = 4)
+        repeat(5_000) { index ->
+            val operationId = state.recordRenderOperation(26, "FillRectangles")
+            state.draw(
+                XDrawingCommand(
+                    drawableId = X11Ids.RootWindow,
+                    kind = XDrawingKind.FillRectangle,
+                    foreground = index,
+                    rectangles = listOf(XRectangleCommand(0, 0, 1, 1)),
+                    renderOperationId = operationId,
+                    renderFill = XRenderFillCommand(
+                        operation = XRender.OpSrc,
+                        destinationPictureId = PictureId,
+                        destinationFormat = XRender.Rgb24Format,
+                        requestedColor = XRenderColor(0, 0, 0, 0xffff),
+                        rectangleCount = 1,
+                    ),
+                    framebufferBacked = true,
+                ),
+            )
+        }
+        repeat(10_001) { index ->
+            val operationId = state.recordRenderOperation(26, "FillRectangles")
+            state.draw(
+                XDrawingCommand(
+                    drawableId = X11Ids.RootWindow,
+                    kind = XDrawingKind.FillRectangle,
+                    foreground = -index - 1,
+                    rectangles = listOf(XRectangleCommand(0, 0, 1, 1)),
+                    renderOperationId = operationId,
+                    renderFill = XRenderFillCommand(
+                        operation = XRender.OpDst,
+                        destinationPictureId = PictureId,
+                        destinationFormat = XRender.Rgb24Format,
+                        requestedColor = XRenderColor(0, 0, 0, 0),
+                        rectangleCount = 1,
+                    ),
+                    framebufferBacked = true,
+                    framebufferPainted = false,
+                ),
+            )
+        }
+        repeat(5_000) { index ->
+            val operationId = state.recordRenderOperation(26, "FillRectangles")
+            state.draw(
+                XDrawingCommand(
+                    drawableId = X11Ids.RootWindow,
+                    kind = XDrawingKind.FillRectangle,
+                    foreground = index + 5_000,
+                    rectangles = listOf(XRectangleCommand(0, 0, 1, 1)),
+                    renderOperationId = operationId,
+                    renderFill = XRenderFillCommand(
+                        operation = XRender.OpSrc,
+                        destinationPictureId = PictureId,
+                        destinationFormat = XRender.Rgb24Format,
+                        requestedColor = XRenderColor(0, 0, 0, 0xffff),
+                        rectangleCount = 1,
+                    ),
+                    framebufferBacked = true,
+                ),
+            )
+        }
+
+        val drawings = state.snapshot().drawings
+        val painted = drawings.filter { it.framebufferPainted }
+        val semanticNoOps = drawings.filter { !it.framebufferPainted }
+        assertEquals(20_000, drawings.size)
+        assertEquals(10_000, semanticNoOps.size)
+        assertTrue(semanticNoOps.all { !it.framebufferPainted })
+        assertEquals((0 until 10_000).toList(), painted.map { it.foreground })
+        val retention = state.snapshot().renderFillRetention
+        assertEquals(20_001L, retention.totalCommands)
+        assertEquals(20_000, retention.retainedCommands)
+        assertEquals(10_001L, retention.totalNoOpCommands)
+        assertEquals(10_000, retention.retainedNoOpCommands)
+        assertEquals(10_000, retention.resolvedOperationLinks)
+        assertFalse(retention.resolvedOperationLinks == retention.retainedCommands)
     }
 
     @Test

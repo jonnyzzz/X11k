@@ -4070,6 +4070,7 @@ internal class X11Connection(
                 imageDataUri = XFramebuffer.imageDataUri(result.image),
                 sourceDrawableId = execution.sourceDrawableId,
                 sourceDrawableGeneration = execution.sourceDrawableGeneration,
+                renderOperationId = operationId,
                 framebufferBacked = true,
                 framebufferPainted = result.painted,
                 rawDrawablePixels = false,
@@ -4662,6 +4663,7 @@ internal class X11Connection(
                     24 -> XTextOrigin.RenderCompositeGlyphs16
                     else -> XTextOrigin.RenderCompositeGlyphs32
                 },
+                renderOperationId = operationId,
                 renderGlyphs = XRenderGlyphCommand(
                     operation = operation,
                     sourcePictureId = sourceId,
@@ -4760,29 +4762,47 @@ internal class X11Connection(
         val destination = state.picture(destinationId)
             ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 26, badValue = destinationId)
         val destinationDrawableId = destination.drawableId ?: return
-        val pixel = XRender.argb32Pixel(
+        val color = XRenderColor(
             red = byteOrder.u16(body, 8),
             green = byteOrder.u16(body, 10),
             blue = byteOrder.u16(body, 12),
             alpha = byteOrder.u16(body, 14),
         )
+        val pixel = color.argb32Pixel
         val rectangles = rectangles(body, 16)
-        val targetPixel = if (operation == XRender.OpClear) 0 else pixel
-        val execution = state.renderFillRectangles(operation, destination, targetPixel, rectangles)
-        if (execution.painted) {
-            execution.provenance?.let { state.annotateRenderOperation(operationId, it) }
-            state.draw(
-                XDrawingCommand(
-                    drawableId = destinationDrawableId,
-                    drawableGeneration = execution.destinationDrawableGeneration,
-                    kind = XDrawingKind.FillRectangle,
-                    foreground = targetPixel,
-                    rectangles = rectangles,
-                    framebufferBacked = true,
-                    rawDrawablePixels = false,
-                ),
-            )
+        val targetPixel = if (
+            operation == XRender.OpClear ||
+            operation == XRender.OpDisjointClear ||
+            operation == XRender.OpConjointClear
+        ) {
+            0
+        } else {
+            pixel
         }
+        val execution = state.renderFillRectangles(operation, destination, targetPixel, rectangles)
+        execution.provenance?.let {
+            state.annotateRenderOperation(operationId, it, rememberPaint = execution.painted)
+        }
+        state.draw(
+            XDrawingCommand(
+                drawableId = destinationDrawableId,
+                drawableGeneration = execution.destinationDrawableGeneration,
+                kind = XDrawingKind.FillRectangle,
+                foreground = targetPixel,
+                rectangles = rectangles,
+                renderOperationId = operationId,
+                renderFill = XRenderFillCommand(
+                    operation = operation,
+                    destinationPictureId = destinationId,
+                    destinationFormat = destination.format,
+                    requestedColor = color,
+                    rectangleCount = rectangles.size,
+                ),
+                framebufferBacked = true,
+                framebufferPainted = execution.painted,
+                rawDrawablePixels = false,
+            ),
+        )
     }
 
     private fun renderCreateCursor(body: ByteArray) {

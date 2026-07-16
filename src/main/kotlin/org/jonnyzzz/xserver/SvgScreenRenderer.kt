@@ -224,6 +224,8 @@ internal object SvgScreenRenderer {
                 } else {
                     append("null")
                 }
+                append(""","renderOperationId":""")
+                drawing.renderOperationId?.let { append(it) } ?: append("null")
                 append(""","renderGlyphs":""")
                 drawing.renderGlyphs?.let { glyphs ->
                     append('{')
@@ -238,6 +240,11 @@ internal object SvgScreenRenderer {
                         append("""{"glyphSet":"0x${placement.glyphSetId.toUInt().toString(16)}","glyph":"0x${placement.glyphId.toUInt().toString(16)}","penX":${placement.penX},"penY":${placement.penY},"imageX":${placement.imageX},"imageY":${placement.imageY},"width":${placement.width},"height":${placement.height},"glyphX":${placement.glyphX},"glyphY":${placement.glyphY},"xOff":${placement.xOff},"yOff":${placement.yOff}}""")
                     }
                     append("]}")
+                } ?: append("null")
+                append(""","renderFill":""")
+                drawing.renderFill?.let { fill ->
+                    append('{')
+                    append(""""operation":${fill.operation},"destinationPicture":"0x${fill.destinationPictureId.toUInt().toString(16)}","destinationFormat":${fill.destinationFormat},"color16":{"red":${fill.requestedColor.red},"green":${fill.requestedColor.green},"blue":${fill.requestedColor.blue},"alpha":${fill.requestedColor.alpha}},"requestedArgb32":"0x${fill.requestedColor.argb32Pixel.toUInt().toString(16)}","rectangleCount":${fill.rectangleCount},"rectanglesRetained":${drawing.rectangles.size},"rectanglesComplete":${drawing.rectangles.size == fill.rectangleCount}}""")
                 } ?: append("null")
                 append(""","drawableGeneration":""")
                 drawing.drawableGeneration?.let { append(it) } ?: append("null")
@@ -276,7 +283,8 @@ internal object SvgScreenRenderer {
                 }
                 append('}')
             }
-            append("""],"renderOperations":${snapshot.renderOperations.size},"renderOperationDetails":[""")
+            val fillRetention = snapshot.renderFillRetention
+            append("""],"renderFillRetention":{"totalCommands":${fillRetention.totalCommands},"retainedCommands":${fillRetention.retainedCommands},"commandsComplete":${fillRetention.totalCommands == fillRetention.retainedCommands.toLong()},"totalNoOpCommands":${fillRetention.totalNoOpCommands},"retainedNoOpCommands":${fillRetention.retainedNoOpCommands},"noOpCommandsComplete":${fillRetention.totalNoOpCommands == fillRetention.retainedNoOpCommands.toLong()},"totalRectangles":${fillRetention.totalRectangles},"retainedRectangles":${fillRetention.retainedRectangles},"rectanglesComplete":${fillRetention.totalRectangles == fillRetention.retainedRectangles.toLong()},"resolvedOperationLinks":${fillRetention.resolvedOperationLinks},"operationLinksComplete":${fillRetention.resolvedOperationLinks == fillRetention.retainedCommands},"regularCommandBudget":${fillRetention.regularCommandBudget},"noOpCommandBudget":${fillRetention.noOpCommandBudget},"combinedCommandBudget":${fillRetention.regularCommandBudget + fillRetention.noOpCommandBudget},"rectangleBudget":${fillRetention.rectangleBudget}},"renderOperations":${snapshot.renderOperations.size},"renderOperationDetails":[""")
             snapshot.renderOperations.forEachIndexed { index, operation ->
                 if (index > 0) append(',')
                 appendRenderOperation(operation)

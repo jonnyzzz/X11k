@@ -4864,6 +4864,13 @@ class XCoreDrawingProtocolTest {
                 assertContains(stateJson, """"points":[{"x":1,"y":3},{"x":5,"y":3}]""")
                 assertContains(stateJson, """"rectangles":[{"x":1,"y":5,"width":4,"height":3}]""")
                 assertContains(stateJson, """"arcs":[{"x":8,"y":1,"width":5,"height":5,"angle1":0,"angle2":11520}]""")
+                assertEquals(
+                    2,
+                    Regex(""""kind":"FillRectangle".*?"renderOperationId":null,"renderGlyphs":null,"renderFill":null""")
+                        .findAll(stateJson)
+                        .count(),
+                    "Core PolyFillRectangle commands must not acquire RENDER semantics",
+                )
             }
             server.close()
             serverThread.join(1_000)
