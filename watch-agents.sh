@@ -206,6 +206,53 @@ run_info_has_key() {
     "$run_dir/run-info.txt" 2>/dev/null
 }
 
+process_start_signature() {
+  local pid="$1"
+  LC_ALL=C ps -p "$pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}' || true
+}
+
+process_group_id() {
+  local pid="$1"
+  ps -p "$pid" -o pgid= 2>/dev/null | awk '{$1=$1; print}' || true
+}
+
+process_group_pids() {
+  local pgid="$1"
+  ps -axo pid=,pgid= 2>/dev/null | awk -v pgid="$pgid" '$2 == pgid { print $1 }' || true
+}
+
+process_matches_run() {
+  local run_dir="$1"
+  local pid="$2"
+  local expected_agent expected_start actual_start command_line process_group actual_pgid
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$pid" -gt 1 ] || return 1
+  ps -p "$pid" >/dev/null 2>&1 || return 1
+
+  expected_start="$(run_info_value "$run_dir" PID_START)"
+  [ -n "$expected_start" ] || return 1
+  actual_start="$(process_start_signature "$pid")"
+  [ -n "$actual_start" ] && [ "$actual_start" = "$expected_start" ] || return 1
+
+  expected_agent="$(run_info_value "$run_dir" AGENT)"
+  [ -n "$expected_agent" ] || return 1
+  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  if ! printf '%s\n' "$command_line" | awk -v agent="$expected_agent" '
+      {
+        pattern = "(^|[/[:space:]])" agent "([^[:alnum:]_-]|$)"
+        exit $0 ~ pattern ? 0 : 1
+      }'; then
+    return 1
+  fi
+  process_group="$(run_info_value "$run_dir" PROCESS_GROUP)"
+  if [ "$process_group" = "1" ]; then
+    actual_pgid="$(process_group_id "$pid")"
+    [ "$actual_pgid" = "$pid" ] || return 1
+  fi
+}
+
 restart_agents_list() {
   printf '%s\n' "$RUN_AGENT_RESTART_AGENTS" | tr ',' ' ' | awk '
     {
@@ -394,29 +441,79 @@ diagnose_run() {
 terminate_run() {
   local run_dir="$1"
   local pid="$2"
-  local pids process_group
+  local pids process_group candidate signature index anchored_group=false known_candidate
+  local -a protected_pids=()
+  local -a protected_starts=()
+  if ! process_matches_run "$run_dir" "$pid"; then
+    echo "  termination refused: PID $pid no longer matches $run_dir" | tee -a "$LOG"
+    return 1
+  fi
   echo "  terminating stale PID $pid for $run_dir" | tee -a "$LOG"
   WATCH_TERMINATED_COUNT=$((WATCH_TERMINATED_COUNT + 1))
   process_group="$(run_info_value "$run_dir" PROCESS_GROUP)"
+  pids="$({ printf '%s\n' "$pid"; descendant_pids "$pid"; } | awk 'NF && !seen[$0]++ { print }' || true)"
+  if [ "$process_group" = "1" ]; then
+    pids="$({ printf '%s\n' $pids; process_group_pids "$pid"; } | awk 'NF && !seen[$0]++ { print }' || true)"
+  fi
+  for candidate in $pids; do
+    signature="$(process_start_signature "$candidate")"
+    [ -n "$signature" ] || continue
+    protected_pids+=("$candidate")
+    protected_starts+=("$signature")
+  done
   if [ "$process_group" = "1" ]; then
     kill -TERM -- "-$pid" 2>/dev/null || true
   fi
-  pids="$(descendant_pids "$pid" | awk 'NF { print }' || true)"
   # shellcheck disable=SC2086
-  kill -TERM $pids "$pid" 2>/dev/null || true
+  kill -TERM $pids 2>/dev/null || true
   sleep 5
   if [ "$process_group" = "1" ]; then
-    kill -KILL -- "-$pid" 2>/dev/null || true
+    for ((index = 0; index < ${#protected_pids[@]}; index++)); do
+      candidate="${protected_pids[$index]}"
+      signature="$(process_start_signature "$candidate")"
+      if [ -n "$signature" ] &&
+        [ "$signature" = "${protected_starts[$index]}" ] &&
+        [ "$(process_group_id "$candidate")" = "$pid" ]; then
+        anchored_group=true
+        break
+      fi
+    done
   fi
-  pids="$(descendant_pids "$pid" | awk 'NF { print }' || true)"
-  # shellcheck disable=SC2086
-  kill -KILL $pids "$pid" 2>/dev/null || true
+  if [ "$anchored_group" = true ]; then
+    for candidate in $(process_group_pids "$pid"); do
+      known_candidate=false
+      for ((index = 0; index < ${#protected_pids[@]}; index++)); do
+        if [ "${protected_pids[$index]}" = "$candidate" ]; then
+          known_candidate=true
+          break
+        fi
+      done
+      [ "$known_candidate" = false ] || continue
+      signature="$(process_start_signature "$candidate")"
+      [ -n "$signature" ] || continue
+      protected_pids+=("$candidate")
+      protected_starts+=("$signature")
+    done
+  fi
+  for ((index = 0; index < ${#protected_pids[@]}; index++)); do
+    candidate="${protected_pids[$index]}"
+    signature="$(process_start_signature "$candidate")"
+    if [ -n "$signature" ] && [ "$signature" = "${protected_starts[$index]}" ]; then
+      kill -KILL "$candidate" 2>/dev/null || true
+    fi
+  done
   rm -f "$run_dir/pid.txt" 2>/dev/null || true
+  return 0
 }
 
 restart_run() {
   local run_dir="$1"
   local agent cwd prompt restart_root previous_attempt next_attempt restart_agent
+  if run_info_has_key "$run_dir" WATCH_ABANDONED_UTC || run_info_has_key "$run_dir" EXIT_CODE; then
+    echo "  restart skipped: terminal run $run_dir" | tee -a "$LOG"
+    WATCH_RESTART_SKIPPED_COUNT=$((WATCH_RESTART_SKIPPED_COUNT + 1))
+    return 1
+  fi
   agent="$(run_info_value "$run_dir" AGENT)"
   cwd="$(run_info_value "$run_dir" CWD)"
   prompt="$run_dir/prompt.md"
@@ -469,6 +566,14 @@ while true; do
     pid_file="$run_dir/pid.txt"
     pid=""
     pid_source=""
+    if run_info_has_key "$run_dir" EXIT_CODE; then
+      echo "  $run_dir: finished (terminal record)" | tee -a "$LOG"
+      continue
+    fi
+    if run_info_has_key "$run_dir" WATCH_ABANDONED_UTC; then
+      echo "  $run_dir: abandoned (terminal record)" | tee -a "$LOG"
+      continue
+    fi
     if [ -f "$pid_file" ]; then
       pid=$(cat "$pid_file" || true)
       if [ -z "$pid" ]; then
@@ -488,14 +593,11 @@ while true; do
       else
         pid_source="pid file"
       fi
-    elif rg -q "EXIT_CODE=" "$run_dir/run-info.txt" 2>/dev/null; then
-      echo "  $run_dir: finished (exit recorded)" | tee -a "$LOG"
-      continue
     else
       pid="$(run_info_value "$run_dir" PID)"
       if [ -n "$pid" ]; then
         pid_source="run-info without pid file"
-        if ps -p "$pid" >/dev/null 2>&1; then
+        if process_matches_run "$run_dir" "$pid"; then
           printf '%s\n' "$pid" >"$pid_file" 2>/dev/null || true
           echo "  $run_dir: restored missing pid.txt from run-info PID $pid" | tee -a "$LOG"
         fi
@@ -509,6 +611,19 @@ while true; do
         fi
         continue
       fi
+    fi
+
+    if ps -p "$pid" >/dev/null 2>&1 && ! process_matches_run "$run_dir" "$pid"; then
+      echo "  $run_dir: PID $pid identity mismatch (source=$pid_source); refusing recovery" | tee -a "$LOG"
+      rm -f "$pid_file" 2>/dev/null || true
+      age_number="$(run_age_seconds "$run_dir")"
+      if [ "$age_number" -ge "$RUN_AGENT_ABANDONED_SECONDS" ]; then
+        mark_abandoned_run "$run_dir" "pid-$pid-identity-mismatch" || true
+        echo "  $run_dir: abandoned (PID $pid identity mismatch, age=${age_number}s)" | tee -a "$LOG"
+      else
+        echo "  $run_dir: waiting for matching process (PID $pid identity mismatch, age=${age_number}s)" | tee -a "$LOG"
+      fi
+      continue
     fi
 
     if ps -p "$pid" >/dev/null 2>&1; then
@@ -527,8 +642,7 @@ while true; do
       if [ "$stale" = true ] && [ "$RUN_AGENT_DIAGNOSE_STALE" = "1" ]; then
         diagnose_run "$run_dir" "$pid" "stale-output-${RUN_AGENT_STALE_SECONDS}s"
         if [ "$RUN_AGENT_TERMINATE_STALE" = "1" ]; then
-          terminate_run "$run_dir" "$pid"
-          if [ "$RUN_AGENT_RESTART_STALE" = "1" ]; then
+          if terminate_run "$run_dir" "$pid" && [ "$RUN_AGENT_RESTART_STALE" = "1" ]; then
             restart_run "$run_dir"
           fi
         fi

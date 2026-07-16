@@ -97,6 +97,18 @@ latest_run_dir() {
   fi
 }
 
+run_dir_for_attempt() {
+  local attempt_token="$1"
+  local run_dir
+  while IFS= read -r run_dir; do
+    [[ -n "$run_dir" ]] || continue
+    if grep -Fqx "ATTEMPT_TOKEN=$attempt_token" "$run_dir/run-info.txt" 2>/dev/null; then
+      printf '%s\n' "$run_dir"
+      return
+    fi
+  done < <(ls -td "$RUNS_DIR"/run_* 2>/dev/null | head -n 200)
+}
+
 stdout_verdict() {
   local stdout_file="$1"
   if [[ ! -f "$stdout_file" ]]; then
@@ -165,12 +177,15 @@ run_matches_attempt() {
   local run_dir="$1"
   local expected_agent="$2"
   local expected_prompt="$3"
+  local expected_token="$4"
   local run_info="$run_dir/run-info.txt"
   local copied_prompt="$run_dir/prompt.md"
   if [[ ! -f "$run_info" || ! -f "$copied_prompt" ]]; then
     return 1
   fi
-  grep -qx "AGENT=$expected_agent" "$run_info" || return 1
+  grep -Fqx "AGENT=$expected_agent" "$run_info" || return 1
+  grep -Fqx "CWD=$ROOT" "$run_info" || return 1
+  grep -Fqx "ATTEMPT_TOKEN=$expected_token" "$run_info" || return 1
   if grep -qE '^RESTART_(OF|ROOT)=' "$run_info"; then
     return 1
   fi
@@ -206,7 +221,9 @@ while (( passes < QUORUM_COUNT && attempt < MAX_ATTEMPTS )); do
   attempt=$((attempt + 1))
   agent_index=$(((attempt - 1) % ${#VALID_AGENTS[@]}))
   agent="${VALID_AGENTS[$agent_index]}"
+  attempt_token="review-quorum-$$-$attempt-$(date +%s)"
   record "ATTEMPT_${attempt}_AGENT=$agent"
+  record "ATTEMPT_${attempt}_TOKEN=$attempt_token"
   previous_run_dir="$(latest_run_dir)"
   record "ATTEMPT_${attempt}_PREVIOUS_RUN_DIR=$previous_run_dir"
 
@@ -215,11 +232,12 @@ while (( passes < QUORUM_COUNT && attempt < MAX_ATTEMPTS )); do
     RUN_AGENT_TIMEOUT_SECONDS="$RUN_AGENT_TIMEOUT_SECONDS" \
     RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS="$RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS" \
     RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS="$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS" \
+    RUN_AGENT_ATTEMPT_TOKEN="$attempt_token" \
     "$ROOT/ralph-loop.sh" agent "$agent" "$PROMPT_FILE"
   status="$?"
   set -e
 
-  run_dir="$(latest_run_dir)"
+  run_dir="$(run_dir_for_attempt "$attempt_token")"
   record "ATTEMPT_${attempt}_EXIT_CODE=$status"
   record "ATTEMPT_${attempt}_RUN_DIR=$run_dir"
 
@@ -231,7 +249,7 @@ while (( passes < QUORUM_COUNT && attempt < MAX_ATTEMPTS )); do
     record "ATTEMPT_${attempt}_RESULT=UNUSABLE_NO_NEW_RUN_DIR"
     continue
   fi
-  if ! run_matches_attempt "$run_dir" "$agent" "$PROMPT_FILE"; then
+  if ! run_matches_attempt "$run_dir" "$agent" "$PROMPT_FILE" "$attempt_token"; then
     record "ATTEMPT_${attempt}_RESULT=UNUSABLE_RUN_PROVENANCE"
     continue
   fi

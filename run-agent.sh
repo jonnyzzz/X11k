@@ -128,6 +128,9 @@ Configuration (env variables):
                       Metadata written by watch-agents.sh when a stale run is
                       restarted. These fields make repeated-restart loops
                       auditable and enforceable by the watcher.
+  RUN_AGENT_ATTEMPT_TOKEN
+                      Optional caller-generated identity copied into run-info.txt
+                      so orchestrators need not trust the shared latest symlink.
 
 Exported to agent process:
   RUNS_DIR            Absolute path to the runs directory
@@ -739,6 +742,13 @@ fi
   fi
 ) &
 AGENT_PID=$!
+AGENT_PID_START="$(LC_ALL=C ps -p "$AGENT_PID" -o lstart= 2>/dev/null | awk '{$1=$1; print}' || true)"
+if [ -z "$AGENT_PID_START" ]; then
+  echo "Failed to capture process birth signature for agent PID $AGENT_PID" >&2
+  kill -TERM "$AGENT_PID" 2>/dev/null || true
+  wait "$AGENT_PID" 2>/dev/null || true
+  exit 1
+fi
 
 # run-info.txt lands before pid.txt so a watcher that uses pid.txt as
 # the "agent is up" signal can rely on run-info.txt already being
@@ -753,6 +763,7 @@ STDOUT=$STDOUT_FILE
 STDERR=$STDERR_FILE
 LATEST=$RUNS_DIR/latest
 PID=$AGENT_PID
+PID_START=$AGENT_PID_START
 TIMEOUT_SECONDS=$RUN_AGENT_TIMEOUT_SECONDS
 NO_OUTPUT_DIAGNOSTICS_SECONDS=$RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS
 NO_OUTPUT_TIMEOUT_SECONDS=$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS
@@ -770,6 +781,10 @@ fi
 if [ -n "${RUN_AGENT_RESTART_ATTEMPT:-}" ]; then
   RUN_INFO_BLOCK="$RUN_INFO_BLOCK
 RESTART_ATTEMPT=$RUN_AGENT_RESTART_ATTEMPT"
+fi
+if [ -n "${RUN_AGENT_ATTEMPT_TOKEN:-}" ]; then
+  RUN_INFO_BLOCK="$RUN_INFO_BLOCK
+ATTEMPT_TOKEN=$RUN_AGENT_ATTEMPT_TOKEN"
 fi
 if [ -n "$CODEX_HOME_OVERRIDE" ]; then
 RUN_INFO_BLOCK="$RUN_INFO_BLOCK
