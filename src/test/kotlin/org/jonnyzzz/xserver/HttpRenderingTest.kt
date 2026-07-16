@@ -996,17 +996,41 @@ class HttpRenderingTest {
                 framebufferPainted = clearPainted,
             ),
         )
+        val renderOperationId = state.recordRenderOperation(8, "Composite")
         state.draw(
             XDrawingCommand(
                 drawableId = window,
                 kind = XDrawingKind.CopyArea,
                 foreground = 0,
                 rectangles = listOf(XRectangleCommand(0, 0, 64, 64)),
-                imageDataUri = XFramebuffer.imageDataUri(XImagePixels(64, 64, IntArray(64 * 64))),
                 sourceDrawableId = pixmap,
                 sourceDrawableGeneration = state.drawableGeneration(pixmap),
+                renderOperationId = renderOperationId,
+                renderComposite = XRenderCompositeCommand(
+                    operation = XRender.OpDst,
+                    sourcePictureId = 0x0020_0200,
+                    sourceFormat = XRender.Rgb24Format,
+                    sourceKind = "pixmap",
+                    maskPictureId = null,
+                    maskFormat = null,
+                    maskKind = null,
+                    destinationPictureId = 0x0020_0201,
+                    destinationFormat = XRender.Rgb24Format,
+                    destinationKind = "window",
+                    sourceX = 0,
+                    sourceY = 0,
+                    maskX = 0,
+                    maskY = 0,
+                    destinationX = 0,
+                    destinationY = 0,
+                    width = 64,
+                    height = 64,
+                    maskDrawableId = null,
+                    maskDrawableGeneration = null,
+                ),
                 framebufferBacked = true,
                 framebufferPainted = false,
+                rawDrawablePixels = false,
             ),
         )
         repeat(10_001) { index ->
@@ -1025,6 +1049,7 @@ class HttpRenderingTest {
         assertContains(svg, """data-window-id="0x200001"""")
         assertContains(svg, """data-source="matching-pixmap"""")
         assertContains(svg, """data-pixmap-id="0x200100"""")
+        assertTrue(state.snapshot().drawings.any { it.renderOperationId == renderOperationId })
         assertFalse(
             Regex("""<image\b(?=[^>]*\bdata-window-id="0x200001")(?=[^>]*\bdata-source="window-framebuffer")""").containsMatchIn(svg),
             "ClearArea and XRender OpDst-style no-op records must not mark the window framebuffer as directly painted",

@@ -1,6 +1,6 @@
 # Roadmap
 
-Status reviewed on 2026-07-15. The compatibility target is IntelliJ IDEA,
+Status reviewed on 2026-07-16. The compatibility target is IntelliJ IDEA,
 VSCode, and the Java AWS application, not unrestricted Xvfb feature parity.
 Extension work remains governed by `workflow/extension-scope.md`.
 
@@ -9,12 +9,12 @@ Extension work remains governed by `workflow/extension-scope.md`.
 - Production and tracked protocol/oracle tests are pure Kotlin/JVM. All tests
   under `src/test` are Kotlin/JUnit; `check` rejects non-Kotlin JVM and Python
   test sources.
-- The default suite contains 1,381 JUnit tests (4 heavyweight opt-in tests are
+- The default suite contains 1,385 JUnit tests (4 heavyweight opt-in tests are
   skipped by default). Full `check` passed in
-  `runs/gradle-bounded/run_20260715-221207-62803`.
+  `runs/gradle-bounded/run_20260716-085144-72955`.
 - IntelliJ deterministic project-open parity is pixel-exact for the Xvfb Robot,
   Kotlin Robot, and Kotlin SVG-composed captures. The parity run
-  `runs/gradle-bounded/run_20260715-220719-57572` reports all three distances as
+  `runs/gradle-bounded/run_20260716-085739-81366` reports all three distances as
   `0.0`, no mismatch bounds, and no unsupported requests.
 - VSCode deterministic parity is pixel-exact for Robot and SVG-composed output
   against Xvfb. Run `runs/gradle-bounded/run_20260715-221046-61229` reports both
@@ -44,6 +44,12 @@ Extension work remains governed by `workflow/extension-scope.md`.
   commands, and do not enter render-paint history; `/state.json` reports total
   and retained command/rectangle counts, completeness, and whether retained
   operation IDs still resolve in the independently bounded provenance ring.
+  RENDER Composite commands retain operator, source/mask/destination picture
+  identities, formats and kinds, signed origins, unsigned extent, drawable
+  generations, and paint result. Successful byte-identical and semantic no-op
+  composites preserve provenance without polluting paint populations or
+  displacing regular drawing commands; fill, glyph, and composite no-ops share
+  one bounded 10,000-command semantic budget.
 - Same-port HTTP/HTML, SVG, text, JSON, and input endpoints derived from the
   maintained server state rather than a separate visual model.
 - Differential Docker coverage for X11 tools, classic clients, AWT/Swing,

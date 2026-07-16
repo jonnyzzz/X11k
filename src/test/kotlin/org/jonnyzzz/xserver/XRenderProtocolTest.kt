@@ -398,6 +398,89 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER zero-sized composites are retained no-ops and keep the stream usable`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 1, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderComposite(SolidPictureId, PictureId, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 0, height = 1))
+                out.write(renderComposite(SolidPictureId, PictureId, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 1, height = 0))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 0))
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"destinationOrigin":[0,0],"size":[0,1]""")
+                assertContains(json, """"destinationOrigin":[0,0],"size":[1,0]""")
+                assertContains(
+                    json,
+                    """"renderCompositeRetention":{"totalCommands":2,"retainedCommands":2,"commandsComplete":true,"totalNoOpCommands":2,"retainedNoOpCommands":2,"noOpCommandsComplete":true""",
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER empty and offscreen drawable and gradient composites retain semantics`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 2, height = 1))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 1, height = 1))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 2, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = 1 to 0,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderComposite(PixmapPictureId, PictureId, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 0, height = 1))
+                out.write(renderComposite(PixmapPictureId, PictureId, operation = XRender.OpSrc, destinationX = 100, destinationY = 0, width = 1, height = 1))
+                out.write(renderComposite(GradientPictureId, PictureId, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 1, height = 0))
+                out.write(renderComposite(GradientPictureId, PictureId, operation = XRender.OpSrc, destinationX = 100, destinationY = 0, width = 1, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 2, x = 0, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 2, x = 1, y = 0))
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, "\"sourcePicture\":\"0x${PixmapPictureId.toUInt().toString(16)}\",\"sourceFormat\":41,\"sourceKind\":\"pixmap\"")
+                assertContains(json, "\"sourcePicture\":\"0x${GradientPictureId.toUInt().toString(16)}\",\"sourceFormat\":37,\"sourceKind\":\"linear-gradient\"")
+                assertContains(json, "\"destinationOrigin\":[0,0],\"size\":[0,1]")
+                assertContains(json, "\"destinationOrigin\":[0,0],\"size\":[1,0]")
+                assertContains(json, "\"destinationOrigin\":[100,0],\"size\":[1,1]")
+                assertContains(
+                    json,
+                    "\"renderCompositeRetention\":{\"totalCommands\":4,\"retainedCommands\":4,\"commandsComplete\":true,\"totalNoOpCommands\":4,\"retainedNoOpCommands\":4,\"noOpCommandsComplete\":true",
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER operation diagnostics retain enough history for IntelliJ captures`() {
         val state = X11State(width = 16, height = 16)
 
@@ -3209,6 +3292,14 @@ class XRenderProtocolTest {
                 assertContains(json, """"lastDrawingPaint":{"drawable":"$sourcePixmapId"""")
                 assertContains(json, """"kind":"PutImage"""")
                 assertContains(json, """"framebuffer":{"width":2,"height":1,"crc32":""")
+                assertContains(
+                    json,
+                    """"renderComposite":{"operation":1,"sourcePicture":"0x${PixmapPictureId.toUInt().toString(16)}","sourceFormat":37,"sourceKind":"pixmap","maskPicture":null,"maskFormat":null,"maskKind":null,"destinationPicture":"0x${MaskPictureId.toUInt().toString(16)}","destinationFormat":37,"destinationKind":"pixmap","sourceOrigin":[0,0],"maskOrigin":[0,0],"destinationOrigin":[0,0],"size":[2,1],"maskDrawable":null,"maskDrawableGeneration":null}""",
+                )
+                assertContains(
+                    json,
+                    """"renderCompositeRetention":{"totalCommands":1,"retainedCommands":1,"commandsComplete":true,"totalNoOpCommands":0,"retainedNoOpCommands":0,"noOpCommandsComplete":true,"resolvedOperationLinks":1,"operationLinksComplete":true""",
+                )
             }
             server.close()
             serverThread.join(1_000)
@@ -10896,10 +10987,31 @@ class XRenderProtocolTest {
                 assertContains(opDstOperation, """"provenance":{"destination":{"id":"0x$pictureIdHex"""")
                 assertFalse(opDstOperation.contains("\"destinationRegion\":"), opDstOperation)
                 assertFalse(opDstOperation.contains("\"result\":"), opDstOperation)
+                val sourcePictureIdHex = SolidPictureId.toUInt().toString(16)
+                val maskPictureIdHex = MaskPictureId.toUInt().toString(16)
+                val maskPixmapIdHex = MaskPixmapId.toUInt().toString(16)
+                val opDstComposite = Regex(
+                    """\{"drawable":"0x$pixmapIdHex","kind":"FillRectangle","framebufferBacked":true,"sourceDrawable":null,"framebufferPainted":false.*?"renderOperationId":(\d+).*?"renderComposite":\{"operation":2,"sourcePicture":"0x$sourcePictureIdHex","sourceFormat":37,"sourceKind":"solid","maskPicture":"0x$maskPictureIdHex","maskFormat":36,"maskKind":"pixmap","destinationPicture":"0x$pictureIdHex","destinationFormat":37,"destinationKind":"pixmap","sourceOrigin":\[0,0],"maskOrigin":\[0,0],"destinationOrigin":\[1,0],"size":\[1,1],"maskDrawable":"0x$maskPixmapIdHex","maskDrawableGeneration":\d+\}""",
+                ).find(json) ?: error("Missing retained masked RENDER OpDst composite in $json")
+                val opDstCompositeId = opDstComposite.groupValues[1]
+                val opDstCompositeOperation = json
+                    .substringAfter("""{"id":$opDstCompositeId,"minorOpcode":8""")
+                    .substringBefore("""},{"id":""")
+                assertContains(opDstCompositeOperation, """"provenance":{"source":{"id":"0x$sourcePictureIdHex"""")
+                assertFalse(opDstCompositeOperation.contains("\"destinationRegion\":"), opDstCompositeOperation)
+                assertFalse(opDstCompositeOperation.contains("\"result\":"), opDstCompositeOperation)
                 val pixmapRenderHistory = json.substringAfter("\"pixmaps\":[").substringBefore("],\"cursors\"")
                 assertFalse(
                     pixmapRenderHistory.contains(""""id":$opDstFillId,"minorOpcode":26"""),
                     "A successful no-op must have provenance without being classified as a render paint: $pixmapRenderHistory",
+                )
+                assertFalse(
+                    pixmapRenderHistory.contains(""""id":$opDstCompositeId,"minorOpcode":8"""),
+                    "A successful no-op composite must not be classified as a render paint: $pixmapRenderHistory",
+                )
+                assertContains(
+                    json,
+                    """"renderCompositeRetention":{"totalCommands":3,"retainedCommands":3,"commandsComplete":true,"totalNoOpCommands":3,"retainedNoOpCommands":3,"noOpCommandsComplete":true""",
                 )
             }
             server.close()
@@ -16039,6 +16151,89 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER unchanged composite preserves pristine pixmap paint and raw pixel metadata`() {
+        val state = X11State(width = 4, height = 4)
+        val pixmap = XPixmap(PixmapId, width = 1, height = 1, depth = 32)
+        val sourcePixel = XRender.argb32Pixel(red = 0, green = 0, blue = 0, alpha = 0xffff)
+        state.putPixmap(pixmap)
+        state.putPicture(XPicture(PixmapPictureId, drawableId = PixmapId, format = XRender.Argb32Format))
+        state.putPicture(
+            XPicture(
+                id = SolidPictureId,
+                drawableId = null,
+                format = XRender.Argb32Format,
+                solidPixel = sourcePixel,
+            ),
+        )
+
+        val operationId = state.recordRenderOperation(8, "Composite")
+        val execution = state.compositeWithPaintResultAndProvenance(
+            operation = XRender.OpSrc,
+            sourceId = SolidPictureId,
+            maskId = 0,
+            destinationId = PixmapPictureId,
+            sourceX = 0,
+            sourceY = 0,
+            maskX = 0,
+            maskY = 0,
+            destinationX = 0,
+            destinationY = 0,
+            width = 1,
+            height = 1,
+        )
+        val result = execution.result ?: error("Missing composite result")
+        val provenance = execution.provenance ?: error("Missing composite provenance")
+        assertFalse(result.painted)
+        assertEquals(null, provenance.destinationRegion)
+        assertEquals(null, provenance.result)
+        state.annotateRenderOperation(operationId, provenance, rememberPaint = false)
+        state.draw(
+            XDrawingCommand(
+                drawableId = PixmapId,
+                kind = XDrawingKind.FillRectangle,
+                foreground = sourcePixel,
+                rectangles = listOf(XRectangleCommand(0, 0, 1, 1)),
+                renderOperationId = operationId,
+                renderComposite = XRenderCompositeCommand(
+                    operation = XRender.OpSrc,
+                    sourcePictureId = SolidPictureId,
+                    sourceFormat = XRender.Argb32Format,
+                    sourceKind = "solid",
+                    maskPictureId = null,
+                    maskFormat = null,
+                    maskKind = null,
+                    destinationPictureId = PixmapPictureId,
+                    destinationFormat = XRender.Argb32Format,
+                    destinationKind = "pixmap",
+                    sourceX = 0,
+                    sourceY = 0,
+                    maskX = 0,
+                    maskY = 0,
+                    destinationX = 0,
+                    destinationY = 0,
+                    width = 1,
+                    height = 1,
+                    maskDrawableId = null,
+                    maskDrawableGeneration = null,
+                ),
+                framebufferBacked = true,
+                framebufferPainted = false,
+                rawDrawablePixels = false,
+            ),
+        )
+
+        assertFalse(pixmap.framebuffer.hasPaintedContent())
+        assertTrue(pixmap.framebuffer.readsAsRawDrawablePixels())
+        val snapshot = state.snapshot()
+        assertFalse(snapshot.pixmaps.single().painted)
+        assertEquals(null, snapshot.pixmaps.single().framebufferDataUri)
+        assertEquals(0, snapshot.pixmaps.single().coreDrawingPaintCount)
+        assertTrue(snapshot.pixmaps.single().renderOperations.isEmpty())
+        assertEquals(1L, snapshot.renderCompositeRetention.totalCommands)
+        assertEquals(1L, snapshot.renderCompositeRetention.totalNoOpCommands)
+    }
+
+    @Test
     fun `RENDER no-op fill retention cannot displace painted commands at drawing cap`() {
         val state = X11State(width = 4, height = 4)
         repeat(5_000) { index ->
@@ -16082,6 +16277,41 @@ class XRenderProtocolTest {
                 ),
             )
         }
+        val compositeOperationId = state.recordRenderOperation(8, "Composite")
+        state.draw(
+            XDrawingCommand(
+                drawableId = X11Ids.RootWindow,
+                kind = XDrawingKind.CopyArea,
+                foreground = -20_002,
+                rectangles = listOf(XRectangleCommand(0, 0, 1, 1)),
+                renderOperationId = compositeOperationId,
+                renderComposite = XRenderCompositeCommand(
+                    operation = XRender.OpDst,
+                    sourcePictureId = SolidPictureId,
+                    sourceFormat = XRender.Argb32Format,
+                    sourceKind = "solid",
+                    maskPictureId = null,
+                    maskFormat = null,
+                    maskKind = null,
+                    destinationPictureId = PictureId,
+                    destinationFormat = XRender.Rgb24Format,
+                    destinationKind = "window",
+                    sourceX = 0,
+                    sourceY = 0,
+                    maskX = 0,
+                    maskY = 0,
+                    destinationX = 0,
+                    destinationY = 0,
+                    width = 1,
+                    height = 1,
+                    maskDrawableId = null,
+                    maskDrawableGeneration = null,
+                ),
+                framebufferBacked = true,
+                framebufferPainted = false,
+                rawDrawablePixels = false,
+            ),
+        )
         repeat(5_000) { index ->
             val operationId = state.recordRenderOperation(26, "FillRectangles")
             state.draw(
@@ -16112,11 +16342,93 @@ class XRenderProtocolTest {
         assertEquals((0 until 10_000).toList(), painted.map { it.foreground })
         val retention = state.snapshot().renderFillRetention
         assertEquals(20_001L, retention.totalCommands)
+        assertEquals(19_999, retention.retainedCommands)
+        assertEquals(10_001L, retention.totalNoOpCommands)
+        assertEquals(9_999, retention.retainedNoOpCommands)
+        assertEquals(9_999, retention.resolvedOperationLinks)
+        assertFalse(retention.resolvedOperationLinks == retention.retainedCommands)
+        val compositeRetention = state.snapshot().renderCompositeRetention
+        assertEquals(1L, compositeRetention.totalCommands)
+        assertEquals(1, compositeRetention.retainedCommands)
+        assertEquals(1L, compositeRetention.totalNoOpCommands)
+        assertEquals(1, compositeRetention.retainedNoOpCommands)
+        assertEquals(1, compositeRetention.resolvedOperationLinks)
+        val drawingRetention = state.snapshot().drawingRetention
+        assertEquals(10_000L, drawingRetention.totalRegularCommands)
+        assertEquals(10_000, drawingRetention.retainedRegularCommands)
+        assertEquals(10_002L, drawingRetention.totalRenderNoOpCommands)
+        assertEquals(10_000, drawingRetention.retainedRenderNoOpCommands)
+        val json = SvgScreenRenderer.json(state.snapshot())
+        assertContains(
+            json,
+            """"drawingRetention":{"totalRegularCommands":10000,"retainedRegularCommands":10000,"regularCommandsComplete":true,"totalRenderNoOpCommands":10002,"retainedRenderNoOpCommands":10000,"renderNoOpCommandsComplete":false,"regularCommandBudget":10000,"renderNoOpCommandBudget":10000,"combinedCommandBudget":20000}""",
+        )
+    }
+
+    @Test
+    fun `RENDER no-op composite retention cannot displace painted commands at drawing cap`() {
+        val state = X11State(width = 4, height = 4)
+
+        fun retainComposite(foreground: Int, painted: Boolean) {
+            val operationId = state.recordRenderOperation(8, "Composite")
+            state.draw(
+                XDrawingCommand(
+                    drawableId = X11Ids.RootWindow,
+                    kind = XDrawingKind.CopyArea,
+                    foreground = foreground,
+                    rectangles = listOf(XRectangleCommand(0, 0, 1, 1)),
+                    renderOperationId = operationId,
+                    renderComposite = XRenderCompositeCommand(
+                        operation = if (painted) XRender.OpSrc else XRender.OpDst,
+                        sourcePictureId = SolidPictureId,
+                        sourceFormat = XRender.Argb32Format,
+                        sourceKind = "solid",
+                        maskPictureId = null,
+                        maskFormat = null,
+                        maskKind = null,
+                        destinationPictureId = PictureId,
+                        destinationFormat = XRender.Rgb24Format,
+                        destinationKind = "window",
+                        sourceX = 0,
+                        sourceY = 0,
+                        maskX = 0,
+                        maskY = 0,
+                        destinationX = 0,
+                        destinationY = 0,
+                        width = 1,
+                        height = 1,
+                        maskDrawableId = null,
+                        maskDrawableGeneration = null,
+                    ),
+                    framebufferBacked = true,
+                    framebufferPainted = painted,
+                    rawDrawablePixels = false,
+                ),
+            )
+        }
+
+        repeat(5_000) { retainComposite(foreground = it, painted = true) }
+        repeat(10_001) { retainComposite(foreground = -it - 1, painted = false) }
+        repeat(5_000) { retainComposite(foreground = it + 5_000, painted = true) }
+
+        val snapshot = state.snapshot()
+        val painted = snapshot.drawings.filter { it.framebufferPainted }
+        val semanticNoOps = snapshot.drawings.filter { !it.framebufferPainted }
+        assertEquals(20_000, snapshot.drawings.size)
+        assertEquals(10_000, semanticNoOps.size)
+        assertEquals((0 until 10_000).toList(), painted.map { it.foreground })
+        val retention = snapshot.renderCompositeRetention
+        assertEquals(20_001L, retention.totalCommands)
         assertEquals(20_000, retention.retainedCommands)
         assertEquals(10_001L, retention.totalNoOpCommands)
         assertEquals(10_000, retention.retainedNoOpCommands)
         assertEquals(10_000, retention.resolvedOperationLinks)
         assertFalse(retention.resolvedOperationLinks == retention.retainedCommands)
+        val json = SvgScreenRenderer.json(snapshot)
+        assertContains(
+            json,
+            """"renderCompositeRetention":{"totalCommands":20001,"retainedCommands":20000,"commandsComplete":false,"totalNoOpCommands":10001,"retainedNoOpCommands":10000,"noOpCommandsComplete":false,"resolvedOperationLinks":10000,"operationLinksComplete":false""",
+        )
     }
 
     @Test

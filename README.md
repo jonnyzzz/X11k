@@ -155,11 +155,11 @@ All tracked protocol clients and reduced Xvfb oracles are native Kotlin/JUnit
 tests under `src/test/kotlin`; no tracked Python test sources remain. Gradle
 `check` enforces Kotlin/JUnit as the single JVM test stack with
 `verifyKotlinTestSources`. The latest full check ran
-1,381 tests (1,377 passed and 4 heavyweight opt-in cases skipped) in
-`runs/gradle-bounded/run_20260715-221207-62803`.
+1,385 tests (1,381 passed and 4 heavyweight opt-in cases skipped) in
+`runs/gradle-bounded/run_20260716-085144-72955`.
 
 The latest deterministic IntelliJ parity run
-`runs/gradle-bounded/run_20260715-220719-57572` and VSCode parity run
+`runs/gradle-bounded/run_20260716-085739-81366` and VSCode parity run
 `runs/gradle-bounded/run_20260715-221046-61229` are pixel-exact against their
 Xvfb references. The requested Java AWS application is not yet represented by a
 tracked artifact or smoke fixture, so its harness is the next compatibility

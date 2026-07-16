@@ -55,8 +55,16 @@ internal data class XRenderCompositeExecution(
     val provenance: XRenderOperationProvenance? = null,
     val destinationDrawableId: Int? = null,
     val destinationDrawableGeneration: Long? = null,
+    val destinationFormat: Int? = null,
     val sourceDrawableId: Int? = null,
     val sourceDrawableGeneration: Long? = null,
+    val sourceFormat: Int? = null,
+    val sourceKind: String? = null,
+    val maskDrawableId: Int? = null,
+    val maskDrawableGeneration: Long? = null,
+    val maskFormat: Int? = null,
+    val maskKind: String? = null,
+    val destinationKind: String? = null,
     val sourceGenerated: Boolean = false,
     val sourceSolidPixel: Int? = null,
     val error: XRenderExecutionError? = null,
@@ -4092,19 +4100,38 @@ internal class X11State(
             },
             overlaps = overlaps(windowSnapshots.filter { it.windowClass == XWindowClass.InputOutput }),
             drawings = drawings.toList(),
+            drawingRetention = XDrawingRetentionSnapshot(
+                totalRegularCommands = totalRegularDrawingCommands,
+                retainedRegularCommands = drawings.size - retainedRenderNoOpCommands,
+                totalRenderNoOpCommands = totalRenderNoOpCommands,
+                retainedRenderNoOpCommands = retainedRenderNoOpCommands,
+                regularCommandBudget = MaxDrawingCommands,
+                renderNoOpCommandBudget = MaxRetainedRenderNoOpCommands,
+            ),
             renderFillRetention = XRenderFillRetentionSnapshot(
                 totalCommands = totalRenderFillCommands,
                 retainedCommands = drawings.count { it.renderFill != null },
                 totalNoOpCommands = totalRenderNoOpFills,
-                retainedNoOpCommands = retainedRenderNoOpFills,
+                retainedNoOpCommands = drawings.count { it.renderFill != null && !it.framebufferPainted },
                 totalRectangles = totalRenderFillRectangles,
                 retainedRectangles = retainedRenderFillRectangles,
                 resolvedOperationLinks = drawings.count { drawing ->
                     drawing.renderFill != null && drawing.renderOperationId?.let { it in retainedRenderOperationIds } == true
                 },
                 regularCommandBudget = MaxDrawingCommands,
-                noOpCommandBudget = MaxRetainedRenderNoOpFills,
+                noOpCommandBudget = MaxRetainedRenderNoOpCommands,
                 rectangleBudget = MaxRetainedRenderFillRectangles,
+            ),
+            renderCompositeRetention = XRenderCompositeRetentionSnapshot(
+                totalCommands = totalRenderCompositeCommands,
+                retainedCommands = drawings.count { it.renderComposite != null },
+                totalNoOpCommands = totalRenderNoOpComposites,
+                retainedNoOpCommands = drawings.count { it.renderComposite != null && !it.framebufferPainted },
+                resolvedOperationLinks = drawings.count { drawing ->
+                    drawing.renderComposite != null && drawing.renderOperationId?.let { it in retainedRenderOperationIds } == true
+                },
+                regularCommandBudget = MaxDrawingCommands,
+                noOpCommandBudget = MaxRetainedRenderNoOpCommands,
             ),
             inputOperations = inputOperations.toList(),
             inputControlOperations = inputControlOperations.toList(),
@@ -5214,7 +5241,7 @@ internal class X11State(
                 drawing.drawableId == drawableId &&
                 drawing.drawableGeneration == generation &&
                 drawing.framebufferBacked &&
-                (drawing.renderFill == null || drawing.framebufferPainted)
+                (drawing.renderOperationId == null || drawing.framebufferPainted)
             ) {
                 val snapshot = drawing.coreDrawablePaintSnapshot()
                 if (first == null) first = snapshot
@@ -6569,22 +6596,36 @@ internal class X11State(
             destinationY = destinationY,
             width = width,
             height = height,
-        ) ?: return XRenderCompositeExecution()
+        ) ?: XRenderImageResult(
+            image = XImagePixels(0, 0, IntArray(0)),
+            painted = false,
+        )
+        val sourceSnapshot = renderPictureSnapshot(source)
+        val maskSnapshot = mask?.let(::renderPictureSnapshot)
+        val destinationSnapshot = renderPictureSnapshot(destination)
         return XRenderCompositeExecution(
             result = result,
             provenance = XRenderOperationProvenance(
-                source = renderPictureSnapshot(source),
-                mask = mask?.let(::renderPictureSnapshot),
-                destination = renderPictureSnapshot(destination),
-                destinationRegion = XRectangleCommand(destinationX, destinationY, width, height),
+                source = sourceSnapshot,
+                mask = maskSnapshot,
+                destination = destinationSnapshot,
+                destinationRegion = XRectangleCommand(destinationX, destinationY, width, height).takeIf { result.painted },
                 sourcePopulation = renderDrawablePopulationSnapshot(source),
                 maskPopulation = mask?.let(::renderDrawablePopulationSnapshot),
-                result = renderResultSnapshot(result.image),
+                result = renderResultSnapshot(result.image).takeIf { result.painted },
             ),
             destinationDrawableId = destinationDrawableId,
             destinationDrawableGeneration = destination.retainedOrLiveDrawableGeneration(),
+            destinationFormat = destination.format,
             sourceDrawableId = source.drawableId,
             sourceDrawableGeneration = source.retainedOrLiveDrawableGeneration(),
+            sourceFormat = source.format,
+            sourceKind = sourceSnapshot.drawableKind,
+            maskDrawableId = mask?.drawableId,
+            maskDrawableGeneration = mask?.retainedOrLiveDrawableGeneration(),
+            maskFormat = mask?.format,
+            maskKind = maskSnapshot?.drawableKind,
+            destinationKind = destinationSnapshot.drawableKind,
             sourceGenerated = source.isGeneratedRenderSource(),
             sourceSolidPixel = source.solidPixel,
         )
@@ -6621,6 +6662,7 @@ internal class X11State(
     ): XRenderImageResult? {
         val framebuffer = destination.drawableFramebuffer() ?: return null
         val before = framebuffer.snapshotRegion(destinationX, destinationY, width, height)
+        val beforeMetadata = framebuffer.mutationMetadata()
         val image = composite(
             operation = operation,
             source = source,
@@ -6634,9 +6676,16 @@ internal class X11State(
             destinationY = destinationY,
             width = width,
             height = height,
-        ) ?: return null
+        ) ?: run {
+            framebuffer.restoreMutationMetadata(beforeMetadata)
+            return null
+        }
         val after = framebuffer.snapshotRegion(destinationX, destinationY, width, height)
-        return XRenderImageResult(image, painted = before != after)
+        val painted = before != after
+        if (!painted) {
+            framebuffer.restoreMutationMetadata(beforeMetadata)
+        }
+        return XRenderImageResult(image, painted = painted)
     }
 
     @Synchronized
@@ -9814,23 +9863,38 @@ internal class X11State(
             totalRenderFillCommands++
             totalRenderFillRectangles += fill.rectangleCount
         }
+        if (retainedCommand.renderOperationId != null && !retainedCommand.framebufferPainted) {
+            retainedRenderNoOpCommands++
+            totalRenderNoOpCommands++
+        } else {
+            totalRegularDrawingCommands++
+        }
         if (retainedCommand.renderFill != null && !retainedCommand.framebufferPainted) {
-            retainedRenderNoOpFills++
             totalRenderNoOpFills++
+        }
+        retainedCommand.renderComposite?.let {
+            totalRenderCompositeCommands++
+            if (!retainedCommand.framebufferPainted) {
+                totalRenderNoOpComposites++
+            }
         }
         fun removeDrawingAt(index: Int) {
             val removed = drawings.removeAt(index)
             retainedRenderGlyphPlacements -= removed.renderGlyphs?.placements?.size ?: 0
             retainedRenderFillRectangles -= removed.renderFill?.let { removed.rectangles.size } ?: 0
-            if (removed.renderFill != null && !removed.framebufferPainted) {
-                retainedRenderNoOpFills--
+            if (removed.renderOperationId != null && !removed.framebufferPainted) {
+                retainedRenderNoOpCommands--
             }
         }
-        if (retainedRenderNoOpFills > MaxRetainedRenderNoOpFills) {
-            removeDrawingAt(drawings.indexOfFirst { it.renderFill != null && !it.framebufferPainted })
+        if (retainedRenderNoOpCommands > MaxRetainedRenderNoOpCommands) {
+            removeDrawingAt(drawings.indexOfFirst { it.renderOperationId != null && !it.framebufferPainted })
         }
-        if (drawings.size - retainedRenderNoOpFills > MaxDrawingCommands) {
-            removeDrawingAt(drawings.indexOfFirst { it.renderFill == null || it.framebufferPainted })
+        if (drawings.size - retainedRenderNoOpCommands > MaxDrawingCommands) {
+            removeDrawingAt(
+                drawings.indexOfFirst {
+                    it.renderOperationId == null || it.framebufferPainted
+                },
+            )
         }
         while (retainedRenderGlyphPlacements > MaxRetainedRenderGlyphPlacements) {
             val index = drawings.indexOfFirst { it.renderGlyphs?.placements?.isNotEmpty() == true }
@@ -10403,7 +10467,7 @@ internal class X11State(
         private const val MaxDrawingCommands = 10_000
         private const val MaxRetainedRenderGlyphPlacements = 100_000
         private const val MaxRetainedRenderFillRectangles = 100_000
-        private const val MaxRetainedRenderNoOpFills = 10_000
+        private const val MaxRetainedRenderNoOpCommands = 10_000
         private const val MaxMotionHistory = 256
         private const val MaxInputOperations = 200
         private const val MaxGlxOperations = 200
@@ -11256,10 +11320,14 @@ internal class X11State(
     private val drawings = mutableListOf<XDrawingCommand>()
     private var retainedRenderGlyphPlacements = 0
     private var retainedRenderFillRectangles = 0
-    private var retainedRenderNoOpFills = 0
+    private var retainedRenderNoOpCommands = 0
+    private var totalRegularDrawingCommands = 0L
+    private var totalRenderNoOpCommands = 0L
     private var totalRenderFillCommands = 0L
     private var totalRenderNoOpFills = 0L
     private var totalRenderFillRectangles = 0L
+    private var totalRenderCompositeCommands = 0L
+    private var totalRenderNoOpComposites = 0L
 
     private data class XRectangle(
         val x: Int,
@@ -12117,6 +12185,29 @@ internal data class XRenderFillCommand(
     val rectangleCount: Int,
 )
 
+internal data class XRenderCompositeCommand(
+    val operation: Int,
+    val sourcePictureId: Int,
+    val sourceFormat: Int,
+    val sourceKind: String,
+    val maskPictureId: Int?,
+    val maskFormat: Int?,
+    val maskKind: String?,
+    val destinationPictureId: Int,
+    val destinationFormat: Int,
+    val destinationKind: String,
+    val sourceX: Int,
+    val sourceY: Int,
+    val maskX: Int,
+    val maskY: Int,
+    val destinationX: Int,
+    val destinationY: Int,
+    val width: Int,
+    val height: Int,
+    val maskDrawableId: Int?,
+    val maskDrawableGeneration: Long?,
+)
+
 internal enum class XDrawingKind {
     Clear,
     Line,
@@ -12173,6 +12264,7 @@ internal data class XDrawingCommand(
     val renderOperationId: Int? = null,
     val renderGlyphs: XRenderGlyphCommand? = null,
     val renderFill: XRenderFillCommand? = null,
+    val renderComposite: XRenderCompositeCommand? = null,
     val imageDataUri: String? = null,
     val sourceDrawableId: Int? = null,
     val drawableGeneration: Long? = null,
@@ -12398,7 +12490,9 @@ internal data class XScreenSnapshot(
     val glxPbuffers: List<XGlxPbufferSnapshot>,
     val overlaps: List<XWindowOverlap>,
     val drawings: List<XDrawingCommand>,
+    val drawingRetention: XDrawingRetentionSnapshot,
     val renderFillRetention: XRenderFillRetentionSnapshot,
+    val renderCompositeRetention: XRenderCompositeRetentionSnapshot,
     val inputOperations: List<XInputOperation>,
     val inputControlOperations: List<XInputControlOperation>,
     val inputGrabs: List<XInputGrabSnapshot>,
@@ -12426,6 +12520,25 @@ internal data class XRenderFillRetentionSnapshot(
     val regularCommandBudget: Int,
     val noOpCommandBudget: Int,
     val rectangleBudget: Int,
+)
+
+internal data class XDrawingRetentionSnapshot(
+    val totalRegularCommands: Long,
+    val retainedRegularCommands: Int,
+    val totalRenderNoOpCommands: Long,
+    val retainedRenderNoOpCommands: Int,
+    val regularCommandBudget: Int,
+    val renderNoOpCommandBudget: Int,
+)
+
+internal data class XRenderCompositeRetentionSnapshot(
+    val totalCommands: Long,
+    val retainedCommands: Int,
+    val totalNoOpCommands: Long,
+    val retainedNoOpCommands: Int,
+    val resolvedOperationLinks: Int,
+    val regularCommandBudget: Int,
+    val noOpCommandBudget: Int,
 )
 
 internal data class XKeyboardMappingSnapshot(

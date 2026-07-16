@@ -4056,10 +4056,13 @@ internal class X11Connection(
         }
         val result = execution.result ?: return
         val destinationDrawableId = execution.destinationDrawableId ?: return
-        state.annotateRenderOperation(
-            operationId,
-            execution.provenance ?: return,
-        )
+        val sourceFormat = execution.sourceFormat ?: return
+        val sourceKind = execution.sourceKind ?: return
+        val destinationFormat = execution.destinationFormat ?: return
+        val destinationKind = execution.destinationKind ?: return
+        execution.provenance?.let {
+            state.annotateRenderOperation(operationId, it, rememberPaint = result.painted)
+        }
         state.draw(
             XDrawingCommand(
                 drawableId = destinationDrawableId,
@@ -4067,10 +4070,31 @@ internal class X11Connection(
                 kind = if (execution.sourceGenerated) XDrawingKind.FillRectangle else XDrawingKind.CopyArea,
                 foreground = execution.sourceSolidPixel ?: 0,
                 rectangles = listOf(rectangle),
-                imageDataUri = XFramebuffer.imageDataUri(result.image),
                 sourceDrawableId = execution.sourceDrawableId,
                 sourceDrawableGeneration = execution.sourceDrawableGeneration,
                 renderOperationId = operationId,
+                renderComposite = XRenderCompositeCommand(
+                    operation = operation,
+                    sourcePictureId = sourceId,
+                    sourceFormat = sourceFormat,
+                    sourceKind = sourceKind,
+                    maskPictureId = maskId.takeUnless { it == 0 },
+                    maskFormat = execution.maskFormat,
+                    maskKind = execution.maskKind,
+                    destinationPictureId = destinationId,
+                    destinationFormat = destinationFormat,
+                    destinationKind = destinationKind,
+                    sourceX = sourceX,
+                    sourceY = sourceY,
+                    maskX = maskX,
+                    maskY = maskY,
+                    destinationX = destinationX,
+                    destinationY = destinationY,
+                    width = width,
+                    height = height,
+                    maskDrawableId = execution.maskDrawableId,
+                    maskDrawableGeneration = execution.maskDrawableGeneration,
+                ),
                 framebufferBacked = true,
                 framebufferPainted = result.painted,
                 rawDrawablePixels = false,
