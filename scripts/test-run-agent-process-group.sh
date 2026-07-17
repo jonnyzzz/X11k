@@ -71,6 +71,28 @@ trap on_term TERM
 wait
 EOF
 chmod +x "$TEST_DIR/bin/gemini"
+cat > "$TEST_DIR/bin/codex" <<'EOF'
+#!/bin/sh
+final_file=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o|--output-last-message)
+      final_file=$2
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+test -n "$final_file"
+verdict=${RUN_AGENT_FAKE_CODEX_VERDICT:-PASS}
+printf '%s\n' "$verdict" '' 'Fake Codex final verdict written only to the dedicated final-message file.' > "$final_file"
+printf '%s\n' 'fake Codex diagnostic stream' >&2
+sleep 1
+exit "${RUN_AGENT_FAKE_CODEX_EXIT_CODE:-0}"
+EOF
+chmod +x "$TEST_DIR/bin/codex"
 printf '%s\n' 'Exercise process-group timeout cleanup.' > "$TEST_DIR/prompt.md"
 
 assert_worker_removed() {
@@ -145,6 +167,76 @@ run_agent_case() {
     echo "$mode run did not retain its attempt token" >&2
     exit 1
   fi
+}
+
+run_codex_final_output_case() {
+  local codex_runs="$TEST_DIR/codex-runs"
+  local run_dir
+  mkdir -p "$codex_runs"
+  PATH="$TEST_DIR/bin:$PATH" \
+  RUNS_DIR="$codex_runs" \
+  RUN_AGENT_PREFLIGHT_WATCH=0 \
+  RUN_AGENT_RELIABILITY_PREAMBLE=0 \
+  RUN_AGENT_CODEX_ISOLATED=0 \
+  RUN_AGENT_TIMEOUT_SECONDS=10 \
+  RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS=0 \
+  RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=0 \
+  RUN_AGENT_HEARTBEAT_SECONDS=0 \
+  RUN_AGENT_HEARTBEAT_STATUS_SECONDS=0 \
+  RUN_AGENT_POLL_SECONDS=1 \
+    "$ROOT/run-agent.sh" codex "$ROOT" "$TEST_DIR/prompt.md"
+  run_dir="$(cd "$codex_runs/latest" && pwd -P)"
+  [[ ! -s "$run_dir/agent-stdout.txt" ]]
+  grep -qx 'PASS' "$run_dir/agent-final.txt"
+  grep -q 'fake Codex diagnostic stream' "$run_dir/agent-stderr.txt"
+  echo "Codex final-output capture passed"
+}
+
+run_review_quorum_final_output_case() {
+  local pass_runs="$TEST_DIR/review-pass-runs"
+  local fail_runs="$TEST_DIR/review-fail-runs"
+  local status
+  mkdir -p "$pass_runs" "$fail_runs"
+  PATH="$TEST_DIR/bin:$PATH" \
+  RUNS_DIR="$pass_runs" \
+  RUN_AGENT_PREFLIGHT_WATCH=0 \
+  RUN_AGENT_RELIABILITY_PREAMBLE=0 \
+  RUN_AGENT_CODEX_ISOLATED=0 \
+  RUN_AGENT_TIMEOUT_SECONDS=10 \
+  RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS=0 \
+  RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=0 \
+  RUN_AGENT_HEARTBEAT_SECONDS=0 \
+  RUN_AGENT_HEARTBEAT_STATUS_SECONDS=0 \
+  RUN_AGENT_POLL_SECONDS=1 \
+  REVIEW_QUORUM_COUNT=1 \
+  REVIEW_QUORUM_MAX_ATTEMPTS=1 \
+    "$ROOT/scripts/run-review-quorum.sh" "$TEST_DIR/prompt.md" > "$TEST_DIR/review-pass.log"
+  grep -q 'ATTEMPT_1_VERDICT_FILE=.*agent-final.txt' "$TEST_DIR/review-pass.log"
+  grep -q 'REVIEW_QUORUM_RESULT=PASS' "$TEST_DIR/review-pass.log"
+
+  set +e
+  PATH="$TEST_DIR/bin:$PATH" \
+  RUNS_DIR="$fail_runs" \
+  RUN_AGENT_FAKE_CODEX_VERDICT=FAIL \
+  RUN_AGENT_FAKE_CODEX_EXIT_CODE=7 \
+  RUN_AGENT_PREFLIGHT_WATCH=0 \
+  RUN_AGENT_RELIABILITY_PREAMBLE=0 \
+  RUN_AGENT_CODEX_ISOLATED=0 \
+  RUN_AGENT_TIMEOUT_SECONDS=10 \
+  RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS=0 \
+  RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=0 \
+  RUN_AGENT_HEARTBEAT_SECONDS=0 \
+  RUN_AGENT_HEARTBEAT_STATUS_SECONDS=0 \
+  RUN_AGENT_POLL_SECONDS=1 \
+  REVIEW_QUORUM_COUNT=1 \
+  REVIEW_QUORUM_MAX_ATTEMPTS=1 \
+    "$ROOT/scripts/run-review-quorum.sh" "$TEST_DIR/prompt.md" > "$TEST_DIR/review-fail.log"
+  status=$?
+  set -e
+  [[ "$status" -eq 1 ]]
+  grep -q 'ATTEMPT_1_VERDICT_FILE=.*agent-final.txt' "$TEST_DIR/review-fail.log"
+  grep -q 'REVIEW_QUORUM_RESULT=FAIL' "$TEST_DIR/review-fail.log"
+  echo "review quorum final-output classification passed"
 }
 
 run_signal_case() {
@@ -328,6 +420,8 @@ run_reused_pid_watch_case() {
 
 run_agent_case timeout 124 2
 run_agent_case normal 0 0
+run_codex_final_output_case
+run_review_quorum_final_output_case
 run_signal_case
 run_stale_watch_case
 run_reused_pid_watch_case

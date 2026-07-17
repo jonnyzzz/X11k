@@ -159,11 +159,7 @@ stdout_verdict() {
     return
   fi
   if [[ "$verdict" == "PASS" ]]; then
-    if (( bytes < MIN_OUTPUT_BYTES )); then
-      echo "EMPTY"
-    else
-      echo "$verdict"
-    fi
+    echo "$verdict"
     return
   fi
   if (( bytes < MIN_OUTPUT_BYTES )); then
@@ -254,7 +250,12 @@ while (( passes < QUORUM_COUNT && attempt < MAX_ATTEMPTS )); do
     continue
   fi
 
-  verdict="$(stdout_verdict "$run_dir/agent-stdout.txt")"
+  verdict_file="$run_dir/agent-stdout.txt"
+  if [[ "$agent" == "codex" && -s "$run_dir/agent-final.txt" ]]; then
+    verdict_file="$run_dir/agent-final.txt"
+  fi
+  record "ATTEMPT_${attempt}_VERDICT_FILE=$verdict_file"
+  verdict="$(stdout_verdict "$verdict_file")"
   record "ATTEMPT_${attempt}_VERDICT=$verdict"
 
   case "$verdict" in
@@ -263,8 +264,8 @@ while (( passes < QUORUM_COUNT && attempt < MAX_ATTEMPTS )); do
       record "REVIEW_QUORUM_RESULT=FAIL"
       record "REVIEW_QUORUM_END_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       echo
-      echo "== failing review stdout =="
-      sed -n '1,220p' "$run_dir/agent-stdout.txt" || true
+      echo "== failing review verdict =="
+      sed -n '1,220p' "$verdict_file" || true
       exit 1
       ;;
     PASS)

@@ -30,6 +30,8 @@ class VSCodeSmokeTest {
         const val VSCodeCaptureWidth = 1280
         const val VSCodeCaptureHeight = 900
         const val VSCodeContainerCommandTimeoutSeconds = 180
+        const val VSCodePreparationTimeoutSeconds = 600
+        const val VSCodeContainerLifetimeSeconds = 1_800
         const val VSCodeParityWorstLimitRatioLimit = 1.0
         const val VSCodeParityMaxLineMeanRgbL1Limit = 48.0
         const val VSCodeParityMaxPixelRgbL1Limit = 64.0
@@ -112,8 +114,11 @@ class VSCodeSmokeTest {
             val stale = File(directory, "vscode-xvfb-reference.png")
             val retainedInputDirectory = File(directory, "project").also { it.mkdirs() }
             val retainedInput = File(retainedInputDirectory, "README.md")
+            val retainedCacheDirectory = File(directory, "vscode-cache").also { it.mkdirs() }
+            val retainedArchive = File(retainedCacheDirectory, "vscode-linux-x64-stable.tar.gz")
             stale.writeText("stale image")
             retainedInput.writeText("tracked input")
+            retainedArchive.writeText("cached archive")
 
             val prepared = prepareVSCodeParityArtifactsDirectory(directory)
 
@@ -121,9 +126,41 @@ class VSCodeSmokeTest {
             assertTrue(prepared.isDirectory)
             assertFalse(stale.exists(), "stale VSCode parity artifacts must not survive into the next bundle")
             assertTrue(retainedInput.isFile, "generated VSCode project input must survive artifact cleanup")
+            assertTrue(retainedArchive.isFile, "host-cached VSCode archives must survive artifact cleanup")
         } finally {
             directory.deleteRecursively()
         }
+    }
+
+    @Test
+    fun `vscode launcher keeps validated downloads in the host cache`() {
+        val launcher = Files.readString(projectRoot().resolve("docker/x11-client/run-vscode.sh"))
+        val url = "https://example.invalid/stable?token=${'$'}value&quote=\"literal\""
+        val container = vscodeContainer("ubuntu:latest", url)
+
+        assertTrue(launcher.contains(": \"${'$'}{VSCODE_CACHE_DIR:=}\""), launcher)
+        assertTrue(launcher.contains("vscode_archive=\"${'$'}VSCODE_CACHE_DIR/"), launcher)
+        assertTrue(launcher.contains("tar -tzf \"${'$'}vscode_archive\""), launcher)
+        assertTrue(launcher.contains("tmp_archive=${'$'}(mktemp \"${'$'}vscode_archive.tmp.XXXXXX\")"), launcher)
+        assertTrue(launcher.contains("flock -w 300 9"), launcher)
+        assertTrue(launcher.contains("trap 'rm -f \"${'$'}tmp_archive\"; exit 1' HUP INT TERM"), launcher)
+        assertTrue(launcher.contains("mv \"${'$'}tmp_archive\" \"${'$'}vscode_archive\""), launcher)
+        assertTrue(launcher.contains("VSCODE_PREPARE_ONLY"), launcher)
+        assertEquals("/tmp/vscode-cache", container.envMap["VSCODE_CACHE_DIR"])
+        assertEquals(url, container.envMap["VSCODE_URL"])
+        val cacheBind = container.binds.single { it.volume.path == "/tmp/vscode-cache" }
+        assertEquals(vscodeCacheDir().toString(), cacheBind.path)
+        assertEquals(listOf("sleep", VSCodeContainerLifetimeSeconds.toString()), container.commandParts.toList())
+        assertTrue(VSCodeContainerLifetimeSeconds > VSCodePreparationTimeoutSeconds)
+    }
+
+    @Test
+    fun `vscode cache is constrained to build tmp`() {
+        val root = projectRoot()
+        val cache = vscodeCacheDir()
+
+        assertTrue(cache.startsWith(root.resolve("build/tmp").normalize()), cache.toString())
+        assertTrue(Files.isDirectory(cache), cache.toString())
     }
 
     @Test
@@ -336,18 +373,16 @@ class VSCodeSmokeTest {
 
         XServer(ServerOptions(host = "0.0.0.0", port = port, width = 1280, height = 900)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
-            vscodeContainer(image)
+            vscodeContainer(image, url)
                 .use { container ->
                     container.start()
+                    prepareVSCode(container, "smoke")
                     val display = port - 6000
                     val startResult = execVSCodeShell(
                         container,
                         """
                         set -eu
                         command -v run-vscode
-                        if [ -n "${url.orEmpty()}" ]; then
-                          export VSCODE_URL="${url.orEmpty()}"
-                        fi
                         DISPLAY=host.docker.internal:$display \
                         VSCODE_PROJECT=/workspace/jonnyzzz-x \
                         run-vscode >/tmp/vscode-run.log 2>&1 &
@@ -478,21 +513,64 @@ class VSCodeSmokeTest {
             DockerClientFactory.instance().client().inspectImageCmd(image).exec()
         }.isSuccess
 
-    private fun vscodeContainer(image: String): GenericContainer<*> =
-        GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
+    private fun vscodeCacheDir(): Path {
+        val root = projectRoot()
+        val cache = root.resolve("build/tmp/vscode-smoke/vscode-cache").normalize()
+        val buildTmp = root.resolve("build/tmp").normalize()
+        check(cache.startsWith(buildTmp)) { "Refusing to use VSCode cache outside build/tmp/: $cache" }
+        Files.createDirectories(cache)
+        return cache
+    }
+
+    private fun vscodeContainer(image: String, url: String?): GenericContainer<*> {
+        val container = GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
             .withFileSystemBind(cleanProjectExport().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
             .withFileSystemBind(
                 projectRoot().resolve("docker/x11-client/run-vscode.sh").toString(),
                 "/usr/local/bin/run-vscode",
                 BindMode.READ_ONLY,
             )
-            .withCommand("sleep", "900")
+            .withFileSystemBind(vscodeCacheDir().toString(), "/tmp/vscode-cache", BindMode.READ_WRITE)
+            .withEnv("VSCODE_CACHE_DIR", "/tmp/vscode-cache")
+            .withCommand("sleep", VSCodeContainerLifetimeSeconds.toString())
+        if (!url.isNullOrBlank()) {
+            container.withEnv("VSCODE_URL", url)
+        }
+        return container
+    }
 
     private fun execContainerShell(container: GenericContainer<*>, timeoutSeconds: Int, script: String) =
         container.execInContainer("timeout", "${timeoutSeconds}s", "sh", "-lc", script)
 
     private fun execVSCodeShell(container: GenericContainer<*>, script: String) =
         execContainerShell(container, VSCodeContainerCommandTimeoutSeconds, script)
+
+    private fun prepareVSCode(container: GenericContainer<*>, label: String) {
+        require(label.matches(Regex("[a-z]+"))) { "Unsafe VSCode preparation label: $label" }
+        val result = execContainerShell(
+            container,
+            VSCodePreparationTimeoutSeconds,
+            """
+            set -eu
+            if ! VSCODE_PREPARE_ONLY=true run-vscode >/tmp/vscode-prepare.log 2>&1; then
+              cat /tmp/vscode-prepare.log
+              exit 1
+            fi
+            """.trimIndent(),
+        )
+        if (result.exitCode != 0) {
+            val retainedLog = execContainerShell(container, 30, "cat /tmp/vscode-prepare.log 2>/dev/null || true").stdout
+            File(vscodeSmokeArtifactsDirectory(), "vscode-$label-prepare-failure.log").writeText(
+                buildString {
+                    appendLine("exitCode=${result.exitCode}")
+                    append(result.stderr)
+                    append(result.stdout)
+                    append(retainedLog)
+                },
+            )
+            assertEquals(0, result.exitCode, "VSCode preparation failed\n${result.stderr}${result.stdout}$retainedLog")
+        }
+    }
 
     private fun httpGet(port: Int, path: String): String =
         Socket("127.0.0.1", port).use { socket ->
@@ -533,9 +611,10 @@ class VSCodeSmokeTest {
     }
 
     private fun runVSCodeAgainstXvfb(image: String, url: String?): VSCodeReferenceCapture =
-        vscodeContainer(image)
+        vscodeContainer(image, url)
             .use { container ->
                 container.start()
+                prepareVSCode(container, "xvfb")
                 compileRobotCapture(container)
                 val result = execVSCodeShell(
                     container,
@@ -543,9 +622,6 @@ class VSCodeSmokeTest {
                     set -eu
                     command -v Xvfb
                     command -v run-vscode
-                    if [ -n "${url.orEmpty()}" ]; then
-                      export VSCODE_URL="${url.orEmpty()}"
-                    fi
                     Xvfb :99 -screen 0 ${VSCodeCaptureWidth}x${VSCodeCaptureHeight}x24 >/tmp/xvfb.log 2>&1 &
                     xvfb=${'$'}!
                     trap 'kill "${'$'}code" 2>/dev/null || true; kill "${'$'}xvfb" 2>/dev/null || true' EXIT
@@ -601,9 +677,10 @@ class VSCodeSmokeTest {
             ),
         ).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
-            vscodeContainer(image)
+            vscodeContainer(image, url)
                 .use { container ->
                     container.start()
+                    prepareVSCode(container, "kotlin")
                     compileRobotCapture(container)
                     val display = port - 6000
                     val startResult = execVSCodeShell(
@@ -611,9 +688,6 @@ class VSCodeSmokeTest {
                         """
                         set -eu
                         command -v run-vscode
-                        if [ -n "${url.orEmpty()}" ]; then
-                          export VSCODE_URL="${url.orEmpty()}"
-                        fi
                         DISPLAY=host.docker.internal:$display \
                         VSCODE_PROJECT=/workspace/jonnyzzz-x \
                         run-vscode >/tmp/vscode-run.log 2>&1 &
@@ -1087,7 +1161,7 @@ class VSCodeSmokeTest {
             "if [ -d /tmp/vscode-log ]; then find /tmp/vscode-log -maxdepth 4 -type f -print | sort | head -80; fi",
         )
         val paths = (
-            listOf("/tmp/vscode-run.log") +
+            listOf("/tmp/vscode-prepare.log", "/tmp/vscode-run.log") +
                 if (dynamicLogs.exitCode == 0) {
                     dynamicLogs.stdout.lineSequence().filter { it.isNotBlank() }.toList()
                 } else {

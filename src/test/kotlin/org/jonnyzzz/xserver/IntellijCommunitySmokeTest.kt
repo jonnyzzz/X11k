@@ -1343,6 +1343,17 @@ class IntellijCommunitySmokeTest {
 
         assertTrue(source.contains("options/ui.lnf.xml"), source)
         assertTrue(source.contains("run-intellij-env.log"), source)
+        assertTrue(source.contains("url_checksum="), source)
+        assertTrue(source.contains("idea-${'$'}{url_checksum}-${'$'}{archive_name}"), source)
+        assertTrue(source.contains("legacy_idea_archive=\"${'$'}IDEA_CACHE_DIR/${'$'}archive_name\""), source)
+        assertTrue(source.contains("adopting validated legacy cache archive"), source)
+        assertTrue(source.contains("[ \"${'$'}idea_url_is_default\" = true ]"), source)
+        assertTrue(source.contains("tmp_archive=${'$'}(mktemp \"${'$'}idea_archive.tmp.XXXXXX\")"), source)
+        assertTrue(source.contains("flock -w 300 9"), source)
+        assertTrue(source.contains("trap 'rm -f \"${'$'}tmp_archive\"; exit 1' HUP INT TERM"), source)
+        assertTrue(source.contains("tar -tzf \"${'$'}idea_archive\""), source)
+        assertTrue(source.contains("tar -tzf \"${'$'}tmp_archive\""), source)
+        assertTrue(source.contains("discarding invalid cached archive"), source)
         assertTrue(source.contains("XDG_CURRENT_DESKTOP"), source)
         assertTrue(source.contains("XDG_SESSION_TYPE"), source)
         assertTrue(source.contains("AWT_TOOLKIT"), source)
@@ -1356,6 +1367,14 @@ class IntellijCommunitySmokeTest {
         assertTrue(harness.contains("runtimeStateMainMenuDisplayMode"), harness)
         assertTrue(harness.contains("intellij-kotlin-config-options-inventory.log"), harness)
         assertTrue(harness.contains("javac --add-modules jdk.attach -d /tmp"), harness)
+    }
+
+    @Test
+    fun `intellij container passes custom archive URL without shell interpolation`() {
+        val url = "https://example.invalid/idea.tar.gz?token=${'$'}value&quote=\"literal\""
+        val container = intellijContainer("ubuntu:latest", url)
+
+        assertEquals(url, container.envMap["IDEA_URL"])
     }
 
     @Test
@@ -2273,7 +2292,7 @@ class IntellijCommunitySmokeTest {
 
         XServer(ServerOptions(host = "0.0.0.0", port = port, width = 1280, height = 900)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
-            intellijContainer(image)
+            intellijContainer(image, url)
                 .use { container ->
                     container.start()
                     val display = port - 6000
@@ -2288,9 +2307,6 @@ class IntellijCommunitySmokeTest {
                           echo "check: ${'$'}*"
                           "${'$'}@"
                         }
-                        if [ -n "${url.orEmpty()}" ]; then
-                          export IDEA_URL="${url.orEmpty()}"
-                        fi
                         DISPLAY=host.docker.internal:$display \
                         IDEA_X11_DEBUG=${intellijDebugValue()} \
                         IDEA_PROJECT=/workspace/jonnyzzz-x \
@@ -2576,7 +2592,7 @@ class IntellijCommunitySmokeTest {
         </application>
         """.trimIndent()
 
-    private fun intellijContainer(image: String, configDir: Path? = null): GenericContainer<*> {
+    private fun intellijContainer(image: String, url: String?, configDir: Path? = null): GenericContainer<*> {
         val container = GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
             .withFileSystemBind(cleanProjectExport().toString(), "/workspace/jonnyzzz-x", BindMode.READ_WRITE)
             .withFileSystemBind(
@@ -2587,6 +2603,9 @@ class IntellijCommunitySmokeTest {
             .withFileSystemBind(intellijCacheDir().toString(), "/tmp/idea-cache", BindMode.READ_WRITE)
             .withEnv("IDEA_CACHE_DIR", "/tmp/idea-cache")
             .withCommand("sleep", "900")
+        if (!url.isNullOrBlank()) {
+            container.withEnv("IDEA_URL", url)
+        }
         if (configDir != null) {
             container.withFileSystemBind(configDir.toString(), "/tmp/idea-config", BindMode.READ_WRITE)
         }
@@ -2822,7 +2841,7 @@ class IntellijCommunitySmokeTest {
         distance <= IntellijRobotSvgCaptureDistanceThreshold
 
     private fun runIntellijAgainstXvfb(image: String, url: String?, configDir: Path): IntellijReferenceCapture =
-        intellijContainer(image, configDir)
+        intellijContainer(image, url, configDir)
             .use { container ->
                 container.start()
                 compileRobotCapture(container)
@@ -2842,9 +2861,6 @@ class IntellijCommunitySmokeTest {
                     test -d /tmp/idea-cache
                     test -x /usr/local/bin/run-intellij
                     cksum /usr/local/bin/run-intellij >/tmp/run-intellij-cksum.log
-                    if [ -n "${url.orEmpty()}" ]; then
-                      export IDEA_URL="${url.orEmpty()}"
-                    fi
                     XVFB_EXTRA_ARGS='${xvfbExtraArgs}'
                     TRACE_XVFB_PUTIMAGE='${traceXvfbPutImage}'
                     xvfb_server_display=:99
@@ -3003,7 +3019,7 @@ class IntellijCommunitySmokeTest {
             ),
         ).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
-            intellijContainer(image, configDir)
+            intellijContainer(image, url, configDir)
                 .use { container ->
                     container.start()
                     compileRobotCapture(container)
@@ -3018,9 +3034,6 @@ class IntellijCommunitySmokeTest {
                         test -d /tmp/idea-cache
                         test -x /usr/local/bin/run-intellij
                         cksum /usr/local/bin/run-intellij >/tmp/run-intellij-cksum.log
-                        if [ -n "${url.orEmpty()}" ]; then
-                          export IDEA_URL="${url.orEmpty()}"
-                        fi
                         DISPLAY=host.docker.internal:$display xdpyinfo -queryExtensions >/tmp/xdpyinfo-extensions-kotlin.log 2>&1 || true
                         DISPLAY=host.docker.internal:$display xdpyinfo -ext GLX >/tmp/xdpyinfo-glx-kotlin.log 2>&1 || true
                         DISPLAY=host.docker.internal:$display \

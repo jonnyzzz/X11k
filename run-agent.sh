@@ -344,6 +344,16 @@ if [ "$RUN_AGENT_PREFLIGHT_WATCH" != "0" ] && \
   done
 fi
 
+# Create the run directory before building the command so agents can receive
+# run-scoped output paths without relying on shell redirection semantics.
+RUN_ID="run_$(date -u +%Y%m%d-%H%M%S)-$$"
+RUN_DIR="$RUNS_DIR/$RUN_ID"
+mkdir -p "$RUN_DIR"
+rm -f "$RUNS_DIR/latest" 2>/dev/null || true
+(cd "$RUNS_DIR" && ln -s "$RUN_ID" latest) 2>/dev/null || true
+cp "$BASE_DIR/run-agent.sh" "$RUN_DIR/run-agent.sh"
+CODEX_FINAL_FILE="$RUN_DIR/agent-final.txt"
+
 # Build agent command array — properly quoted, no eval needed.
 # To add a new agent, add a case entry here and update BUILTIN_AGENTS above.
 AGENT_CMD=()
@@ -353,7 +363,7 @@ case "$AGENT" in
     if [ "$RUN_AGENT_CODEX_ISOLATED" != "0" ]; then
       AGENT_CMD+=(-c 'mcp_servers={}' -c 'features.hooks=false' -c 'plugins={}')
     fi
-    AGENT_CMD+=(-C "$CWD" -)
+    AGENT_CMD+=(--output-last-message "$CODEX_FINAL_FILE" -C "$CWD" -)
     ;;
   claude)
     AGENT_CMD=(claude -p --input-format text --output-format text --tools default --permission-mode bypassPermissions)
@@ -370,13 +380,6 @@ case "$AGENT" in
     exit 2
     ;;
 esac
-
-RUN_ID="run_$(date -u +%Y%m%d-%H%M%S)-$$"
-RUN_DIR="$RUNS_DIR/$RUN_ID"
-mkdir -p "$RUN_DIR"
-rm -f "$RUNS_DIR/latest" 2>/dev/null || true
-(cd "$RUNS_DIR" && ln -s "$RUN_ID" latest) 2>/dev/null || true
-cp "$BASE_DIR/run-agent.sh" "$RUN_DIR/run-agent.sh"
 
 CODEX_HOME_OVERRIDE=""
 if [ "$AGENT" = "codex" ] && [ "$RUN_AGENT_CODEX_ISOLATED" != "0" ]; then

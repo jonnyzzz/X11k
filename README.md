@@ -155,12 +155,12 @@ All tracked protocol clients and reduced Xvfb oracles are native Kotlin/JUnit
 tests under `src/test/kotlin`; no tracked Python test sources remain. Gradle
 `check` enforces Kotlin/JUnit as the single JVM test stack with
 `verifyKotlinTestSources`. The latest full check ran
-1,385 tests (1,381 passed and 4 heavyweight opt-in cases skipped) in
-`runs/gradle-bounded/run_20260716-085144-72955`.
+1,388 tests (1,384 passed and 4 heavyweight opt-in cases skipped) in
+`runs/gradle-bounded/run_20260717-111545-80452`.
 
 The latest deterministic IntelliJ parity run
 `runs/gradle-bounded/run_20260716-085739-81366` and VSCode parity run
-`runs/gradle-bounded/run_20260715-221046-61229` are pixel-exact against their
+`runs/gradle-bounded/run_20260716-150852-98699` are pixel-exact against their
 Xvfb references. The requested Java AWS application is not yet represented by a
 tracked artifact or smoke fixture, so its harness is the next compatibility
 milestone rather than a reason to speculate about additional extensions.
@@ -198,14 +198,16 @@ Build only the reusable X11 client image before running heavyweight GUI demos:
 scripts/run-supervised.sh gradle dockerBuildX11Client
 ```
 
-The IntelliJ release archive is intentionally not baked into the image; `run-intellij`
-downloads it on first use inside the container. Set `IDEA_CACHE_DIR` to reuse the
-downloaded archive across disposable containers; the smoke and parity tests bind
-`build/tmp/intellij-community-smoke/idea-cache` for that purpose. The Docker
-helper also seeds the IntelliJ first-run agreement state, registers the bundled
-JetBrains Runtime as a JDK, disables first-run onboarding, and enables project
-trust for the isolated container by default so the mounted repository opens
-directly.
+The IntelliJ release archive is intentionally not baked into the image. Set
+`IDEA_CACHE_DIR` to reuse the validated downloaded archive across disposable
+containers; the smoke and parity tests bind the host directory
+`build/tmp/intellij-community-smoke/idea-cache` for that purpose. Cache entries
+are keyed by the full download URL, and a validated archive from the previous
+basename-only layout is adopted for the default IntelliJ release without being
+downloaded again. The Docker helper also seeds the IntelliJ first-run agreement
+state, registers the bundled JetBrains Runtime as a JDK, disables first-run
+onboarding, and enables project trust for the isolated container by default so
+the mounted repository opens directly.
 
 The IntelliJ Community smoke is intentionally opt-in because it downloads a large GitHub release artifact:
 
@@ -244,7 +246,10 @@ copied into the same diagnostics directory, including pid-suffixed JCEF/Chromium
 logs and Mesa/EGL debug output in the run log.
 
 The VSCode/Electron smoke is also opt-in because it downloads the current stable
-VSCode tarball. It records the Kotlin server text/SVG/HTML view, a compact
+VSCode tarball. The fixture validates and atomically stores the archive in the
+host directory `build/tmp/vscode-smoke/vscode-cache`, then reuses it for both
+the Xvfb and Kotlin containers. Delete that cache directory to intentionally
+refresh the `latest` archive. The test records the Kotlin server text/SVG/HTML view, a compact
 extension and GLX diagnostics summary, and VSCode logs under
 `build/tmp/vscode-smoke/`;
 set `-Dx.vscodeUrl=...` or `X_VSCODE_URL=...` to pin a specific archive instead

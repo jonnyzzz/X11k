@@ -36,7 +36,9 @@ if [ -z "$IDEA_PROJECT" ]; then
   fi
 fi
 
+idea_url_is_default=false
 if [ -z "${IDEA_URL:-}" ]; then
+  idea_url_is_default=true
   case "$(uname -m)" in
     aarch64|arm64)
       IDEA_URL=https://github.com/JetBrains/intellij-community/releases/download/idea/2026.1.3/idea-2026.1.3-aarch64.tar.gz
@@ -48,29 +50,63 @@ if [ -z "${IDEA_URL:-}" ]; then
 fi
 
 idea_archive=/tmp/idea.tar.gz
+legacy_idea_archive=
 if [ -n "$IDEA_CACHE_DIR" ]; then
   mkdir -p "$IDEA_CACHE_DIR"
   archive_name=$(basename "${IDEA_URL%%\?*}")
   if [ -z "$archive_name" ]; then
     archive_name=idea.tar.gz
   fi
-  idea_archive="$IDEA_CACHE_DIR/$archive_name"
+  url_checksum=$(printf '%s' "$IDEA_URL" | cksum | awk '{print $1}')
+  idea_archive="$IDEA_CACHE_DIR/idea-${url_checksum}-${archive_name}"
+  legacy_idea_archive="$IDEA_CACHE_DIR/$archive_name"
 fi
 
 mkdir -p "$IDEA_HOME" "$IDEA_CONFIG" "$IDEA_SYSTEM" "$IDEA_LOG" "$IDEA_PLUGINS" "$IDEA_PROJECT"
 
 if [ ! -x "$IDEA_HOME/bin/idea.sh" ]; then
+  if [ -n "$IDEA_CACHE_DIR" ]; then
+    exec 9>"$idea_archive.lock"
+    if ! flock -w 300 9; then
+      echo "[run-intellij] timed out waiting for cache lock: $idea_archive.lock" >&2
+      exit 1
+    fi
+  fi
+  if [ "$idea_url_is_default" = true ] && [ ! -s "$idea_archive" ] && [ -s "$legacy_idea_archive" ]; then
+    if tar -tzf "$legacy_idea_archive" >/dev/null 2>&1; then
+      echo "[run-intellij] adopting validated legacy cache archive: $legacy_idea_archive -> $idea_archive" >&2
+      mv "$legacy_idea_archive" "$idea_archive"
+    else
+      echo "[run-intellij] discarding invalid legacy cache archive: $legacy_idea_archive" >&2
+      rm -f "$legacy_idea_archive"
+    fi
+  fi
+  if [ -s "$idea_archive" ] && ! tar -tzf "$idea_archive" >/dev/null 2>&1; then
+    echo "[run-intellij] discarding invalid cached archive: $idea_archive" >&2
+    rm -f "$idea_archive"
+  fi
   if [ ! -s "$idea_archive" ]; then
     echo "[run-intellij] downloading IDEA archive: $IDEA_URL -> $idea_archive" >&2
-    tmp_archive="$idea_archive.tmp.$$"
-    rm -f "$tmp_archive"
+    tmp_archive=$(mktemp "$idea_archive.tmp.XXXXXX")
+    trap 'rm -f "$tmp_archive"' EXIT
+    trap 'rm -f "$tmp_archive"; exit 1' HUP INT TERM
     if ! curl -fL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 30 --speed-limit 1024 --speed-time 30 "$IDEA_URL" -o "$tmp_archive"; then
       rm -f "$tmp_archive"
       exit 1
     fi
+    if ! tar -tzf "$tmp_archive" >/dev/null 2>&1; then
+      echo "[run-intellij] downloaded archive is invalid: $tmp_archive" >&2
+      rm -f "$tmp_archive"
+      exit 1
+    fi
     mv "$tmp_archive" "$idea_archive"
+    trap - EXIT HUP INT TERM
   else
     echo "[run-intellij] using cached IDEA archive: $idea_archive" >&2
+  fi
+  if [ -n "$IDEA_CACHE_DIR" ]; then
+    flock -u 9
+    exec 9>&-
   fi
   echo "[run-intellij] extracting IDEA archive into $IDEA_HOME" >&2
   tar -xzf "$idea_archive" -C "$IDEA_HOME" --strip-components=1
