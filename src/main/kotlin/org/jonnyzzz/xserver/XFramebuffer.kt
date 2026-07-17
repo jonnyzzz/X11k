@@ -5747,12 +5747,14 @@ internal class XFramebuffer(
         const val TextDescent = 2
         const val TextCellHeight = TextAscent + TextDescent
 
+        fun canAllocate(width: Int, height: Int): Boolean =
+            width > 0 && height > 0 && width.toLong() * height.toLong() <= MaxPixels
+
         private fun framebufferSize(width: Int, height: Int): Pair<Int, Int> {
             val safeWidth = width.coerceAtLeast(0)
             val safeHeight = height.coerceAtLeast(0)
             if (safeWidth == 0 || safeHeight == 0) return 0 to 0
-            val pixels = safeWidth.toLong() * safeHeight.toLong()
-            if (pixels > MaxPixels) return 0 to 0
+            if (!canAllocate(safeWidth, safeHeight)) return 0 to 0
             return safeWidth to safeHeight
         }
 

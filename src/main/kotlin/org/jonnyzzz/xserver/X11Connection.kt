@@ -7593,6 +7593,7 @@ internal class X11Connection(
         if (width == 0) return writeError(error = 2, opcode = 53, badValue = width)
         if (height == 0) return writeError(error = 2, opcode = 53, badValue = height)
         if (depth !in SupportedPixmapDepths) return writeError(error = 2, opcode = 53, badValue = depth)
+        if (!XFramebuffer.canAllocate(width, height)) return writeError(error = 11, opcode = 53, badValue = 0)
         state.putPixmap(
             XPixmap(
                 id = id,

@@ -16,6 +16,8 @@ Kotlin/JUnit tests under `src/test/kotlin`. The Gradle `check` lifecycle runs
 under `src/test` so a standalone reproducer cannot silently become an
 unmaintained second test stack and Kotlin/JUnit remains the single maintained
 JVM test language.
+Core protocol coverage includes `CreatePixmap` validation and allocation-error
+ordering, resource-ID reuse after `BadAlloc`, and the framebuffer pixel limit.
 
 ## Docker Clients
 

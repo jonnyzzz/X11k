@@ -6,11 +6,20 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class XFramebufferTest {
+    @Test
+    fun `framebuffer allocation predicate includes the bounded pixel limit`() {
+        assertTrue(XFramebuffer.canAllocate(4096, 4096))
+        assertFalse(XFramebuffer.canAllocate(24_929, 673))
+        assertFalse(XFramebuffer.canAllocate(0, 1))
+        assertFalse(XFramebuffer.canAllocate(1, 0))
+    }
+
     @Test
     fun `image data uri generation is stable under concurrent diagnostics`() {
         val image = XImagePixels(

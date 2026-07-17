@@ -9,15 +9,15 @@ Extension work remains governed by `workflow/extension-scope.md`.
 - Production and tracked protocol/oracle tests are pure Kotlin/JVM. All tests
   under `src/test` are Kotlin/JUnit; `check` rejects non-Kotlin JVM and Python
   test sources.
-- The default suite contains 1,397 JUnit tests (4 heavyweight opt-in tests are
+- The default suite contains 1,399 JUnit tests (4 heavyweight opt-in tests are
   skipped by default). Full `check` passed in
-  `runs/gradle-bounded/run_20260717-160359-64441`.
+  `runs/gradle-bounded/run_20260717-170657-55258`.
 - IntelliJ deterministic project-open parity is pixel-exact for the Xvfb Robot,
   Kotlin Robot, and Kotlin SVG-composed captures. The parity run
-  `runs/gradle-bounded/run_20260717-161014-76402` reports all three distances as
+  `runs/gradle-bounded/run_20260717-164934-32757` reports all three distances as
   `0.0`, no mismatch bounds, and no unsupported requests.
 - VSCode deterministic parity is pixel-exact for Robot and SVG-composed output
-  against Xvfb. Run `runs/gradle-bounded/run_20260717-160926-75118` reports both
+  against Xvfb. Run `runs/gradle-bounded/run_20260717-164844-31774` reports both
   distances as `0.0` and no unsupported requests.
 - No Java AWS application artifact, source fixture, launch command, or expected
   visual state is tracked in this repository. Its compatibility is therefore
@@ -52,6 +52,9 @@ Extension work remains governed by `workflow/extension-scope.md`.
   one bounded 10,000-command semantic budget.
 - Same-port HTTP/HTML, SVG, text, JSON, and input endpoints derived from the
   maintained server state rather than a separate visual model.
+- Core pixmap creation rejects requests beyond the bounded framebuffer capacity
+  with `BadAlloc`, so retained drawable geometry cannot disagree with a silently
+  empty backing store and failed resource IDs remain reusable.
 - Differential Docker coverage for X11 tools, classic clients, AWT/Swing,
   IntelliJ IDEA Community, and VSCode/Electron.
 - Advertised and maintained extension inventory: BIG-REQUESTS, RENDER, MIT-SHM,

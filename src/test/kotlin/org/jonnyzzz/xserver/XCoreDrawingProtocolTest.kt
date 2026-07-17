@@ -822,6 +822,39 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreatePixmap reports BadAlloc for oversized backing store without reserving id`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingDrawable = 0x0020_9999
+                val candidate = PixmapId + 1
+                val out = socket.getOutputStream()
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2, drawable = X11Ids.RootWindow))
+                out.write(createPixmapRequest(PixmapId, width = 65535, height = 65535, drawable = X11Ids.RootWindow))
+                out.write(createPixmapRequest(candidate, width = 65535, height = 65535, drawable = missingDrawable))
+                out.write(createPixmapRequest(candidate, width = 65535, height = 65535, depth = 7, drawable = X11Ids.RootWindow))
+                out.write(createPixmapRequest(candidate, width = 65535, height = 65535, drawable = X11Ids.RootWindow))
+                out.write(createPixmapRequest(candidate, width = 2, height = 2, drawable = X11Ids.RootWindow))
+                out.write(createGcRequest(GcId, foreground = Blue, drawable = candidate))
+                out.write(polyPointRequest(candidate, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(getImageRequest(candidate, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 14, opcode = 53, badValue = PixmapId, sequence = 2)
+                assertError(socket.getInputStream(), error = 9, opcode = 53, badValue = missingDrawable, sequence = 3)
+                assertError(socket.getInputStream(), error = 2, opcode = 53, badValue = 7, sequence = 4)
+                assertError(socket.getInputStream(), error = 11, opcode = 53, badValue = 0, sequence = 5)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CreatePixmap PutImage and GetImage support advertised depth 16 ZPixmap`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2295,7 +2328,7 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
-    fun `CreateCursor rejects oversized cursor image snapshots and recovers stream`() {
+    fun `CreatePixmap rejects oversized cursor source before CreateCursor and recovers stream`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             Socket("127.0.0.1", server.localPort).use { socket ->
@@ -2310,7 +2343,8 @@ class XCoreDrawingProtocolTest {
                 out.write(queryPointerRequest())
                 out.flush()
 
-                assertError(socket.getInputStream(), error = 11, opcode = 93, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 11, opcode = 53, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 4, opcode = 93, badValue = source, sequence = 2)
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(1, pointer[0].toInt() and 0xff)
                 assertEquals(3, u16le(pointer, 2))
