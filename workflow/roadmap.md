@@ -1,6 +1,6 @@
 # Roadmap
 
-Status reviewed on 2026-07-16. The compatibility target is IntelliJ IDEA,
+Status reviewed on 2026-07-17. The compatibility target is IntelliJ IDEA,
 VSCode, and the Java AWS application, not unrestricted Xvfb feature parity.
 Extension work remains governed by `workflow/extension-scope.md`.
 
@@ -9,15 +9,15 @@ Extension work remains governed by `workflow/extension-scope.md`.
 - Production and tracked protocol/oracle tests are pure Kotlin/JVM. All tests
   under `src/test` are Kotlin/JUnit; `check` rejects non-Kotlin JVM and Python
   test sources.
-- The default suite contains 1,385 JUnit tests (4 heavyweight opt-in tests are
+- The default suite contains 1,393 JUnit tests (4 heavyweight opt-in tests are
   skipped by default). Full `check` passed in
-  `runs/gradle-bounded/run_20260716-085144-72955`.
+  `runs/gradle-bounded/run_20260717-151325-75812`.
 - IntelliJ deterministic project-open parity is pixel-exact for the Xvfb Robot,
   Kotlin Robot, and Kotlin SVG-composed captures. The parity run
-  `runs/gradle-bounded/run_20260716-085739-81366` reports all three distances as
+  `runs/gradle-bounded/run_20260717-132014-64950` reports all three distances as
   `0.0`, no mismatch bounds, and no unsupported requests.
 - VSCode deterministic parity is pixel-exact for Robot and SVG-composed output
-  against Xvfb. Run `runs/gradle-bounded/run_20260715-221046-61229` reports both
+  against Xvfb. Run `runs/gradle-bounded/run_20260717-131916-63123` reports both
   distances as `0.0` and no unsupported requests.
 - No Java AWS application artifact, source fixture, launch command, or expected
   visual state is tracked in this repository. Its compatibility is therefore
@@ -57,8 +57,10 @@ Extension work remains governed by `workflow/extension-scope.md`.
 - Advertised and maintained extension inventory: BIG-REQUESTS, RENDER, MIT-SHM,
   XFIXES, SHAPE, XKEYBOARD, RANDR, SYNC, DOUBLE-BUFFER, XC-MISC, XINERAMA,
   MIT-SCREEN-SAVER, Generic Event Extension, minimal GLX, minimal
-  XInputExtension, XTEST, and MIT-SUNDRY-NONSTANDARD. Deeper work still needs
-  target evidence.
+  XInputExtension, XTEST, and MIT-SUNDRY-NONSTANDARD. VSCode's observed XI2
+  selection path validates device/event masks, enforces exclusive touch and
+  gesture ownership across clients, and keeps client/window lifecycle state.
+  Deeper work still needs target evidence.
 
 ## Remaining Acceptance Work
 

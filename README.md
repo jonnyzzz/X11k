@@ -155,12 +155,12 @@ All tracked protocol clients and reduced Xvfb oracles are native Kotlin/JUnit
 tests under `src/test/kotlin`; no tracked Python test sources remain. Gradle
 `check` enforces Kotlin/JUnit as the single JVM test stack with
 `verifyKotlinTestSources`. The latest full check ran
-1,388 tests (1,384 passed and 4 heavyweight opt-in cases skipped) in
-`runs/gradle-bounded/run_20260717-111545-80452`.
+1,393 tests (1,389 passed and 4 heavyweight opt-in cases skipped) in
+`runs/gradle-bounded/run_20260717-151325-75812`.
 
 The latest deterministic IntelliJ parity run
-`runs/gradle-bounded/run_20260716-085739-81366` and VSCode parity run
-`runs/gradle-bounded/run_20260716-150852-98699` are pixel-exact against their
+`runs/gradle-bounded/run_20260717-132014-64950` and VSCode parity run
+`runs/gradle-bounded/run_20260717-131916-63123` are pixel-exact against their
 Xvfb references. The requested Java AWS application is not yet represented by a
 tracked artifact or smoke fixture, so its harness is the next compatibility
 milestone rather than a reason to speculate about additional extensions.
@@ -207,7 +207,9 @@ basename-only layout is adopted for the default IntelliJ release without being
 downloaded again. The Docker helper also seeds the IntelliJ first-run agreement
 state, registers the bundled JetBrains Runtime as a JDK, disables first-run
 onboarding, and enables project trust for the isolated container by default so
-the mounted repository opens directly.
+the mounted repository opens directly. The README screenshot helper uses this
+same host cache by default instead of keeping another copy under its run
+directory.
 
 The IntelliJ Community smoke is intentionally opt-in because it downloads a large GitHub release artifact:
 

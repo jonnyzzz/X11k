@@ -32,7 +32,6 @@ internal class X11Connection(
     private var closeDownHandled = false
     private var pendingSyncCounterAwait: List<XSyncWaitCondition>? = null
     private var pendingSyncFenceAwait: List<Int>? = null
-    private val xinputXi2SelectedEvents = linkedMapOf<Int, LinkedHashMap<Int, ByteArray>>()
     private var xinputClientPointerDeviceId: Int? = null
 
     fun run() {
@@ -9349,10 +9348,14 @@ internal class X11Connection(
 
     private fun xinputXiSelectEvents(body: ByteArray, majorOpcode: Int) {
         if (body.size < 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = 0)
-        val windowId = byteOrder.u32(body, 0)
-        state.window(windowId) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = windowId)
         val maskCount = byteOrder.u16(body, 4)
         if (maskCount == 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = 0)
+        if (byteOrder == ByteOrder.MsbFirst && !xinputXiSelectEventsMasksFit(body, maskCount)) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = 0)
+        }
+        val windowId = byteOrder.u32(body, 0)
+        val window = state.window(windowId)
+            ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = windowId)
         val selected = mutableListOf<Pair<Int, ByteArray>>()
         var offset = 8
         repeat(maskCount) {
@@ -9361,29 +9364,87 @@ internal class X11Connection(
             val maskUnits = byteOrder.u16(body, offset + 2)
             val nextOffset = offset.toLong() + 4L + maskUnits.toLong() * 4L
             if (nextOffset > body.size) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = 0)
-            selected += deviceId to body.copyOfRange(offset + 4, nextOffset.toInt())
+            val mask = body.copyOfRange(offset + 4, nextOffset.toInt())
+            if (xinputDeviceIds(deviceId) == null) {
+                return writeError(error = XXInput.BadDevice, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = deviceId)
+            }
+            val invalidEvent = xinputXiSelectionBadValue(windowId, deviceId, mask)
+            if (invalidEvent != null) {
+                return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = invalidEvent)
+            }
+            if (state.xinputXi2SelectionConflict(this, windowId, deviceId, mask)) {
+                return writeError(error = 10, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = 0)
+            }
+            val invalidMaskBit = xinputXiSelectionInvalidMaskBit(mask)
+            if (invalidMaskBit != null) {
+                return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = invalidMaskBit)
+            }
+            selected += deviceId to XXInput.canonicalEventMask(mask)
             offset = nextOffset.toInt()
         }
         if (offset != body.size) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = 0)
-        val windowSelections = xinputXi2SelectedEvents.getOrPut(windowId) { linkedMapOf() }
-        selected.forEach { (deviceId, mask) ->
-            if (mask.isEmpty() || mask.all { it == 0.toByte() }) {
-                windowSelections.remove(deviceId)
-            } else {
-                windowSelections[deviceId] = mask
-            }
-        }
-        if (windowSelections.isEmpty()) {
-            xinputXi2SelectedEvents.remove(windowId)
+        when (state.updateXinputXi2SelectedEvents(this, window, selected)) {
+            XXInputSelectionUpdateResult.Success -> Unit
+            XXInputSelectionUpdateResult.BadWindow ->
+                return writeError(error = 3, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = windowId)
+            XXInputSelectionUpdateResult.BadAccess ->
+                return writeError(error = 10, opcode = majorOpcode, minorOpcode = XXInput.XISelectEvents, badValue = 0)
         }
     }
+
+    private fun xinputXiSelectEventsMasksFit(body: ByteArray, maskCount: Int): Boolean {
+        var offset = 8
+        repeat(maskCount) {
+            if (offset + 4 > body.size) return false
+            val maskUnits = byteOrder.u16(body, offset + 2)
+            val nextOffset = offset.toLong() + 4L + maskUnits.toLong() * 4L
+            if (nextOffset > body.size) return false
+            offset = nextOffset.toInt()
+        }
+        return true
+    }
+
+    private fun xinputXiSelectionBadValue(windowId: Int, deviceId: Int, mask: ByteArray): Int? {
+        if (deviceId != XXInput.XIAllDevices && XXInput.eventMaskContains(mask, XXInput.XIHierarchyChanged)) {
+            return XXInput.XIHierarchyChanged
+        }
+        if (windowId != X11Ids.RootWindow && XXInput.rawEvents.any { XXInput.eventMaskContains(mask, it) }) {
+            return XXInput.XIRawKeyPress
+        }
+        if (
+            XXInput.touchSelectionEvents.any { XXInput.eventMaskContains(mask, it) } &&
+            !XXInput.touchEvents.all { XXInput.eventMaskContains(mask, it) }
+        ) {
+            return XXInput.XITouchBegin
+        }
+        if (
+            XXInput.gesturePinchEvents.any { XXInput.eventMaskContains(mask, it) } &&
+            !XXInput.gesturePinchEvents.all { XXInput.eventMaskContains(mask, it) }
+        ) {
+            return XXInput.XIGesturePinchBegin
+        }
+        if (
+            XXInput.gestureSwipeEvents.any { XXInput.eventMaskContains(mask, it) } &&
+            !XXInput.gestureSwipeEvents.all { XXInput.eventMaskContains(mask, it) }
+        ) {
+            return XXInput.XIGestureSwipeBegin
+        }
+        return null
+    }
+
+    private fun xinputXiSelectionInvalidMaskBit(mask: ByteArray): Int? =
+        ((XXInput.XILastEvent + 1) until mask.size * 8)
+            .firstOrNull { XXInput.eventMaskContains(mask, it) }
 
     private fun xinputXiGetSelectedEvents(body: ByteArray, majorOpcode: Int) {
         if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXInput.XIGetSelectedEvents, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
-        state.window(windowId) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XXInput.XIGetSelectedEvents, badValue = windowId)
-        val selected = xinputXi2SelectedEvents[windowId].orEmpty()
-        val payloadSize = selected.values.sumOf { 4 + it.size }
+        val result = state.xinputXi2SelectedEvents(this, windowId)
+        if (!result.windowExists) {
+            return writeError(error = 3, opcode = majorOpcode, minorOpcode = XXInput.XIGetSelectedEvents, badValue = windowId)
+        }
+        val selected = result.selected
+        val payloadSize = selected.sumOf { 4 + it.second.size }
         val payload = ByteArray(payloadSize)
         var offset = 0
         selected.forEach { (deviceId, mask) ->

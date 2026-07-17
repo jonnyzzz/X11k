@@ -32,6 +32,17 @@ internal data class XResourceRemoval(
     val colormapNotifyDispatches: List<XColormapNotifyDispatch> = emptyList(),
 )
 
+internal enum class XXInputSelectionUpdateResult {
+    Success,
+    BadWindow,
+    BadAccess,
+}
+
+internal data class XXInputSelectedEventsResult(
+    val windowExists: Boolean,
+    val selected: List<Pair<Int, ByteArray>> = emptyList(),
+)
+
 internal data class XRenderImageResult(
     val image: XImagePixels,
     val painted: Boolean,
@@ -222,6 +233,7 @@ internal class X11State(
     private val windowOwners = linkedMapOf<Int, XEventSink>()
     private val resourceOwners = linkedMapOf<Int, XEventSink>()
     private val eventSinks = linkedMapOf<XEventSink, MutableMap<Int, Int>>()
+    private val xinputXi2SelectedEvents = linkedMapOf<XEventSink, LinkedHashMap<Int, LinkedHashMap<Int, ByteArray>>>()
     private val saveSets = linkedMapOf<XEventSink, LinkedHashMap<Int, XSaveSetEntry>>()
     private val retainedClients = linkedMapOf<Int, XRetainedClientResources>()
     private var nextRetainedClientId = 1
@@ -3017,6 +3029,7 @@ internal class X11State(
             }
         val xkbControlsNotifyDispatches = xkbPerClientAutoResetControlsDispatches(sink)
         eventSinks.remove(sink)
+        xinputXi2SelectedEvents.remove(sink)
         selectionOwners.entries.removeIf { it.value.sink == sink }
         xfixesSelectionInputs.remove(sink)
         xfixesCursorInputs.remove(sink)
@@ -3056,6 +3069,54 @@ internal class X11State(
         return eventSinks.none { (otherSink, selections) ->
             otherSink != sink && (selections[windowId]?.let { it and exclusiveMask } ?: 0) != 0
         }
+    }
+
+    @Synchronized
+    fun updateXinputXi2SelectedEvents(
+        owner: XEventSink,
+        window: XWindow,
+        selected: List<Pair<Int, ByteArray>>,
+    ): XXInputSelectionUpdateResult {
+        val windowId = window.id
+        if (windows[windowId] !== window) return XXInputSelectionUpdateResult.BadWindow
+        if (selected.any { (deviceId, mask) -> xinputXi2SelectionConflictLocked(owner, windowId, deviceId, mask) }) {
+            return XXInputSelectionUpdateResult.BadAccess
+        }
+
+        val ownerWindows = xinputXi2SelectedEvents.getOrPut(owner) { linkedMapOf() }
+        val windowSelections = ownerWindows.getOrPut(windowId) { linkedMapOf() }
+        selected.forEach { (deviceId, mask) ->
+            if (mask.isEmpty() || mask.all { it == 0.toByte() }) {
+                windowSelections.remove(deviceId)
+            } else {
+                windowSelections[deviceId] = mask.copyOf()
+            }
+        }
+        if (windowSelections.isEmpty()) ownerWindows.remove(windowId)
+        if (ownerWindows.isEmpty()) xinputXi2SelectedEvents.remove(owner)
+        return XXInputSelectionUpdateResult.Success
+    }
+
+    @Synchronized
+    fun xinputXi2SelectionConflict(owner: XEventSink, windowId: Int, deviceId: Int, mask: ByteArray): Boolean =
+        xinputXi2SelectionConflictLocked(owner, windowId, deviceId, mask)
+
+    private fun xinputXi2SelectionConflictLocked(owner: XEventSink, windowId: Int, deviceId: Int, mask: ByteArray): Boolean =
+        XXInput.exclusiveSelectionEvents.any { eventType ->
+            XXInput.eventMaskContains(mask, eventType) && xinputXi2SelectedEvents.any { (otherOwner, windows) ->
+                otherOwner != owner &&
+                    windows[windowId]?.get(deviceId)?.let { XXInput.eventMaskContains(it, eventType) } == true
+            }
+        }
+
+    @Synchronized
+    fun xinputXi2SelectedEvents(owner: XEventSink, windowId: Int): XXInputSelectedEventsResult {
+        if (!windows.containsKey(windowId)) return XXInputSelectedEventsResult(windowExists = false)
+        val selected = xinputXi2SelectedEvents[owner]
+            ?.get(windowId)
+            ?.map { (deviceId, mask) -> deviceId to mask.copyOf() }
+            .orEmpty()
+        return XXInputSelectedEventsResult(windowExists = true, selected = selected)
     }
 
     @Synchronized
@@ -10747,6 +10808,12 @@ internal class X11State(
                 selections.remove(windowId)
             }
         }
+        for (ownerWindows in xinputXi2SelectedEvents.values) {
+            for (windowId in windowIds) {
+                ownerWindows.remove(windowId)
+            }
+        }
+        xinputXi2SelectedEvents.entries.removeIf { it.value.isEmpty() }
     }
 
     private fun childrenBefore(children: List<XWindow>, child: XWindow): List<XWindow> =

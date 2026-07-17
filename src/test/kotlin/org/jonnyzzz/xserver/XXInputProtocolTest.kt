@@ -7,6 +7,7 @@ import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class XXInputProtocolTest {
     @Test
@@ -148,6 +149,7 @@ class XXInputProtocolTest {
                 out.write(request(XXInput.MajorOpcode, XXInput.XIQueryVersion, ByteArray(0)))
                 out.write(xinputXiQueryVersionRequest(1, 5))
                 out.write(xinputXiSelectEventsRequest(0x0102_0304, emptyList()))
+                out.write(xinputXiSelectEventsRequest(0x0102_0304, listOf(XXInput.XIAllDevices to byteArrayOf())))
                 out.write(request(XXInput.MajorOpcode, XXInput.XISelectEvents, u32leBytes(X11Ids.RootWindow)))
                 out.write(xinputXiSelectEventsRequest(X11Ids.RootWindow, emptyList()))
                 out.write(
@@ -174,17 +176,18 @@ class XXInputProtocolTest {
                 assertError(socket.getInputStream(), error = 16, sequence = 1, minorOpcode = XXInput.XIQueryVersion)
                 assertError(socket.getInputStream(), error = 2, badValue = 1, sequence = 2, minorOpcode = XXInput.XIQueryVersion)
 
-                assertError(socket.getInputStream(), error = 3, badValue = 0x0102_0304, sequence = 3, minorOpcode = XXInput.XISelectEvents)
-                assertError(socket.getInputStream(), error = 16, sequence = 4, minorOpcode = XXInput.XISelectEvents)
-                assertError(socket.getInputStream(), error = 2, sequence = 5, minorOpcode = XXInput.XISelectEvents)
+                assertError(socket.getInputStream(), error = 2, sequence = 3, minorOpcode = XXInput.XISelectEvents)
+                assertError(socket.getInputStream(), error = 3, badValue = 0x0102_0304, sequence = 4, minorOpcode = XXInput.XISelectEvents)
+                assertError(socket.getInputStream(), error = 16, sequence = 5, minorOpcode = XXInput.XISelectEvents)
+                assertError(socket.getInputStream(), error = 2, sequence = 6, minorOpcode = XXInput.XISelectEvents)
 
-                assertError(socket.getInputStream(), error = 16, sequence = 7, minorOpcode = XXInput.XIGetSelectedEvents)
-                assertError(socket.getInputStream(), error = 3, badValue = 0x0102_0304, sequence = 8, minorOpcode = XXInput.XIGetSelectedEvents)
+                assertError(socket.getInputStream(), error = 16, sequence = 8, minorOpcode = XXInput.XIGetSelectedEvents)
+                assertError(socket.getInputStream(), error = 3, badValue = 0x0102_0304, sequence = 9, minorOpcode = XXInput.XIGetSelectedEvents)
 
                 val selected = readReply(socket.getInputStream())
                 assertXi2SelectedEvents(
                     selected,
-                    sequence = 9,
+                    sequence = 10,
                     expected = listOf(
                         0 to byteArrayOf(0x01, 0x00, 0x00, 0x00),
                         XXInput.MasterPointerId to byteArrayOf(0x20, 0x00, 0x00, 0x00),
@@ -194,7 +197,7 @@ class XXInputProtocolTest {
                 val replaced = readReply(socket.getInputStream())
                 assertXi2SelectedEvents(
                     replaced,
-                    sequence = 11,
+                    sequence = 12,
                     expected = listOf(
                         0 to byteArrayOf(0x01, 0x00, 0x00, 0x00),
                         XXInput.MasterPointerId to byteArrayOf(0x02, 0x00, 0x00, 0x00),
@@ -204,15 +207,333 @@ class XXInputProtocolTest {
                 val clearedPointer = readReply(socket.getInputStream())
                 assertXi2SelectedEvents(
                     clearedPointer,
-                    sequence = 13,
+                    sequence = 14,
                     expected = listOf(0 to byteArrayOf(0x01, 0x00, 0x00, 0x00)),
                 )
 
                 val clearedAll = readReply(socket.getInputStream())
-                assertXi2SelectedEvents(clearedAll, sequence = 15, expected = emptyList())
+                assertXi2SelectedEvents(clearedAll, sequence = 16, expected = emptyList())
 
                 val pointer = readReply(socket.getInputStream())
-                assertEquals(16, u16le(pointer, 2))
+                assertEquals(17, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XInputExtension preflights XI2 mask framing for big endian clients`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setupBigEndian(socket)
+                val malformedBody = ByteArray(16)
+                put32be(malformedBody, 0, X11Ids.RootWindow)
+                put16be(malformedBody, 4, 2)
+                put16be(malformedBody, 8, 99)
+                put16be(malformedBody, 12, XXInput.XIAllDevices)
+                put16be(malformedBody, 14, 1)
+                socket.getOutputStream().apply {
+                    write(requestBigEndian(XXInput.MajorOpcode, XXInput.XISelectEvents, malformedBody))
+                    write(requestBigEndian(38, 0, u32beBytes(X11Ids.RootWindow)))
+                    flush()
+                }
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt() and 0xff)
+                assertEquals(16, error[1].toInt() and 0xff)
+                assertEquals(1, u16be(error, 2))
+                assertEquals(XXInput.XISelectEvents, u16be(error, 8))
+                assertEquals(XXInput.MajorOpcode, error[10].toInt() and 0xff)
+                val pointer = socket.getInputStream().readExactly(32)
+                assertEquals(1, pointer[0].toInt() and 0xff)
+                assertEquals(2, u16be(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XInputExtension validates XI2 selection semantics atomically and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val childWindow = 0x0020_0200
+                val baseline = listOf(
+                    XXInput.XIAllDevices to xi2EventMask(XXInput.XIDeviceChanged),
+                    XXInput.MasterPointerId to xi2EventMask(XXInput.XIMotion),
+                    XXInput.MasterKeyboardId to xi2EventMask(XXInput.XIKeyRelease),
+                )
+                val baselineRequest = listOf(
+                    baseline[0],
+                    baseline[1],
+                    XXInput.MasterKeyboardId to xi2EventMask(XXInput.XIKeyRelease).copyOf(4_096),
+                )
+                val touch = xi2EventMask(
+                    XXInput.XIHierarchyChanged,
+                    XXInput.XIRawKeyPress,
+                    XXInput.XIRawKeyRelease,
+                    XXInput.XIRawButtonPress,
+                    XXInput.XIRawButtonRelease,
+                    XXInput.XIRawMotion,
+                    XXInput.XITouchBegin,
+                    XXInput.XITouchUpdate,
+                    XXInput.XITouchEnd,
+                    XXInput.XITouchOwnership,
+                    XXInput.XIRawTouchBegin,
+                    XXInput.XIRawTouchUpdate,
+                    XXInput.XIRawTouchEnd,
+                )
+                val pinch = xi2EventMask(
+                    XXInput.XIGesturePinchBegin,
+                    XXInput.XIGesturePinchUpdate,
+                    XXInput.XIGesturePinchEnd,
+                )
+                val swipe = xi2EventMask(
+                    XXInput.XIGestureSwipeBegin,
+                    XXInput.XIGestureSwipeUpdate,
+                    XXInput.XIGestureSwipeEnd,
+                )
+
+                out.write(createWindowRequest(childWindow))
+                out.write(xinputXiSelectEventsRequest(X11Ids.RootWindow, baselineRequest))
+                out.write(xinputXiSelectEventsRequest(X11Ids.RootWindow, listOf(99 to byteArrayOf())))
+                out.write(
+                    xinputXiSelectEventsRequest(
+                        X11Ids.RootWindow,
+                        listOf(XXInput.MasterPointerId to xi2EventMask(XXInput.XIHierarchyChanged)),
+                    ),
+                )
+                out.write(
+                    xinputXiSelectEventsRequest(
+                        childWindow,
+                        listOf(XXInput.XIAllDevices to xi2EventMask(XXInput.XIRawMotion)),
+                    ),
+                )
+                out.write(xinputXiSelectEventsRequest(X11Ids.RootWindow, listOf(XXInput.XIAllDevices to xi2EventMask(XXInput.XITouchBegin))))
+                out.write(xinputXiSelectEventsRequest(X11Ids.RootWindow, listOf(XXInput.XIAllDevices to xi2EventMask(XXInput.XITouchOwnership))))
+                out.write(xinputXiSelectEventsRequest(X11Ids.RootWindow, listOf(XXInput.XIAllDevices to xi2EventMask(XXInput.XIGesturePinchBegin))))
+                out.write(
+                    xinputXiSelectEventsRequest(
+                        X11Ids.RootWindow,
+                        listOf(
+                            XXInput.XIAllDevices to xi2EventMask(
+                                XXInput.XIGestureSwipeBegin,
+                                XXInput.XIGestureSwipeUpdate,
+                            ),
+                        ),
+                    ),
+                )
+                out.write(xinputXiSelectEventsRequest(X11Ids.RootWindow, listOf(XXInput.XIAllDevices to xi2EventMask(XXInput.XILastEvent + 1))))
+                out.write(
+                    xinputXiSelectEventsRequest(
+                        X11Ids.RootWindow,
+                        listOf(
+                            XXInput.XIAllDevices to xi2EventMask(XXInput.XIKeyPress),
+                            100 to xi2EventMask(XXInput.XIKeyRelease),
+                        ),
+                    ),
+                )
+                out.write(xinputXiGetSelectedEventsRequest(X11Ids.RootWindow))
+                out.write(
+                    xinputXiSelectEventsRequest(
+                        X11Ids.RootWindow,
+                        listOf(
+                            XXInput.XIAllDevices to touch,
+                            XXInput.XIAllMasterDevices to pinch,
+                            XXInput.MasterKeyboardId to swipe,
+                        ),
+                    ),
+                )
+                out.write(xinputXiGetSelectedEventsRequest(X11Ids.RootWindow))
+                out.write(xinputXiGetSelectedEventsRequest(childWindow))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = XXInput.BadDevice, badValue = 99, sequence = 3, minorOpcode = XXInput.XISelectEvents)
+                assertError(socket.getInputStream(), error = 2, badValue = XXInput.XIHierarchyChanged, sequence = 4, minorOpcode = XXInput.XISelectEvents)
+                assertError(socket.getInputStream(), error = 2, badValue = XXInput.XIRawKeyPress, sequence = 5, minorOpcode = XXInput.XISelectEvents)
+                assertError(socket.getInputStream(), error = 2, badValue = XXInput.XITouchBegin, sequence = 6, minorOpcode = XXInput.XISelectEvents)
+                assertError(socket.getInputStream(), error = 2, badValue = XXInput.XITouchBegin, sequence = 7, minorOpcode = XXInput.XISelectEvents)
+                assertError(socket.getInputStream(), error = 2, badValue = XXInput.XIGesturePinchBegin, sequence = 8, minorOpcode = XXInput.XISelectEvents)
+                assertError(socket.getInputStream(), error = 2, badValue = XXInput.XIGestureSwipeBegin, sequence = 9, minorOpcode = XXInput.XISelectEvents)
+                assertError(socket.getInputStream(), error = 2, badValue = XXInput.XILastEvent + 1, sequence = 10, minorOpcode = XXInput.XISelectEvents)
+                assertError(socket.getInputStream(), error = XXInput.BadDevice, badValue = 100, sequence = 11, minorOpcode = XXInput.XISelectEvents)
+                assertXi2SelectedEvents(readReply(socket.getInputStream()), sequence = 12, expected = baseline)
+                assertXi2SelectedEvents(
+                    readReply(socket.getInputStream()),
+                    sequence = 14,
+                    expected = listOf(
+                        XXInput.XIAllDevices to touch,
+                        XXInput.MasterPointerId to xi2EventMask(XXInput.XIMotion),
+                        XXInput.MasterKeyboardId to swipe,
+                        XXInput.XIAllMasterDevices to pinch,
+                    ),
+                )
+                assertXi2SelectedEvents(readReply(socket.getInputStream()), sequence = 15, expected = emptyList())
+                assertEquals(16, u16le(readReply(socket.getInputStream()), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XInputExtension rejects another clients matching XI2 touch selection`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { first ->
+                Socket("127.0.0.1", server.localPort).use { second ->
+                    first.soTimeout = 2_000
+                    second.soTimeout = 2_000
+                    setup(first)
+                    setup(second)
+                    val exclusive = xi2EventMask(
+                        XXInput.XITouchBegin,
+                        XXInput.XITouchUpdate,
+                        XXInput.XITouchEnd,
+                        XXInput.XIGesturePinchBegin,
+                        XXInput.XIGesturePinchUpdate,
+                        XXInput.XIGesturePinchEnd,
+                        XXInput.XIGestureSwipeBegin,
+                        XXInput.XIGestureSwipeUpdate,
+                        XXInput.XIGestureSwipeEnd,
+                    )
+                    val touchOnly = xi2EventMask(XXInput.XITouchBegin, XXInput.XITouchUpdate, XXInput.XITouchEnd)
+                    val pinchOnly = xi2EventMask(
+                        XXInput.XIGesturePinchBegin,
+                        XXInput.XIGesturePinchUpdate,
+                        XXInput.XIGesturePinchEnd,
+                    )
+                    val swipeOnly = xi2EventMask(
+                        XXInput.XIGestureSwipeBegin,
+                        XXInput.XIGestureSwipeUpdate,
+                        XXInput.XIGestureSwipeEnd,
+                    )
+
+                    first.getOutputStream().apply {
+                        write(xinputXiSelectEventsRequest(X11Ids.RootWindow, listOf(XXInput.XIAllDevices to exclusive)))
+                        write(queryPointerRequest())
+                        flush()
+                    }
+                    assertEquals(2, u16le(readReply(first.getInputStream()), 2))
+
+                    second.getOutputStream().apply {
+                        val exclusiveWithUnknownBit = exclusive.copyOf(5).also {
+                            it[(XXInput.XILastEvent + 1) / 8] =
+                                (it[(XXInput.XILastEvent + 1) / 8].toInt() or (1 shl ((XXInput.XILastEvent + 1) % 8))).toByte()
+                        }
+                        write(
+                            xinputXiSelectEventsRequest(
+                                X11Ids.RootWindow,
+                                listOf(XXInput.XIAllDevices to exclusiveWithUnknownBit, 99 to byteArrayOf()),
+                            ),
+                        )
+                        write(xinputXiSelectEventsWithTruncatedSecondMask(X11Ids.RootWindow, firstDeviceId = 99))
+                        write(xinputXiSelectEventsRequest(X11Ids.RootWindow, listOf(XXInput.XIAllDevices to touchOnly)))
+                        write(xinputXiSelectEventsRequest(X11Ids.RootWindow, listOf(XXInput.XIAllDevices to pinchOnly)))
+                        write(xinputXiSelectEventsRequest(X11Ids.RootWindow, listOf(XXInput.XIAllDevices to swipeOnly)))
+                        write(xinputXiGetSelectedEventsRequest(X11Ids.RootWindow))
+                        write(xinputXiSelectEventsRequest(X11Ids.RootWindow, listOf(XXInput.XIAllMasterDevices to exclusive)))
+                        write(xinputXiGetSelectedEventsRequest(X11Ids.RootWindow))
+                        write(queryPointerRequest())
+                        flush()
+                    }
+
+                    assertError(second.getInputStream(), error = 10, sequence = 1, minorOpcode = XXInput.XISelectEvents)
+                    assertError(second.getInputStream(), error = XXInput.BadDevice, badValue = 99, sequence = 2, minorOpcode = XXInput.XISelectEvents)
+                    assertError(second.getInputStream(), error = 10, sequence = 3, minorOpcode = XXInput.XISelectEvents)
+                    assertError(second.getInputStream(), error = 10, sequence = 4, minorOpcode = XXInput.XISelectEvents)
+                    assertError(second.getInputStream(), error = 10, sequence = 5, minorOpcode = XXInput.XISelectEvents)
+                    assertXi2SelectedEvents(readReply(second.getInputStream()), sequence = 6, expected = emptyList())
+                    assertXi2SelectedEvents(
+                        readReply(second.getInputStream()),
+                        sequence = 8,
+                        expected = listOf(XXInput.XIAllMasterDevices to exclusive),
+                    )
+                    assertEquals(9, u16le(readReply(second.getInputStream()), 2))
+
+                    first.getOutputStream().apply {
+                        write(xinputXiGetSelectedEventsRequest(X11Ids.RootWindow))
+                        flush()
+                    }
+                    assertXi2SelectedEvents(
+                        readReply(first.getInputStream()),
+                        sequence = 3,
+                        expected = listOf(XXInput.XIAllDevices to exclusive),
+                    )
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XInputExtension removes XI2 selections with destroyed windows and disconnected clients`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            val windowId = 0x0020_0200
+            val exclusive = xi2EventMask(XXInput.XITouchBegin, XXInput.XITouchUpdate, XXInput.XITouchEnd)
+            Socket("127.0.0.1", server.localPort).use { second ->
+                second.soTimeout = 2_000
+                Socket("127.0.0.1", server.localPort).use { first ->
+                    first.soTimeout = 2_000
+                    setup(first)
+                    setup(second)
+                    first.getOutputStream().apply {
+                        write(createWindowRequest(windowId))
+                        write(xinputXiSelectEventsRequest(windowId, listOf(XXInput.XIAllDevices to exclusive)))
+                        write(destroyWindowRequest(windowId))
+                        write(createWindowRequest(windowId))
+                        write(xinputXiGetSelectedEventsRequest(windowId))
+                        write(xinputXiSelectEventsRequest(X11Ids.RootWindow, listOf(XXInput.XIAllDevices to exclusive)))
+                        write(queryPointerRequest())
+                        flush()
+                    }
+                    assertXi2SelectedEvents(readReply(first.getInputStream()), sequence = 5, expected = emptyList())
+                    assertEquals(7, u16le(readReply(first.getInputStream()), 2))
+                }
+
+                var sequence = 0
+                var selected = false
+                for (attempt in 0 until 100) {
+                    second.getOutputStream().apply {
+                        write(xinputXiSelectEventsRequest(X11Ids.RootWindow, listOf(XXInput.XIAllDevices to exclusive)))
+                        write(xinputXiGetSelectedEventsRequest(X11Ids.RootWindow))
+                        flush()
+                    }
+                    val selectionSequence = ++sequence
+                    val getSequence = ++sequence
+                    val header = second.getInputStream().readExactly(32)
+                    val packet = if (header[0].toInt() == 1) {
+                        header + second.getInputStream().readExactly(u32le(header, 4) * 4)
+                    } else {
+                        header
+                    }
+                    if (packet[0].toInt() == 0) {
+                        assertEquals(10, packet[1].toInt() and 0xff)
+                        assertEquals(selectionSequence, u16le(packet, 2))
+                        assertXi2SelectedEvents(readReply(second.getInputStream()), sequence = getSequence, expected = emptyList())
+                        Thread.sleep(10)
+                    } else {
+                        assertXi2SelectedEvents(packet, sequence = getSequence, expected = listOf(XXInput.XIAllDevices to exclusive))
+                        selected = true
+                        break
+                    }
+                }
+                assertTrue(selected, "disconnected client's XI2 selection was not released")
+                second.getOutputStream().apply {
+                    write(queryPointerRequest())
+                    flush()
+                }
+                assertEquals(sequence + 1, u16le(readReply(second.getInputStream()), 2))
             }
             server.close()
             serverThread.join(1_000)
@@ -225,6 +546,17 @@ class XXInputProtocolTest {
         val prefix = socket.getInputStream().readExactly(8)
         assertEquals(1, prefix[0].toInt())
         socket.getInputStream().readExactly(u16le(prefix, 6) * 4)
+    }
+
+    private fun setupBigEndian(socket: Socket) {
+        val setup = ByteArray(12)
+        setup[0] = 0x42
+        put16be(setup, 2, 11)
+        socket.getOutputStream().write(setup)
+        socket.getOutputStream().flush()
+        val prefix = socket.getInputStream().readExactly(8)
+        assertEquals(1, prefix[0].toInt())
+        socket.getInputStream().readExactly(u16be(prefix, 6) * 4)
     }
 
     private fun queryExtensionRequest(name: String): ByteArray {
@@ -307,8 +639,71 @@ class XXInputProtocolTest {
     private fun xinputXiGetSelectedEventsRequest(windowId: Int): ByteArray =
         request(XXInput.MajorOpcode, XXInput.XIGetSelectedEvents, u32leBytes(windowId))
 
+    private fun xinputXiSelectEventsWithTruncatedSecondMask(windowId: Int, firstDeviceId: Int): ByteArray {
+        val body = ByteArray(16)
+        put32le(body, 0, windowId)
+        put16le(body, 4, 2)
+        put16le(body, 8, firstDeviceId)
+        put16le(body, 12, XXInput.XIAllDevices)
+        put16le(body, 14, 1)
+        return request(XXInput.MajorOpcode, XXInput.XISelectEvents, body)
+    }
+
+    private fun xi2EventMask(vararg eventTypes: Int): ByteArray {
+        require(eventTypes.all { it >= 0 })
+        val mask = ByteArray((eventTypes.maxOrNull() ?: return byteArrayOf()) / 8 + 1)
+        eventTypes.forEach { eventType ->
+            val index = eventType / 8
+            mask[index] = (mask[index].toInt() or (1 shl (eventType % 8))).toByte()
+        }
+        return mask
+    }
+
+    private fun createWindowRequest(windowId: Int): ByteArray {
+        val body = ByteArray(28)
+        put32le(body, 0, windowId)
+        put32le(body, 4, X11Ids.RootWindow)
+        put16le(body, 8, 5)
+        put16le(body, 10, 6)
+        put16le(body, 12, 20)
+        put16le(body, 14, 20)
+        put16le(body, 18, 1)
+        put32le(body, 20, X11Ids.RootVisual)
+        return request(1, X11Ids.RootDepth, body)
+    }
+
+    private fun destroyWindowRequest(windowId: Int): ByteArray =
+        request(4, 0, u32leBytes(windowId))
+
     private fun queryPointerRequest(): ByteArray =
         request(38, 0, u32leBytes(X11Ids.RootWindow))
+
+    private fun requestBigEndian(opcode: Int, data: Int, body: ByteArray): ByteArray {
+        require(body.size % 4 == 0)
+        val bytes = ByteArray(4 + body.size)
+        bytes[0] = opcode.toByte()
+        bytes[1] = data.toByte()
+        put16be(bytes, 2, bytes.size / 4)
+        body.copyInto(bytes, 4)
+        return bytes
+    }
+
+    private fun u32beBytes(value: Int): ByteArray = ByteArray(4).also { put32be(it, 0, value) }
+
+    private fun put16be(bytes: ByteArray, offset: Int, value: Int) {
+        bytes[offset] = (value ushr 8).toByte()
+        bytes[offset + 1] = value.toByte()
+    }
+
+    private fun put32be(bytes: ByteArray, offset: Int, value: Int) {
+        bytes[offset] = (value ushr 24).toByte()
+        bytes[offset + 1] = (value ushr 16).toByte()
+        bytes[offset + 2] = (value ushr 8).toByte()
+        bytes[offset + 3] = value.toByte()
+    }
+
+    private fun u16be(bytes: ByteArray, offset: Int): Int =
+        ((bytes[offset].toInt() and 0xff) shl 8) or (bytes[offset + 1].toInt() and 0xff)
 
     private fun request(opcode: Int, minorOpcode: Int, body: ByteArray): ByteArray {
         val bytes = ByteArray(4 + body.size)

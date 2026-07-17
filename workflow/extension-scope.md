@@ -31,13 +31,13 @@ These extensions are currently advertised and maintained. Deeper behavior still 
 | `XINERAMA` | Legacy single-screen geometry fallback. |
 | `MIT-SCREEN-SAVER` | Query/suspend compatibility for desktop toolkits. |
 | `GLX` | Probe and lifecycle surface only; keep real GL rendering out of scope unless IntelliJ/JCEF, VSCode, or the established Java AWS fixture cannot reach its accepted state without it. |
-| `XInputExtension` | Minimal discovery and device-inventory surface only; keep broad XI2 event/input semantics parked unless target-client traces require them. |
+| `XInputExtension` | Discovery/device inventory plus the `XISelectEvents`/`XIGetSelectedEvents` semantics exercised by VSCode; keep event delivery and broader XI2 input behavior parked unless target-client traces require it. |
 | `XTEST` | Test and automation support only; do not expand it as a runtime requirement without trace evidence. |
 | `MIT-SUNDRY-NONSTANDARD` | Legacy probe compatibility only; avoid new work without trace evidence. |
 | `Generic Event Extension` | Generic-event framing required by maintained extension behavior. |
 
 ## Parked Until Proven
 
-Do not implement or advertise additional extensions such as `Composite`, `DAMAGE`, `Present`, broad `XInputExtension`/XI2 behavior beyond the current minimal discovery surface, `DRI2`, `DRI3`, or desktop-environment-specific extensions unless an IntelliJ IDEA, VSCode, or established Java AWS trace proves that absence blocks startup, input, or visual parity.
+Do not implement or advertise additional extensions such as `Composite`, `DAMAGE`, `Present`, broad `XInputExtension`/XI2 behavior beyond the observed selection surface, `DRI2`, `DRI3`, or desktop-environment-specific extensions unless an IntelliJ IDEA, VSCode, or established Java AWS trace proves that absence blocks startup, input, or visual parity.
 
 When a parked extension becomes necessary, start with discovery replies and the exact requests observed in the trace. Keep rendering and semantic state preservation ahead of broad protocol coverage.

@@ -1007,6 +1007,17 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
+    fun `intellij readme screenshot reuses the heavyweight host cache`() {
+        val source = Files.readString(projectRoot().resolve("scripts/update-intellij-readme-screenshot.sh"))
+
+        assertTrue(
+            source.contains("IDEA_CACHE_DIR=\"\${IDEA_CACHE_DIR:-\$ROOT/build/tmp/intellij-community-smoke/idea-cache}\""),
+            source,
+        )
+        assertTrue(source.contains("-v \"\$IDEA_CACHE_DIR:/tmp/idea-cache\""), source)
+    }
+
+    @Test
     fun `intellij log artifact names preserve pid suffixes`() {
         assertEquals("intellij-kotlin-jcef.log", intellijLogArtifactName("intellij-kotlin", "/tmp/idea-log/jcef.log"))
         assertEquals("intellij-kotlin-jcef-55.log", intellijLogArtifactName("intellij-kotlin", "/tmp/idea-log/jcef_55.log"))
