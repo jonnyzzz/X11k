@@ -155,12 +155,12 @@ All tracked protocol clients and reduced Xvfb oracles are native Kotlin/JUnit
 tests under `src/test/kotlin`; no tracked Python test sources remain. Gradle
 `check` enforces Kotlin/JUnit as the single JVM test stack with
 `verifyKotlinTestSources`. The latest full check ran
-1,393 tests (1,389 passed and 4 heavyweight opt-in cases skipped) in
-`runs/gradle-bounded/run_20260717-151325-75812`.
+1,397 tests (1,393 passed and 4 heavyweight opt-in cases skipped) in
+`runs/gradle-bounded/run_20260717-160359-64441`.
 
 The latest deterministic IntelliJ parity run
-`runs/gradle-bounded/run_20260717-132014-64950` and VSCode parity run
-`runs/gradle-bounded/run_20260717-131916-63123` are pixel-exact against their
+`runs/gradle-bounded/run_20260717-161014-76402` and VSCode parity run
+`runs/gradle-bounded/run_20260717-160926-75118` are pixel-exact against their
 Xvfb references. The requested Java AWS application is not yet represented by a
 tracked artifact or smoke fixture, so its harness is the next compatibility
 milestone rather than a reason to speculate about additional extensions.
@@ -198,8 +198,8 @@ Build only the reusable X11 client image before running heavyweight GUI demos:
 scripts/run-supervised.sh gradle dockerBuildX11Client
 ```
 
-The IntelliJ release archive is intentionally not baked into the image. Set
-`IDEA_CACHE_DIR` to reuse the validated downloaded archive across disposable
+The IntelliJ binary release archive is intentionally not baked into the image.
+Set `IDEA_CACHE_DIR` to reuse the validated download across disposable
 containers; the smoke and parity tests bind the host directory
 `build/tmp/intellij-community-smoke/idea-cache` for that purpose. Cache entries
 are keyed by the full download URL, and a validated archive from the previous

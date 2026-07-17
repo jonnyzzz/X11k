@@ -33,6 +33,7 @@ internal class X11Connection(
     private var pendingSyncCounterAwait: List<XSyncWaitCondition>? = null
     private var pendingSyncFenceAwait: List<Int>? = null
     private var xinputClientPointerDeviceId: Int? = null
+    private var xkbInitialized = false
 
     fun run() {
         try {
@@ -1543,6 +1544,9 @@ internal class X11Connection(
     }
 
     private fun xkb(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        if (minorOpcode != XXkb.UseExtension && !xkbInitialized) {
+            return writeError(error = 10, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = 0)
+        }
         when (minorOpcode) {
             XXkb.UseExtension -> xkbUseExtension(body, majorOpcode)
             XXkb.SelectEvents -> xkbSelectEvents(body, majorOpcode)
@@ -1576,7 +1580,9 @@ internal class X11Connection(
 
     private fun xkbUseExtension(body: ByteArray, majorOpcode: Int) {
         if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.UseExtension, badValue = 0)
-        val reply = reply(extra = 1, payloadUnits = 0)
+        val supported = byteOrder.u16(body, 0) == XXkb.MajorVersion
+        if (supported) xkbInitialized = true
+        val reply = reply(extra = if (supported) 1 else 0, payloadUnits = 0)
         byteOrder.put16(reply, 8, XXkb.MajorVersion)
         byteOrder.put16(reply, 10, XXkb.MinorVersion)
         write(reply)

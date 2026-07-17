@@ -10,8 +10,8 @@ import kotlin.test.assertEquals
 
 class XXkbProtocolTest {
     @Test
-    fun `XKEYBOARD exposes query-only UseExtension metadata`() {
-        withServer { socket, port ->
+    fun `XKEYBOARD UseExtension initializes a compatible client`() {
+        withUninitializedServer { socket, port ->
             socket.getOutputStream().write(queryExtensionRequest("XKEYBOARD"))
             socket.getOutputStream().write(useExtensionRequest())
             socket.getOutputStream().flush()
@@ -34,7 +34,7 @@ class XXkbProtocolTest {
 
     @Test
     fun `XKEYBOARD alias resolves through QueryExtension`() {
-        withServer { socket, _ ->
+        withUninitializedServer { socket, _ ->
             socket.getOutputStream().write(queryExtensionRequest("XKB"))
             socket.getOutputStream().flush()
 
@@ -48,7 +48,7 @@ class XXkbProtocolTest {
 
     @Test
     fun `XKEYBOARD UseExtension validates request length and recovers stream`() {
-        withServer { socket, _ ->
+        withUninitializedServer { socket, _ ->
             val out = socket.getOutputStream()
             out.write(request(XXkb.MajorOpcode, XXkb.UseExtension, ByteArray(0)))
             out.write(useExtensionRequest())
@@ -63,6 +63,99 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD UseExtension rejects incompatible major versions without initializing client`() {
+        withUninitializedServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(useExtensionRequest(wantedMajor = 0, wantedMinor = 0))
+            out.write(useExtensionRequest(wantedMajor = XXkb.MajorVersion + 1, wantedMinor = 0))
+            out.write(getStateRequest())
+            out.write(useExtensionRequest())
+            out.write(getStateRequest())
+            out.flush()
+
+            repeat(2) { index ->
+                val unsupported = readReply(socket.getInputStream())
+                assertEquals(0, unsupported[1].toInt() and 0xff)
+                assertEquals(index + 1, u16le(unsupported, 2))
+                assertEquals(XXkb.MajorVersion, u16le(unsupported, 8))
+                assertEquals(XXkb.MinorVersion, u16le(unsupported, 10))
+            }
+            assertError(socket.getInputStream(), error = 10, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.GetState)
+            val supported = readReply(socket.getInputStream())
+            assertEquals(1, supported[1].toInt() and 0xff)
+            assertEquals(4, u16le(supported, 2))
+            assertEquals(5, u16le(readReply(socket.getInputStream()), 2))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD accepts any matching major minor and failed renegotiation does not revoke initialization`() {
+        withUninitializedServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(useExtensionRequest(wantedMinor = XXkb.MinorVersion + 1))
+            out.write(useExtensionRequest(wantedMajor = XXkb.MajorVersion + 1, wantedMinor = 0))
+            out.write(getStateRequest())
+            out.flush()
+
+            val supported = readReply(socket.getInputStream())
+            assertEquals(1, supported[1].toInt() and 0xff)
+            assertEquals(1, u16le(supported, 2))
+            val unsupported = readReply(socket.getInputStream())
+            assertEquals(0, unsupported[1].toInt() and 0xff)
+            assertEquals(2, u16le(unsupported, 2))
+            assertEquals(3, u16le(readReply(socket.getInputStream()), 2))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD rejects requests before initialization before request-specific validation`() {
+        withUninitializedServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.GetState, ByteArray(0)))
+            out.write(useExtensionRequest())
+            out.write(request(XXkb.MajorOpcode, XXkb.GetState, ByteArray(0)))
+            out.write(getStateRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 10, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetState)
+            val supported = readReply(socket.getInputStream())
+            assertEquals(1, supported[1].toInt() and 0xff)
+            assertEquals(2, u16le(supported, 2))
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.GetState)
+            assertEquals(4, u16le(readReply(socket.getInputStream()), 2))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD initialization is isolated per client`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { initialized ->
+                Socket("127.0.0.1", server.localPort).use { uninitialized ->
+                    initialized.soTimeout = 2_000
+                    uninitialized.soTimeout = 2_000
+                    setupConnection(initialized)
+                    setupConnection(uninitialized)
+
+                    initialized.getOutputStream().write(useExtensionRequest())
+                    initialized.getOutputStream().write(getStateRequest())
+                    initialized.getOutputStream().flush()
+                    uninitialized.getOutputStream().write(getStateRequest())
+                    uninitialized.getOutputStream().flush()
+
+                    val supported = readReply(initialized.getInputStream())
+                    assertEquals(1, supported[1].toInt() and 0xff)
+                    assertEquals(1, u16le(supported, 2))
+                    assertEquals(2, u16le(readReply(initialized.getInputStream()), 2))
+                    assertError(uninitialized.getInputStream(), error = 10, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetState)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD SelectEvents accepts fixed prefix no-op and recovers stream`() {
         withServer { socket, port ->
             val out = socket.getOutputStream()
@@ -71,7 +164,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val version = readReply(socket.getInputStream())
-            assertEquals(2, u16le(version, 2))
+            assertEquals(3, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
             assertEquals(XXkb.MinorVersion, u16le(version, 10))
@@ -88,9 +181,9 @@ class XXkbProtocolTest {
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SelectEvents)
             val version = readReply(socket.getInputStream())
-            assertEquals(2, u16le(version, 2))
+            assertEquals(3, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
         }
@@ -109,9 +202,9 @@ class XXkbProtocolTest {
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0020, sequence = 1, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0020, sequence = 2, minorOpcode = XXkb.SelectEvents)
             val version = readReply(socket.getInputStream())
-            assertEquals(2, u16le(version, 2))
+            assertEquals(3, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
         }
     }
@@ -174,14 +267,14 @@ class XXkbProtocolTest {
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SelectEvents)
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 1 shl 12, sequence = 2, minorOpcode = XXkb.SelectEvents)
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SelectEvents)
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.SelectEvents)
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 5, minorOpcode = XXkb.SelectEvents)
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 9, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 1 shl 12, sequence = 3, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 5, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 6, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 10, minorOpcode = XXkb.SelectEvents)
             val version = readReply(socket.getInputStream())
-            assertEquals(10, u16le(version, 2))
+            assertEquals(11, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
         }
@@ -197,7 +290,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val version = readReply(socket.getInputStream())
-            assertEquals(3, u16le(version, 2))
+            assertEquals(4, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
             assertEquals(XXkb.MinorVersion, u16le(version, 10))
@@ -236,7 +329,7 @@ class XXkbProtocolTest {
 
             assertBellNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 bellClass = 2,
                 bellId = 3,
                 percent = 50,
@@ -246,7 +339,7 @@ class XXkbProtocolTest {
                 window = X11Ids.RootWindow,
                 eventOnly = true,
             )
-            assertEquals(3, u16le(readReply(socket.getInputStream()), 2))
+            assertEquals(4, u16le(readReply(socket.getInputStream()), 2))
         }
     }
 
@@ -278,9 +371,9 @@ class XXkbProtocolTest {
             out.write(useExtensionRequest())
             out.flush()
 
-            assertEquals(3, u16le(readReply(socket.getInputStream()), 2))
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 101, sequence = 5, minorOpcode = XXkb.Bell)
-            assertEquals(6, u16le(readReply(socket.getInputStream()), 2))
+            assertEquals(4, u16le(readReply(socket.getInputStream()), 2))
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 101, sequence = 6, minorOpcode = XXkb.Bell)
+            assertEquals(7, u16le(readReply(socket.getInputStream()), 2))
         }
     }
 
@@ -300,9 +393,9 @@ class XXkbProtocolTest {
             out.write(useExtensionRequest())
             out.flush()
 
-            assertEquals(3, u16le(readReply(socket.getInputStream()), 2))
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.Bell)
-            assertEquals(5, u16le(readReply(socket.getInputStream()), 2))
+            assertEquals(4, u16le(readReply(socket.getInputStream()), 2))
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 5, minorOpcode = XXkb.Bell)
+            assertEquals(6, u16le(readReply(socket.getInputStream()), 2))
         }
     }
 
@@ -326,7 +419,7 @@ class XXkbProtocolTest {
             out.write(useExtensionRequest())
             out.flush()
 
-            assertEquals(4, u16le(readReply(socket.getInputStream()), 2))
+            assertEquals(5, u16le(readReply(socket.getInputStream()), 2))
         }
     }
 
@@ -341,12 +434,12 @@ class XXkbProtocolTest {
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 101, sequence = 1, minorOpcode = XXkb.Bell)
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = -101, sequence = 2, minorOpcode = XXkb.Bell)
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.Bell)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 101, sequence = 2, minorOpcode = XXkb.Bell)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = -101, sequence = 3, minorOpcode = XXkb.Bell)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.Bell)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 5, minorOpcode = XXkb.Bell)
             val version = readReply(socket.getInputStream())
-            assertEquals(5, u16le(version, 2))
+            assertEquals(6, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
         }
@@ -361,7 +454,7 @@ class XXkbProtocolTest {
 
             val state = readReply(socket.getInputStream())
             assertEquals(0, state[1].toInt() and 0xff)
-            assertEquals(1, u16le(state, 2))
+            assertEquals(2, u16le(state, 2))
             assertEquals(0, u32le(state, 4))
             assertEquals(0, state[8].toInt() and 0xff)
             assertEquals(0, state[9].toInt() and 0xff)
@@ -453,9 +546,9 @@ class XXkbProtocolTest {
             out.write(getStateRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetState)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.GetState)
             val state = readReply(socket.getInputStream())
-            assertEquals(2, u16le(state, 2))
+            assertEquals(3, u16le(state, 2))
             assertEquals(0, state[1].toInt() and 0xff)
             assertEquals(0, u16le(state, 24))
         }
@@ -471,7 +564,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val version = readReply(socket.getInputStream())
-            assertEquals(3, u16le(version, 2))
+            assertEquals(4, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
             assertEquals(XXkb.MinorVersion, u16le(version, 10))
@@ -501,7 +594,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val locked = readReply(socket.getInputStream())
-            assertEquals(2, u16le(locked, 2))
+            assertEquals(3, u16le(locked, 2))
             assertEquals(0x07, locked[8].toInt() and 0xff)
             assertEquals(0x00, locked[9].toInt() and 0xff)
             assertEquals(0x02, locked[10].toInt() and 0xff)
@@ -514,7 +607,7 @@ class XXkbProtocolTest {
             assertEquals(0, u16le(locked, 24))
 
             val pointer = readReply(socket.getInputStream())
-            assertEquals(3, u16le(pointer, 2))
+            assertEquals(4, u16le(pointer, 2))
             assertEquals(0, u16le(pointer, 24))
 
             assertContains(httpGet(port, "/state.json"), """"xkbLatchedModifiers":2""")
@@ -537,14 +630,14 @@ class XXkbProtocolTest {
             out.flush()
 
             val cleared = readReply(socket.getInputStream())
-            assertEquals(5, u16le(cleared, 2))
+            assertEquals(6, u16le(cleared, 2))
             assertEquals(0, cleared[8].toInt() and 0xff)
             assertEquals(0, cleared[10].toInt() and 0xff)
             assertEquals(0, cleared[11].toInt() and 0xff)
             assertEquals(0, u16le(cleared, 24))
 
             val clearedPointer = readReply(socket.getInputStream())
-            assertEquals(6, u16le(clearedPointer, 2))
+            assertEquals(7, u16le(clearedPointer, 2))
             assertEquals(0, u16le(clearedPointer, 24))
         }
     }
@@ -587,7 +680,7 @@ class XXkbProtocolTest {
             val event = socket.getInputStream().readExactly(32)
             assertEquals(XXkb.FirstEvent, event[0].toInt() and 0xff)
             assertEquals(XXkb.StateNotify, event[1].toInt() and 0xff)
-            assertEquals(2, u16le(event, 2))
+            assertEquals(3, u16le(event, 2))
             assertEquals(0, event[8].toInt() and 0xff)
             assertEquals(0x07, event[9].toInt() and 0xff)
             assertEquals(0x00, event[10].toInt() and 0xff)
@@ -615,7 +708,7 @@ class XXkbProtocolTest {
             assertEquals(XXkb.LatchLockState, event[31].toInt() and 0xff)
 
             val state = readReply(socket.getInputStream())
-            assertEquals(3, u16le(state, 2))
+            assertEquals(4, u16le(state, 2))
             assertEquals(0x07, state[8].toInt() and 0xff)
             assertEquals(0x02, state[10].toInt() and 0xff)
             assertEquals(0x05, state[11].toInt() and 0xff)
@@ -650,7 +743,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val state = readReply(socket.getInputStream())
-            assertEquals(3, u16le(state, 2))
+            assertEquals(4, u16le(state, 2))
             assertEquals(0x0c, state[8].toInt() and 0xff)
             assertEquals(0x08, state[10].toInt() and 0xff)
             assertEquals(0x04, state[11].toInt() and 0xff)
@@ -686,7 +779,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val state = readReply(socket.getInputStream())
-            assertEquals(4, u16le(state, 2))
+            assertEquals(5, u16le(state, 2))
             assertEquals(0x01, state[8].toInt() and 0xff)
             assertEquals(0x01, state[11].toInt() and 0xff)
         }
@@ -717,7 +810,7 @@ class XXkbProtocolTest {
                 val pressed = socket.getInputStream().readExactly(32)
                 assertEquals(XXkb.FirstEvent, pressed[0].toInt() and 0xff)
                 assertEquals(XXkb.StateNotify, pressed[1].toInt() and 0xff)
-                assertEquals(2, u16le(pressed, 2))
+                assertEquals(3, u16le(pressed, 2))
                 assertEquals(0x100, u16le(pressed, 24))
                 assertEquals(XXkb.PointerButtonMask, u16le(pressed, 26))
                 assertEquals(0, pressed[30].toInt() and 0xff)
@@ -810,9 +903,9 @@ class XXkbProtocolTest {
             out.write(getStateRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.LatchLockState)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.LatchLockState)
             val state = readReply(socket.getInputStream())
-            assertEquals(3, u16le(state, 2))
+            assertEquals(4, u16le(state, 2))
             assertEquals(0x0c, state[8].toInt() and 0xff)
             assertEquals(0, state[9].toInt() and 0xff)
             assertEquals(0x08, state[10].toInt() and 0xff)
@@ -845,11 +938,11 @@ class XXkbProtocolTest {
             out.flush()
 
             val controls = readReply(socket.getInputStream())
-            assertGetControls(controls, sequence = 1, enabledControls = XXkb.BoolCtrlRepeatKeys)
+            assertGetControls(controls, sequence = 2, enabledControls = XXkb.BoolCtrlRepeatKeys)
             assertEquals(1, XXkb.DefaultGroupCount)
 
             val state = readReply(socket.getInputStream())
-            assertEquals(3, u16le(state, 2))
+            assertEquals(4, u16le(state, 2))
             assertEquals(0, state[12].toInt() and 0xff)
             assertEquals(0, state[13].toInt() and 0xff)
             assertEquals(0, u16le(state, 14))
@@ -871,10 +964,10 @@ class XXkbProtocolTest {
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.LatchLockState)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.LatchLockState)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.LatchLockState)
             val version = readReply(socket.getInputStream())
-            assertEquals(4, u16le(version, 2))
+            assertEquals(5, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
         }
@@ -888,7 +981,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val controls = readReply(socket.getInputStream())
-            assertGetControls(controls, sequence = 1, enabledControls = XXkb.BoolCtrlRepeatKeys)
+            assertGetControls(controls, sequence = 2, enabledControls = XXkb.BoolCtrlRepeatKeys)
             assertEquals(0xff, controls[60 + 5].toInt() and 0xff)
         }
     }
@@ -904,11 +997,11 @@ class XXkbProtocolTest {
             out.flush()
 
             val perKeyControls = readReply(socket.getInputStream())
-            assertGetControls(perKeyControls, sequence = 2, enabledControls = XXkb.BoolCtrlRepeatKeys)
+            assertGetControls(perKeyControls, sequence = 3, enabledControls = XXkb.BoolCtrlRepeatKeys)
             assertEquals(0xfe, perKeyControls[60 + 5].toInt() and 0xff)
 
             val globalControls = readReply(socket.getInputStream())
-            assertGetControls(globalControls, sequence = 4, enabledControls = 0)
+            assertGetControls(globalControls, sequence = 5, enabledControls = 0)
             assertEquals(0xfe, globalControls[60 + 5].toInt() and 0xff)
         }
     }
@@ -921,9 +1014,9 @@ class XXkbProtocolTest {
             out.write(getControlsRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetControls)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.GetControls)
             val controls = readReply(socket.getInputStream())
-            assertGetControls(controls, sequence = 2, enabledControls = XXkb.BoolCtrlRepeatKeys)
+            assertGetControls(controls, sequence = 3, enabledControls = XXkb.BoolCtrlRepeatKeys)
         }
     }
 
@@ -940,14 +1033,14 @@ class XXkbProtocolTest {
             out.write(getKeyboardControlRequest())
             out.flush()
 
-            assertGetControls(readReply(socket.getInputStream()), sequence = 1, enabledControls = XXkb.BoolCtrlRepeatKeys)
-            assertGetControls(readReply(socket.getInputStream()), sequence = 3, enabledControls = 0)
+            assertGetControls(readReply(socket.getInputStream()), sequence = 2, enabledControls = XXkb.BoolCtrlRepeatKeys)
+            assertGetControls(readReply(socket.getInputStream()), sequence = 4, enabledControls = 0)
             val disabledCore = readReply(socket.getInputStream())
-            assertEquals(4, u16le(disabledCore, 2))
+            assertEquals(5, u16le(disabledCore, 2))
             assertEquals(0, disabledCore[1].toInt() and 0xff)
-            assertGetControls(readReply(socket.getInputStream()), sequence = 6, enabledControls = XXkb.BoolCtrlRepeatKeys)
+            assertGetControls(readReply(socket.getInputStream()), sequence = 7, enabledControls = XXkb.BoolCtrlRepeatKeys)
             val enabledCore = readReply(socket.getInputStream())
-            assertEquals(7, u16le(enabledCore, 2))
+            assertEquals(8, u16le(enabledCore, 2))
             assertEquals(1, enabledCore[1].toInt() and 0xff)
         }
     }
@@ -971,12 +1064,12 @@ class XXkbProtocolTest {
 
             assertControlsNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 changedControls = XXkb.ControlEnabledMask,
                 enabledControls = 0,
                 enabledControlChanges = XXkb.BoolCtrlRepeatKeys,
             )
-            assertGetControls(readReply(socket.getInputStream()), sequence = 3, enabledControls = 0)
+            assertGetControls(readReply(socket.getInputStream()), sequence = 4, enabledControls = 0)
         }
     }
 
@@ -996,12 +1089,12 @@ class XXkbProtocolTest {
 
             assertControlsNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 changedControls = XXkb.ControlEnabledMask,
                 enabledControls = 0,
                 enabledControlChanges = XXkb.BoolCtrlRepeatKeys,
             )
-            assertGetControls(readReply(socket.getInputStream()), sequence = 3, enabledControls = 0)
+            assertGetControls(readReply(socket.getInputStream()), sequence = 4, enabledControls = 0)
         }
     }
 
@@ -1036,13 +1129,13 @@ class XXkbProtocolTest {
 
             assertControlsNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 changedControls = XXkb.ControlEnabledMask,
                 enabledControls = 0,
                 enabledControlChanges = XXkb.BoolCtrlRepeatKeys,
             )
-            assertGetControls(readReply(socket.getInputStream()), sequence = 4, enabledControls = 0)
-            assertGetControls(readReply(socket.getInputStream()), sequence = 7, enabledControls = XXkb.BoolCtrlRepeatKeys)
+            assertGetControls(readReply(socket.getInputStream()), sequence = 5, enabledControls = 0)
+            assertGetControls(readReply(socket.getInputStream()), sequence = 8, enabledControls = XXkb.BoolCtrlRepeatKeys)
         }
     }
 
@@ -1066,7 +1159,7 @@ class XXkbProtocolTest {
             out.write(getControlsRequest())
             out.flush()
 
-            assertGetControls(readReply(socket.getInputStream()), sequence = 4, enabledControls = 0)
+            assertGetControls(readReply(socket.getInputStream()), sequence = 5, enabledControls = 0)
         }
     }
 
@@ -1081,10 +1174,10 @@ class XXkbProtocolTest {
             out.write(getControlsRequest())
             out.flush()
 
-            assertGetControls(readReply(socket.getInputStream()), sequence = 2, enabledControls = XXkb.BoolCtrlRepeatKeys)
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetControls)
+            assertGetControls(readReply(socket.getInputStream()), sequence = 3, enabledControls = XXkb.BoolCtrlRepeatKeys)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.SetControls)
-            assertGetControls(readReply(socket.getInputStream()), sequence = 5, enabledControls = XXkb.BoolCtrlRepeatKeys)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 5, minorOpcode = XXkb.SetControls)
+            assertGetControls(readReply(socket.getInputStream()), sequence = 6, enabledControls = XXkb.BoolCtrlRepeatKeys)
         }
     }
 
@@ -1098,7 +1191,7 @@ class XXkbProtocolTest {
             val map = readReply(socket.getInputStream())
             assertEquals(1, map[0].toInt())
             assertEquals(0, map[1].toInt() and 0xff)
-            assertEquals(1, u16le(map, 2))
+            assertEquals(2, u16le(map, 2))
             assertEquals(2, u32le(map, 4))
             assertEquals(0, u16le(map, 8))
             assertEquals(XKeyboard.MinKeycode, map[10].toInt() and 0xff)
@@ -1140,7 +1233,7 @@ class XXkbProtocolTest {
 
             val map = readReply(socket.getInputStream())
             assertEquals(1, map[0].toInt())
-            assertEquals(1, u16le(map, 2))
+            assertEquals(2, u16le(map, 2))
             assertEquals(10, u32le(map, 4))
             assertEquals(0, u16le(map, 8))
             assertEquals(XXkb.MapPartKeySyms, u16le(map, 12))
@@ -1173,14 +1266,14 @@ class XXkbProtocolTest {
 
             assertMapNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 changed = XXkb.MapPartKeySyms,
                 firstKeySym = 38,
                 nKeySyms = 2,
             )
-            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 2, request = 1, firstKeycode = 38, count = 2)
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 3, request = 1, firstKeycode = 38, count = 2)
             val map = readReply(socket.getInputStream())
-            assertEquals(3, u16le(map, 2))
+            assertEquals(4, u16le(map, 2))
             assertEquals(XXkb.MapPartKeySyms, u16le(map, 12))
             assertXkbKeySymMap(map, offset = xkbKeySymMapOffset(map, keycode = 38), width = 2, 0x0061, 0x0041)
             assertXkbKeySymMap(map, offset = xkbKeySymMapOffset(map, keycode = 39), width = 2, 0x0062, 0x0042)
@@ -1202,9 +1295,9 @@ class XXkbProtocolTest {
             out.write(getMapRequest(full = 0, partial = XXkb.MapPartKeySyms, firstKeySym = 38, nKeySyms = 1))
             out.flush()
 
-            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 2, request = 1, firstKeycode = 38, count = 1)
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 3, request = 1, firstKeycode = 38, count = 1)
             val map = readReply(socket.getInputStream())
-            assertEquals(3, u16le(map, 2))
+            assertEquals(4, u16le(map, 2))
             assertXkbKeySymMap(map, offset = xkbKeySymMapOffset(map, keycode = 38), width = 1, 0x007a)
         }
     }
@@ -1229,9 +1322,9 @@ class XXkbProtocolTest {
             out.write(getMapRequest(full = 0, partial = XXkb.MapPartKeySyms, firstKeySym = 38, nKeySyms = 1))
             out.flush()
 
-            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 3, request = 1, firstKeycode = 38, count = 1)
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 4, request = 1, firstKeycode = 38, count = 1)
             val map = readReply(socket.getInputStream())
-            assertEquals(4, u16le(map, 2))
+            assertEquals(5, u16le(map, 2))
             assertXkbKeySymMap(map, offset = xkbKeySymMapOffset(map, keycode = 38), width = 1, 0x0078)
         }
     }
@@ -1245,7 +1338,7 @@ class XXkbProtocolTest {
 
             val map = readReply(socket.getInputStream())
             val keycodeCount = XKeyboard.MaxKeycode - XKeyboard.MinKeycode + 1
-            assertEquals(1, u16le(map, 2))
+            assertEquals(2, u16le(map, 2))
             assertEquals(map.size, 32 + u32le(map, 4) * 4)
             assertEquals(0, u16le(map, 8))
             assertEquals(XXkb.MapPartKeySyms, u16le(map, 12))
@@ -1267,7 +1360,7 @@ class XXkbProtocolTest {
 
             val map = readReply(socket.getInputStream())
             val keycodeCount = XKeyboard.MaxKeycode - XKeyboard.MinKeycode + 1
-            assertEquals(1, u16le(map, 2))
+            assertEquals(2, u16le(map, 2))
             assertEquals(map.size, 32 + u32le(map, 4) * 4)
             assertEquals(0, u16le(map, 8))
             assertEquals(requested, u16le(map, 12))
@@ -1316,7 +1409,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val map = readReply(socket.getInputStream())
-            assertEquals(1, u16le(map, 2))
+            assertEquals(2, u16le(map, 2))
             assertEquals(map.size, 32 + u32le(map, 4) * 4)
             assertEquals(0, u16le(map, 8))
             assertEquals(XXkb.MapPartModifierMap, u16le(map, 12))
@@ -1339,9 +1432,9 @@ class XXkbProtocolTest {
             out.write(getMapRequest(full = 0, partial = 0))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetMap)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.GetMap)
             val map = readReply(socket.getInputStream())
-            assertEquals(2, u16le(map, 2))
+            assertEquals(3, u16le(map, 2))
             assertEquals(2, u32le(map, 4))
             assertEquals(XKeyboard.MinKeycode, map[10].toInt() and 0xff)
             assertEquals(XKeyboard.MaxKeycode, map[11].toInt() and 0xff)
@@ -1360,10 +1453,10 @@ class XXkbProtocolTest {
             out.write(getMapRequest(full = 0, partial = XXkb.MapPartModifierMap, firstModMapKey = 50, nModMapKeys = 1))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = unknownPart, sequence = 1, minorOpcode = XXkb.GetMap)
             assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = unknownPart, sequence = 2, minorOpcode = XXkb.GetMap)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = unknownPart, sequence = 3, minorOpcode = XXkb.GetMap)
             val map = readReply(socket.getInputStream())
-            assertEquals(3, u16le(map, 2))
+            assertEquals(4, u16le(map, 2))
             assertEquals(XXkb.MapPartModifierMap, u16le(map, 12))
             assertXkbModifierMap(map, 50 to 0x01)
         }
@@ -1378,10 +1471,10 @@ class XXkbProtocolTest {
             out.write(getMapRequest(full = 0, partial = XXkb.MapPartModifierMap, firstModMapKey = 50, nModMapKeys = 1))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 7, sequence = 1, minorOpcode = XXkb.GetMap)
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = XKeyboard.MaxKeycode, sequence = 2, minorOpcode = XXkb.GetMap)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 7, sequence = 2, minorOpcode = XXkb.GetMap)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = XKeyboard.MaxKeycode, sequence = 3, minorOpcode = XXkb.GetMap)
             val map = readReply(socket.getInputStream())
-            assertEquals(3, u16le(map, 2))
+            assertEquals(4, u16le(map, 2))
             assertEquals(XXkb.MapPartModifierMap, u16le(map, 12))
             assertXkbModifierMap(map, 50 to 0x01)
         }
@@ -1395,9 +1488,9 @@ class XXkbProtocolTest {
             out.write(getMapRequest(full = 0, partial = XXkb.MapPartKeySyms, firstKeySym = 38, nKeySyms = 2))
             out.flush()
 
-            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 1, request = 0, firstKeycode = 0, count = 0)
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 2, request = 0, firstKeycode = 0, count = 0)
             val map = readReply(socket.getInputStream())
-            assertEquals(2, u16le(map, 2))
+            assertEquals(3, u16le(map, 2))
             assertEquals(9, u32le(map, 4))
             assertEquals(XXkb.MapPartKeySyms, u16le(map, 12))
             assertEquals(XKeyboard.MinKeycode, map[10].toInt() and 0xff)
@@ -1419,9 +1512,9 @@ class XXkbProtocolTest {
             out.write(getMapRequest(full = 0, partial = XXkb.MapPartKeySyms, firstKeySym = 38, nKeySyms = 1))
             out.flush()
 
-            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 1, request = 0, firstKeycode = 0, count = 0)
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 2, request = 0, firstKeycode = 0, count = 0)
             val map = readReply(socket.getInputStream())
-            assertEquals(2, u16le(map, 2))
+            assertEquals(3, u16le(map, 2))
             assertEquals(6, u32le(map, 4))
             assertEquals(XXkb.MapPartKeySyms, u16le(map, 12))
             assertEquals(38, map[17].toInt() and 0xff)
@@ -1449,13 +1542,13 @@ class XXkbProtocolTest {
 
             assertMapNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 changed = XXkb.MapPartKeySyms,
                 firstKeySym = 38,
                 nKeySyms = 2,
             )
             val map = readReply(socket.getInputStream())
-            assertEquals(3, u16le(map, 2))
+            assertEquals(4, u16le(map, 2))
             assertEquals(XXkb.MapPartKeySyms, u16le(map, 12))
             assertXkbKeySymMap(map, offset = 40, width = 2, 0x0078, 0x0058)
         }
@@ -1477,7 +1570,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val map = readReply(socket.getInputStream())
-            assertEquals(3, u16le(map, 2))
+            assertEquals(4, u16le(map, 2))
             assertEquals(XXkb.MapPartKeySyms, u16le(map, 12))
             assertXkbKeySymMap(map, offset = 40, width = 2, 0x0078, 0x0058)
         }
@@ -1496,11 +1589,11 @@ class XXkbProtocolTest {
                 error = 8,
                 opcode = XXkb.MajorOpcode,
                 badValue = XKeyboard.MaxKeycode,
-                sequence = 1,
+                sequence = 2,
                 minorOpcode = XXkb.SetMap,
             )
             val map = readReply(socket.getInputStream())
-            assertEquals(2, u16le(map, 2))
+            assertEquals(3, u16le(map, 2))
             assertEquals(0, u16le(map, 12))
         }
     }
@@ -1513,9 +1606,9 @@ class XXkbProtocolTest {
             out.write(getMapRequest(full = 0, partial = XXkb.MapPartModifierMap, firstModMapKey = 77, nModMapKeys = 1))
             out.flush()
 
-            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 1, request = 0, firstKeycode = 0, count = 0)
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 2, request = 0, firstKeycode = 0, count = 0)
             val map = readReply(socket.getInputStream())
-            assertEquals(2, u16le(map, 2))
+            assertEquals(3, u16le(map, 2))
             assertEquals(XXkb.MapPartModifierMap, u16le(map, 12))
             assertEquals(77, map[31].toInt() and 0xff)
             assertEquals(1, map[32].toInt() and 0xff)
@@ -1543,16 +1636,16 @@ class XXkbProtocolTest {
 
             assertMapNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 3,
+                sequence = 4,
                 changed = XXkb.MapPartModifierMap,
                 firstKeySym = 0,
                 nKeySyms = 0,
                 firstModMapKey = 77,
                 nModMapKeys = 1,
             )
-            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 3, request = 0, firstKeycode = 0, count = 0)
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 4, request = 0, firstKeycode = 0, count = 0)
             val map = readReply(socket.getInputStream())
-            assertEquals(5, u16le(map, 2))
+            assertEquals(6, u16le(map, 2))
             assertEquals(XXkb.MapPartModifierMap, u16le(map, 12))
             assertXkbModifierMap(map, 77 to 0x08)
         }
@@ -1575,16 +1668,16 @@ class XXkbProtocolTest {
 
             assertMapNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 changed = XXkb.MapPartModifierMap,
                 firstKeySym = 0,
                 nKeySyms = 0,
                 firstModMapKey = 77,
                 nModMapKeys = 1,
             )
-            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 2, request = 0, firstKeycode = 0, count = 0)
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 3, request = 0, firstKeycode = 0, count = 0)
             val map = readReply(socket.getInputStream())
-            assertEquals(3, u16le(map, 2))
+            assertEquals(4, u16le(map, 2))
             assertEquals(XXkb.MapPartModifierMap, u16le(map, 12))
             assertXkbModifierMap(map, 77 to 0x08)
         }
@@ -1605,9 +1698,9 @@ class XXkbProtocolTest {
             out.write(getMapRequest(full = 0, partial = XXkb.MapPartModifierMap, firstModMapKey = 77, nModMapKeys = 1))
             out.flush()
 
-            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 2, request = 0, firstKeycode = 0, count = 0)
+            assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 3, request = 0, firstKeycode = 0, count = 0)
             val map = readReply(socket.getInputStream())
-            assertEquals(3, u16le(map, 2))
+            assertEquals(4, u16le(map, 2))
             assertEquals(XXkb.MapPartModifierMap, u16le(map, 12))
             assertXkbModifierMap(map, 77 to 0x08)
         }
@@ -1622,7 +1715,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val map = readReply(socket.getInputStream())
-            assertEquals(2, u16le(map, 2))
+            assertEquals(3, u16le(map, 2))
             assertEquals(XXkb.MapPartVirtualMods, u16le(map, 12))
             assertEquals(0x0003, u16le(map, 38))
             assertXkbVirtualMods(map, 0x02, 0x04)
@@ -1646,14 +1739,14 @@ class XXkbProtocolTest {
 
             assertMapNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 changed = XXkb.MapPartVirtualMods,
                 firstKeySym = 0,
                 nKeySyms = 0,
                 virtualMods = 0x0003,
             )
             val map = readReply(socket.getInputStream())
-            assertEquals(3, u16le(map, 2))
+            assertEquals(4, u16le(map, 2))
             assertEquals(XXkb.MapPartVirtualMods, u16le(map, 12))
             assertXkbVirtualMods(map, 0x02, 0x04)
         }
@@ -1675,7 +1768,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val map = readReply(socket.getInputStream())
-            assertEquals(3, u16le(map, 2))
+            assertEquals(4, u16le(map, 2))
             assertEquals(XXkb.MapPartVirtualMods, u16le(map, 12))
             assertXkbVirtualMods(map, 0x02, 0x04)
         }
@@ -1700,11 +1793,11 @@ class XXkbProtocolTest {
                 error = 8,
                 opcode = XXkb.MajorOpcode,
                 badValue = XKeyboard.MaxKeycode,
-                sequence = 1,
+                sequence = 2,
                 minorOpcode = XXkb.SetMap,
             )
             val map = readReply(socket.getInputStream())
-            assertEquals(2, u16le(map, 2))
+            assertEquals(3, u16le(map, 2))
             assertEquals(0, u16le(map, 12))
         }
     }
@@ -1729,11 +1822,11 @@ class XXkbProtocolTest {
                 error = 8,
                 opcode = XXkb.MajorOpcode,
                 badValue = XKeyboard.MaxKeycode,
-                sequence = 1,
+                sequence = 2,
                 minorOpcode = XXkb.SetMap,
             )
             val map = readReply(socket.getInputStream())
-            assertEquals(2, u16le(map, 2))
+            assertEquals(3, u16le(map, 2))
             assertEquals(XXkb.MapPartKeySyms, u16le(map, 12))
             assertXkbKeySymMap(map, offset = 40, width = 2, 0x0061, 0x0041)
         }
@@ -1759,11 +1852,11 @@ class XXkbProtocolTest {
                 error = 8,
                 opcode = XXkb.MajorOpcode,
                 badValue = XKeyboard.MaxKeycode,
-                sequence = 1,
+                sequence = 2,
                 minorOpcode = XXkb.SetMap,
             )
             val map = readReply(socket.getInputStream())
-            assertEquals(2, u16le(map, 2))
+            assertEquals(3, u16le(map, 2))
             assertEquals(XXkb.MapPartVirtualMods, u16le(map, 12))
             assertEquals(0, u16le(map, 38))
             assertEquals(40, map.size)
@@ -1781,11 +1874,11 @@ class XXkbProtocolTest {
             out.write(getMapRequest(full = 0, partial = 0))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetMap)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetMap)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetMap)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.SetMap)
             val map = readReply(socket.getInputStream())
-            assertEquals(5, u16le(map, 2))
+            assertEquals(6, u16le(map, 2))
             assertEquals(2, u32le(map, 4))
             assertEquals(XKeyboard.MinKeycode, map[10].toInt() and 0xff)
             assertEquals(XKeyboard.MaxKeycode, map[11].toInt() and 0xff)
@@ -1804,7 +1897,7 @@ class XXkbProtocolTest {
             val compatMap = readReply(socket.getInputStream())
             assertEquals(1, compatMap[0].toInt())
             assertEquals(0, compatMap[1].toInt() and 0xff)
-            assertEquals(1, u16le(compatMap, 2))
+            assertEquals(2, u16le(compatMap, 2))
             assertEquals(0, u32le(compatMap, 4))
             assertEquals(0, compatMap[8].toInt() and 0xff)
             assertEquals(0, u16le(compatMap, 10))
@@ -1822,9 +1915,9 @@ class XXkbProtocolTest {
             out.write(getCompatMapRequest(groups = 0, getAllSI = false, firstSI = 0, nSI = 0))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetCompatMap)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.GetCompatMap)
             val compatMap = readReply(socket.getInputStream())
-            assertEquals(2, u16le(compatMap, 2))
+            assertEquals(3, u16le(compatMap, 2))
             assertEquals(0, compatMap[1].toInt() and 0xff)
             assertEquals(0, u16le(compatMap, 10))
             assertEquals(0, u16le(compatMap, 12))
@@ -1841,7 +1934,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val compatMap = readReply(socket.getInputStream())
-            assertEquals(2, u16le(compatMap, 2))
+            assertEquals(3, u16le(compatMap, 2))
             assertEquals(0, compatMap[1].toInt() and 0xff)
             assertEquals(0, u16le(compatMap, 10))
             assertEquals(0, u16le(compatMap, 12))
@@ -1867,7 +1960,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val compatMap = readReply(socket.getInputStream())
-            assertEquals(2, u16le(compatMap, 2))
+            assertEquals(3, u16le(compatMap, 2))
             assertEquals(2, u32le(compatMap, 4))
             assertEquals(0x5, compatMap[8].toInt() and 0xff)
             assertEquals(0, u16le(compatMap, 10))
@@ -1902,7 +1995,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val compatMap = readReply(socket.getInputStream())
-            assertEquals(2, u16le(compatMap, 2))
+            assertEquals(3, u16le(compatMap, 2))
             assertEquals(1, u32le(compatMap, 4))
             assertEquals(0x2, compatMap[8].toInt() and 0xff)
             assertEquals(0x02, compatMap[32].toInt() and 0xff)
@@ -1940,7 +2033,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val compatMap = readReply(socket.getInputStream())
-            assertEquals(2, u16le(compatMap, 2))
+            assertEquals(3, u16le(compatMap, 2))
             assertEquals(9, u32le(compatMap, 4))
             assertEquals(0x1, compatMap[8].toInt() and 0xff)
             assertEquals(0, u16le(compatMap, 10))
@@ -1972,7 +2065,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val compatMap = readReply(socket.getInputStream())
-            assertEquals(2, u16le(compatMap, 2))
+            assertEquals(3, u16le(compatMap, 2))
             assertEquals(4, u32le(compatMap, 4))
             assertEquals(0, compatMap[8].toInt() and 0xff)
             assertEquals(1, u16le(compatMap, 10))
@@ -2017,7 +2110,7 @@ class XXkbProtocolTest {
 
             assertCompatMapNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 changedGroups = 0,
                 firstSI = 0,
                 nSI = 2,
@@ -2025,14 +2118,14 @@ class XXkbProtocolTest {
             )
             assertCompatMapNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 3,
+                sequence = 4,
                 changedGroups = 0,
                 firstSI = 1,
                 nSI = 1,
                 nTotalSI = 2,
             )
             val compatMap = readReply(socket.getInputStream())
-            assertEquals(4, u16le(compatMap, 2))
+            assertEquals(5, u16le(compatMap, 2))
             assertEquals(8, u32le(compatMap, 4))
             assertEquals(0, u16le(compatMap, 10))
             assertEquals(2, u16le(compatMap, 12))
@@ -2070,7 +2163,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val compatMap = readReply(socket.getInputStream())
-            assertEquals(3, u16le(compatMap, 2))
+            assertEquals(4, u16le(compatMap, 2))
             assertEquals(4, u32le(compatMap, 4))
             assertEquals(0, u16le(compatMap, 10))
             assertEquals(1, u16le(compatMap, 12))
@@ -2090,9 +2183,9 @@ class XXkbProtocolTest {
             out.write(getCompatMapRequest(groups = 0, getAllSI = true, firstSI = 0, nSI = 0))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 1, sequence = 2, minorOpcode = XXkb.GetCompatMap)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 1, sequence = 3, minorOpcode = XXkb.GetCompatMap)
             val compatMap = readReply(socket.getInputStream())
-            assertEquals(3, u16le(compatMap, 2))
+            assertEquals(4, u16le(compatMap, 2))
             assertEquals(4, u32le(compatMap, 4))
             assertEquals(0, u16le(compatMap, 10))
             assertEquals(1, u16le(compatMap, 12))
@@ -2113,9 +2206,9 @@ class XXkbProtocolTest {
             out.write(getCompatMapRequest(groups = 0x1, getAllSI = true, firstSI = 0, nSI = 0))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 3, sequence = 2, minorOpcode = XXkb.SetCompatMap)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 3, sequence = 3, minorOpcode = XXkb.SetCompatMap)
             val compatMap = readReply(socket.getInputStream())
-            assertEquals(3, u16le(compatMap, 2))
+            assertEquals(4, u16le(compatMap, 2))
             assertEquals(4, u32le(compatMap, 4))
             assertEquals(0, compatMap[8].toInt() and 0xff)
             assertEquals(0, u16le(compatMap, 10))
@@ -2142,14 +2235,14 @@ class XXkbProtocolTest {
 
             assertCompatMapNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 changedGroups = 0x5,
                 firstSI = 0,
                 nSI = 2,
                 nTotalSI = 2,
             )
             val compatMap = readReply(socket.getInputStream())
-            assertEquals(3, u16le(compatMap, 2))
+            assertEquals(4, u16le(compatMap, 2))
             assertEquals(0, u16le(compatMap, 10))
             assertEquals(0, u16le(compatMap, 12))
             assertEquals(2, u16le(compatMap, 14))
@@ -2171,7 +2264,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val compatMap = readReply(socket.getInputStream())
-            assertEquals(3, u16le(compatMap, 2))
+            assertEquals(4, u16le(compatMap, 2))
             assertEquals(0, u16le(compatMap, 10))
             assertEquals(0, u16le(compatMap, 12))
             assertEquals(0, u16le(compatMap, 14))
@@ -2199,7 +2292,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val compatMap = readReply(socket.getInputStream())
-            assertEquals(4, u16le(compatMap, 2))
+            assertEquals(5, u16le(compatMap, 2))
             assertEquals(0, u16le(compatMap, 10))
             assertEquals(0, u16le(compatMap, 12))
             assertEquals(1, u16le(compatMap, 14))
@@ -2219,9 +2312,9 @@ class XXkbProtocolTest {
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SelectEvents)
             val version = readReply(socket.getInputStream())
-            assertEquals(2, u16le(version, 2))
+            assertEquals(3, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
         }
@@ -2235,9 +2328,9 @@ class XXkbProtocolTest {
             out.write(getCompatMapRequest(groups = -1, getAllSI = true, firstSI = 0, nSI = 0xffff))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x10, sequence = 1, minorOpcode = XXkb.SetCompatMap)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x10, sequence = 2, minorOpcode = XXkb.SetCompatMap)
             val compatMap = readReply(socket.getInputStream())
-            assertEquals(2, u16le(compatMap, 2))
+            assertEquals(3, u16le(compatMap, 2))
             assertEquals(0, u32le(compatMap, 4))
             assertEquals(0, compatMap[8].toInt() and 0xff)
             assertEquals(32, compatMap.size)
@@ -2255,11 +2348,11 @@ class XXkbProtocolTest {
             out.write(getCompatMapRequest(groups = 0, getAllSI = false, firstSI = 0, nSI = 0))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetCompatMap)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetCompatMap)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetCompatMap)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.SetCompatMap)
             val compatMap = readReply(socket.getInputStream())
-            assertEquals(5, u16le(compatMap, 2))
+            assertEquals(6, u16le(compatMap, 2))
             assertEquals(0, u16le(compatMap, 10))
             assertEquals(0, u16le(compatMap, 12))
             assertEquals(0, u16le(compatMap, 14))
@@ -2276,13 +2369,13 @@ class XXkbProtocolTest {
 
             val state = readReply(socket.getInputStream())
             assertEquals(0, state[1].toInt() and 0xff)
-            assertEquals(1, u16le(state, 2))
+            assertEquals(2, u16le(state, 2))
             assertEquals(0, u32le(state, 4))
             assertEquals(0, u32le(state, 8))
 
             val map = readReply(socket.getInputStream())
             assertEquals(0, map[1].toInt() and 0xff)
-            assertEquals(2, u16le(map, 2))
+            assertEquals(3, u16le(map, 2))
             assertEquals(0, u32le(map, 4))
             assertEquals(0, u32le(map, 8))
             assertEquals(0, u32le(map, 12))
@@ -2301,14 +2394,14 @@ class XXkbProtocolTest {
             out.write(getIndicatorMapRequest(which = 1))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetIndicatorState)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.GetIndicatorState)
             val state = readReply(socket.getInputStream())
-            assertEquals(2, u16le(state, 2))
+            assertEquals(3, u16le(state, 2))
             assertEquals(0, u32le(state, 8))
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.GetIndicatorMap)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.GetIndicatorMap)
             val map = readReply(socket.getInputStream())
-            assertEquals(4, u16le(map, 2))
+            assertEquals(5, u16le(map, 2))
             assertEquals(0, u32le(map, 8))
             assertEquals(0, map[16].toInt() and 0xff)
         }
@@ -2325,7 +2418,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val map = readReply(socket.getInputStream())
-            assertEquals(2, u16le(map, 2))
+            assertEquals(3, u16le(map, 2))
             assertEquals(6, u32le(map, 4))
             assertEquals(0x3, u32le(map, 8))
             assertEquals(0, u32le(map, 12))
@@ -2333,7 +2426,7 @@ class XXkbProtocolTest {
             assertIndicatorMaps(map, records)
 
             val state = readReply(socket.getInputStream())
-            assertEquals(3, u16le(state, 2))
+            assertEquals(4, u16le(state, 2))
             assertEquals(0, u32le(state, 8))
         }
     }
@@ -2348,7 +2441,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val map = readReply(socket.getInputStream())
-            assertEquals(2, u16le(map, 2))
+            assertEquals(3, u16le(map, 2))
             assertEquals(3, u32le(map, 4))
             assertEquals(0x2, u32le(map, 8))
             assertEquals(0, u32le(map, 12))
@@ -2372,9 +2465,9 @@ class XXkbProtocolTest {
             out.write(getIndicatorMapRequest(which = 0x3))
             out.flush()
 
-            assertIndicatorMapNotify(socket.getInputStream().readExactly(32), sequence = 2, state = 0, changed = 0x3)
+            assertIndicatorMapNotify(socket.getInputStream().readExactly(32), sequence = 3, state = 0, changed = 0x3)
             val map = readReply(socket.getInputStream())
-            assertEquals(3, u16le(map, 2))
+            assertEquals(4, u16le(map, 2))
             assertEquals(0x3, u32le(map, 8))
             assertEquals(2, map[16].toInt() and 0xff)
             assertIndicatorMaps(map, records)
@@ -2396,7 +2489,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val map = readReply(socket.getInputStream())
-            assertEquals(3, u16le(map, 2))
+            assertEquals(4, u16le(map, 2))
             assertEquals(0x3, u32le(map, 8))
             assertEquals(2, map[16].toInt() and 0xff)
         }
@@ -2423,7 +2516,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val map = readReply(socket.getInputStream())
-            assertEquals(4, u16le(map, 2))
+            assertEquals(5, u16le(map, 2))
             assertEquals(0x2, u32le(map, 8))
             assertEquals(1, map[16].toInt() and 0xff)
         }
@@ -2442,9 +2535,9 @@ class XXkbProtocolTest {
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SelectEvents)
             val version = readReply(socket.getInputStream())
-            assertEquals(2, u16le(version, 2))
+            assertEquals(3, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
         }
@@ -2461,11 +2554,11 @@ class XXkbProtocolTest {
             out.write(getIndicatorMapRequest(which = 0x3))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetIndicatorMap)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetIndicatorMap)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetIndicatorMap)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.SetIndicatorMap)
             val map = readReply(socket.getInputStream())
-            assertEquals(5, u16le(map, 2))
+            assertEquals(6, u16le(map, 2))
             assertEquals(0, u32le(map, 8))
             assertEquals(0, map[16].toInt() and 0xff)
         }
@@ -2481,7 +2574,7 @@ class XXkbProtocolTest {
 
             val reply = readReply(socket.getInputStream())
             assertEquals(0, reply[1].toInt() and 0xff)
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(indicator, u32le(reply, 8))
             assertEquals(0, reply[12].toInt() and 0xff)
@@ -2508,9 +2601,9 @@ class XXkbProtocolTest {
             out.write(getNamedIndicatorRequest(0x0020_0400))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetNamedIndicator)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.GetNamedIndicator)
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(0x0020_0400, u32le(reply, 8))
             assertEquals(0, reply[12].toInt() and 0xff)
             assertEquals(0, reply[28].toInt() and 0xff)
@@ -2528,7 +2621,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val named = readReply(socket.getInputStream())
-            assertEquals(2, u16le(named, 2))
+            assertEquals(3, u16le(named, 2))
             assertEquals(indicator, u32le(named, 8))
             assertEquals(1, named[12].toInt() and 0xff)
             assertEquals(1, named[13].toInt() and 0xff)
@@ -2537,7 +2630,7 @@ class XXkbProtocolTest {
             assertEquals(1, named[28].toInt() and 0xff)
 
             val state = readReply(socket.getInputStream())
-            assertEquals(3, u16le(state, 2))
+            assertEquals(4, u16le(state, 2))
             assertEquals(1, u32le(state, 8))
         }
     }
@@ -2559,9 +2652,9 @@ class XXkbProtocolTest {
             out.write(getIndicatorMapRequest(which = 0x1))
             out.flush()
 
-            assertIndicatorMapNotify(socket.getInputStream().readExactly(32), sequence = 2, state = 0, changed = 0x1)
+            assertIndicatorMapNotify(socket.getInputStream().readExactly(32), sequence = 3, state = 0, changed = 0x1)
             val named = readReply(socket.getInputStream())
-            assertEquals(3, u16le(named, 2))
+            assertEquals(4, u16le(named, 2))
             assertEquals(indicator, u32le(named, 8))
             assertEquals(1, named[12].toInt() and 0xff)
             assertEquals(0, named[13].toInt() and 0xff)
@@ -2571,7 +2664,7 @@ class XXkbProtocolTest {
             assertEquals(1, named[28].toInt() and 0xff)
 
             val maps = readReply(socket.getInputStream())
-            assertEquals(4, u16le(maps, 2))
+            assertEquals(5, u16le(maps, 2))
             assertEquals(0x1, u32le(maps, 8))
             assertIndicatorMaps(maps, listOf(map))
         }
@@ -2594,13 +2687,13 @@ class XXkbProtocolTest {
             out.flush()
 
             val named = readReply(socket.getInputStream())
-            assertEquals(3, u16le(named, 2))
+            assertEquals(4, u16le(named, 2))
             assertEquals(indicator, u32le(named, 8))
             assertEquals(0, named[12].toInt() and 0xff)
             assertEquals(0, named[28].toInt() and 0xff)
 
             val maps = readReply(socket.getInputStream())
-            assertEquals(4, u16le(maps, 2))
+            assertEquals(5, u16le(maps, 2))
             assertEquals(0, u32le(maps, 8))
             assertEquals(0, maps[16].toInt() and 0xff)
         }
@@ -2617,14 +2710,14 @@ class XXkbProtocolTest {
             out.flush()
 
             val named = readReply(socket.getInputStream())
-            assertEquals(2, u16le(named, 2))
+            assertEquals(3, u16le(named, 2))
             assertEquals(indicator, u32le(named, 8))
             assertEquals(0, named[12].toInt() and 0xff)
             assertEquals(0, named[13].toInt() and 0xff)
             assertEquals(0, named[28].toInt() and 0xff)
 
             val state = readReply(socket.getInputStream())
-            assertEquals(3, u16le(state, 2))
+            assertEquals(4, u16le(state, 2))
             assertEquals(0, u32le(state, 8))
         }
     }
@@ -2644,9 +2737,9 @@ class XXkbProtocolTest {
             out.write(getIndicatorStateRequest())
             out.flush()
 
-            assertIndicatorStateNotify(socket.getInputStream().readExactly(32), sequence = 2, state = 1, changed = 1)
+            assertIndicatorStateNotify(socket.getInputStream().readExactly(32), sequence = 3, state = 1, changed = 1)
             val state = readReply(socket.getInputStream())
-            assertEquals(3, u16le(state, 2))
+            assertEquals(4, u16le(state, 2))
             assertEquals(1, u32le(state, 8))
         }
     }
@@ -2667,7 +2760,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val state = readReply(socket.getInputStream())
-            assertEquals(3, u16le(state, 2))
+            assertEquals(4, u16le(state, 2))
             assertEquals(1, u32le(state, 8))
         }
     }
@@ -2688,9 +2781,9 @@ class XXkbProtocolTest {
             out.write(getIndicatorStateRequest())
             out.flush()
 
-            assertIndicatorStateNotify(socket.getInputStream().readExactly(32), sequence = 3, state = 0, changed = 1)
+            assertIndicatorStateNotify(socket.getInputStream().readExactly(32), sequence = 4, state = 0, changed = 1)
             val state = readReply(socket.getInputStream())
-            assertEquals(4, u16le(state, 2))
+            assertEquals(5, u16le(state, 2))
             assertEquals(0, u32le(state, 8))
         }
     }
@@ -2717,7 +2810,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val state = readReply(socket.getInputStream())
-            assertEquals(4, u16le(state, 2))
+            assertEquals(5, u16le(state, 2))
             assertEquals(1, u32le(state, 8))
         }
     }
@@ -2735,9 +2828,9 @@ class XXkbProtocolTest {
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SelectEvents)
             val version = readReply(socket.getInputStream())
-            assertEquals(2, u16le(version, 2))
+            assertEquals(3, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
         }
@@ -2754,10 +2847,10 @@ class XXkbProtocolTest {
             out.write(getNamedIndicatorRequest(indicator))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetNamedIndicator)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetNamedIndicator)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetNamedIndicator)
             val reply = readReply(socket.getInputStream())
-            assertEquals(4, u16le(reply, 2))
+            assertEquals(5, u16le(reply, 2))
             assertEquals(indicator, u32le(reply, 8))
             assertEquals(0, reply[12].toInt() and 0xff)
             assertEquals(0, reply[28].toInt() and 0xff)
@@ -2774,7 +2867,7 @@ class XXkbProtocolTest {
             val reply = readReply(socket.getInputStream())
             assertEquals(1, reply[0].toInt())
             assertEquals(0, reply[1].toInt() and 0xff)
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(0, u32le(reply, 8))
             assertEquals(XKeyboard.MinKeycode, reply[12].toInt() and 0xff)
@@ -2803,7 +2896,7 @@ class XXkbProtocolTest {
             val reply = readReply(socket.getInputStream())
             assertEquals(1, reply[0].toInt())
             assertEquals(0, reply[1].toInt() and 0xff)
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(6, u32le(reply, 4))
             assertEquals(requested, u32le(reply, 8))
             assertEquals(XKeyboard.MinKeycode, reply[12].toInt() and 0xff)
@@ -2834,7 +2927,7 @@ class XXkbProtocolTest {
             val reply = readReply(socket.getInputStream())
             assertEquals(1, reply[0].toInt())
             assertEquals(0, reply[1].toInt() and 0xff)
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(6, u32le(reply, 4))
             assertEquals(XXkb.ComponentNameDetails, u32le(reply, 8))
             assertEquals(0, reply[14].toInt() and 0xff)
@@ -2861,7 +2954,7 @@ class XXkbProtocolTest {
             val reply = readReply(socket.getInputStream())
             assertEquals(1, reply[0].toInt())
             assertEquals(0, reply[1].toInt() and 0xff)
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(2, u32le(reply, 4))
             assertEquals(requested, u32le(reply, 8))
             assertEquals(XKeyboard.MinKeycode, reply[12].toInt() and 0xff)
@@ -2890,7 +2983,7 @@ class XXkbProtocolTest {
                 val reply = readReplyBigEndian(socket.getInputStream())
                 assertEquals(1, reply[0].toInt())
                 assertEquals(0, reply[1].toInt() and 0xff)
-                assertEquals(1, u16be(reply, 2))
+                assertEquals(2, u16be(reply, 2))
                 assertEquals(2, u32be(reply, 4))
                 assertEquals(XXkb.NameDetailSymbols or XXkb.NameDetailTypes, u32be(reply, 8))
                 assertEquals(XKeyboard.MinKeycode, reply[12].toInt() and 0xff)
@@ -2911,9 +3004,9 @@ class XXkbProtocolTest {
             out.write(getNamesRequest(which = 0))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetNames)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.GetNames)
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(0, u32le(reply, 8))
             assertEquals(XKeyboard.MinKeycode, reply[12].toInt() and 0xff)
             assertEquals(XKeyboard.MaxKeycode, reply[13].toInt() and 0xff)
@@ -2929,7 +3022,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(0, u32le(reply, 8))
             assertEquals(XKeyboard.MinKeycode, reply[12].toInt() and 0xff)
             assertEquals(XKeyboard.MaxKeycode, reply[13].toInt() and 0xff)
@@ -2970,7 +3063,7 @@ class XXkbProtocolTest {
 
             assertNamesNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 8,
+                sequence = 9,
                 changed = XXkb.ComponentNameDetails,
                 firstType = 0,
                 nTypes = 0,
@@ -2985,7 +3078,7 @@ class XXkbProtocolTest {
                 changedIndicators = 0,
             )
             val reply = readReply(socket.getInputStream())
-            assertEquals(9, u16le(reply, 2))
+            assertEquals(10, u16le(reply, 2))
             assertEquals(6, u32le(reply, 4))
             assertEquals(XXkb.ComponentNameDetails, u32le(reply, 8))
             assertEquals(atoms, List(6) { index -> u32le(reply, 32 + index * 4) })
@@ -3003,7 +3096,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(2, u32le(reply, 4))
             assertEquals(requested, u32le(reply, 8))
             val atoms = List(2) { index -> u32le(reply, 32 + index * 4) }
@@ -3021,9 +3114,9 @@ class XXkbProtocolTest {
             out.write(getNamesRequest(which = requested))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 5, opcode = XXkb.MajorOpcode, badValue = invalidAtom, sequence = 1, minorOpcode = XXkb.SetNames)
+            assertError(socket.getInputStream(), error = 5, opcode = XXkb.MajorOpcode, badValue = invalidAtom, sequence = 2, minorOpcode = XXkb.SetNames)
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(1, u32le(reply, 4))
             assertEquals(requested, u32le(reply, 8))
             assertEquals("us", atomName(socket, u32le(reply, 32)))
@@ -3046,7 +3139,7 @@ class XXkbProtocolTest {
 
             assertNamesNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 changed = XXkb.AllNameEventsMask,
                 firstType = 0,
                 nTypes = 2,
@@ -3061,7 +3154,7 @@ class XXkbProtocolTest {
                 changedIndicators = 0x3,
             )
             val reply = readReply(socket.getInputStream())
-            assertEquals(3, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals(0, u32le(reply, 8))
             assertEquals(32, reply.size)
         }
@@ -3082,7 +3175,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(3, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals(0, u32le(reply, 8))
             assertEquals(32, reply.size)
         }
@@ -3104,7 +3197,7 @@ class XXkbProtocolTest {
 
             assertNamesNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 changed = XXkb.NameDetailGroupNames,
                 firstType = 0,
                 nTypes = 0,
@@ -3119,7 +3212,7 @@ class XXkbProtocolTest {
                 changedIndicators = 0,
             )
             val reply = readReply(socket.getInputStream())
-            assertEquals(3, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals(0, u32le(reply, 8))
         }
     }
@@ -3145,7 +3238,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(4, u16le(reply, 2))
+            assertEquals(5, u16le(reply, 2))
             assertEquals(0, u32le(reply, 8))
             assertEquals(32, reply.size)
         }
@@ -3164,9 +3257,9 @@ class XXkbProtocolTest {
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SelectEvents)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SelectEvents)
             val version = readReply(socket.getInputStream())
-            assertEquals(2, u16le(version, 2))
+            assertEquals(3, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
         }
@@ -3183,11 +3276,11 @@ class XXkbProtocolTest {
             out.write(getNamesRequest(which = 0))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetNames)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetNames)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetNames)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.SetNames)
             val reply = readReply(socket.getInputStream())
-            assertEquals(5, u16le(reply, 2))
+            assertEquals(6, u16le(reply, 2))
             assertEquals(0, u32le(reply, 8))
             assertEquals(XKeyboard.MinKeycode, reply[12].toInt() and 0xff)
             assertEquals(XKeyboard.MaxKeycode, reply[13].toInt() and 0xff)
@@ -3204,7 +3297,7 @@ class XXkbProtocolTest {
             val reply = readReply(socket.getInputStream())
             assertEquals(1, reply[0].toInt())
             assertEquals(0, reply[1].toInt() and 0xff)
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(0x40, u32le(reply, 8))
             assertEquals(0, reply[12].toInt() and 0xff)
@@ -3231,9 +3324,9 @@ class XXkbProtocolTest {
             out.write(getGeometryRequest(name = 0))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 5, opcode = XXkb.MajorOpcode, badValue = invalidAtom, sequence = 1, minorOpcode = XXkb.GetGeometry)
+            assertError(socket.getInputStream(), error = 5, opcode = XXkb.MajorOpcode, badValue = invalidAtom, sequence = 2, minorOpcode = XXkb.GetGeometry)
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(0, u32le(reply, 8))
             assertEquals(0, reply[12].toInt() and 0xff)
@@ -3249,9 +3342,9 @@ class XXkbProtocolTest {
             out.write(getGeometryRequest(name = 0))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetGeometry)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.GetGeometry)
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(0, u32le(reply, 8))
             assertEquals(0, reply[12].toInt() and 0xff)
@@ -3273,7 +3366,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertGeometryReply(reply, sequence = 3, geometryBody = geometryBody)
+            assertGeometryReply(reply, sequence = 4, geometryBody = geometryBody)
         }
     }
 
@@ -3298,7 +3391,7 @@ class XXkbProtocolTest {
 
             assertNamesNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 3,
+                sequence = 4,
                 changed = XXkb.NameDetailGeometry,
                 firstType = 0,
                 nTypes = 0,
@@ -3313,7 +3406,7 @@ class XXkbProtocolTest {
                 changedIndicators = 0,
             )
             val reply = readReply(socket.getInputStream())
-            assertEquals(4, u16le(reply, 2))
+            assertEquals(5, u16le(reply, 2))
             assertEquals(1, u32le(reply, 4))
             assertEquals(XXkb.NameDetailGeometry, u32le(reply, 8))
             assertEquals(geometryAtom, u32le(reply, 32))
@@ -3335,9 +3428,9 @@ class XXkbProtocolTest {
             out.write(getGeometryRequest(name = 0))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 5, opcode = XXkb.MajorOpcode, badValue = invalidAtom, sequence = 3, minorOpcode = XXkb.SetGeometry)
+            assertError(socket.getInputStream(), error = 5, opcode = XXkb.MajorOpcode, badValue = invalidAtom, sequence = 4, minorOpcode = XXkb.SetGeometry)
             val reply = readReply(socket.getInputStream())
-            assertGeometryReply(reply, sequence = 4, geometryBody = geometryBody)
+            assertGeometryReply(reply, sequence = 5, geometryBody = geometryBody)
         }
     }
 
@@ -3356,10 +3449,10 @@ class XXkbProtocolTest {
             out.write(getGeometryRequest(name = 0))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 1, sequence = 3, minorOpcode = XXkb.SetGeometry)
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.SetGeometry)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 1, sequence = 4, minorOpcode = XXkb.SetGeometry)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 5, minorOpcode = XXkb.SetGeometry)
             val reply = readReply(socket.getInputStream())
-            assertGeometryReply(reply, sequence = 5, geometryBody = geometryBody)
+            assertGeometryReply(reply, sequence = 6, geometryBody = geometryBody)
         }
     }
 
@@ -3378,10 +3471,10 @@ class XXkbProtocolTest {
             out.write(getGeometryRequest(name = 0))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetGeometry)
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 2, sequence = 4, minorOpcode = XXkb.SetGeometry)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.SetGeometry)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 2, sequence = 5, minorOpcode = XXkb.SetGeometry)
             val reply = readReply(socket.getInputStream())
-            assertGeometryReply(reply, sequence = 5, geometryBody = geometryBody)
+            assertGeometryReply(reply, sequence = 6, geometryBody = geometryBody)
         }
     }
 
@@ -3400,9 +3493,9 @@ class XXkbProtocolTest {
             out.write(getGeometryRequest(name = 0))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 5, opcode = XXkb.MajorOpcode, badValue = invalidAtom, sequence = 3, minorOpcode = XXkb.SetGeometry)
+            assertError(socket.getInputStream(), error = 5, opcode = XXkb.MajorOpcode, badValue = invalidAtom, sequence = 4, minorOpcode = XXkb.SetGeometry)
             val reply = readReply(socket.getInputStream())
-            assertGeometryReply(reply, sequence = 4, geometryBody = geometryBody)
+            assertGeometryReply(reply, sequence = 5, geometryBody = geometryBody)
         }
     }
 
@@ -3417,11 +3510,11 @@ class XXkbProtocolTest {
             out.write(getGeometryRequest(name = 0))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetGeometry)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetGeometry)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetGeometry)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.SetGeometry)
             val reply = readReply(socket.getInputStream())
-            assertGeometryReply(reply, sequence = 5, geometryBody = setGeometryBody(name = 0x40))
+            assertGeometryReply(reply, sequence = 6, geometryBody = setGeometryBody(name = 0x40))
         }
     }
 
@@ -3440,11 +3533,11 @@ class XXkbProtocolTest {
             out.write(perClientFlagsRequest(change = 0, value = 0, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = 0))
             out.flush()
 
-            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 1, value = 0)
-            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 2, value = flags)
+            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 2, value = 0)
             assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 3, value = flags)
-            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 4, value = 0)
+            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 4, value = flags)
             assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 5, value = 0)
+            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 6, value = 0)
         }
     }
 
@@ -3454,7 +3547,7 @@ class XXkbProtocolTest {
             val out = socket.getOutputStream()
             out.write(perClientFlagsRequest(change = XXkb.PcfDetectableAutoRepeat, value = XXkb.PcfDetectableAutoRepeat, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = 0))
             out.flush()
-            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 1, value = XXkb.PcfDetectableAutoRepeat)
+            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 2, value = XXkb.PcfDetectableAutoRepeat)
 
             Socket("127.0.0.1", port).use { second ->
                 second.soTimeout = 2_000
@@ -3463,7 +3556,7 @@ class XXkbProtocolTest {
                 secondOut.write(perClientFlagsRequest(change = 0, value = 0, ctrlsToChange = 0, autoCtrls = 0, autoCtrlsValues = 0))
                 secondOut.flush()
 
-                assertPerClientFlagsReply(readReply(second.getInputStream()), sequence = 1, value = 0)
+                assertPerClientFlagsReply(readReply(second.getInputStream()), sequence = 2, value = 0)
             }
         }
     }
@@ -3496,12 +3589,6 @@ class XXkbProtocolTest {
 
             assertPerClientFlagsReply(
                 readReply(socket.getInputStream()),
-                sequence = 1,
-                value = XXkb.PcfAutoResetControls,
-                autoCtrls = XXkb.BoolCtrlRepeatKeys,
-            )
-            assertPerClientFlagsReply(
-                readReply(socket.getInputStream()),
                 sequence = 2,
                 value = XXkb.PcfAutoResetControls,
                 autoCtrls = XXkb.BoolCtrlRepeatKeys,
@@ -3511,9 +3598,15 @@ class XXkbProtocolTest {
                 sequence = 3,
                 value = XXkb.PcfAutoResetControls,
                 autoCtrls = XXkb.BoolCtrlRepeatKeys,
+            )
+            assertPerClientFlagsReply(
+                readReply(socket.getInputStream()),
+                sequence = 4,
+                value = XXkb.PcfAutoResetControls,
+                autoCtrls = XXkb.BoolCtrlRepeatKeys,
                 autoCtrlValues = XXkb.BoolCtrlRepeatKeys,
             )
-            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 4, value = 0)
+            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 5, value = 0)
         }
     }
 
@@ -3537,12 +3630,12 @@ class XXkbProtocolTest {
 
             assertControlsNotify(
                 input.readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 changedControls = XXkb.ControlEnabledMask,
                 enabledControls = 0,
                 enabledControlChanges = XXkb.BoolCtrlRepeatKeys,
             )
-            assertGetControls(readReply(input), sequence = 3, enabledControls = 0)
+            assertGetControls(readReply(input), sequence = 4, enabledControls = 0)
 
             Socket("127.0.0.1", port).use { owner ->
                 owner.soTimeout = 2_000
@@ -3561,7 +3654,7 @@ class XXkbProtocolTest {
 
                 assertPerClientFlagsReply(
                     readReply(owner.getInputStream()),
-                    sequence = 1,
+                    sequence = 2,
                     value = XXkb.PcfAutoResetControls,
                     autoCtrls = XXkb.BoolCtrlRepeatKeys,
                     autoCtrlValues = XXkb.BoolCtrlRepeatKeys,
@@ -3570,7 +3663,7 @@ class XXkbProtocolTest {
 
             assertControlsNotify(
                 input.readExactly(32),
-                sequence = 3,
+                sequence = 4,
                 changedControls = XXkb.ControlEnabledMask,
                 enabledControls = XXkb.BoolCtrlRepeatKeys,
                 enabledControlChanges = XXkb.BoolCtrlRepeatKeys,
@@ -3578,7 +3671,7 @@ class XXkbProtocolTest {
             )
             out.write(getControlsRequest())
             out.flush()
-            assertGetControls(readReply(input), sequence = 4, enabledControls = XXkb.BoolCtrlRepeatKeys)
+            assertGetControls(readReply(input), sequence = 5, enabledControls = XXkb.BoolCtrlRepeatKeys)
         }
     }
 
@@ -3600,18 +3693,18 @@ class XXkbProtocolTest {
             out.write(getControlsRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.PerClientFlags)
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x20, sequence = 2, minorOpcode = XXkb.PerClientFlags)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.PerClientFlags)
             assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x20, sequence = 3, minorOpcode = XXkb.PerClientFlags)
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.PerClientFlags)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x20, sequence = 4, minorOpcode = XXkb.PerClientFlags)
             assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 5, minorOpcode = XXkb.PerClientFlags)
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = XXkb.ControlEnabledMask, sequence = 6, minorOpcode = XXkb.PerClientFlags)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 6, minorOpcode = XXkb.PerClientFlags)
             assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = XXkb.ControlEnabledMask, sequence = 7, minorOpcode = XXkb.PerClientFlags)
             assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = XXkb.ControlEnabledMask, sequence = 8, minorOpcode = XXkb.PerClientFlags)
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 9, minorOpcode = XXkb.PerClientFlags)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = XXkb.ControlEnabledMask, sequence = 9, minorOpcode = XXkb.PerClientFlags)
             assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 10, minorOpcode = XXkb.PerClientFlags)
-            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 11, value = XXkb.PcfDetectableAutoRepeat)
-            assertGetControls(readReply(socket.getInputStream()), sequence = 12, enabledControls = XXkb.BoolCtrlRepeatKeys)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 11, minorOpcode = XXkb.PerClientFlags)
+            assertPerClientFlagsReply(readReply(socket.getInputStream()), sequence = 12, value = XXkb.PcfDetectableAutoRepeat)
+            assertGetControls(readReply(socket.getInputStream()), sequence = 13, enabledControls = XXkb.BoolCtrlRepeatKeys)
         }
     }
 
@@ -3625,7 +3718,7 @@ class XXkbProtocolTest {
             val reply = readReply(socket.getInputStream())
             assertEquals(1, reply[0].toInt())
             assertEquals(0, reply[1].toInt() and 0xff)
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(17, u32le(reply, 4))
             assertEquals(1, u16le(reply, 8))
             assertEquals(1, u16le(reply, 10))
@@ -3659,7 +3752,7 @@ class XXkbProtocolTest {
             val reply = readReply(socket.getInputStream())
             assertEquals(1, reply[0].toInt())
             assertEquals(0, reply[1].toInt() and 0xff)
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(0, u16le(reply, 8))
             assertEquals(0, u16le(reply, 10))
@@ -3684,7 +3777,7 @@ class XXkbProtocolTest {
             val reply = readReply(socket.getInputStream())
             assertEquals(1, reply[0].toInt())
             assertEquals(0, reply[1].toInt() and 0xff)
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(2, u32le(reply, 4))
             assertEquals(1, u16le(reply, 8))
             assertEquals(0, u16le(reply, 10))
@@ -3715,7 +3808,7 @@ class XXkbProtocolTest {
             val reply = readReply(socket.getInputStream())
             assertEquals(1, reply[0].toInt())
             assertEquals(0, reply[1].toInt() and 0xff)
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(17, u32le(reply, 4))
             assertEquals(1, u16le(reply, 8))
             assertEquals(1, u16le(reply, 10))
@@ -3750,7 +3843,7 @@ class XXkbProtocolTest {
             val reply = readReply(socket.getInputStream())
             assertEquals(1, reply[0].toInt())
             assertEquals(0, reply[1].toInt() and 0xff)
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(8, u32le(reply, 4))
             assertEquals(1, u16le(reply, 8))
             assertEquals(1, u16le(reply, 10))
@@ -3782,9 +3875,9 @@ class XXkbProtocolTest {
             out.write(listComponentsRequest(maxNames = 1, trailingPatterns = xkbComponentSpecs("base")))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.ListComponents)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.ListComponents)
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(1, u16le(reply, 8))
             assertEquals(0, u16le(reply, 20))
             assertEquals(
@@ -3810,9 +3903,9 @@ class XXkbProtocolTest {
             out.write(listComponentsRequest(maxNames = 1))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.ListComponents)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.ListComponents)
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(1, u16le(reply, 8))
             assertEquals(5, u16le(reply, 20))
             assertEquals(
@@ -3840,7 +3933,7 @@ class XXkbProtocolTest {
             val reply = readReply(socket.getInputStream())
             assertEquals(1, reply[0].toInt())
             assertEquals(0, reply[1].toInt() and 0xff)
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(XKeyboard.MinKeycode, reply[8].toInt() and 0xff)
             assertEquals(XKeyboard.MaxKeycode, reply[9].toInt() and 0xff)
@@ -3863,7 +3956,7 @@ class XXkbProtocolTest {
             val reply = readReply(socket.getInputStream())
             assertEquals(1, reply[0].toInt())
             assertEquals(0, reply[1].toInt() and 0xff)
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(XKeyboard.MinKeycode, reply[8].toInt() and 0xff)
             assertEquals(XKeyboard.MaxKeycode, reply[9].toInt() and 0xff)
@@ -3882,13 +3975,13 @@ class XXkbProtocolTest {
 
             val reply = readReply(socket.getInputStream())
             val map = reply.copyOfRange(32, reply.size)
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(map.size / 4, u32le(reply, 4))
             assertEquals(XXkb.GbnTypes or XXkb.GbnClientSymbols, u16le(reply, 12))
             assertEquals(XXkb.GbnTypes or XXkb.GbnClientSymbols, u16le(reply, 14))
             assertMapReplyHeader(
                 map,
-                sequence = 1,
+                sequence = 2,
                 present = XXkb.MapPartKeyTypes or XXkb.MapPartKeySyms or XXkb.MapPartModifierMap,
             )
             assertEquals(XKeyboard.MinKeycode, map[17].toInt() and 0xff)
@@ -3922,7 +4015,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(0, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
@@ -3939,7 +4032,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(0, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
@@ -3956,7 +4049,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(0, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
@@ -3973,7 +4066,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(0, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
@@ -3989,7 +4082,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(0, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
@@ -4011,11 +4104,11 @@ class XXkbProtocolTest {
             val mapSize = 96
             val map = reply.copyOfRange(32, 32 + mapSize)
             val compat = reply.copyOfRange(32 + mapSize, reply.size)
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(reported, u16le(reply, 12))
             assertEquals(reported, u16le(reply, 14))
-            assertMapReplyHeader(map, sequence = 2, present = XXkb.MapPartKeyTypes)
-            assertCompatMapReply(compat, sequence = 2, groups = 0x1, groupMaps = groupMaps)
+            assertMapReplyHeader(map, sequence = 3, present = XXkb.MapPartKeyTypes)
+            assertCompatMapReply(compat, sequence = 3, groups = 0x1, groupMaps = groupMaps)
         }
     }
 
@@ -4034,7 +4127,7 @@ class XXkbProtocolTest {
 
             val reply = readReply(socket.getInputStream())
             val geometryPayload = geometryBody.copyOfRange(24, geometryBody.size)
-            assertEquals(3, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals((32 + geometryPayload.size) / 4, u32le(reply, 4))
             assertEquals(XKeyboard.MinKeycode, reply[8].toInt() and 0xff)
             assertEquals(XKeyboard.MaxKeycode, reply[9].toInt() and 0xff)
@@ -4042,7 +4135,7 @@ class XXkbProtocolTest {
             assertEquals(0, reply[11].toInt() and 0xff)
             assertEquals(XXkb.GbnGeometry, u16le(reply, 12))
             assertEquals(XXkb.GbnGeometry, u16le(reply, 14))
-            assertGeometryReply(reply.copyOfRange(32, reply.size), sequence = 3, geometryBody = geometryBody)
+            assertGeometryReply(reply.copyOfRange(32, reply.size), sequence = 4, geometryBody = geometryBody)
         }
     }
 
@@ -4062,11 +4155,11 @@ class XXkbProtocolTest {
 
             val reply = readReply(socket.getInputStream())
             val geometryPayload = geometryBody.copyOfRange(24, geometryBody.size)
-            assertEquals(3, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals((32 + geometryPayload.size) / 4, u32le(reply, 4))
             assertEquals(XXkb.GbnGeometry, u16le(reply, 12))
             assertEquals(XXkb.GbnGeometry, u16le(reply, 14))
-            assertGeometryReply(reply.copyOfRange(32, reply.size), sequence = 3, geometryBody = geometryBody)
+            assertGeometryReply(reply.copyOfRange(32, reply.size), sequence = 4, geometryBody = geometryBody)
         }
     }
 
@@ -4086,11 +4179,11 @@ class XXkbProtocolTest {
 
             val reply = readReply(socket.getInputStream())
             val compatSize = 32 + groupMaps.size * 4
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(compatSize / 4, u32le(reply, 4))
             assertEquals(XXkb.GbnCompatMap, u16le(reply, 12))
             assertEquals(XXkb.GbnCompatMap, u16le(reply, 14))
-            assertCompatMapReply(reply.copyOfRange(32, reply.size), sequence = 2, groups = 0x5, groupMaps = groupMaps)
+            assertCompatMapReply(reply.copyOfRange(32, reply.size), sequence = 3, groups = 0x5, groupMaps = groupMaps)
         }
     }
 
@@ -4111,7 +4204,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(0, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
@@ -4134,7 +4227,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(XXkb.GbnCompatMap, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
@@ -4153,11 +4246,11 @@ class XXkbProtocolTest {
 
             val reply = readReply(socket.getInputStream())
             val indicatorSize = 32 + records.size * 12
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(indicatorSize / 4, u32le(reply, 4))
             assertEquals(XXkb.GbnIndicatorMap, u16le(reply, 12))
             assertEquals(XXkb.GbnIndicatorMap, u16le(reply, 14))
-            assertIndicatorMapReply(reply.copyOfRange(32, reply.size), sequence = 2, which = 0x3, maps = records)
+            assertIndicatorMapReply(reply.copyOfRange(32, reply.size), sequence = 3, which = 0x3, maps = records)
         }
     }
 
@@ -4173,11 +4266,11 @@ class XXkbProtocolTest {
 
             val reply = readReply(socket.getInputStream())
             val indicatorSize = 32 + records.size * 12
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(indicatorSize / 4, u32le(reply, 4))
             assertEquals(XXkb.GbnIndicatorMap, u16le(reply, 12))
             assertEquals(XXkb.GbnIndicatorMap, u16le(reply, 14))
-            assertIndicatorMapReply(reply.copyOfRange(32, reply.size), sequence = 2, which = 0x3, maps = records)
+            assertIndicatorMapReply(reply.copyOfRange(32, reply.size), sequence = 3, which = 0x3, maps = records)
         }
     }
 
@@ -4192,7 +4285,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(0, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
@@ -4210,7 +4303,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(XXkb.GbnIndicatorMap, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
@@ -4240,12 +4333,12 @@ class XXkbProtocolTest {
             val compatSize = 32 + groupMaps.size * 4
             val geometrySize = geometryBody.copyOfRange(24, geometryBody.size).size + 32
             val reported = XXkb.GbnCompatMap or XXkb.GbnGeometry
-            assertEquals(4, u16le(reply, 2))
+            assertEquals(5, u16le(reply, 2))
             assertEquals((compatSize + geometrySize) / 4, u32le(reply, 4))
             assertEquals(reported, u16le(reply, 12))
             assertEquals(reported, u16le(reply, 14))
-            assertCompatMapReply(reply.copyOfRange(32, 32 + compatSize), sequence = 4, groups = 0x5, groupMaps = groupMaps)
-            assertGeometryReply(reply.copyOfRange(32 + compatSize, reply.size), sequence = 4, geometryBody = geometryBody)
+            assertCompatMapReply(reply.copyOfRange(32, 32 + compatSize), sequence = 5, groups = 0x5, groupMaps = groupMaps)
+            assertGeometryReply(reply.copyOfRange(32 + compatSize, reply.size), sequence = 5, geometryBody = geometryBody)
         }
     }
 
@@ -4274,18 +4367,18 @@ class XXkbProtocolTest {
             val indicatorSize = 32 + indicatorMaps.size * 12
             val geometrySize = geometryBody.copyOfRange(24, geometryBody.size).size + 32
             val reported = XXkb.GbnCompatMap or XXkb.GbnIndicatorMap or XXkb.GbnGeometry
-            assertEquals(5, u16le(reply, 2))
+            assertEquals(6, u16le(reply, 2))
             assertEquals((compatSize + indicatorSize + geometrySize) / 4, u32le(reply, 4))
             assertEquals(reported, u16le(reply, 12))
             assertEquals(reported, u16le(reply, 14))
-            assertCompatMapReply(reply.copyOfRange(32, 32 + compatSize), sequence = 5, groups = 0x5, groupMaps = groupMaps)
+            assertCompatMapReply(reply.copyOfRange(32, 32 + compatSize), sequence = 6, groups = 0x5, groupMaps = groupMaps)
             assertIndicatorMapReply(
                 reply.copyOfRange(32 + compatSize, 32 + compatSize + indicatorSize),
-                sequence = 5,
+                sequence = 6,
                 which = 0x3,
                 maps = indicatorMaps,
             )
-            assertGeometryReply(reply.copyOfRange(32 + compatSize + indicatorSize, reply.size), sequence = 5, geometryBody = geometryBody)
+            assertGeometryReply(reply.copyOfRange(32 + compatSize + indicatorSize, reply.size), sequence = 6, geometryBody = geometryBody)
         }
     }
 
@@ -4304,7 +4397,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(3, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(0, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
@@ -4326,7 +4419,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(3, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(XXkb.GbnGeometry, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
@@ -4342,7 +4435,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(0, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
@@ -4358,9 +4451,9 @@ class XXkbProtocolTest {
             out.write(getKbdByNameRequest(need = 0, want = 0, load = false, trailingNames = xkbComponentSpecs("base")))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetKbdByName)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.GetKbdByName)
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(XKeyboard.MinKeycode, reply[8].toInt() and 0xff)
             assertEquals(XKeyboard.MaxKeycode, reply[9].toInt() and 0xff)
             assertEquals(0, u16le(reply, 12))
@@ -4376,9 +4469,9 @@ class XXkbProtocolTest {
             out.write(getKbdByNameRequest(need = 0, want = 0, load = false))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetKbdByName)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.GetKbdByName)
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(XKeyboard.MinKeycode, reply[8].toInt() and 0xff)
             assertEquals(XKeyboard.MaxKeycode, reply[9].toInt() and 0xff)
             assertEquals(0, u16le(reply, 12))
@@ -4397,7 +4490,7 @@ class XXkbProtocolTest {
             val reply = readReply(socket.getInputStream())
             assertEquals(1, reply[0].toInt())
             assertEquals(0, reply[1].toInt() and 0xff)
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(511, u32le(reply, 4))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
             assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
@@ -4434,7 +4527,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(1, u32le(reply, 4))
             assertEquals(0, u16le(reply, 8))
             assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
@@ -4465,7 +4558,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(6, u32le(reply, 4))
             assertEquals(XXkb.XiFeatureIndicators, u16le(reply, 8))
             assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
@@ -4490,9 +4583,9 @@ class XXkbProtocolTest {
             out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 2, nButtons = 1))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetDeviceInfo)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.GetDeviceInfo)
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(3, u32le(reply, 4))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
             assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
@@ -4517,10 +4610,10 @@ class XXkbProtocolTest {
             out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = true, firstButton = 0, nButtons = 0))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetDeviceInfo)
             assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.GetDeviceInfo)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.GetDeviceInfo)
             val reply = readReply(socket.getInputStream())
-            assertEquals(3, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
             assertEquals(1, reply[18].toInt() and 0xff)
             assertEquals(255, reply[19].toInt() and 0xff)
@@ -4535,7 +4628,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(1, u32le(reply, 4))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
             assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
@@ -4557,7 +4650,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(5, u32le(reply, 4))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
             assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
@@ -4595,9 +4688,9 @@ class XXkbProtocolTest {
             out.write(getDeviceInfoRequest(wanted = wanted, allButtons = false, firstButton = 0, nButtons = 0, ledClass = XXkb.AllXIClasses, ledId = XXkb.AllXIIds))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetDeviceInfo)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetDeviceInfo)
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(0, u16le(reply, 8))
             assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
             assertEquals(0, u16le(reply, 12))
@@ -4629,13 +4722,13 @@ class XXkbProtocolTest {
 
             assertXkbExtensionDeviceNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 reason = XXkb.XiFeatureButtonActions,
                 firstButton = 2,
                 nButtons = 2,
             )
             val reply = readReply(socket.getInputStream())
-            assertEquals(3, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
             assertEquals(2, reply[18].toInt() and 0xff)
             assertEquals(2, reply[19].toInt() and 0xff)
@@ -4663,7 +4756,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val version = readReply(socket.getInputStream())
-            assertEquals(3, u16le(version, 2))
+            assertEquals(4, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
         }
     }
@@ -4695,7 +4788,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val version = readReply(socket.getInputStream())
-            assertEquals(4, u16le(version, 2))
+            assertEquals(5, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
         }
     }
@@ -4727,7 +4820,7 @@ class XXkbProtocolTest {
 
             assertXkbExtensionDeviceNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 reason = reason,
                 ledClass = XXkb.KbdFeedbackClass,
                 ledId = 0,
@@ -4735,7 +4828,7 @@ class XXkbProtocolTest {
                 ledState = 0x0000_0002,
             )
             val reply = readReply(socket.getInputStream())
-            assertEquals(3, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals(reason, u16le(reply, 8))
             assertEquals(reason, u16le(reply, 10) and reason)
         }
@@ -4777,7 +4870,7 @@ class XXkbProtocolTest {
 
             assertXkbExtensionDeviceNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 3,
+                sequence = 4,
                 reason = XXkb.XiFeatureIndicatorState,
                 ledClass = XXkb.KbdFeedbackClass,
                 ledId = 0,
@@ -4785,7 +4878,7 @@ class XXkbProtocolTest {
                 ledState = 0x0000_0002,
             )
             val reply = readReply(socket.getInputStream())
-            assertEquals(4, u16le(reply, 2))
+            assertEquals(5, u16le(reply, 2))
             assertEquals(XXkb.XiFeatureIndicators, u16le(reply, 8))
         }
     }
@@ -4828,7 +4921,7 @@ class XXkbProtocolTest {
 
             assertXkbExtensionDeviceNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 3,
+                sequence = 4,
                 reason = reason,
                 ledClass = XXkb.KbdFeedbackClass,
                 ledId = 0,
@@ -4836,7 +4929,7 @@ class XXkbProtocolTest {
                 ledState = 0x0000_0002,
             )
             val reply = readReply(socket.getInputStream())
-            assertEquals(4, u16le(reply, 2))
+            assertEquals(5, u16le(reply, 2))
             assertEquals(XXkb.XiFeatureIndicators, u16le(reply, 8))
         }
     }
@@ -4862,9 +4955,9 @@ class XXkbProtocolTest {
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetDeviceInfo)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetDeviceInfo)
             val version = readReply(socket.getInputStream())
-            assertEquals(3, u16le(version, 2))
+            assertEquals(4, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
         }
     }
@@ -4883,9 +4976,9 @@ class XXkbProtocolTest {
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0020, sequence = 1, minorOpcode = XXkb.SetDeviceInfo)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0020, sequence = 2, minorOpcode = XXkb.SetDeviceInfo)
             val version = readReply(socket.getInputStream())
-            assertEquals(2, u16le(version, 2))
+            assertEquals(3, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
         }
     }
@@ -4918,7 +5011,7 @@ class XXkbProtocolTest {
 
             assertXkbExtensionDeviceNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 reason = XXkb.XiFeatureUnsupportedFeature,
                 deviceId = 3,
                 ledClass = XXkb.KbdFeedbackClass,
@@ -4927,7 +5020,7 @@ class XXkbProtocolTest {
                 unsupported = XXkb.XiFeatureIndicatorState,
             )
             val version = readReply(socket.getInputStream())
-            assertEquals(3, u16le(version, 2))
+            assertEquals(4, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
         }
     }
@@ -4963,7 +5056,7 @@ class XXkbProtocolTest {
                     observerOut.flush()
                     val observerSelectionReply = observer.getInputStream().readExactly(32)
                     assertEquals(1, observerSelectionReply[0].toInt() and 0xff)
-                    assertEquals(2, u16le(observerSelectionReply, 2))
+                    assertEquals(3, u16le(observerSelectionReply, 2))
 
                     requesterOut.write(
                         setDeviceInfoRequest(
@@ -4977,7 +5070,7 @@ class XXkbProtocolTest {
 
                     assertXkbExtensionDeviceNotify(
                         requester.getInputStream().readExactly(32),
-                        sequence = 2,
+                        sequence = 3,
                         reason = XXkb.XiFeatureUnsupportedFeature,
                         deviceId = 3,
                         supported = 0,
@@ -4987,7 +5080,7 @@ class XXkbProtocolTest {
                     observerOut.flush()
                     val observerReply = observer.getInputStream().readExactly(32)
                     assertEquals(1, observerReply[0].toInt() and 0xff)
-                    assertEquals(3, u16le(observerReply, 2))
+                    assertEquals(4, u16le(observerReply, 2))
                     assertEquals(XXkb.MajorVersion, u16le(observerReply, 8))
                 }
             }
@@ -5021,19 +5114,19 @@ class XXkbProtocolTest {
 
             assertXkbExtensionDeviceNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 reason = XXkb.XiFeatureButtonActions,
                 firstButton = 1,
                 nButtons = 1,
             )
             assertXkbExtensionDeviceNotify(
                 socket.getInputStream().readExactly(32),
-                sequence = 2,
+                sequence = 3,
                 reason = XXkb.XiFeatureUnsupportedFeature,
                 unsupported = XXkb.XiFeatureKeyboards,
             )
             val reply = readReply(socket.getInputStream())
-            assertEquals(3, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
             assertEquals(1, reply[18].toInt() and 0xff)
             assertEquals(1, reply[19].toInt() and 0xff)
@@ -5062,7 +5155,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val version = readReply(socket.getInputStream())
-            assertEquals(3, u16le(version, 2))
+            assertEquals(4, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
         }
     }
@@ -5101,7 +5194,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(10, u32le(reply, 4))
             assertEquals(wanted, u16le(reply, 8))
             assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
@@ -5138,9 +5231,9 @@ class XXkbProtocolTest {
             out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 1, nButtons = 1))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 5, opcode = XXkb.MajorOpcode, badValue = invalidAtom, sequence = 1, minorOpcode = XXkb.SetDeviceInfo)
+            assertError(socket.getInputStream(), error = 5, opcode = XXkb.MajorOpcode, badValue = invalidAtom, sequence = 2, minorOpcode = XXkb.SetDeviceInfo)
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(3, u32le(reply, 4))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
             assertEquals(1, reply[18].toInt() and 0xff)
@@ -5195,7 +5288,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(3, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals(wanted, u16le(reply, 8))
             assertEquals(1, u16le(reply, 14))
             assertEquals(0x0000_0001, u32le(reply, 40))
@@ -5242,7 +5335,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(7, u32le(reply, 4))
             assertEquals(wanted, u16le(reply, 8))
             assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
@@ -5300,10 +5393,10 @@ class XXkbProtocolTest {
             out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 1, nButtons = 1))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 2, minorOpcode = XXkb.GetDeviceInfo)
             assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 3, minorOpcode = XXkb.GetDeviceInfo)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 4, minorOpcode = XXkb.GetDeviceInfo)
             val reply = readReply(socket.getInputStream())
-            assertEquals(4, u16le(reply, 2))
+            assertEquals(5, u16le(reply, 2))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
             assertEquals(1, reply[18].toInt() and 0xff)
             assertEquals(1, reply[19].toInt() and 0xff)
@@ -5339,10 +5432,10 @@ class XXkbProtocolTest {
             out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 1, nButtons = 1))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 1, minorOpcode = XXkb.GetDeviceInfo)
             assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 2, minorOpcode = XXkb.GetDeviceInfo)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 3, minorOpcode = XXkb.GetDeviceInfo)
             val reply = readReply(socket.getInputStream())
-            assertEquals(3, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
             assertEquals(1, reply[18].toInt() and 0xff)
             assertEquals(1, reply[19].toInt() and 0xff)
@@ -5402,10 +5495,10 @@ class XXkbProtocolTest {
             )
             out.flush()
 
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.GetDeviceInfo)
             assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.GetDeviceInfo)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.GetDeviceInfo)
             val reply = readReply(socket.getInputStream())
-            assertEquals(4, u16le(reply, 2))
+            assertEquals(5, u16le(reply, 2))
             assertEquals(6, u32le(reply, 4))
             assertEquals(XXkb.XiFeatureIndicatorState, u16le(reply, 8))
             assertEquals(1, u16le(reply, 14))
@@ -5442,10 +5535,10 @@ class XXkbProtocolTest {
             out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 1, nButtons = 1))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = XXkb.AllXIClasses, sequence = 1, minorOpcode = XXkb.SetDeviceInfo)
-            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 2, minorOpcode = XXkb.SetDeviceInfo)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = XXkb.AllXIClasses, sequence = 2, minorOpcode = XXkb.SetDeviceInfo)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 3, minorOpcode = XXkb.SetDeviceInfo)
             val reply = readReply(socket.getInputStream())
-            assertEquals(3, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
             assertEquals(true, reply.copyOfRange(36, 44).all { it == 0.toByte() })
         }
@@ -5494,9 +5587,9 @@ class XXkbProtocolTest {
             )
             out.flush()
 
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetDeviceInfo)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetDeviceInfo)
             val reply = readReply(socket.getInputStream())
-            assertEquals(3, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals(1, u16le(reply, 14))
             assertEquals(XXkb.KbdFeedbackClass, u16le(reply, 36))
             assertEquals(0, u16le(reply, 38))
@@ -5520,9 +5613,9 @@ class XXkbProtocolTest {
             out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 1, nButtons = 1))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetDeviceInfo)
+            assertError(socket.getInputStream(), error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetDeviceInfo)
             val reply = readReply(socket.getInputStream())
-            assertEquals(2, u16le(reply, 2))
+            assertEquals(3, u16le(reply, 2))
             assertEquals(true, reply.copyOfRange(36, 44).all { it == 0.toByte() })
         }
     }
@@ -5564,17 +5657,17 @@ class XXkbProtocolTest {
             out.flush()
 
             val state = readReply(socket.getInputStream())
-            assertEquals(2, u16le(state, 2))
+            assertEquals(3, u16le(state, 2))
             assertEquals(0x0000_0004, u32le(state, 8))
 
             val maps = readReply(socket.getInputStream())
-            assertEquals(3, u16le(maps, 2))
+            assertEquals(4, u16le(maps, 2))
             assertEquals(0x0000_0004, u32le(maps, 8))
             assertEquals(1, maps[16].toInt() and 0xff)
             assertIndicatorMaps(maps, listOf(map))
 
             val named = readReply(socket.getInputStream())
-            assertEquals(4, u16le(named, 2))
+            assertEquals(5, u16le(named, 2))
             assertEquals(indicatorAtom, u32le(named, 8))
             assertEquals(1, named[12].toInt() and 0xff)
             assertEquals(1, named[13].toInt() and 0xff)
@@ -5582,7 +5675,7 @@ class XXkbProtocolTest {
             assertEquals(map.toList(), named.copyOfRange(16, 28).toList())
 
             val deviceInfo = readReply(socket.getInputStream())
-            assertEquals(5, u16le(deviceInfo, 2))
+            assertEquals(6, u16le(deviceInfo, 2))
             assertEquals(XXkb.XiFeatureIndicators, u16le(deviceInfo, 8))
             assertEquals(1, u16le(deviceInfo, 14))
             assertEquals(XXkb.KbdFeedbackClass, u16le(deviceInfo, 36))
@@ -5619,7 +5712,7 @@ class XXkbProtocolTest {
             out.flush()
 
             val reply = readReply(socket.getInputStream())
-            assertEquals(3, u16le(reply, 2))
+            assertEquals(4, u16le(reply, 2))
             assertEquals(10, u32le(reply, 4))
             assertEquals(XXkb.XiFeatureIndicators, u16le(reply, 8))
             assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
@@ -5660,17 +5753,17 @@ class XXkbProtocolTest {
             out.flush()
 
             val sparse = readReply(socket.getInputStream())
-            assertEquals(3, u16le(sparse, 2))
+            assertEquals(4, u16le(sparse, 2))
             assertEquals(2, sparse[15].toInt() and 0xff)
             assertEquals(0, sparse[13].toInt() and 0xff)
 
             val added = readReply(socket.getInputStream())
-            assertEquals(4, u16le(added, 2))
+            assertEquals(5, u16le(added, 2))
             assertEquals(0, added[15].toInt() and 0xff)
             assertEquals(1, added[13].toInt() and 0xff)
 
             val state = readReply(socket.getInputStream())
-            assertEquals(5, u16le(state, 2))
+            assertEquals(6, u16le(state, 2))
             assertEquals(0x0000_0001, u32le(state, 8))
         }
     }
@@ -5699,7 +5792,7 @@ class XXkbProtocolTest {
 
             send(useExtensionRequest())
             val version = readReply(input)
-            assertEquals(1, u16le(version, 2))
+            assertEquals(2, u16le(version, 2))
             assertEquals(1, version[1].toInt() and 0xff)
 
             send(
@@ -5714,15 +5807,15 @@ class XXkbProtocolTest {
                 ),
             )
             val pointer = readReply(input)
-            assertEquals(2, u16le(pointer, 2))
+            assertEquals(3, u16le(pointer, 2))
             assertEquals(0, u16le(pointer, 8))
             assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(pointer, 10))
             assertEquals(0, u16le(pointer, 14))
 
             send(getDeviceInfoRequest(XXkb.XiFeatureIndicators, false, 0, 0, ledClass = 0x0700, ledId = XXkb.AllXIIds, deviceSpec = XXkb.DeviceSpecUseCorePointer))
-            assertError(input, error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 3, minorOpcode = XXkb.GetDeviceInfo)
+            assertError(input, error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 4, minorOpcode = XXkb.GetDeviceInfo)
             send(getDeviceInfoRequest(XXkb.XiFeatureIndicators, false, 0, 0, ledClass = XXkb.DfltXIClass, ledId = XXkb.DfltXIId, deviceSpec = XXkb.DeviceSpecUseCorePointer))
-            assertError(input, error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.GetDeviceInfo)
+            assertError(input, error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 5, minorOpcode = XXkb.GetDeviceInfo)
 
             send(
                 getDeviceInfoRequest(
@@ -5736,7 +5829,7 @@ class XXkbProtocolTest {
                 ),
             )
             val keyboard = readReply(input)
-            assertEquals(5, u16le(keyboard, 2))
+            assertEquals(6, u16le(keyboard, 2))
             assertEquals(1, u16le(keyboard, 14))
             assertEquals(XXkb.KbdFeedbackClass, u16le(keyboard, 36))
             assertEquals(0, u16le(keyboard, 38))
@@ -5745,21 +5838,21 @@ class XXkbProtocolTest {
             send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, XXkb.DfltXIClass, XXkb.DfltXIId))
             send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, XXkb.KbdFeedbackClass, 0))
             send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, XXkb.KbdFeedbackClass, 1))
-            assertError(input, error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 8, minorOpcode = XXkb.SetDeviceInfo)
-            send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, XXkb.KbdFeedbackClass, 7))
             assertError(input, error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 9, minorOpcode = XXkb.SetDeviceInfo)
-            send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, XXkb.LedFeedbackClass, 0))
+            send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, XXkb.KbdFeedbackClass, 7))
             assertError(input, error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 10, minorOpcode = XXkb.SetDeviceInfo)
-            send(setIndicatorState(XXkb.DeviceSpecUseCorePointer, XXkb.KbdFeedbackClass, 0))
+            send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, XXkb.LedFeedbackClass, 0))
             assertError(input, error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 11, minorOpcode = XXkb.SetDeviceInfo)
+            send(setIndicatorState(XXkb.DeviceSpecUseCorePointer, XXkb.KbdFeedbackClass, 0))
+            assertError(input, error = 8, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 12, minorOpcode = XXkb.SetDeviceInfo)
             send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, XXkb.KbdFeedbackClass, 0x0700))
-            assertError(input, error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 12, minorOpcode = XXkb.SetDeviceInfo)
-            send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, 0x0700, XXkb.DfltXIId))
             assertError(input, error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 13, minorOpcode = XXkb.SetDeviceInfo)
+            send(setIndicatorState(XXkb.DeviceSpecUseCoreKeyboard, 0x0700, XXkb.DfltXIId))
+            assertError(input, error = 2, opcode = XXkb.MajorOpcode, badValue = 0x0700, sequence = 14, minorOpcode = XXkb.SetDeviceInfo)
 
             send(useExtensionRequest())
             val recovered = readReply(input)
-            assertEquals(14, u16le(recovered, 2))
+            assertEquals(15, u16le(recovered, 2))
             assertEquals(1, recovered[1].toInt() and 0xff)
         }
     }
@@ -5775,11 +5868,11 @@ class XXkbProtocolTest {
             out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 2, nButtons = 1))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetDeviceInfo)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetDeviceInfo)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetDeviceInfo)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.SetDeviceInfo)
             val reply = readReply(socket.getInputStream())
-            assertEquals(5, u16le(reply, 2))
+            assertEquals(6, u16le(reply, 2))
             assertEquals(3, u32le(reply, 4))
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
             assertEquals(XXkb.XiFeatureAllDeviceFeatures, u16le(reply, 10))
@@ -5805,7 +5898,7 @@ class XXkbProtocolTest {
             val reply = readReply(socket.getInputStream())
             assertEquals(1, reply[0].toInt())
             assertEquals(0, reply[1].toInt() and 0xff)
-            assertEquals(1, u16le(reply, 2))
+            assertEquals(2, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
             assertEquals(0, u32le(reply, 8))
             assertEquals(0, u32le(reply, 12))
@@ -5827,16 +5920,16 @@ class XXkbProtocolTest {
             out.write(setDebuggingFlagsRequest(message = "", affectFlags = 1, flags = 1, affectCtrls = 1, ctrls = 1))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetDebuggingFlags)
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetDebuggingFlags)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetDebuggingFlags)
             val overlongReply = readReply(socket.getInputStream())
-            assertEquals(3, u16le(overlongReply, 2))
+            assertEquals(4, u16le(overlongReply, 2))
             assertEquals(0, u32le(overlongReply, 8))
             assertEquals(0, u32le(overlongReply, 12))
             assertEquals(0, u32le(overlongReply, 16))
             assertEquals(0, u32le(overlongReply, 20))
             val reply = readReply(socket.getInputStream())
-            assertEquals(4, u16le(reply, 2))
+            assertEquals(5, u16le(reply, 2))
             assertEquals(0, u32le(reply, 8))
             assertEquals(0, u32le(reply, 12))
             assertEquals(0, u32le(reply, 16))
@@ -5852,7 +5945,7 @@ class XXkbProtocolTest {
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 26)
+            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = 26)
             val version = readReply(socket.getInputStream())
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
@@ -5862,11 +5955,18 @@ class XXkbProtocolTest {
     }
 
     private fun withServer(block: (Socket, Int) -> Unit) {
+        withUninitializedServer { socket, port ->
+            initializeXkb(socket)
+            block(socket, port)
+        }
+    }
+
+    private fun withUninitializedServer(block: (Socket, Int) -> Unit) {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             Socket("127.0.0.1", server.localPort).use { socket ->
                 socket.soTimeout = 2_000
-                setup(socket)
+                setupConnection(socket)
                 block(socket, server.localPort)
             }
             server.close()
@@ -5874,7 +5974,22 @@ class XXkbProtocolTest {
         }
     }
 
+    private fun initializeXkb(socket: Socket) {
+        socket.getOutputStream().write(useExtensionRequest())
+        socket.getOutputStream().flush()
+        val reply = readReply(socket.getInputStream())
+        assertEquals(1, reply[1].toInt() and 0xff)
+        assertEquals(1, u16le(reply, 2))
+        assertEquals(XXkb.MajorVersion, u16le(reply, 8))
+        assertEquals(XXkb.MinorVersion, u16le(reply, 10))
+    }
+
     private fun setup(socket: Socket) {
+        setupConnection(socket)
+        initializeXkb(socket)
+    }
+
+    private fun setupConnection(socket: Socket) {
         val out = socket.getOutputStream()
         val input = socket.getInputStream()
         out.write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
@@ -5895,6 +6010,17 @@ class XXkbProtocolTest {
         val prefix = input.readExactly(8)
         assertEquals(1, prefix[0].toInt())
         input.readExactly(u16be(prefix, 6) * 4)
+
+        val body = ByteArray(4)
+        put16be(body, 0, XXkb.MajorVersion)
+        put16be(body, 2, XXkb.MinorVersion)
+        out.write(requestBigEndian(XXkb.MajorOpcode, XXkb.UseExtension, body))
+        out.flush()
+        val reply = readReplyBigEndian(input)
+        assertEquals(1, reply[1].toInt() and 0xff)
+        assertEquals(1, u16be(reply, 2))
+        assertEquals(XXkb.MajorVersion, u16be(reply, 8))
+        assertEquals(XXkb.MinorVersion, u16be(reply, 10))
     }
 
     private fun queryExtensionRequest(name: String): ByteArray {
@@ -5905,10 +6031,13 @@ class XXkbProtocolTest {
         return request(98, 0, body)
     }
 
-    private fun useExtensionRequest(): ByteArray {
+    private fun useExtensionRequest(
+        wantedMajor: Int = XXkb.MajorVersion,
+        wantedMinor: Int = XXkb.MinorVersion,
+    ): ByteArray {
         val body = ByteArray(4)
-        put16le(body, 0, XXkb.MajorVersion)
-        put16le(body, 2, XXkb.MinorVersion)
+        put16le(body, 0, wantedMajor)
+        put16le(body, 2, wantedMinor)
         return request(XXkb.MajorOpcode, XXkb.UseExtension, body)
     }
 

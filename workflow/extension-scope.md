@@ -23,7 +23,7 @@ These extensions are currently advertised and maintained. Deeper behavior still 
 | `MIT-SHM` | Shared-image probing and fallback compatibility; do not require real shared memory until a client trace needs it. |
 | `XFIXES` | Cursor, selection, and region behavior used by modern toolkits. |
 | `SHAPE` | Window/input shape behavior for toolkit and window-manager compatibility. |
-| `XKEYBOARD` | Keyboard discovery and map compatibility for JVM and Electron clients. |
+| `XKEYBOARD` | Per-client version negotiation plus keyboard discovery and map compatibility for JVM and Electron clients. |
 | `RANDR` | Fixed-screen monitor, DPI, output, and size reporting. |
 | `SYNC` | Counters, alarms, and fences when clients use them for presentation or coordination. |
 | `DOUBLE-BUFFER` | Java2D/AWT DBE discovery and back-buffer drawable compatibility; keep it minimal unless target-client traces show real DBE swaps or attributes need deeper behavior. |

@@ -9,15 +9,15 @@ Extension work remains governed by `workflow/extension-scope.md`.
 - Production and tracked protocol/oracle tests are pure Kotlin/JVM. All tests
   under `src/test` are Kotlin/JUnit; `check` rejects non-Kotlin JVM and Python
   test sources.
-- The default suite contains 1,393 JUnit tests (4 heavyweight opt-in tests are
+- The default suite contains 1,397 JUnit tests (4 heavyweight opt-in tests are
   skipped by default). Full `check` passed in
-  `runs/gradle-bounded/run_20260717-151325-75812`.
+  `runs/gradle-bounded/run_20260717-160359-64441`.
 - IntelliJ deterministic project-open parity is pixel-exact for the Xvfb Robot,
   Kotlin Robot, and Kotlin SVG-composed captures. The parity run
-  `runs/gradle-bounded/run_20260717-132014-64950` reports all three distances as
+  `runs/gradle-bounded/run_20260717-161014-76402` reports all three distances as
   `0.0`, no mismatch bounds, and no unsupported requests.
 - VSCode deterministic parity is pixel-exact for Robot and SVG-composed output
-  against Xvfb. Run `runs/gradle-bounded/run_20260717-131916-63123` reports both
+  against Xvfb. Run `runs/gradle-bounded/run_20260717-160926-75118` reports both
   distances as `0.0` and no unsupported requests.
 - No Java AWS application artifact, source fixture, launch command, or expected
   visual state is tracked in this repository. Its compatibility is therefore
@@ -60,6 +60,10 @@ Extension work remains governed by `workflow/extension-scope.md`.
   XInputExtension, XTEST, and MIT-SUNDRY-NONSTANDARD. VSCode's observed XI2
   selection path validates device/event masks, enforces exclusive touch and
   gesture ownership across clients, and keeps client/window lifecycle state.
+  XKEYBOARD clients must negotiate a compatible protocol version before other
+  requests. Initialization is isolated per connection: failed negotiation on
+  an uninitialized connection leaves it in core-keyboard mode, while a failed
+  renegotiation does not revoke prior successful initialization.
   Deeper work still needs target evidence.
 
 ## Remaining Acceptance Work

@@ -48,6 +48,10 @@ fixture is opt-in only after its artifact and launch model are established.
 Both IDE fixtures retain validated release archives in host directories under
 `build/tmp` and bind them into disposable containers; Xvfb and Kotlin phases
 reuse the same archive rather than downloading it per container.
+The retained VSCode trace supplies target evidence for XKEYBOARD negotiation,
+map, event-selection, and per-client-flag requests. Focused Kotlin tests cover
+compatible and incompatible versions, pre-initialization `BadAccess`, byte
+order, request validation order, failed renegotiation, and per-client isolation.
 Build `jonnyzzz-x/x11-client:latest` first with `scripts/run-supervised.sh gradle dockerBuildX11Client`, then run the smoke explicitly with `-Dx.intellijSmoke=true`. Build both Docker images with `scripts/run-supervised.sh gradle dockerBuildX11Images`, then run the deterministic bounded full-pixel parity probe explicitly with `-Dx.intellijParity=true`.
 Both IntelliJ paths mount a clean tracked-file project export from `build/tmp/intellij-community-smoke/project` so untracked orchestration files do not affect the visible IDE project tree.
 The parity probe writes PNG/SVG/HTML/text diagnostics, SVG layer and HTML per-window preview inventories, visual diffs/metrics, visual region metrics with full-screen, inside-frame, top-frame, right-frame, and bottom-frame mismatch bounds, and IntelliJ client logs under `build/tmp/intellij-community-smoke/` so visual drift can be inspected without rerunning the heavyweight clients immediately.
