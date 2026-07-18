@@ -1,6 +1,6 @@
 # Roadmap
 
-Status reviewed on 2026-07-17. The compatibility target is IntelliJ IDEA,
+Status reviewed on 2026-07-18. The compatibility target is IntelliJ IDEA,
 VSCode, and the Java AWS application, not unrestricted Xvfb feature parity.
 Extension work remains governed by `workflow/extension-scope.md`.
 
@@ -9,12 +9,12 @@ Extension work remains governed by `workflow/extension-scope.md`.
 - Production and tracked protocol/oracle tests are pure Kotlin/JVM. All tests
   under `src/test` are Kotlin/JUnit; `check` rejects non-Kotlin JVM and Python
   test sources.
-- The default suite contains 1,399 JUnit tests (4 heavyweight opt-in tests are
+- The default suite contains 1,409 JUnit tests (4 heavyweight opt-in tests are
   skipped by default). Full `check` passed in
-  `runs/gradle-bounded/run_20260717-170657-55258`.
+  `runs/gradle-bounded/run_20260718-154306-78735`.
 - IntelliJ deterministic project-open parity is pixel-exact for the Xvfb Robot,
   Kotlin Robot, and Kotlin SVG-composed captures. The parity run
-  `runs/gradle-bounded/run_20260717-164934-32757` reports all three distances as
+  `runs/gradle-bounded/run_20260718-145840-31243` reports all three distances as
   `0.0`, no mismatch bounds, and no unsupported requests.
 - VSCode deterministic parity is pixel-exact for Robot and SVG-composed output
   against Xvfb. Run `runs/gradle-bounded/run_20260717-164844-31774` reports both
@@ -57,6 +57,14 @@ Extension work remains governed by `workflow/extension-scope.md`.
   empty backing store and failed resource IDs remain reusable.
 - Differential Docker coverage for X11 tools, classic clients, AWT/Swing,
   IntelliJ IDEA Community, and VSCode/Electron.
+- IntelliJ archives and extracted homes persist outside `build/` in one
+  SHA-256 URL-keyed host cache, with locked atomic population and explicit
+  Xvfb/Kotlin reuse assertions. Explicit homes are checked for overlap in both
+  normalized lexical and symlink-resolved path trees, and legacy migration
+  refuses a symlinked source root in both Gradle and screenshot workflows.
+  Gradle migration also rejects lexical/effective filesystem-root destinations.
+  Structural `archives`/`homes` directories must be non-links that resolve
+  beneath the cache root; URL-keyed prepared homes and lock paths reject links.
 - Advertised and maintained extension inventory: BIG-REQUESTS, RENDER, MIT-SHM,
   XFIXES, SHAPE, XKEYBOARD, RANDR, SYNC, DOUBLE-BUFFER, XC-MISC, XINERAMA,
   MIT-SCREEN-SAVER, Generic Event Extension, minimal GLX, minimal

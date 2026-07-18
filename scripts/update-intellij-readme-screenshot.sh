@@ -11,7 +11,13 @@ IMAGE="${X_INTELLIJ_IMAGE:-jonnyzzz-x/x11-client:latest}"
 OUT="${OUT:-$ROOT/docs/images/intellij-demo-renderer.png}"
 RUN_DIR="${RUN_DIR:-$ROOT/runs/intellij-readme-screenshot}"
 PROJECT_EXPORT_DIR="${PROJECT_EXPORT_DIR:-$RUN_DIR/project}"
-IDEA_CACHE_DIR="${IDEA_CACHE_DIR:-$ROOT/build/tmp/intellij-community-smoke/idea-cache}"
+DEFAULT_IDEA_CACHE_DIR="$ROOT/.gradle/intellij-community-cache"
+LEGACY_IDEA_CACHE_DIR="$ROOT/build/tmp/intellij-community-smoke/idea-cache"
+IDEA_CACHE_DIR="${IDEA_CACHE_DIR:-$ROOT/.gradle/intellij-community-cache}"
+IDEA_CACHE_DIR_IS_DEFAULT=false
+if [[ "$IDEA_CACHE_DIR" == "$DEFAULT_IDEA_CACHE_DIR" ]]; then
+  IDEA_CACHE_DIR_IS_DEFAULT=true
+fi
 IDEA_PROJECT_CONTAINER="${IDEA_PROJECT_CONTAINER:-/workspace/jonnyzzz-x}"
 IDEA_OPEN_FILE_CONTAINER="${IDEA_OPEN_FILE_CONTAINER:-$IDEA_PROJECT_CONTAINER/README.md}"
 READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-600}"
@@ -86,6 +92,28 @@ absolute_path() {
   esac
 }
 
+guarded_idea_cache_dir() {
+  local requested raw candidate
+  requested="$1"
+  if [[ -z "$requested" ]]; then
+    echo "IDEA_CACHE_DIR must not be empty" >&2
+    return 1
+  fi
+  raw="$(absolute_path "$requested")"
+  while [[ "$raw" != "/" && "$raw" == */ ]]; do raw="${raw%/}"; done
+  if [[ "$raw" == "/" ]]; then
+    echo "Refusing unsafe IDEA_CACHE_DIR: $requested" >&2
+    return 1
+  fi
+  mkdir -p "$raw"
+  candidate="$(canonical_dir "$raw")"
+  if [[ "$candidate" == "/" ]]; then
+    echo "Refusing IDEA_CACHE_DIR that resolves to filesystem root: $requested" >&2
+    return 1
+  fi
+  printf '%s\n' "$candidate"
+}
+
 guarded_project_export_dir() {
   local requested raw parent base runs_root build_tmp_root parent_real candidate
   requested="$1"
@@ -140,10 +168,55 @@ assert_project_export_guard() {
   fi
 }
 
+assert_idea_cache_guard() {
+  local name="$1"
+  local expected="$2"
+  local path="$3"
+  local actual
+  if guarded_idea_cache_dir "$path" >/dev/null 2>&1; then
+    actual=1
+  else
+    actual=0
+  fi
+  if [[ "$actual" != "$expected" ]]; then
+    echo "IDEA cache guard self-test failed: $name expected $expected got $actual" >&2
+    exit 1
+  fi
+}
+
+migrate_legacy_idea_cache() {
+  local legacy="$1"
+  local cache="$2"
+  local parent_real expected_real entry target
+  if [[ -L "$legacy" ]]; then
+    echo "Refusing symlinked legacy IntelliJ cache directory: $legacy" >&2
+    return 1
+  fi
+  [[ -d "$legacy" ]] || return 0
+  parent_real="$(canonical_dir "$(dirname "$legacy")")"
+  expected_real="$parent_real/$(basename "$legacy")"
+  (
+    cd -P "$legacy"
+    if [[ "$(pwd -P)" != "$expected_real" ]]; then
+      echo "Refusing replaced legacy IntelliJ cache directory: $legacy" >&2
+      exit 1
+    fi
+    while IFS= read -r -d '' entry; do
+      target="$cache/$(basename "$entry")"
+      if [[ ! -e "$target" && ! -L "$target" ]]; then
+        if ! mv -n "$entry" "$target" 2>/dev/null && [[ ! -e "$target" && ! -L "$target" ]]; then
+          echo "Failed to migrate IntelliJ cache entry: $legacy/${entry#./}" >&2
+          exit 1
+        fi
+      fi
+    done < <(find -P . -mindepth 1 -maxdepth 1 -print0)
+  )
+}
+
 run_readiness_self_test() {
   local ready_text=$'Screen: 3840 x 2160\nMapped windows: 3\n- 0x200001 label="Content window"'
   local ready_svg='<svg><image class="framebuffer-image backing-pixmap-image"/></svg>'
-  local workspace_seed
+  local workspace_seed migration_guard_root migration_target migration_legacy migration_cache
   assert_readiness "ready content framebuffer" 1 "$ready_text" "$ready_svg"
   assert_readiness "missing mapped windows" 0 "Content window" "$ready_svg"
   assert_readiness "missing content window" 0 "Mapped windows: 3" "$ready_svg"
@@ -158,6 +231,31 @@ run_readiness_self_test() {
   assert_project_export_guard "repo root rejected" 0 "$ROOT"
   assert_project_export_guard "parent traversal rejected" 0 "$ROOT/runs/../../outside-project"
   assert_project_export_guard "outside tmp rejected" 0 "/tmp/intellij-readme-screenshot-project"
+  local cache_guard_root_link="$ROOT/build/tmp/intellij-cache-root-link"
+  local cache_guard_safe="$ROOT/build/tmp/intellij-cache-guard-safe"
+  rm -f "$cache_guard_root_link"
+  rm -rf "$cache_guard_safe"
+  ln -s / "$cache_guard_root_link"
+  assert_idea_cache_guard "safe cache" 1 "$cache_guard_safe"
+  assert_idea_cache_guard "root rejected" 0 "/"
+  assert_idea_cache_guard "root symlink rejected" 0 "$cache_guard_root_link"
+  rm -f "$cache_guard_root_link"
+  rm -rf "$cache_guard_safe"
+  migration_guard_root="$(mktemp -d "$ROOT/build/tmp/intellij-cache-migration-guard.XXXXXX")"
+  migration_target="$migration_guard_root/target"
+  migration_legacy="$migration_guard_root/legacy"
+  migration_cache="$migration_guard_root/cache"
+  mkdir -p "$migration_target"
+  printf 'must stay\n' >"$migration_target/must-stay.txt"
+  ln -s "$migration_target" "$migration_legacy"
+  if migrate_legacy_idea_cache "$migration_legacy" "$migration_cache" >/dev/null 2>&1; then
+    echo "legacy cache migration self-test failed: symlinked source accepted" >&2
+    exit 1
+  fi
+  [[ "$(cat "$migration_target/must-stay.txt")" == "must stay" ]]
+  [[ ! -e "$migration_cache" && ! -L "$migration_cache" ]]
+  rm -f "$migration_legacy"
+  rm -rf "$migration_guard_root"
   workspace_seed="$(intellij_project_workspace_seed)"
   [[ "$workspace_seed" == *'component name="ProjectColorInfo"'* ]]
   [[ "$workspace_seed" == *"associatedIndex&quot;: $IDEA_PROJECT_COLOR_INDEX"* ]]
@@ -223,7 +321,11 @@ if [[ -z "$TIMEOUT_BIN" ]]; then
   TIMEOUT_BIN="$(timeout_bin || true)"
 fi
 
-mkdir -p "$RUN_DIR" "$IDEA_CACHE_DIR" "$(dirname "$OUT")"
+mkdir -p "$RUN_DIR" "$(dirname "$OUT")"
+IDEA_CACHE_DIR="$(guarded_idea_cache_dir "$IDEA_CACHE_DIR")"
+if [[ "$IDEA_CACHE_DIR_IS_DEFAULT" == true ]]; then
+  migrate_legacy_idea_cache "$LEGACY_IDEA_CACHE_DIR" "$IDEA_CACHE_DIR"
+fi
 SERVER_LOG="$RUN_DIR/server.log"
 IDEA_CONTAINER="x-readme-idea-$PORT"
 SERVER_PID=""

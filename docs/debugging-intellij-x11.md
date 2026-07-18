@@ -9,8 +9,11 @@ IDEA_X11_DEBUG=true run-intellij
 For the full Docker demo:
 
 ```bash
+mkdir -p "$PWD/.gradle/intellij-community-cache"
 docker run -d --name x-demo-idea \
   -v "$PWD:/workspace/jonnyzzz-x" \
+  -v "$PWD/.gradle/intellij-community-cache:/tmp/idea-cache" \
+  -e IDEA_CACHE_DIR=/tmp/idea-cache \
   -e IDEA_X11_DEBUG=true \
   -e SKIKO_RENDER_API=SOFTWARE_FAST \
   jonnyzzz-x/x11-client:latest \

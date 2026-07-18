@@ -155,11 +155,11 @@ All tracked protocol clients and reduced Xvfb oracles are native Kotlin/JUnit
 tests under `src/test/kotlin`; no tracked Python test sources remain. Gradle
 `check` enforces Kotlin/JUnit as the single JVM test stack with
 `verifyKotlinTestSources`. The latest full check ran
-1,399 tests (1,395 passed and 4 heavyweight opt-in cases skipped) in
-`runs/gradle-bounded/run_20260717-170657-55258`.
+1,409 tests (1,405 passed and 4 heavyweight opt-in cases skipped) in
+`runs/gradle-bounded/run_20260718-154306-78735`.
 
 The latest deterministic IntelliJ parity run
-`runs/gradle-bounded/run_20260717-164934-32757` and VSCode parity run
+`runs/gradle-bounded/run_20260718-145840-31243` and VSCode parity run
 `runs/gradle-bounded/run_20260717-164844-31774` are pixel-exact against their
 Xvfb references. The requested Java AWS application is not yet represented by a
 tracked artifact or smoke fixture, so its harness is the next compatibility
@@ -200,16 +200,29 @@ scripts/run-supervised.sh gradle dockerBuildX11Client
 
 The IntelliJ binary release archive is intentionally not baked into the image.
 Set `IDEA_CACHE_DIR` to reuse the validated download across disposable
-containers; the smoke and parity tests bind the host directory
-`build/tmp/intellij-community-smoke/idea-cache` for that purpose. Cache entries
-are keyed by the full download URL, and a validated archive from the previous
-basename-only layout is adopted for the default IntelliJ release without being
-downloaded again. The Docker helper also seeds the IntelliJ first-run agreement
-state, registers the bundled JetBrains Runtime as a JDK, disables first-run
-onboarding, and enables project trust for the isolated container by default so
-the mounted repository opens directly. The README screenshot helper uses this
-same host cache by default instead of keeping another copy under its run
-directory.
+containers; the smoke, parity, and screenshot tests bind the persistent host
+directory `.gradle/intellij-community-cache` for that purpose. Set the Gradle
+property `x.intellijCacheDir` or the host environment variable `IDEA_CACHE_DIR`
+to override it. The container launcher normalizes relative cache paths to
+absolute paths and rejects filesystem-root aliases. Both validated archives
+and extracted IntelliJ homes are keyed by the SHA-256 of the full download URL.
+Explicit IntelliJ homes may not overlap the cache in either direction in either
+the normalized lexical or symlink-resolved path tree, and host bind paths are
+canonicalized before use. Population is locked and atomic, so the
+cache's `archives` and `homes` structural directories must be real directories
+that resolve beneath the cache root; per-URL prepared homes and lock paths also
+reject symlinks. The Xvfb and Kotlin containers reuse
+the same complete home without validating or
+extracting the 800 MB archive again. The harness migrates the previous
+`build/tmp/intellij-community-smoke/idea-cache` entries without following a
+symlinked legacy cache root; the screenshot helper pins migration to the opened
+physical directory as well, and migration rejects a destination that is or
+resolves to filesystem root. The launcher adopts the prior
+basename/CRC-keyed archive layouts without another download. The
+Docker helper also seeds the IntelliJ first-run agreement state, registers the
+bundled JetBrains Runtime as a JDK, disables first-run onboarding, and enables
+project trust for the isolated container by default so the mounted repository
+opens directly.
 
 The IntelliJ Community smoke is intentionally opt-in because it downloads a large GitHub release artifact:
 
@@ -289,6 +302,7 @@ Run the 4K/100 DPI IntelliJ Docker demo:
 
 ```bash
 scripts/run-supervised.sh gradle installDist dockerBuildX11Client
+mkdir -p "$PWD/.gradle/intellij-community-cache"
 docker rm -f x-demo-server x-demo-idea
 docker run -d --name x-demo-server \
   -p 6000:6000 -p 16000:6000 \
@@ -297,6 +311,8 @@ docker run -d --name x-demo-server \
   /app/bin/x --host 0.0.0.0 --port 6000 --width 3840 --height 2160 --dpi 100
 docker run -d --name x-demo-idea \
   -v "$PWD:/workspace/jonnyzzz-x" \
+  -v "$PWD/.gradle/intellij-community-cache:/tmp/idea-cache" \
+  -e IDEA_CACHE_DIR=/tmp/idea-cache \
   jonnyzzz-x/x11-client:latest \
   sh -lc 'touch /tmp/idea-run.log; DISPLAY=host.docker.internal:0 IDEA_PROJECT=/workspace/jonnyzzz-x run-intellij >>/tmp/idea-run.log 2>&1 & tail -f /tmp/idea-run.log'
 ```

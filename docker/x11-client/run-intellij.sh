@@ -1,9 +1,82 @@
 #!/usr/bin/env sh
 set -eu
 
+idea_paths_overlap() {
+  overlap_first=$1
+  overlap_second=$2
+  case "$overlap_first" in
+    "$overlap_second"|"$overlap_second"/*) return 0 ;;
+  esac
+  case "$overlap_second" in
+    "$overlap_first"/*) return 0 ;;
+  esac
+  return 1
+}
+
+prepare_idea_cache_structural_directory() {
+  idea_structural_path=$1
+  idea_structural_name=$2
+  if [ -L "$idea_structural_path" ] ||
+    { [ -e "$idea_structural_path" ] && [ ! -d "$idea_structural_path" ]; }; then
+    echo "[run-intellij] refusing unsafe IDEA cache $idea_structural_name directory: $idea_structural_path" >&2
+    return 1
+  fi
+  mkdir -p "$idea_structural_path"
+  if [ -L "$idea_structural_path" ] || [ ! -d "$idea_structural_path" ]; then
+    echo "[run-intellij] refusing unsafe IDEA cache $idea_structural_name directory after creation: $idea_structural_path" >&2
+    return 1
+  fi
+  idea_structural_resolved=$(realpath -e -- "$idea_structural_path" 2>/dev/null || true)
+  case "$idea_structural_resolved" in
+    "$idea_cache_root_resolved"/*) return 0 ;;
+  esac
+  echo "[run-intellij] refusing IDEA cache $idea_structural_name directory outside cache root: $idea_structural_path" >&2
+  return 1
+}
+
 : "${DISPLAY:=host.docker.internal:0}"
 : "${IDEA_CACHE_DIR:=}"
+idea_home_was_explicit=false
+if [ -n "${IDEA_HOME:-}" ]; then
+  idea_home_was_explicit=true
+fi
 : "${IDEA_HOME:=/opt/idea}"
+normalized_idea_home=$(realpath -m -s -- "$IDEA_HOME")
+resolved_idea_home=$(realpath -m -- "$normalized_idea_home" 2>/dev/null || true)
+effective_idea_home=
+if [ -e "$normalized_idea_home" ] || [ -L "$normalized_idea_home" ]; then
+  effective_idea_home=$(realpath -e -- "$normalized_idea_home" 2>/dev/null || true)
+fi
+if [ -z "$normalized_idea_home" ] || [ "$normalized_idea_home" = "/" ] ||
+  [ "$resolved_idea_home" = "/" ] || [ "$effective_idea_home" = "/" ]; then
+  echo "[run-intellij] refusing unsafe IDEA_HOME: $IDEA_HOME" >&2
+  exit 1
+fi
+IDEA_HOME=$normalized_idea_home
+if [ -n "$IDEA_CACHE_DIR" ]; then
+  original_idea_cache_dir=$IDEA_CACHE_DIR
+  normalized_idea_cache_dir=$(realpath -m -s -- "$IDEA_CACHE_DIR")
+  resolved_idea_cache_dir=$(realpath -m -- "$normalized_idea_cache_dir" 2>/dev/null || true)
+  effective_idea_cache_dir=
+  if [ -e "$normalized_idea_cache_dir" ] || [ -L "$normalized_idea_cache_dir" ]; then
+    effective_idea_cache_dir=$(realpath -e -- "$normalized_idea_cache_dir" 2>/dev/null || true)
+  fi
+  if [ -z "$normalized_idea_cache_dir" ] || [ "$normalized_idea_cache_dir" = "/" ] ||
+    [ "$resolved_idea_cache_dir" = "/" ] || [ "$effective_idea_cache_dir" = "/" ]; then
+    echo "[run-intellij] refusing unsafe IDEA_CACHE_DIR: $original_idea_cache_dir" >&2
+    exit 1
+  fi
+  IDEA_CACHE_DIR=$normalized_idea_cache_dir
+  if [ "$idea_home_was_explicit" = true ]; then
+    idea_home_overlap_path=${resolved_idea_home:-$normalized_idea_home}
+    idea_cache_overlap_path=${resolved_idea_cache_dir:-$normalized_idea_cache_dir}
+    if idea_paths_overlap "$normalized_idea_home" "$normalized_idea_cache_dir" ||
+      idea_paths_overlap "$idea_home_overlap_path" "$idea_cache_overlap_path"; then
+      echo "[run-intellij] refusing overlapping IDEA_HOME and IDEA_CACHE_DIR: $IDEA_HOME / $original_idea_cache_dir" >&2
+      exit 1
+    fi
+  fi
+fi
 : "${IDEA_CONFIG:=/tmp/idea-config}"
 : "${IDEA_SYSTEM:=/tmp/idea-system}"
 : "${IDEA_LOG:=/tmp/idea-log}"
@@ -23,6 +96,9 @@ set -eu
 : "${IDEA_X11_SEPARATE_LOG_CATEGORIES:=#com.intellij.ui.jcef,#sun.awt.X11,#java.awt.KeyboardFocusManager}"
 : "${IDEA_LAUNCHER:=native}"
 : "${IDEA_OPEN_FILE:=}"
+: "${IDEA_PREPARE_ONLY:=false}"
+: "${IDEA_CACHE_LOCK_TIMEOUT_SECONDS:=900}"
+: "${IDEA_CACHE_STALE_LOCK_SECONDS:=120}"
 
 if [ -z "$IDEA_TRUST_ALL_PROJECTS" ]; then
   IDEA_TRUST_ALL_PROJECTS="$IDEA_TRUST_PROJECT"
@@ -49,70 +125,540 @@ if [ -z "${IDEA_URL:-}" ]; then
   esac
 fi
 
-idea_archive=/tmp/idea.tar.gz
-legacy_idea_archive=
+archive_name=$(basename "${IDEA_URL%%\?*}")
+archive_name=$(printf '%s' "$archive_name" | tr -c 'A-Za-z0-9._-' '_')
+if [ -z "$archive_name" ]; then
+  archive_name=idea.tar.gz
+fi
+url_sha256=$(printf '%s' "$IDEA_URL" | sha256sum | awk '{print $1}')
+idea_archive="${TMPDIR:-/tmp}/idea-${url_sha256}-$$.tar.gz"
+legacy_url_archive=
+legacy_basename_archive=
+persistent_idea_home=
+idea_cache_marker=.jonnyzzz-x-idea-cache-complete
 if [ -n "$IDEA_CACHE_DIR" ]; then
   mkdir -p "$IDEA_CACHE_DIR"
-  archive_name=$(basename "${IDEA_URL%%\?*}")
-  if [ -z "$archive_name" ]; then
-    archive_name=idea.tar.gz
+  idea_cache_root_resolved=$(realpath -e -- "$IDEA_CACHE_DIR" 2>/dev/null || true)
+  if [ -z "$idea_cache_root_resolved" ] || [ "$idea_cache_root_resolved" = "/" ]; then
+    echo "[run-intellij] refusing unresolved IDEA cache root: $IDEA_CACHE_DIR" >&2
+    exit 1
   fi
-  url_checksum=$(printf '%s' "$IDEA_URL" | cksum | awk '{print $1}')
-  idea_archive="$IDEA_CACHE_DIR/idea-${url_checksum}-${archive_name}"
-  legacy_idea_archive="$IDEA_CACHE_DIR/$archive_name"
+  prepare_idea_cache_structural_directory "$IDEA_CACHE_DIR/archives" archives || exit 1
+  prepare_idea_cache_structural_directory "$IDEA_CACHE_DIR/homes" homes || exit 1
+  idea_homes_root_resolved=$(realpath -e -- "$IDEA_CACHE_DIR/homes" 2>/dev/null || true)
+  legacy_url_checksum=$(printf '%s' "$IDEA_URL" | cksum | awk '{print $1}')
+  idea_archive="$IDEA_CACHE_DIR/archives/idea-${url_sha256}-${archive_name}"
+  legacy_url_archive="$IDEA_CACHE_DIR/idea-${legacy_url_checksum}-${archive_name}"
+  legacy_basename_archive="$IDEA_CACHE_DIR/$archive_name"
+  if [ "$idea_home_was_explicit" = false ]; then
+    persistent_idea_home="$IDEA_CACHE_DIR/homes/idea-${url_sha256}"
+    if [ -L "$persistent_idea_home" ]; then
+      echo "[run-intellij] refusing symlinked prepared IDEA home: $persistent_idea_home" >&2
+      exit 1
+    fi
+  fi
 fi
 
-mkdir -p "$IDEA_HOME" "$IDEA_CONFIG" "$IDEA_SYSTEM" "$IDEA_LOG" "$IDEA_PLUGINS" "$IDEA_PROJECT"
+mkdir -p "$IDEA_CONFIG" "$IDEA_SYSTEM" "$IDEA_LOG" "$IDEA_PLUGINS" "$IDEA_PROJECT"
 
-if [ ! -x "$IDEA_HOME/bin/idea.sh" ]; then
-  if [ -n "$IDEA_CACHE_DIR" ]; then
-    exec 9>"$idea_archive.lock"
-    if ! flock -w 300 9; then
-      echo "[run-intellij] timed out waiting for cache lock: $idea_archive.lock" >&2
-      exit 1
+idea_archive_listing=
+idea_archive_details=
+idea_marker_tmp=
+cleanup_idea_transient_files() {
+  if [ -n "$idea_archive_listing" ]; then
+    rm -f "$idea_archive_listing" 2>/dev/null || true
+    idea_archive_listing=
+  fi
+  if [ -n "$idea_archive_details" ]; then
+    rm -f "$idea_archive_details" 2>/dev/null || true
+    idea_archive_details=
+  fi
+  if [ -n "$idea_marker_tmp" ]; then
+    rm -f "$idea_marker_tmp" 2>/dev/null || true
+    idea_marker_tmp=
+  fi
+}
+
+valid_idea_archive() {
+  candidate=$1
+  [ ! -L "$candidate" ] && [ -f "$candidate" ] && [ -s "$candidate" ] || return 1
+  idea_archive_listing=$(mktemp "${TMPDIR:-/tmp}/idea-archive-list.XXXXXX")
+  idea_archive_details=$(mktemp "${TMPDIR:-/tmp}/idea-archive-details.XXXXXX")
+  if ! LC_ALL=C tar --quoting-style=escape -tzf "$candidate" >"$idea_archive_listing" 2>/dev/null; then
+    cleanup_idea_transient_files
+    return 1
+  fi
+  if grep -Eq '(^|/)[.][.](/|$)|^/' "$idea_archive_listing"; then
+    cleanup_idea_transient_files
+    return 1
+  fi
+  if ! LC_ALL=C tar --numeric-owner --full-time --quoting-style=escape -tvzf "$candidate" >"$idea_archive_details" 2>/dev/null; then
+    cleanup_idea_transient_files
+    return 1
+  fi
+  for required_member in \
+    'bin/idea[.]sh' \
+    'bin/idea' \
+    'jbr/bin/java' \
+    'product-info[.]json'; do
+    if ! awk -v member="^[^/]+/${required_member}$" \
+      '$1 ~ /^-/ && $NF ~ member { found = 1 } END { exit !found }' "$idea_archive_details"; then
+      cleanup_idea_transient_files
+      return 1
+    fi
+  done
+  if ! awk '
+    function safe_symlink(member, target, count, idx, part, depth) {
+      if (target ~ /^\//) return 0
+      count = split(member, member_parts, "/")
+      depth = 0
+      for (idx = 1; idx < count; idx++) {
+        part = member_parts[idx]
+        if (part != "" && part != ".") resolved[++depth] = part
+      }
+      count = split(target, target_parts, "/")
+      for (idx = 1; idx <= count; idx++) {
+        part = target_parts[idx]
+        if (part == "" || part == ".") continue
+        if (part == "..") {
+          if (depth <= 1) return 0
+          depth--
+        } else {
+          resolved[++depth] = part
+        }
+      }
+      return depth >= 1
+    }
+    $1 ~ /^-/ { next }
+    $1 ~ /^d/ { next }
+    $1 ~ /^l/ {
+      if (NF != 8 || $7 != "->" || !safe_symlink($6, $8)) exit 1
+      next
+    }
+    { exit 1 }
+  ' "$idea_archive_details"; then
+    cleanup_idea_transient_files
+    return 1
+  fi
+  cleanup_idea_transient_files
+}
+
+valid_idea_install() {
+  candidate=$1
+  [ ! -L "$candidate/bin/idea.sh" ] && [ -f "$candidate/bin/idea.sh" ] && [ -x "$candidate/bin/idea.sh" ] &&
+    [ ! -L "$candidate/bin/idea" ] && [ -f "$candidate/bin/idea" ] && [ -x "$candidate/bin/idea" ] &&
+    [ ! -L "$candidate/jbr/bin/java" ] && [ -f "$candidate/jbr/bin/java" ] && [ -x "$candidate/jbr/bin/java" ] &&
+    [ ! -L "$candidate/product-info.json" ] && [ -f "$candidate/product-info.json" ]
+}
+
+valid_prepared_idea_home() {
+  candidate=$1
+  [ ! -L "$candidate" ] && [ -d "$candidate" ] || return 1
+  prepared_home_resolved=$(realpath -e -- "$candidate" 2>/dev/null || true)
+  case "$prepared_home_resolved" in
+    "$idea_homes_root_resolved"/*) ;;
+    *) return 1 ;;
+  esac
+  marker="$candidate/$idea_cache_marker"
+  [ ! -L "$marker" ] && [ -f "$marker" ] || return 1
+  marker_value=$(cat "$marker" 2>/dev/null || true)
+  valid_idea_install "$candidate" &&
+    { [ "$marker_value" = "$url_sha256" ] || [ "$marker_value" = "$IDEA_URL" ]; }
+}
+
+migrate_prepared_idea_marker() {
+  candidate=$1
+  marker="$candidate/$idea_cache_marker"
+  [ ! -L "$marker" ] && [ -f "$marker" ] || return 0
+  if [ "$(cat "$marker" 2>/dev/null || true)" = "$IDEA_URL" ] && [ "$IDEA_URL" != "$url_sha256" ]; then
+    idea_marker_tmp=$(mktemp "$marker.tmp.XXXXXX" 2>/dev/null || true)
+    if [ -n "$idea_marker_tmp" ]; then
+      if printf '%s\n' "$url_sha256" >"$idea_marker_tmp" && mv -f "$idea_marker_tmp" "$marker"; then
+        idea_marker_tmp=
+      else
+        cleanup_idea_transient_files
+      fi
     fi
   fi
-  if [ "$idea_url_is_default" = true ] && [ ! -s "$idea_archive" ] && [ -s "$legacy_idea_archive" ]; then
-    if tar -tzf "$legacy_idea_archive" >/dev/null 2>&1; then
-      echo "[run-intellij] adopting validated legacy cache archive: $legacy_idea_archive -> $idea_archive" >&2
-      mv "$legacy_idea_archive" "$idea_archive"
-    else
-      echo "[run-intellij] discarding invalid legacy cache archive: $legacy_idea_archive" >&2
-      rm -f "$legacy_idea_archive"
-    fi
+}
+
+link_stage=
+cleanup_idea_link_stage() {
+  if [ -n "$link_stage" ]; then
+    rm -rf "$link_stage" 2>/dev/null || true
+    link_stage=
   fi
-  if [ -s "$idea_archive" ] && ! tar -tzf "$idea_archive" >/dev/null 2>&1; then
-    echo "[run-intellij] discarding invalid cached archive: $idea_archive" >&2
-    rm -f "$idea_archive"
+}
+
+link_prepared_idea_home() {
+  link_parent=$(dirname "$IDEA_HOME")
+  link_name=$(basename "$IDEA_HOME")
+  mkdir -p "$link_parent"
+  if [ -L "$IDEA_HOME" ] && [ "$(readlink "$IDEA_HOME")" = "$persistent_idea_home" ]; then
+    return 0
   fi
-  if [ ! -s "$idea_archive" ]; then
-    echo "[run-intellij] downloading IDEA archive: $IDEA_URL -> $idea_archive" >&2
-    tmp_archive=$(mktemp "$idea_archive.tmp.XXXXXX")
-    trap 'rm -f "$tmp_archive"' EXIT
-    trap 'rm -f "$tmp_archive"; exit 1' HUP INT TERM
-    if ! curl -fL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 30 --speed-limit 1024 --speed-time 30 "$IDEA_URL" -o "$tmp_archive"; then
-      rm -f "$tmp_archive"
-      exit 1
-    fi
-    if ! tar -tzf "$tmp_archive" >/dev/null 2>&1; then
-      echo "[run-intellij] downloaded archive is invalid: $tmp_archive" >&2
-      rm -f "$tmp_archive"
-      exit 1
-    fi
-    mv "$tmp_archive" "$idea_archive"
-    trap - EXIT HUP INT TERM
+  if [ -d "$IDEA_HOME" ] && [ ! -L "$IDEA_HOME" ]; then
+    echo "[run-intellij] refusing non-atomic prepared-home replacement: $IDEA_HOME" >&2
+    return 1
+  fi
+  link_stage=$(mktemp -d "$link_parent/.${link_name}.link.XXXXXX")
+  if ! ln -s "$persistent_idea_home" "$link_stage/link"; then
+    cleanup_idea_link_stage
+    return 1
+  fi
+  if ! mv -Tf "$link_stage/link" "$IDEA_HOME"; then
+    cleanup_idea_link_stage
+    return 1
+  fi
+  rmdir "$link_stage"
+  link_stage=
+}
+
+trap 'cleanup_idea_link_stage; cleanup_idea_transient_files' EXIT
+trap 'trap - EXIT; cleanup_idea_link_stage; cleanup_idea_transient_files; exit 1' HUP INT TERM
+
+cleanup_quarantined_idea_home() {
+  cleanup_quarantine=$1
+  cleanup_target=$2
+  if [ ! -e "$cleanup_target" ] && [ ! -L "$cleanup_target" ]; then
+    mv -T "$cleanup_quarantine" "$cleanup_target"
   else
-    echo "[run-intellij] using cached IDEA archive: $idea_archive" >&2
+    rm -rf "$cleanup_quarantine"
+  fi
+}
+
+acquire_directory_lock() {
+  lock_dir=$1
+  lock_label=$2
+  waited=0
+  waiting_reported=false
+  while :; do
+    if [ -L "$lock_dir" ] || { [ -e "$lock_dir" ] && [ ! -d "$lock_dir" ]; }; then
+      echo "[run-intellij] refusing unsafe $lock_label lock path: $lock_dir" >&2
+      return 1
+    fi
+    if mkdir "$lock_dir" 2>/dev/null; then
+      acquired_lock_token=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || printf '%s-%s-%s' "$$" "$lock_label" "$(date +%s)")
+      acquired_owner_marker="$lock_dir/owner-$acquired_lock_token"
+      if mkdir "$acquired_owner_marker" 2>/dev/null; then
+        current_owner_count=0
+        for current_owner_marker in "$lock_dir"/owner-*; do
+          [ -d "$current_owner_marker" ] || continue
+          current_owner_count=$((current_owner_count + 1))
+        done
+        if [ "$current_owner_count" -eq 1 ] && [ -d "$acquired_owner_marker" ]; then
+          return 0
+        fi
+        rmdir "$acquired_owner_marker" 2>/dev/null || true
+      fi
+      continue
+    fi
+    now=$(date +%s)
+    owner_marker=
+    owner_count=0
+    for candidate_owner_marker in "$lock_dir"/owner-*; do
+      [ -d "$candidate_owner_marker" ] || continue
+      owner_marker=$candidate_owner_marker
+      owner_count=$((owner_count + 1))
+    done
+    if [ "$owner_count" -eq 1 ]; then
+      modified=$(stat -c %Y "$owner_marker" 2>/dev/null || printf '0')
+    elif [ "$owner_count" -eq 0 ]; then
+      modified=$(stat -c %Y "$lock_dir" 2>/dev/null || printf '0')
+    else
+      modified=0
+    fi
+    if [ "$modified" -gt 0 ] && [ $((now - modified)) -gt "$IDEA_CACHE_STALE_LOCK_SECONDS" ]; then
+      echo "[run-intellij] removing stale $lock_label lock: $lock_dir" >&2
+      if [ -n "$owner_marker" ]; then
+        rmdir "$owner_marker" 2>/dev/null || true
+      fi
+      if rmdir "$lock_dir" 2>/dev/null; then
+        continue
+      fi
+    fi
+    if [ "$waited" -ge "$IDEA_CACHE_LOCK_TIMEOUT_SECONDS" ]; then
+      echo "[run-intellij] timed out waiting for $lock_label lock: $lock_dir" >&2
+      return 1
+    fi
+    if [ "$waiting_reported" = false ]; then
+      echo "[run-intellij] waiting for $lock_label lock: $lock_dir" >&2
+      waiting_reported=true
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+}
+
+directory_lock_heartbeat() {
+  heartbeat_dir=$1
+  heartbeat_token=$2
+  heartbeat_marker="$heartbeat_dir/owner-$heartbeat_token"
+  while [ -d "$heartbeat_marker" ]; do
+    touch -c "$heartbeat_marker"
+    sleep 15
+  done
+}
+
+release_directory_lock() {
+  release_dir=$1
+  release_token=$2
+  rmdir "$release_dir/owner-$release_token" 2>/dev/null || true
+  rmdir "$release_dir" 2>/dev/null || true
+}
+
+acquire_directory_lock_fence() {
+  fence_owner_marker=$1
+  fence_name=$2
+  acquired_lock_fence="$fence_owner_marker/$fence_name"
+  mkdir "$acquired_lock_fence" 2>/dev/null
+}
+
+adopt_cached_idea_archive() {
+  candidate=$1
+  if valid_idea_archive "$candidate"; then
+    if ! acquire_directory_lock_fence "$idea_cache_lock_marker" archive-publishing; then
+      echo "[run-intellij] lost cache publication lock before legacy archive commit" >&2
+      return 1
+    fi
+    idea_publication_fence=$acquired_lock_fence
+    echo "[run-intellij] adopting validated legacy cache archive: $candidate -> $idea_archive" >&2
+    if mv -fT "$candidate" "$idea_archive"; then
+      rmdir "$idea_publication_fence"
+      idea_publication_fence=
+      return 0
+    fi
+    rmdir "$idea_publication_fence" 2>/dev/null || true
+    idea_publication_fence=
+    return 1
+  fi
+  echo "[run-intellij] discarding invalid legacy cache archive: $candidate" >&2
+  rm -f "$candidate"
+  return 1
+}
+
+idea_is_prepared=false
+if [ -n "$persistent_idea_home" ] && valid_prepared_idea_home "$persistent_idea_home"; then
+  migrate_prepared_idea_marker "$persistent_idea_home"
+  link_prepared_idea_home || exit 1
+  echo "[run-intellij] using prepared IDEA binaries: $persistent_idea_home" >&2
+  idea_is_prepared=true
+elif [ -z "$persistent_idea_home" ] && valid_idea_install "$IDEA_HOME"; then
+  echo "[run-intellij] using existing IDEA_HOME: $IDEA_HOME" >&2
+  idea_is_prepared=true
+fi
+
+if [ "$idea_is_prepared" = false ]; then
+  idea_home_lock_acquired=false
+  idea_cache_lock_acquired=false
+  idea_home_lock=
+  idea_cache_lock=
+  idea_home_lock_token=
+  idea_cache_lock_token=
+  idea_home_lock_marker=
+  idea_cache_lock_marker=
+  idea_home_heartbeat_pid=
+  idea_cache_heartbeat_pid=
+  idea_publication_fence=
+  quarantined_home=
+  quarantined_home_target=
+  tmp_archive=
+  tmp_home=
+  cleanup_idea_work() {
+    cleanup_idea_link_stage
+    cleanup_idea_transient_files
+    if [ -n "$quarantined_home" ]; then
+      if [ -n "$quarantined_home_target" ] &&
+        cleanup_quarantined_idea_home "$quarantined_home" "$quarantined_home_target"; then
+        quarantined_home=
+      fi
+    fi
+    if [ -n "$idea_publication_fence" ]; then
+      rmdir "$idea_publication_fence" 2>/dev/null || true
+      idea_publication_fence=
+    fi
+    if [ -n "$idea_cache_heartbeat_pid" ]; then
+      kill "$idea_cache_heartbeat_pid" 2>/dev/null || true
+      wait "$idea_cache_heartbeat_pid" 2>/dev/null || true
+      idea_cache_heartbeat_pid=
+    fi
+    if [ -n "$idea_home_heartbeat_pid" ]; then
+      kill "$idea_home_heartbeat_pid" 2>/dev/null || true
+      wait "$idea_home_heartbeat_pid" 2>/dev/null || true
+      idea_home_heartbeat_pid=
+    fi
+    if [ -n "$tmp_archive" ]; then rm -f "$tmp_archive"; tmp_archive=; fi
+    if [ -z "$IDEA_CACHE_DIR" ]; then rm -f "$idea_archive"; fi
+    if [ -n "$tmp_home" ]; then rm -rf "$tmp_home"; tmp_home=; fi
+    if [ "$idea_cache_lock_acquired" = true ]; then
+      idea_cache_lock_acquired=false
+      release_directory_lock "$idea_cache_lock" "$idea_cache_lock_token"
+    fi
+    if [ "$idea_home_lock_acquired" = true ]; then
+      idea_home_lock_acquired=false
+      release_directory_lock "$idea_home_lock" "$idea_home_lock_token"
+    fi
+  }
+  trap 'cleanup_idea_work' EXIT
+  trap 'trap - EXIT; cleanup_idea_work; exit 1' HUP INT TERM
+  if [ -z "$persistent_idea_home" ]; then
+    mkdir -p "$(dirname "$IDEA_HOME")"
+    idea_home_lock="$IDEA_HOME.lock.d"
+    acquire_directory_lock "$idea_home_lock" IDEA_HOME || exit 1
+    idea_home_lock_token=$acquired_lock_token
+    idea_home_lock_marker="$idea_home_lock/owner-$idea_home_lock_token"
+    idea_home_lock_acquired=true
+    directory_lock_heartbeat "$idea_home_lock" "$idea_home_lock_token" &
+    idea_home_heartbeat_pid=$!
   fi
   if [ -n "$IDEA_CACHE_DIR" ]; then
-    flock -u 9
-    exec 9>&-
+    idea_cache_lock="$IDEA_CACHE_DIR/.idea-${url_sha256}.lock.d"
+    acquire_directory_lock "$idea_cache_lock" cache || exit 1
+    idea_cache_lock_token=$acquired_lock_token
+    idea_cache_lock_marker="$idea_cache_lock/owner-$idea_cache_lock_token"
+    idea_cache_lock_acquired=true
+    directory_lock_heartbeat "$idea_cache_lock" "$idea_cache_lock_token" &
+    idea_cache_heartbeat_pid=$!
   fi
-  echo "[run-intellij] extracting IDEA archive into $IDEA_HOME" >&2
-  tar -xzf "$idea_archive" -C "$IDEA_HOME" --strip-components=1
-  echo "[run-intellij] IDEA extraction complete" >&2
-else
-  echo "[run-intellij] using existing IDEA_HOME: $IDEA_HOME" >&2
+
+  if [ -n "$persistent_idea_home" ] && valid_prepared_idea_home "$persistent_idea_home"; then
+    migrate_prepared_idea_marker "$persistent_idea_home"
+    link_prepared_idea_home || exit 1
+    echo "[run-intellij] using prepared IDEA binaries after cache wait: $persistent_idea_home" >&2
+  elif [ -z "$persistent_idea_home" ] && valid_idea_install "$IDEA_HOME"; then
+    echo "[run-intellij] using existing IDEA_HOME after cache wait: $IDEA_HOME" >&2
+  else
+    if [ -d "$idea_archive" ] && [ ! -L "$idea_archive" ]; then
+      echo "[run-intellij] refusing wrong-type cached archive destination: $idea_archive" >&2
+      exit 1
+    fi
+    if [ ! -s "$idea_archive" ] && [ -s "$legacy_url_archive" ]; then
+      adopt_cached_idea_archive "$legacy_url_archive" || true
+    fi
+    if [ "$idea_url_is_default" = true ] && [ ! -s "$idea_archive" ] && [ -s "$legacy_basename_archive" ]; then
+      adopt_cached_idea_archive "$legacy_basename_archive" || true
+    fi
+    idea_archive_is_valid=false
+    if [ -s "$idea_archive" ] && valid_idea_archive "$idea_archive"; then
+      idea_archive_is_valid=true
+    elif [ -s "$idea_archive" ]; then
+      echo "[run-intellij] discarding invalid cached archive: $idea_archive" >&2
+    fi
+    if [ "$idea_archive_is_valid" = false ]; then
+      echo "[run-intellij] downloading IDEA archive: $IDEA_URL -> $idea_archive" >&2
+      if [ -n "$IDEA_CACHE_DIR" ]; then
+        tmp_archive=$(mktemp "$IDEA_CACHE_DIR/archives/.idea-${url_sha256}.tmp.XXXXXX")
+      else
+        tmp_archive=$(mktemp "${TMPDIR:-/tmp}/idea-archive.tmp.XXXXXX")
+      fi
+      if ! curl -fL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 30 --speed-limit 1024 --speed-time 30 "$IDEA_URL" -o "$tmp_archive"; then
+        exit 1
+      fi
+      if ! valid_idea_archive "$tmp_archive"; then
+        echo "[run-intellij] downloaded archive is not an IntelliJ distribution: $tmp_archive" >&2
+        exit 1
+      fi
+      if [ -n "$IDEA_CACHE_DIR" ]; then
+        if ! acquire_directory_lock_fence "$idea_cache_lock_marker" archive-publishing; then
+          echo "[run-intellij] lost cache publication lock before archive commit" >&2
+          exit 1
+        fi
+        idea_publication_fence=$acquired_lock_fence
+      fi
+      mv -fT "$tmp_archive" "$idea_archive"
+      tmp_archive=
+      if [ -n "$idea_publication_fence" ]; then
+        rmdir "$idea_publication_fence"
+        idea_publication_fence=
+      fi
+    else
+      echo "[run-intellij] using cached IDEA archive: $idea_archive" >&2
+    fi
+
+    idea_install_target=${persistent_idea_home:-$IDEA_HOME}
+    idea_install_parent=$(dirname "$idea_install_target")
+    idea_install_name=$(basename "$idea_install_target")
+    mkdir -p "$idea_install_parent"
+    tmp_home=$(mktemp -d "$idea_install_parent/.${idea_install_name}.tmp.XXXXXX")
+    if [ -n "$persistent_idea_home" ]; then
+      echo "[run-intellij] extracting IDEA archive into host cache: $tmp_home" >&2
+    else
+      echo "[run-intellij] extracting IDEA archive into staging home: $tmp_home" >&2
+    fi
+    tar -xzf "$idea_archive" -C "$tmp_home" --strip-components=1
+    if [ -z "$IDEA_CACHE_DIR" ]; then
+      rm -f "$idea_archive"
+    fi
+    if ! valid_idea_install "$tmp_home"; then
+      echo "[run-intellij] extracted archive is not a complete IntelliJ distribution: $idea_archive" >&2
+      exit 1
+    fi
+    if [ -n "$persistent_idea_home" ]; then
+      printf '%s\n' "$url_sha256" >"$tmp_home/$idea_cache_marker"
+      idea_install_lock_marker=$idea_cache_lock_marker
+    else
+      idea_install_lock_marker=$idea_home_lock_marker
+    fi
+    idea_publication_fence="$idea_install_lock_marker/publishing"
+    if ! acquire_directory_lock_fence "$idea_install_lock_marker" publishing; then
+      echo "[run-intellij] lost $idea_install_name publication lock before commit" >&2
+      exit 1
+    fi
+    idea_publication_fence=$acquired_lock_fence
+    if { [ -n "$persistent_idea_home" ] && valid_prepared_idea_home "$idea_install_target"; } ||
+      { [ -z "$persistent_idea_home" ] && valid_idea_install "$idea_install_target"; }; then
+      rm -rf "$tmp_home"
+      tmp_home=
+    else
+      if [ -e "$idea_install_target" ] || [ -L "$idea_install_target" ]; then
+        quarantined_home="$idea_install_parent/.${idea_install_name}.replaced.$acquired_lock_token"
+        quarantined_home_target=$idea_install_target
+        mv -T "$idea_install_target" "$quarantined_home"
+      fi
+      mv -T "$tmp_home" "$idea_install_target"
+      tmp_home=
+    fi
+    rmdir "$idea_publication_fence"
+    idea_publication_fence=
+    if [ -n "$quarantined_home" ]; then
+      cleanup_quarantined_idea_home "$quarantined_home" "$idea_install_target"
+      quarantined_home=
+      quarantined_home_target=
+    fi
+    if [ -n "$persistent_idea_home" ]; then
+      link_prepared_idea_home || exit 1
+      echo "[run-intellij] IDEA host-cache extraction complete: $persistent_idea_home" >&2
+    else
+      echo "[run-intellij] IDEA staged extraction complete: $IDEA_HOME" >&2
+    fi
+
+  fi
+  if [ -n "$idea_cache_heartbeat_pid" ]; then
+    kill "$idea_cache_heartbeat_pid" 2>/dev/null || true
+    wait "$idea_cache_heartbeat_pid" 2>/dev/null || true
+    idea_cache_heartbeat_pid=
+  fi
+  if [ -n "$idea_home_heartbeat_pid" ]; then
+    kill "$idea_home_heartbeat_pid" 2>/dev/null || true
+    wait "$idea_home_heartbeat_pid" 2>/dev/null || true
+    idea_home_heartbeat_pid=
+  fi
+  if [ "$idea_cache_lock_acquired" = true ]; then
+    idea_cache_lock_acquired=false
+    release_directory_lock "$idea_cache_lock" "$idea_cache_lock_token"
+  fi
+  if [ "$idea_home_lock_acquired" = true ]; then
+    idea_home_lock_acquired=false
+    release_directory_lock "$idea_home_lock" "$idea_home_lock_token"
+  fi
+  trap - EXIT HUP INT TERM
+fi
+
+if [ "$IDEA_PREPARE_ONLY" = true ]; then
+  test -x "$IDEA_HOME/bin/idea.sh"
+  test -x "$IDEA_HOME/bin/idea"
+  test -x "$IDEA_HOME/jbr/bin/java"
+  exit 0
 fi
 
 if [ "$IDEA_REGISTER_JBR_SDK" = "true" ] && [ -x "$IDEA_HOME/jbr/bin/java" ]; then

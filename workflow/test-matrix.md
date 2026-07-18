@@ -47,9 +47,27 @@ The AWT/Swing Java2D probes require full-pixel equality for client-side `Robot` 
 The IntelliJ and VSCode smokes are excluded from default `test` because they use
 heavyweight external application artifacts. Decide whether the future Java AWS
 fixture is opt-in only after its artifact and launch model are established.
-Both IDE fixtures retain validated release archives in host directories under
-`build/tmp` and bind them into disposable containers; Xvfb and Kotlin phases
-reuse the same archive rather than downloading it per container.
+The IntelliJ container lifetime exceeds preparation, startup, readiness, and
+the larger Xvfb/Kotlin worst-case capture budget; individual commands and the
+outer Gradle run remain independently bounded.
+Both IDE fixtures retain validated release archives in host directories and
+bind them into disposable containers. IntelliJ additionally retains its
+SHA-256 URL-keyed extracted home under `.gradle/intellij-community-cache`, so
+Xvfb and Kotlin phases reuse identical binaries without downloading,
+revalidating, or extracting the archive per container. Relative container-side
+cache roots are normalized before link publication, while lexical/effective
+filesystem-root aliases are rejected at launcher and host bind boundaries;
+explicit-home/cache overlap is rejected independently in both normalized
+lexical and symlink-resolved path trees. Kotlin regressions cover cache
+persistence, concurrent legacy migration, refusal of a symlinked migration
+source root by both Gradle and the screenshot helper, rejection of symlinked or
+out-of-cache `archives`/`homes` directories, linked prepared homes and locks,
+lexical/effective root migration destinations, malicious links and every tar
+special-member type, cold atomic publication, former-owner/successor release
+races, concurrent explicit-home preparation, stale-lock recovery, networkless
+read-only reuse, wrong-type completion markers including FIFOs, and fail-closed
+prepared-home evidence. Forced process-group interruption also verifies cleanup
+of archive-validation files and legacy-marker publication temporaries.
 The retained VSCode trace supplies target evidence for XKEYBOARD negotiation,
 map, event-selection, and per-client-flag requests. Focused Kotlin tests cover
 compatible and incompatible versions, pre-initialization `BadAccess`, byte

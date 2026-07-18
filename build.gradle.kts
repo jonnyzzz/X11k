@@ -1,4 +1,41 @@
 import java.time.Duration
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
+
+fun safeIntellijMigrationCacheDirectory(cache: Path): Path {
+    val lexical = cache.toAbsolutePath().normalize()
+    check(lexical.parent != null && lexical != lexical.root) {
+        "Refusing unsafe IntelliJ migration cache path: $cache"
+    }
+    Files.createDirectories(lexical)
+    val resolved = lexical.toRealPath()
+    check(resolved.parent != null && resolved != resolved.root) {
+        "Refusing IntelliJ migration cache path that resolves to filesystem root: $cache"
+    }
+    return resolved
+}
+
+fun migrateDirectoryContents(legacy: Path, cache: Path) {
+    if (!Files.isDirectory(legacy, LinkOption.NOFOLLOW_LINKS)) return
+    val safeCache = safeIntellijMigrationCacheDirectory(cache)
+    Files.list(legacy).use { entries ->
+        entries.forEach { entry ->
+            val target = safeCache.resolve(entry.fileName.toString())
+            if (!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                runCatching { Files.move(entry, target) }
+                    .onFailure {
+                        if (
+                            Files.exists(entry, LinkOption.NOFOLLOW_LINKS) &&
+                            !Files.exists(target, LinkOption.NOFOLLOW_LINKS)
+                        ) {
+                            throw it
+                        }
+                    }
+            }
+        }
+    }
+}
 
 plugins {
     kotlin("jvm") version "2.4.0"
@@ -31,7 +68,27 @@ dependencies {
     testImplementation("org.testcontainers:testcontainers")
 }
 
+val migrateLegacyIntellijCache by tasks.registering {
+    group = "build setup"
+    description = "Moves the old cleanable IntelliJ cache into the persistent host cache before clean."
+    doLast {
+        val configured = providers.systemProperty("x.intellijCacheDir").orNull
+            ?: providers.environmentVariable("IDEA_CACHE_DIR").orNull
+        if (configured.isNullOrBlank()) {
+            migrateDirectoryContents(
+                layout.projectDirectory.dir("build/tmp/intellij-community-smoke/idea-cache").asFile.toPath(),
+                layout.projectDirectory.dir(".gradle/intellij-community-cache").asFile.toPath(),
+            )
+        }
+    }
+}
+
+tasks.named("clean") {
+    dependsOn(migrateLegacyIntellijCache)
+}
+
 tasks.test {
+    dependsOn(migrateLegacyIntellijCache)
     useJUnitPlatform()
     listOf(
         "x.intellijSmoke",
@@ -42,6 +99,7 @@ tasks.test {
         "x.intellijUrl",
         "x.intellijImage",
         "x.intellijReferenceImage",
+        "x.intellijCacheDir",
         "x.guiArtifactsDir",
         "x.intellijXvfbExtraArgs",
         "x.vscodeSmoke",
@@ -53,6 +111,55 @@ tasks.test {
     ).forEach { name ->
         System.getProperty(name)?.let { systemProperty(name, it) }
     }
+}
+
+val verifyIntellijCacheMigration by tasks.registering {
+    group = "verification"
+    description = "Verifies no-clobber legacy IntelliJ cache migration, including dangling symlinks."
+    doLast {
+        val root = Files.createTempDirectory(temporaryDir.toPath(), "migration-")
+        val legacy = root.resolve("legacy")
+        val cache = root.resolve("cache")
+        Files.createDirectories(legacy)
+        Files.createDirectories(cache)
+        Files.writeString(legacy.resolve("archive.tar.gz"), "archive")
+        Files.writeString(legacy.resolve("preserved.txt"), "legacy")
+        Files.writeString(cache.resolve("preserved.txt"), "persistent")
+        Files.createSymbolicLink(legacy.resolve("dangling"), Path.of("missing-target"))
+
+        migrateDirectoryContents(legacy, cache)
+
+        check(Files.readString(cache.resolve("archive.tar.gz")) == "archive")
+        check(Files.readString(cache.resolve("preserved.txt")) == "persistent")
+        check(Files.isSymbolicLink(cache.resolve("dangling")))
+        check(!Files.exists(legacy.resolve("archive.tar.gz"), LinkOption.NOFOLLOW_LINKS))
+        check(Files.exists(legacy.resolve("preserved.txt"), LinkOption.NOFOLLOW_LINKS))
+
+        val linkedTarget = root.resolve("linked-target")
+        val linkedLegacy = root.resolve("linked-legacy")
+        val linkedCache = root.resolve("linked-cache")
+        Files.createDirectories(linkedTarget)
+        Files.writeString(linkedTarget.resolve("must-stay.txt"), "linked")
+        Files.createSymbolicLink(linkedLegacy, linkedTarget)
+        migrateDirectoryContents(linkedLegacy, linkedCache)
+        check(Files.readString(linkedTarget.resolve("must-stay.txt")) == "linked")
+        check(!Files.exists(linkedCache, LinkOption.NOFOLLOW_LINKS))
+        Files.delete(linkedLegacy)
+
+        val unsafeLegacy = root.resolve("unsafe-legacy")
+        val unsafeCache = root.resolve("unsafe-cache")
+        Files.createDirectories(unsafeLegacy)
+        Files.writeString(unsafeLegacy.resolve("must-stay.txt"), "unsafe")
+        Files.createSymbolicLink(unsafeCache, root.root)
+        val unsafeFailure = runCatching { migrateDirectoryContents(unsafeLegacy, unsafeCache) }.exceptionOrNull()
+        check(unsafeFailure is IllegalStateException)
+        check(Files.readString(unsafeLegacy.resolve("must-stay.txt")) == "unsafe")
+        Files.delete(unsafeCache)
+    }
+}
+
+tasks.check {
+    dependsOn(verifyIntellijCacheMigration)
 }
 
 tasks.register<Exec>("dockerBuildX11Client") {

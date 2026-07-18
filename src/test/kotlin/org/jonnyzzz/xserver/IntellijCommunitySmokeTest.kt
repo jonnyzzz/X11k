@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test
 import org.testcontainers.DockerClientFactory
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.BindMode
+import org.testcontainers.containers.Container
 import org.testcontainers.utility.DockerImageName
 import java.awt.Rectangle
 import java.io.ByteArrayInputStream
@@ -12,14 +13,19 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.awt.image.BufferedImage
 import java.net.Socket
+import java.security.MessageDigest
 import java.nio.file.Path
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.StandardCopyOption
+import java.nio.file.attribute.PosixFilePermission
 import java.net.ServerSocket
 import java.util.Base64
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 import java.net.URLClassLoader
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
 import javax.imageio.ImageIO
 import javax.tools.ToolProvider
 import kotlin.concurrent.thread
@@ -999,11 +1005,93 @@ class IntellijCommunitySmokeTest {
     }
 
     @Test
-    fun `intellij heavyweight cache directory stays under build tmp`() {
+    fun `intellij heavyweight cache survives gradle clean`() {
         val root = projectRoot()
-        val cache = intellijCacheDir()
+        val cache = resolveIntellijCacheDir(root, configured = null)
+        val buildScript = Files.readString(root.resolve("build.gradle.kts"))
 
-        assertTrue(cache.startsWith(root.resolve("build/tmp").normalize()), "Unexpected IntelliJ cache path: $cache")
+        assertEquals(root.resolve(".gradle/intellij-community-cache").normalize(), cache)
+        assertFalse(cache.startsWith(root.resolve("build").normalize()), "Gradle clean must not remove $cache")
+        assertTrue(buildScript.contains("\"x.intellijCacheDir\","), buildScript)
+        assertTrue(buildScript.contains("val migrateLegacyIntellijCache by tasks.registering"), buildScript)
+        assertTrue(buildScript.contains("tasks.named(\"clean\")"), buildScript)
+        assertTrue(buildScript.contains("dependsOn(migrateLegacyIntellijCache)"), buildScript)
+        assertTrue(buildScript.contains("val verifyIntellijCacheMigration by tasks.registering"), buildScript)
+        assertTrue(buildScript.contains("Files.isDirectory(legacy, LinkOption.NOFOLLOW_LINKS)"), buildScript)
+        assertTrue(buildScript.contains("fun safeIntellijMigrationCacheDirectory"), buildScript)
+        assertTrue(buildScript.contains("resolved != resolved.root"), buildScript)
+
+        val guardRoot = Files.createTempDirectory("intellij-host-cache-guard")
+        val rootLink = guardRoot.resolve("root-link")
+        try {
+            val safe = guardRoot.resolve("cache")
+            assertEquals(safe.toFile().canonicalFile.toPath(), safeIntellijCacheDir(safe))
+            assertFailsWith<IllegalStateException> { safeIntellijCacheDir(guardRoot.root) }
+            Files.createSymbolicLink(rootLink, guardRoot.root)
+            assertFailsWith<IllegalStateException> { safeIntellijCacheDir(rootLink) }
+        } finally {
+            Files.deleteIfExists(rootLink)
+            guardRoot.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `intellij legacy host cache migration preserves existing entries`() {
+        val root = Files.createTempDirectory("intellij-cache-migration-test")
+        try {
+            val legacy = root.resolve("build/tmp/intellij-community-smoke/idea-cache")
+            val cache = root.resolve(".gradle/intellij-community-cache")
+            Files.createDirectories(legacy)
+            Files.createDirectories(cache)
+            Files.writeString(legacy.resolve("legacy-archive.tar.gz"), "archive")
+            Files.writeString(legacy.resolve("already-present.tar.gz"), "legacy")
+            Files.writeString(cache.resolve("already-present.tar.gz"), "current")
+            Files.writeString(legacy.resolve("dangling-entry"), "legacy-dangling")
+            Files.createSymbolicLink(cache.resolve("dangling-entry"), Path.of("missing-target"))
+
+            migrateLegacyIntellijCache(legacy, cache)
+
+            assertEquals("archive", Files.readString(cache.resolve("legacy-archive.tar.gz")))
+            assertEquals("current", Files.readString(cache.resolve("already-present.tar.gz")))
+            assertFalse(Files.exists(legacy.resolve("legacy-archive.tar.gz")))
+            assertEquals("legacy", Files.readString(legacy.resolve("already-present.tar.gz")))
+            assertTrue(Files.isSymbolicLink(cache.resolve("dangling-entry")))
+            assertEquals("legacy-dangling", Files.readString(legacy.resolve("dangling-entry")))
+
+            repeat(40) { index -> Files.writeString(legacy.resolve("race-$index"), index.toString()) }
+            val failures = java.util.Collections.synchronizedList(mutableListOf<Throwable>())
+            val workers = List(2) {
+                thread(start = true) {
+                    runCatching { migrateLegacyIntellijCache(legacy, cache) }
+                        .onFailure(failures::add)
+                }
+            }
+            workers.forEach(Thread::join)
+            assertTrue(failures.isEmpty(), failures.joinToString("\n") { it.stackTraceToString() })
+            repeat(40) { index -> assertEquals(index.toString(), Files.readString(cache.resolve("race-$index"))) }
+
+            val linkedTarget = root.resolve("linked-target")
+            val linkedLegacy = root.resolve("linked-legacy")
+            val linkedCache = root.resolve("linked-cache")
+            Files.createDirectories(linkedTarget)
+            Files.writeString(linkedTarget.resolve("must-stay.txt"), "linked")
+            Files.createSymbolicLink(linkedLegacy, linkedTarget)
+            migrateLegacyIntellijCache(linkedLegacy, linkedCache)
+            assertEquals("linked", Files.readString(linkedTarget.resolve("must-stay.txt")))
+            assertFalse(Files.exists(linkedCache, LinkOption.NOFOLLOW_LINKS))
+            Files.delete(linkedLegacy)
+
+            val unsafeLegacy = root.resolve("unsafe-legacy")
+            val unsafeCache = root.resolve("unsafe-cache")
+            Files.createDirectories(unsafeLegacy)
+            Files.writeString(unsafeLegacy.resolve("must-stay.txt"), "unsafe")
+            Files.createSymbolicLink(unsafeCache, root.root)
+            assertFailsWith<IllegalStateException> { migrateLegacyIntellijCache(unsafeLegacy, unsafeCache) }
+            assertEquals("unsafe", Files.readString(unsafeLegacy.resolve("must-stay.txt")))
+            Files.delete(unsafeCache)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
     }
 
     @Test
@@ -1011,10 +1099,48 @@ class IntellijCommunitySmokeTest {
         val source = Files.readString(projectRoot().resolve("scripts/update-intellij-readme-screenshot.sh"))
 
         assertTrue(
-            source.contains("IDEA_CACHE_DIR=\"\${IDEA_CACHE_DIR:-\$ROOT/build/tmp/intellij-community-smoke/idea-cache}\""),
+            source.contains("IDEA_CACHE_DIR=\"\${IDEA_CACHE_DIR:-\$ROOT/.gradle/intellij-community-cache}\""),
             source,
         )
+        assertTrue(source.contains("LEGACY_IDEA_CACHE_DIR=\"\$ROOT/build/tmp/intellij-community-smoke/idea-cache\""), source)
+        assertTrue(source.contains("IDEA_CACHE_DIR=\"\$(guarded_idea_cache_dir \"\$IDEA_CACHE_DIR\")\""), source)
+        assertTrue(source.contains("root symlink rejected"), source)
+        assertTrue(source.contains("Refusing symlinked legacy IntelliJ cache directory"), source)
+        assertTrue(source.contains("find -P . -mindepth 1 -maxdepth 1 -print0"), source)
+        assertTrue(source.contains("[[ ! -e \"\$target\" && ! -L \"\$target\" ]]"), source)
+        assertTrue(source.contains("migrate_legacy_idea_cache \"\$LEGACY_IDEA_CACHE_DIR\" \"\$IDEA_CACHE_DIR\""), source)
         assertTrue(source.contains("-v \"\$IDEA_CACHE_DIR:/tmp/idea-cache\""), source)
+    }
+
+    @Test
+    fun `intellij readme screenshot self test rejects symlinked legacy cache`() {
+        val root = Files.createTempDirectory("intellij-screenshot-self-test")
+        try {
+            val output = root.resolve("output.log")
+            val process = ProcessBuilder(
+                "bash",
+                projectRoot().resolve("scripts/update-intellij-readme-screenshot.sh").toString(),
+            )
+                .redirectErrorStream(true)
+                .redirectOutput(output.toFile())
+                .apply {
+                    environment()["INTELLIJ_README_SCREENSHOT_SELF_TEST"] = "1"
+                    environment()["IDEA_CACHE_DIR"] = root.resolve("cache").toString()
+                    environment()["RUN_DIR"] = root.resolve("run").toString()
+                    environment()["OUT"] = root.resolve("intellij.png").toString()
+                }
+                .start()
+            if (!process.waitFor(30, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                process.waitFor()
+                error("IntelliJ screenshot self-test timed out:\n${Files.readString(output)}")
+            }
+            val log = Files.readString(output)
+            assertEquals(0, process.exitValue(), log)
+            assertFalse(Files.exists(root.resolve("cache/escaped"), LinkOption.NOFOLLOW_LINKS), log)
+        } finally {
+            root.toFile().deleteRecursively()
+        }
     }
 
     @Test
@@ -1354,17 +1480,62 @@ class IntellijCommunitySmokeTest {
 
         assertTrue(source.contains("options/ui.lnf.xml"), source)
         assertTrue(source.contains("run-intellij-env.log"), source)
-        assertTrue(source.contains("url_checksum="), source)
-        assertTrue(source.contains("idea-${'$'}{url_checksum}-${'$'}{archive_name}"), source)
-        assertTrue(source.contains("legacy_idea_archive=\"${'$'}IDEA_CACHE_DIR/${'$'}archive_name\""), source)
+        assertTrue(source.contains("url_sha256="), source)
+        assertTrue(source.contains("archives/idea-${'$'}{url_sha256}-${'$'}{archive_name}"), source)
+        assertTrue(source.contains("legacy_url_archive=\"${'$'}IDEA_CACHE_DIR/idea-${'$'}{legacy_url_checksum}-${'$'}{archive_name}\""), source)
         assertTrue(source.contains("adopting validated legacy cache archive"), source)
         assertTrue(source.contains("[ \"${'$'}idea_url_is_default\" = true ]"), source)
-        assertTrue(source.contains("tmp_archive=${'$'}(mktemp \"${'$'}idea_archive.tmp.XXXXXX\")"), source)
-        assertTrue(source.contains("flock -w 300 9"), source)
-        assertTrue(source.contains("trap 'rm -f \"${'$'}tmp_archive\"; exit 1' HUP INT TERM"), source)
-        assertTrue(source.contains("tar -tzf \"${'$'}idea_archive\""), source)
-        assertTrue(source.contains("tar -tzf \"${'$'}tmp_archive\""), source)
+        assertTrue(source.contains("acquire_directory_lock \"${'$'}idea_cache_lock\" cache"), source)
+        assertTrue(source.contains("IDEA_CACHE_STALE_LOCK_SECONDS"), source)
+        assertTrue(source.contains("realpath -m -s -- \"${'$'}IDEA_HOME\""), source)
+        assertTrue(source.contains("realpath -e -- \"${'$'}normalized_idea_home\""), source)
+        assertTrue(source.contains("refusing unsafe IDEA_HOME"), source)
+        assertTrue(source.contains("prepare_idea_cache_structural_directory"), source)
+        assertTrue(source.contains("refusing unsafe IDEA cache ${'$'}idea_structural_name directory"), source)
+        assertTrue(source.contains("\"${'$'}idea_cache_root_resolved\"/*"), source)
+        assertTrue(source.contains("refusing symlinked prepared IDEA home"), source)
+        assertTrue(source.contains("refusing unsafe ${'$'}lock_label lock path"), source)
+        assertTrue(source.contains("mkdir \"${'$'}acquired_owner_marker\""), source)
+        assertTrue(source.contains("[ \"${'$'}current_owner_count\" -eq 1 ]"), source)
+        val freshLockBody = sourceBodyBetweenLast(
+            source,
+            "    if mkdir \"${'$'}lock_dir\" 2>/dev/null; then",
+            "    now=${'$'}(date +%s)",
+        )
+        assertFalse(freshLockBody.contains("rmdir \"${'$'}lock_dir\""), freshLockBody)
+        assertTrue(source.contains("rmdir \"${'$'}release_dir/owner-${'$'}release_token\""), source)
+        assertTrue(source.contains("acquire_directory_lock_fence \"${'$'}idea_install_lock_marker\" publishing"), source)
+        assertTrue(source.contains("acquire_directory_lock_fence \"${'$'}idea_cache_lock_marker\" archive-publishing"), source)
+        assertTrue(source.contains("idea-${'$'}{url_sha256}-${'$'}${'$'}.tar.gz"), source)
+        val linkBody = sourceBodyBetweenLast(
+            source,
+            "link_prepared_idea_home() {",
+            "\nacquire_directory_lock() {",
+        )
+        assertTrue(linkBody.contains("mv -Tf \"${'$'}link_stage/link\" \"${'$'}IDEA_HOME\""), linkBody)
+        assertFalse(linkBody.contains("rm -rf \"${'$'}IDEA_HOME\""), linkBody)
+        val adoptionBody = sourceBodyBetweenLast(
+            source,
+            "adopt_cached_idea_archive() {",
+            "\nidea_is_prepared=false",
+        )
+        assertTrue(adoptionBody.contains("acquire_directory_lock_fence"), adoptionBody)
+        assertTrue(source.contains("cleanup_quarantined_idea_home \"${'$'}quarantined_home\" \"${'$'}quarantined_home_target\""), source)
+        assertTrue(source.contains("[ -z \"${'$'}IDEA_CACHE_DIR\" ]; then rm -f \"${'$'}idea_archive\""), source)
+        assertTrue(source.contains("valid_idea_archive \"${'$'}tmp_archive\""), source)
+        assertTrue(source.contains("'bin/idea[.]sh'"), source)
+        assertTrue(source.contains("'jbr/bin/java'"), source)
+        assertTrue(source.contains("grep -Eq '(^|/)[.][.](/|${'$'})|^/'"), source)
+        assertTrue(source.contains("${'$'}1 ~ /^-/ { next }"), source)
+        assertTrue(source.contains("{ exit 1 }"), source)
         assertTrue(source.contains("discarding invalid cached archive"), source)
+        assertTrue(source.contains("persistent_idea_home=\"${'$'}IDEA_CACHE_DIR/homes/idea-${'$'}{url_sha256}\""), source)
+        assertTrue(source.contains("idea_cache_marker=.jonnyzzz-x-idea-cache-complete"), source)
+        assertTrue(source.contains("mktemp \"${'$'}marker.tmp.XXXXXX\""), source)
+        assertTrue(source.contains("printf '%s\\n' \"${'$'}url_sha256\" >\"${'$'}tmp_home/${'$'}idea_cache_marker\""), source)
+        assertTrue(source.contains("tmp_home=${'$'}(mktemp -d"), source)
+        assertTrue(source.contains("mv -T \"${'$'}tmp_home\" \"${'$'}idea_install_target\""), source)
+        assertTrue(source.contains("IDEA_PREPARE_ONLY"), source)
         assertTrue(source.contains("XDG_CURRENT_DESKTOP"), source)
         assertTrue(source.contains("XDG_SESSION_TYPE"), source)
         assertTrue(source.contains("AWT_TOOLKIT"), source)
@@ -1378,6 +1549,10 @@ class IntellijCommunitySmokeTest {
         assertTrue(harness.contains("runtimeStateMainMenuDisplayMode"), harness)
         assertTrue(harness.contains("intellij-kotlin-config-options-inventory.log"), harness)
         assertTrue(harness.contains("javac --add-modules jdk.attach -d /tmp"), harness)
+        assertTrue(
+            harness.contains("File(intellijSmokeArtifactsDirectory(), \"intellij-${'$'}label-prepare.log\")"),
+            harness,
+        )
     }
 
     @Test
@@ -1386,6 +1561,1006 @@ class IntellijCommunitySmokeTest {
         val container = intellijContainer("ubuntu:latest", url)
 
         assertEquals(url, container.envMap["IDEA_URL"])
+        assertEquals("/tmp/idea-cache", container.envMap["IDEA_CACHE_DIR"])
+        assertEquals(listOf("sleep", IntellijContainerLifetimeSeconds.toString()), container.commandParts.toList())
+        val longestCaptureBudget = maxOf(IntellijRobotSvgCaptureAttempts, IntellijXvfbRobotCaptureMaxSamples)
+        assertTrue(
+            IntellijContainerLifetimeSeconds >
+                IntellijPreparationTimeoutSeconds +
+                IntellijContainerCommandTimeoutSeconds * (1 + longestCaptureBudget) +
+                IntellijOpenWaitSeconds +
+                IntellijParityReadyWaitSeconds,
+        )
+    }
+
+    @Test
+    fun `intellij parity cache evidence requires prepared-home reuse without download`() {
+        val reference = listOf(
+            IntellijLogArtifact(
+                "intellij-xvfb-prepare.log",
+                "[run-intellij] IDEA host-cache extraction complete: /tmp/idea-cache/homes/idea-key",
+            ),
+        )
+        val reused = listOf(
+            IntellijLogArtifact(
+                "intellij-kotlin-prepare.log",
+                "[run-intellij] using prepared IDEA binaries: /tmp/idea-cache/homes/idea-key",
+            ),
+        )
+
+        assertIntellijHostCacheReuse(reference, reused)
+
+        assertFailsWith<AssertionError> {
+            assertIntellijHostCacheReuse(
+                reference,
+                listOf(
+                    IntellijLogArtifact(
+                        "intellij-kotlin-prepare.log",
+                        """
+                        [run-intellij] downloading IDEA archive: https://example.invalid/idea.tar.gz
+                        [run-intellij] using prepared IDEA binaries: /tmp/idea-cache/homes/idea-key
+                        """.trimIndent(),
+                    ),
+                ),
+            )
+        }
+        assertFailsWith<AssertionError> {
+            assertIntellijHostCacheReuse(
+                reference,
+                listOf(
+                    IntellijLogArtifact(
+                        "intellij-kotlin-prepare.log",
+                        "[run-intellij] using prepared IDEA binaries: /tmp/idea-cache/homes/other-key",
+                    ),
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `intellij directory lock former release and failed acquirer preserve successor ownership`() {
+        assumeTrue(DockerClientFactory.instance().isDockerAvailable, "Docker is not available")
+        val image = "jonnyzzz-x/x11-client:latest"
+        assumeTrue(imageExists(image), "Build $image first with scripts/run-supervised.sh gradle dockerBuildX11Client")
+        val source = runIntellijScriptSource()
+        val linkFunctionsStart = source.indexOf("idea_archive_listing=\n")
+        val functionsStart = source.indexOf("acquire_directory_lock() {")
+        val functionsEnd = source.indexOf("\nadopt_cached_idea_archive() {")
+        assertTrue(linkFunctionsStart >= 0 && functionsStart > linkFunctionsStart && functionsEnd > functionsStart, source)
+        val linkFunctions = source.substring(linkFunctionsStart, functionsStart)
+        val lockFunctions = source.substring(functionsStart, functionsEnd)
+        val buildTmp = projectRoot().resolve("build/tmp")
+        Files.createDirectories(buildTmp)
+        val root = Files.createTempDirectory(buildTmp, "intellij-lock-race-")
+        try {
+            val script = root.resolve("lock-race.sh")
+            Files.writeString(
+                script,
+                "set -eu\n" +
+                    "IDEA_CACHE_STALE_LOCK_SECONDS=300\n" +
+                    "IDEA_CACHE_LOCK_TIMEOUT_SECONDS=5\n" +
+                    linkFunctions +
+                    lockFunctions +
+                    "\n" +
+                    """
+                    lock_path=/tmp/lock-race/idea.lock.d
+                    mkdir -p /tmp/lock-race
+                    mkdir() {
+                      fail_owner_marker=false
+                      case "${'$'}{PAUSE_OWNER_MARKER:-}:${'$'}{1:-}" in
+                        second:"${'$'}lock_path"/owner-*)
+                          : > /tmp/lock-race/second-marker-ready
+                          attempts=0
+                          while [ ! -e /tmp/lock-race/second-marker-continue ]; do
+                            attempts=${'$'}((attempts + 1))
+                            [ "${'$'}attempts" -lt 100 ] || exit 95
+                            sleep 0.05
+                          done
+                          fail_owner_marker=true
+                          ;;
+                        successor:"${'$'}lock_path"/owner-*)
+                          : > /tmp/lock-race/successor-marker-ready
+                          attempts=0
+                          while [ ! -e /tmp/lock-race/successor-marker-continue ]; do
+                            attempts=${'$'}((attempts + 1))
+                            [ "${'$'}attempts" -lt 100 ] || exit 97
+                            sleep 0.05
+                          done
+                          ;;
+                      esac
+                      if [ "${'$'}fail_owner_marker" = true ]; then
+                        : > /tmp/lock-race/second-marker-attempted
+                        return 1
+                      fi
+                      command mkdir "${'$'}@"
+                      status=${'$'}?
+                      return "${'$'}status"
+                    }
+                    rmdir() {
+                      if [ "${'$'}{PAUSE_PARENT_RMDIR:-false}" = true ] && [ "${'$'}#" -eq 1 ] && [ "${'$'}1" = "${'$'}lock_path" ]; then
+                        : > /tmp/lock-race/former-release-ready
+                        attempts=0
+                        while [ ! -e /tmp/lock-race/former-release-continue ]; do
+                          attempts=${'$'}((attempts + 1))
+                          [ "${'$'}attempts" -lt 100 ] || exit 91
+                          sleep 0.05
+                        done
+                      fi
+                      command rmdir "${'$'}@"
+                    }
+
+                    acquire_directory_lock "${'$'}lock_path" test
+                    former_token=${'$'}acquired_lock_token
+                    PAUSE_PARENT_RMDIR=true release_directory_lock "${'$'}lock_path" "${'$'}former_token" &
+                    former_pid=${'$'}!
+                    attempts=0
+                    while [ ! -e /tmp/lock-race/former-release-ready ]; do
+                      attempts=${'$'}((attempts + 1))
+                      [ "${'$'}attempts" -lt 100 ] || exit 92
+                      sleep 0.05
+                    done
+
+                    command rmdir "${'$'}lock_path"
+                    (
+                      IDEA_CACHE_LOCK_TIMEOUT_SECONDS=1
+                      if PAUSE_OWNER_MARKER=second acquire_directory_lock "${'$'}lock_path" second; then
+                        echo "second acquirer stole successor ownership" >&2
+                        exit 98
+                      fi
+                      : > /tmp/lock-race/second-blocked
+                    ) &
+                    second_pid=${'$'}!
+                    attempts=0
+                    while [ ! -e /tmp/lock-race/second-marker-ready ]; do
+                      attempts=${'$'}((attempts + 1))
+                      [ "${'$'}attempts" -lt 100 ] || exit 96
+                      sleep 0.05
+                    done
+                    : > /tmp/lock-race/former-release-continue
+                    wait "${'$'}former_pid"
+
+                    (
+                      PAUSE_OWNER_MARKER=successor acquire_directory_lock "${'$'}lock_path" successor
+                      printf '%s\n' "${'$'}acquired_lock_token" > /tmp/lock-race/successor-token
+                    ) &
+                    successor_pid=${'$'}!
+                    attempts=0
+                    while [ ! -e /tmp/lock-race/successor-marker-ready ]; do
+                      attempts=${'$'}((attempts + 1))
+                      [ "${'$'}attempts" -lt 100 ] || exit 99
+                      sleep 0.05
+                    done
+
+                    : > /tmp/lock-race/second-marker-continue
+                    attempts=0
+                    while [ ! -e /tmp/lock-race/second-marker-attempted ]; do
+                      attempts=${'$'}((attempts + 1))
+                      [ "${'$'}attempts" -lt 100 ] || exit 100
+                      sleep 0.05
+                    done
+                    test -d "${'$'}lock_path"
+
+                    : > /tmp/lock-race/successor-marker-continue
+                    wait "${'$'}successor_pid"
+                    successor_token=${'$'}(cat /tmp/lock-race/successor-token)
+                    test -d "${'$'}lock_path/owner-${'$'}successor_token"
+                    wait "${'$'}second_pid"
+                    test -e /tmp/lock-race/second-blocked
+
+                    printf '%s\n' successor > /tmp/lock-race/published-home
+                    if acquire_directory_lock_fence "${'$'}lock_path/owner-${'$'}former_token" publishing; then
+                      printf '%s\n' former > /tmp/lock-race/published-home
+                      exit 94
+                    fi
+                    test "${'$'}(cat /tmp/lock-race/published-home)" = successor
+
+                    IDEA_CACHE_LOCK_TIMEOUT_SECONDS=1
+                    if acquire_directory_lock "${'$'}lock_path" contender; then
+                      echo "contender acquired a live successor lock" >&2
+                      exit 93
+                    fi
+                    release_directory_lock "${'$'}lock_path" "${'$'}successor_token"
+                    IDEA_CACHE_LOCK_TIMEOUT_SECONDS=5
+                    acquire_directory_lock "${'$'}lock_path" contender
+                    contender_token=${'$'}acquired_lock_token
+                    test -d "${'$'}lock_path/owner-${'$'}contender_token"
+                    release_directory_lock "${'$'}lock_path" "${'$'}contender_token"
+
+                    persistent_idea_home=/tmp/lock-race/prepared-home
+                    IDEA_HOME=/tmp/lock-race/idea
+                    mkdir -p "${'$'}persistent_idea_home" /tmp/lock-race/old-home
+                    ln -s /tmp/lock-race/old-home "${'$'}IDEA_HOME"
+                    (
+                      while [ ! -e /tmp/lock-race/link-monitor-stop ]; do
+                        if [ ! -L "${'$'}IDEA_HOME" ]; then
+                          : > /tmp/lock-race/link-monitor-failed
+                          exit 1
+                        fi
+                      done
+                    ) &
+                    monitor_pid=${'$'}!
+                    link_pids=
+                    index=0
+                    while [ "${'$'}index" -lt 20 ]; do
+                      link_prepared_idea_home &
+                      link_pids="${'$'}link_pids ${'$'}!"
+                      index=${'$'}((index + 1))
+                    done
+                    for link_pid in ${'$'}link_pids; do wait "${'$'}link_pid"; done
+                    : > /tmp/lock-race/link-monitor-stop
+                    wait "${'$'}monitor_pid"
+                    test ! -e /tmp/lock-race/link-monitor-failed
+                    test "${'$'}(readlink "${'$'}IDEA_HOME")" = "${'$'}persistent_idea_home"
+
+                    mkdir -p /tmp/lock-race/quarantined-home
+                    printf '%s\n' prior > /tmp/lock-race/quarantined-home/state
+                    cleanup_quarantined_idea_home /tmp/lock-race/quarantined-home /tmp/lock-race/restored-home
+                    test "${'$'}(cat /tmp/lock-race/restored-home/state)" = prior
+                    mkdir -p /tmp/lock-race/quarantined-discard /tmp/lock-race/live-home
+                    printf '%s\n' old > /tmp/lock-race/quarantined-discard/state
+                    printf '%s\n' live > /tmp/lock-race/live-home/state
+                    cleanup_quarantined_idea_home /tmp/lock-race/quarantined-discard /tmp/lock-race/live-home
+                    test ! -e /tmp/lock-race/quarantined-discard
+                    test "${'$'}(cat /tmp/lock-race/live-home/state)" = live
+                    """.trimIndent(),
+            )
+
+            GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
+                .withFileSystemBind(script.toString(), "/tmp/lock-race.sh", BindMode.READ_ONLY)
+                .withCommand("sleep", "300")
+                .use { container ->
+                    container.start()
+                    val result = execContainerShell(container, 30, "sh /tmp/lock-race.sh")
+                    assertEquals(0, result.exitCode, result.stderr + result.stdout)
+                    assertTrue((result.stderr + result.stdout).contains("timed out waiting for contender lock"))
+                }
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `intellij archive validation rejects every special tar member type`() {
+        assumeTrue(DockerClientFactory.instance().isDockerAvailable, "Docker is not available")
+        val image = "jonnyzzz-x/x11-client:latest"
+        assumeTrue(imageExists(image), "Build $image first with scripts/run-supervised.sh gradle dockerBuildX11Client")
+        val buildTmp = projectRoot().resolve("build/tmp")
+        Files.createDirectories(buildTmp)
+        val root = Files.createTempDirectory(buildTmp, "intellij-special-archive-")
+        try {
+            val fixture = root.resolve("fixture")
+            val validArchive = createIntellijCacheFixtureArchive(fixture, linkedIdeaScript = false)
+            val specialTypes = listOf('1', '3', '4', '6', '7', 'V', 's')
+            val archives = buildMap {
+                specialTypes.forEach { typeFlag ->
+                    put(
+                        "type-$typeFlag",
+                        appendTarMember(
+                            source = validArchive,
+                            target = fixture.resolve("special-${typeFlag.code}.tar.gz"),
+                            typeFlag = typeFlag,
+                        ),
+                    )
+                }
+                put(
+                    "absolute-symlink",
+                    appendTarMember(
+                        source = validArchive,
+                        target = fixture.resolve("absolute-symlink.tar.gz"),
+                        typeFlag = '2',
+                        linkName = "/outside",
+                    ),
+                )
+                put(
+                    "traversal-path",
+                    appendTarMember(
+                        source = validArchive,
+                        target = fixture.resolve("traversal-path.tar.gz"),
+                        typeFlag = '0',
+                        memberName = "../outside",
+                    ),
+                )
+            }
+            val cache = root.resolve("cache")
+            Files.createDirectories(cache)
+            intellijCacheFixtureContainer(
+                image,
+                cache,
+                fixture,
+                "file:///fixture/${archives.values.first().fileName}",
+                readOnlyCache = false,
+            ).use { container ->
+                container.start()
+                archives.forEach { (case, archive) ->
+                    val result = execContainerShell(
+                        container,
+                        30,
+                        "IDEA_URL=file:///fixture/${archive.fileName} IDEA_PREPARE_ONLY=true run-intellij",
+                    )
+                    val log = result.stderr + result.stdout
+                    assertTrue(result.exitCode != 0, "case=$case\n$log")
+                    assertTrue(log.contains("not an IntelliJ distribution"), "case=$case\n$log")
+                }
+            }
+            assertEquals(0L, Files.list(cache.resolve("homes")).use { it.count() })
+            assertEquals(0L, Files.list(cache.resolve("archives")).use { it.count() })
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `intellij uncached concurrent urls use isolated archives`() {
+        assumeTrue(DockerClientFactory.instance().isDockerAvailable, "Docker is not available")
+        val image = "jonnyzzz-x/x11-client:latest"
+        assumeTrue(imageExists(image), "Build $image first with scripts/run-supervised.sh gradle dockerBuildX11Client")
+        val buildTmp = projectRoot().resolve("build/tmp")
+        Files.createDirectories(buildTmp)
+        val root = Files.createTempDirectory(buildTmp, "intellij-uncached-urls-")
+        try {
+            val firstArchive = createIntellijCacheFixtureArchive(
+                root.resolve("first"),
+                linkedIdeaScript = false,
+                launcherTag = "fixture-first",
+            )
+            val secondArchive = createIntellijCacheFixtureArchive(
+                root.resolve("second"),
+                linkedIdeaScript = false,
+                launcherTag = "fixture-second",
+            )
+            GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
+                .withFileSystemBind(
+                    projectRoot().resolve("docker/x11-client/run-intellij.sh").toString(),
+                    "/usr/local/bin/run-intellij",
+                    BindMode.READ_ONLY,
+                )
+                .withFileSystemBind(root.toString(), "/fixture", BindMode.READ_ONLY)
+                .withCommand("sleep", "300")
+                .use { container ->
+                    container.start()
+                    val results = arrayOfNulls<Container.ExecResult>(2)
+                    val commands = listOf(
+                        "IDEA_CACHE_DIR= IDEA_URL=file:///fixture/first/${firstArchive.fileName} IDEA_HOME=/tmp/home-first IDEA_PREPARE_ONLY=true run-intellij",
+                        "IDEA_CACHE_DIR= IDEA_URL=file:///fixture/second/${secondArchive.fileName} IDEA_HOME=/tmp/home-second IDEA_PREPARE_ONLY=true run-intellij",
+                    )
+                    val workers = commands.mapIndexed { index, command ->
+                        thread(start = true) {
+                            results[index] = execContainerShell(container, 60, command)
+                        }
+                    }
+                    workers.forEach(Thread::join)
+                    results.forEach { result ->
+                        requireNotNull(result)
+                        assertEquals(0, result.exitCode, result.stderr + result.stdout)
+                    }
+                    val installed = execContainerShell(
+                        container,
+                        10,
+                        "grep -q fixture-first /tmp/home-first/bin/idea.sh\ngrep -q fixture-second /tmp/home-second/bin/idea.sh",
+                    )
+                    assertEquals(0, installed.exitCode, installed.stderr + installed.stdout)
+                    val leakedArchives = execContainerShell(
+                        container,
+                        10,
+                        "test -z \"${'$'}(find /tmp -maxdepth 1 -type f -name 'idea-*-*.tar.gz' -print -quit)\"",
+                    )
+                    assertEquals(0, leakedArchives.exitCode, leakedArchives.stderr + leakedArchives.stdout)
+                }
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `intellij launcher normalizes relative cache before publishing prepared home link`() {
+        assumeTrue(DockerClientFactory.instance().isDockerAvailable, "Docker is not available")
+        val image = "jonnyzzz-x/x11-client:latest"
+        assumeTrue(imageExists(image), "Build $image first with scripts/run-supervised.sh gradle dockerBuildX11Client")
+        val buildTmp = projectRoot().resolve("build/tmp")
+        Files.createDirectories(buildTmp)
+        val root = Files.createTempDirectory(buildTmp, "intellij-relative-cache-")
+        try {
+            val fixture = root.resolve("fixture")
+            val archive = createIntellijCacheFixtureArchive(fixture, linkedIdeaScript = false)
+            val unusedHostCache = root.resolve("unused-host-cache")
+            Files.createDirectories(unusedHostCache)
+            val url = "file:///fixture/${archive.fileName}"
+            val urlHash = MessageDigest.getInstance("SHA-256")
+                .digest(url.toByteArray())
+                .joinToString("") { "%02x".format(it) }
+            intellijCacheFixtureContainer(image, unusedHostCache, fixture, url, readOnlyCache = false)
+                .use { container ->
+                    container.start()
+                    val result = execContainerShell(
+                        container,
+                        120,
+                        """
+                        set -eu
+                        mkdir -p /tmp/relative-cache-root
+                        cd /tmp/relative-cache-root
+                        IDEA_CACHE_DIR=.cache IDEA_PREPARE_ONLY=true run-intellij
+                        test -L /opt/idea
+                        test "${'$'}(readlink /opt/idea)" = \
+                          /tmp/relative-cache-root/.cache/homes/idea-$urlHash
+                        test -x /opt/idea/bin/idea
+                        IDEA_CACHE_DIR=.cache IDEA_PREPARE_ONLY=true run-intellij
+                        mkdir -p /tmp/overlap /tmp/separate-cache
+                        ln -s /tmp/separate-cache /tmp/overlap/cache-link
+                        for paths in \
+                          '/tmp/overlap /tmp/overlap' \
+                          '/tmp/overlap/home /tmp/overlap' \
+                          '/tmp/overlap /tmp/overlap/cache' \
+                          '/tmp/overlap /tmp/overlap/cache-link'; do
+                          set -- ${'$'}paths
+                          set +e
+                          IDEA_HOME="${'$'}1" IDEA_CACHE_DIR="${'$'}2" IDEA_PREPARE_ONLY=true run-intellij \
+                            >/tmp/overlap.log 2>&1
+                          status=${'$'}?
+                          set -e
+                          test "${'$'}status" -ne 0
+                          grep -q 'refusing overlapping IDEA_HOME and IDEA_CACHE_DIR' /tmp/overlap.log
+                        done
+                        """.trimIndent(),
+                    )
+                    val log = result.stderr + result.stdout
+                    assertEquals(0, result.exitCode, log)
+                    assertTrue(
+                        log.contains(
+                            "IDEA host-cache extraction complete: " +
+                                "/tmp/relative-cache-root/.cache/homes/idea-$urlHash",
+                        ),
+                        log,
+                    )
+                    val rejectedRoot = execContainerShell(
+                        container,
+                        10,
+                        "IDEA_CACHE_DIR=/ IDEA_PREPARE_ONLY=true run-intellij",
+                    )
+                    val rejectedLog = rejectedRoot.stderr + rejectedRoot.stdout
+                    assertTrue(rejectedRoot.exitCode != 0, rejectedLog)
+                    assertTrue(rejectedLog.contains("refusing unsafe IDEA_CACHE_DIR"), rejectedLog)
+                }
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `intellij launcher cleans validation and marker temporaries on interruption`() {
+        assumeTrue(DockerClientFactory.instance().isDockerAvailable, "Docker is not available")
+        val image = "jonnyzzz-x/x11-client:latest"
+        assumeTrue(imageExists(image), "Build $image first with scripts/run-supervised.sh gradle dockerBuildX11Client")
+        val buildTmp = projectRoot().resolve("build/tmp")
+        Files.createDirectories(buildTmp)
+        val root = Files.createTempDirectory(buildTmp, "intellij-cache-interruption-")
+        try {
+            val fixture = root.resolve("fixture")
+            val archive = createIntellijCacheFixtureArchive(fixture, linkedIdeaScript = false)
+            val cache = root.resolve("cache")
+            Files.createDirectories(cache)
+            val url = "file:///fixture/${archive.fileName}"
+            val urlHash = MessageDigest.getInstance("SHA-256")
+                .digest(url.toByteArray())
+                .joinToString("") { "%02x".format(it) }
+            val preparedHome = cache.resolve("homes/idea-$urlHash")
+            val preparedMarker = preparedHome.resolve(".jonnyzzz-x-idea-cache-complete")
+
+            intellijCacheFixtureContainer(image, cache, fixture, url, readOnlyCache = false).use { container ->
+                container.start()
+                val result = execContainerShell(container, 120, "IDEA_PREPARE_ONLY=true run-intellij")
+                assertEquals(0, result.exitCode, result.stderr + result.stdout)
+            }
+            assertTrue(Files.isRegularFile(preparedMarker))
+
+            Files.writeString(preparedMarker, "invalid\n")
+            intellijCacheFixtureContainer(image, cache, fixture = null, url = url, readOnlyCache = false)
+                .withNetworkMode("none")
+                .use { container ->
+                    container.start()
+                    val interrupted = execContainerShell(
+                        container,
+                        30,
+                        """
+                        set -eu
+                        mkdir -p /tmp/intercept /tmp/archive-validation-transients
+                        cat > /tmp/intercept/tar <<'EOF'
+                        #!/bin/sh
+                        case " ${'$'}* " in
+                          *" -tzf "*) touch /tmp/archive-validation-blocked; sleep 300 ;;
+                        esac
+                        exec /usr/bin/tar "${'$'}@"
+                        EOF
+                        chmod +x /tmp/intercept/tar
+                        PATH=/tmp/intercept:"${'$'}PATH" TMPDIR=/tmp/archive-validation-transients \
+                          IDEA_PREPARE_ONLY=true setsid run-intellij \
+                          >/tmp/archive-validation-run.log 2>&1 &
+                        runner=${'$'}!
+                        ready=0
+                        for _ in ${'$'}(seq 1 100); do
+                          if [ -e /tmp/archive-validation-blocked ]; then ready=1; break; fi
+                          sleep 0.05
+                        done
+                        test "${'$'}ready" -eq 1
+                        kill -TERM "-${'$'}runner"
+                        wait "${'$'}runner" || true
+                        leaked=${'$'}(find /tmp/archive-validation-transients -mindepth 1 -print -quit)
+                        if [ -n "${'$'}leaked" ]; then
+                          echo "leaked archive-validation transient: ${'$'}leaked" >&2
+                          cat /tmp/archive-validation-run.log >&2
+                          exit 1
+                        fi
+                        if [ -e /tmp/idea-cache/.idea-$urlHash.lock.d ]; then
+                          echo "leaked cache lock" >&2
+                          find /tmp/idea-cache/.idea-$urlHash.lock.d -maxdepth 2 -print >&2
+                          cat /tmp/archive-validation-run.log >&2
+                          exit 1
+                        fi
+                        """.trimIndent(),
+                    )
+                    assertEquals(0, interrupted.exitCode, interrupted.stderr + interrupted.stdout)
+                }
+
+            Files.writeString(preparedMarker, "$url\n")
+            intellijCacheFixtureContainer(image, cache, fixture = null, url = url, readOnlyCache = false)
+                .withNetworkMode("none")
+                .use { container ->
+                    container.start()
+                    val interrupted = execContainerShell(
+                        container,
+                        30,
+                        """
+                        set -eu
+                        mkdir -p /tmp/intercept
+                        cat > /tmp/intercept/mv <<'EOF'
+                        #!/bin/sh
+                        case " ${'$'}* " in
+                          *".jonnyzzz-x-idea-cache-complete.tmp."*)
+                            touch /tmp/marker-migration-blocked
+                            sleep 300
+                            ;;
+                        esac
+                        exec /usr/bin/mv "${'$'}@"
+                        EOF
+                        chmod +x /tmp/intercept/mv
+                        PATH=/tmp/intercept:"${'$'}PATH" IDEA_PREPARE_ONLY=true setsid run-intellij \
+                          >/tmp/marker-migration-run.log 2>&1 &
+                        runner=${'$'}!
+                        ready=0
+                        for _ in ${'$'}(seq 1 100); do
+                          if [ -e /tmp/marker-migration-blocked ]; then ready=1; break; fi
+                          sleep 0.05
+                        done
+                        test "${'$'}ready" -eq 1
+                        kill -TERM "-${'$'}runner"
+                        wait "${'$'}runner" || true
+                        leaked=${'$'}(find /tmp/idea-cache/homes/idea-$urlHash -maxdepth 1 \
+                          -name '.jonnyzzz-x-idea-cache-complete.tmp.*' -print -quit)
+                        if [ -n "${'$'}leaked" ]; then
+                          echo "leaked marker-migration transient: ${'$'}leaked" >&2
+                          cat /tmp/marker-migration-run.log >&2
+                          exit 1
+                        fi
+                        leaked=${'$'}(find /opt -maxdepth 1 -name '.idea.link.*' -print -quit)
+                        if [ -n "${'$'}leaked" ]; then
+                          echo "leaked prepared-home link stage: ${'$'}leaked" >&2
+                          cat /tmp/marker-migration-run.log >&2
+                          exit 1
+                        fi
+                        """.trimIndent(),
+                    )
+                    assertEquals(0, interrupted.exitCode, interrupted.stderr + interrupted.stdout)
+                }
+            assertEquals(url, Files.readString(preparedMarker).trim())
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `intellij launcher rejects symlinked cache structural directories`() {
+        assumeTrue(DockerClientFactory.instance().isDockerAvailable, "Docker is not available")
+        val image = "jonnyzzz-x/x11-client:latest"
+        assumeTrue(imageExists(image), "Build $image first with scripts/run-supervised.sh gradle dockerBuildX11Client")
+        val buildTmp = projectRoot().resolve("build/tmp")
+        Files.createDirectories(buildTmp)
+        val root = Files.createTempDirectory(buildTmp, "intellij-cache-structure-")
+        val cache = root.resolve("cache")
+        Files.createDirectories(cache)
+        try {
+            intellijCacheFixtureContainer(
+                image,
+                cache,
+                fixture = null,
+                url = "file:///tmp/missing-idea.tar.gz",
+                readOnlyCache = false,
+            ).use { container ->
+                container.start()
+                val result = execContainerShell(
+                    container,
+                    30,
+                    """
+                    for structural in archives homes; do
+                      rm -rf /tmp/idea-cache/archives /tmp/idea-cache/homes /tmp/escaped-cache-structure
+                      mkdir -p /tmp/idea-cache /tmp/escaped-cache-structure
+                      ln -s /tmp/escaped-cache-structure "/tmp/idea-cache/${'$'}structural"
+                      set +e
+                      IDEA_PREPARE_ONLY=true run-intellij >"/tmp/${'$'}structural.log" 2>&1
+                      status=${'$'}?
+                      set -e
+                      test "${'$'}status" -ne 0
+                      grep -q "refusing unsafe IDEA cache ${'$'}structural directory" "/tmp/${'$'}structural.log"
+                      test -z "${'$'}(find /tmp/escaped-cache-structure -mindepth 1 -print -quit)"
+                      rm -f "/tmp/idea-cache/${'$'}structural"
+                    done
+                    rm -rf /tmp/idea-cache/archives /tmp/idea-cache/homes /tmp/escaped-cache-structure
+                    mkdir -p /tmp/idea-cache/archives /tmp/idea-cache/homes /tmp/escaped-cache-structure/bin \
+                      /tmp/escaped-cache-structure/jbr/bin
+                    url_hash=${'$'}(printf '%s' "${'$'}IDEA_URL" | sha256sum | awk '{print ${'$'}1}')
+                    printf '#!/bin/sh\nexit 0\n' >/tmp/escaped-cache-structure/bin/idea.sh
+                    cp /tmp/escaped-cache-structure/bin/idea.sh /tmp/escaped-cache-structure/bin/idea
+                    cp /tmp/escaped-cache-structure/bin/idea.sh /tmp/escaped-cache-structure/jbr/bin/java
+                    chmod +x /tmp/escaped-cache-structure/bin/idea.sh /tmp/escaped-cache-structure/bin/idea \
+                      /tmp/escaped-cache-structure/jbr/bin/java
+                    printf '{}\n' >/tmp/escaped-cache-structure/product-info.json
+                    printf '%s\n' "${'$'}IDEA_URL" >/tmp/escaped-cache-structure/.jonnyzzz-x-idea-cache-complete
+                    ln -s /tmp/escaped-cache-structure "/tmp/idea-cache/homes/idea-${'$'}url_hash"
+                    set +e
+                    IDEA_PREPARE_ONLY=true run-intellij >/tmp/prepared-home-link.log 2>&1
+                    status=${'$'}?
+                    set -e
+                    test "${'$'}status" -ne 0
+                    grep -q 'refusing symlinked prepared IDEA home' /tmp/prepared-home-link.log
+                    test "${'$'}(cat /tmp/escaped-cache-structure/.jonnyzzz-x-idea-cache-complete)" = "${'$'}IDEA_URL"
+                    rm -f "/tmp/idea-cache/homes/idea-${'$'}url_hash"
+                    lock="/tmp/idea-cache/.idea-${'$'}url_hash.lock.d"
+                    ln -s /tmp/escaped-cache-structure "${'$'}lock"
+                    set +e
+                    IDEA_CACHE_LOCK_TIMEOUT_SECONDS=0 IDEA_PREPARE_ONLY=true run-intellij >/tmp/cache-lock-link.log 2>&1
+                    status=${'$'}?
+                    set -e
+                    test "${'$'}status" -ne 0
+                    grep -q 'refusing unsafe cache lock path' /tmp/cache-lock-link.log
+                    test -L "${'$'}lock"
+                    rm -f "${'$'}lock"
+                    """.trimIndent(),
+                )
+                assertEquals(0, result.exitCode, result.stderr + result.stdout)
+            }
+        } finally {
+            listOf(cache.resolve("archives"), cache.resolve("homes")).forEach { path ->
+                if (Files.isSymbolicLink(path)) Files.deleteIfExists(path)
+            }
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `intellij launcher publishes valid binaries and rejects linked required members`() {
+        assumeTrue(DockerClientFactory.instance().isDockerAvailable, "Docker is not available")
+        val image = "jonnyzzz-x/x11-client:latest"
+        assumeTrue(imageExists(image), "Build $image first with scripts/run-supervised.sh gradle dockerBuildX11Client")
+        val buildTmp = projectRoot().resolve("build/tmp")
+        Files.createDirectories(buildTmp)
+        val root = Files.createTempDirectory(buildTmp, "intellij-cache-behavior-")
+        try {
+            val validFixture = root.resolve("valid-fixture")
+            val validArchive = createIntellijCacheFixtureArchive(validFixture, linkedIdeaScript = false)
+            val validCache = root.resolve("valid-cache")
+            Files.createDirectories(validCache)
+            val validUrl = "file:///fixture/${validArchive.fileName}"
+
+            intellijCacheFixtureContainer(image, validCache, validFixture, validUrl, readOnlyCache = false)
+                .use { container ->
+                    container.start()
+                    val result = execContainerShell(container, 120, "IDEA_PREPARE_ONLY=true run-intellij")
+                    assertEquals(0, result.exitCode, result.stderr + result.stdout)
+                    assertTrue((result.stderr + result.stdout).contains("IDEA host-cache extraction complete"))
+                }
+
+            val preparedHomes = Files.list(validCache.resolve("homes")).use { it.toList() }
+            assertEquals(1, preparedHomes.size)
+            val preparedMarker = preparedHomes.single().resolve(".jonnyzzz-x-idea-cache-complete")
+            assertTrue(Files.isRegularFile(preparedMarker))
+            val expectedUrlHash = MessageDigest.getInstance("SHA-256")
+                .digest(validUrl.toByteArray())
+                .joinToString("") { "%02x".format(it) }
+            assertEquals(expectedUrlHash, Files.readString(preparedMarker).trim())
+            assertFalse(Files.readString(preparedMarker).contains(validUrl))
+
+            intellijCacheFixtureContainer(image, validCache, fixture = null, url = validUrl, readOnlyCache = false)
+                .withNetworkMode("none")
+                .use { container ->
+                    container.start()
+                    val recoveredMarker = execContainerShell(
+                        container,
+                        60,
+                        """
+                        marker=/tmp/idea-cache/homes/idea-$expectedUrlHash/.jonnyzzz-x-idea-cache-complete
+                        rm -f "${'$'}marker"
+                        mkfifo "${'$'}marker"
+                        IDEA_PREPARE_ONLY=true run-intellij
+                        test -f "${'$'}marker"
+                        test ! -L "${'$'}marker"
+                        test "${'$'}(cat "${'$'}marker")" = "$expectedUrlHash"
+                        """.trimIndent(),
+                    )
+                    val log = recoveredMarker.stderr + recoveredMarker.stdout
+                    assertEquals(0, recoveredMarker.exitCode, log)
+                    assertTrue(log.contains("using cached IDEA archive"), log)
+                    assertTrue(log.contains("extracting IDEA archive into host cache"), log)
+                }
+
+            intellijCacheFixtureContainer(image, validCache, fixture = null, url = validUrl, readOnlyCache = false)
+                .withNetworkMode("none")
+                .use { container ->
+                    container.start()
+                    val failedLink = execContainerShell(
+                        container,
+                        30,
+                        """
+                        mkdir -p /tmp/fail-bin
+                        printf '%s\n' '#!/bin/sh' 'exit 1' > /tmp/fail-bin/ln
+                        chmod +x /tmp/fail-bin/ln
+                        PATH=/tmp/fail-bin:"${'$'}PATH" IDEA_PREPARE_ONLY=true run-intellij
+                        """.trimIndent(),
+                    )
+                    assertTrue(failedLink.exitCode != 0, failedLink.stderr + failedLink.stdout)
+                    val leakedStage = execContainerShell(
+                        container,
+                        10,
+                        "test -z \"${'$'}(find /opt -maxdepth 1 -type d -name '.idea.link.*' -print -quit)\"",
+                    )
+                    assertEquals(0, leakedStage.exitCode, leakedStage.stderr + leakedStage.stdout)
+                }
+
+            val wrongTypeCache = root.resolve("wrong-type-cache")
+            Files.createDirectories(wrongTypeCache)
+            intellijCacheFixtureContainer(
+                image,
+                wrongTypeCache,
+                validFixture,
+                validUrl,
+                readOnlyCache = false,
+            ).use { container ->
+                container.start()
+                val result = execContainerShell(
+                    container,
+                    30,
+                    """
+                    archive_name=${validArchive.fileName}
+                    legacy_checksum=${'$'}(printf '%s' "${'$'}IDEA_URL" | cksum | awk '{print ${'$'}1}')
+                    legacy=/tmp/idea-cache/idea-${'$'}{legacy_checksum}-${'$'}archive_name
+                    target=/tmp/idea-cache/archives/idea-$expectedUrlHash-${'$'}archive_name
+                    cp /fixture/${validArchive.fileName} "${'$'}legacy"
+                    mkdir -p "${'$'}target"
+                    set +e
+                    IDEA_PREPARE_ONLY=true run-intellij
+                    status=${'$'}?
+                    set -e
+                    test -f "${'$'}legacy"
+                    test -d "${'$'}target"
+                    test -z "${'$'}(find "${'$'}target" -mindepth 1 -print -quit)"
+                    exit "${'$'}status"
+                    """.trimIndent(),
+                )
+                val log = result.stderr + result.stdout
+                assertTrue(result.exitCode != 0, log)
+                assertTrue(log.contains("refusing wrong-type cached archive destination"), log)
+            }
+
+            Files.writeString(preparedMarker, "$validUrl\n")
+            intellijCacheFixtureContainer(image, validCache, fixture = null, url = validUrl, readOnlyCache = false)
+                .withNetworkMode("none")
+                .use { first ->
+                    intellijCacheFixtureContainer(image, validCache, fixture = null, url = validUrl, readOnlyCache = false)
+                        .withNetworkMode("none")
+                        .use { second ->
+                            first.start()
+                            second.start()
+                            val results = arrayOfNulls<Container.ExecResult>(2)
+                            val workers = listOf(first, second).mapIndexed { index, container ->
+                                thread(start = true) {
+                                    results[index] = execContainerShell(
+                                        container,
+                                        30,
+                                        "IDEA_PREPARE_ONLY=true run-intellij",
+                                    )
+                                }
+                            }
+                            workers.forEach(Thread::join)
+                            results.forEach { result ->
+                                requireNotNull(result)
+                                assertEquals(0, result.exitCode, result.stderr + result.stdout)
+                            }
+                        }
+                }
+            assertEquals(expectedUrlHash, Files.readString(preparedMarker).trim())
+
+            intellijCacheFixtureContainer(image, validCache, fixture = null, url = validUrl, readOnlyCache = true)
+                .withNetworkMode("none")
+                .use { container ->
+                    container.start()
+                    val result = execContainerShell(container, 120, "IDEA_PREPARE_ONLY=true run-intellij")
+                    val log = result.stderr + result.stdout
+                    assertEquals(0, result.exitCode, log)
+                    assertTrue(log.contains("using prepared IDEA binaries"), log)
+                    assertFalse(log.contains("downloading IDEA archive"), log)
+                    assertFalse(log.contains("extracting IDEA archive"), log)
+                }
+
+            val trailingCache = root.resolve("trailing-cache")
+            val trailingHomeRoot = root.resolve("trailing-home")
+            Files.createDirectories(trailingCache)
+            Files.createDirectories(trailingHomeRoot)
+            intellijCacheFixtureContainer(
+                image,
+                trailingCache,
+                validFixture,
+                validUrl,
+                readOnlyCache = false,
+                explicitHomeRoot = trailingHomeRoot,
+            ).withEnv("IDEA_HOME", "/tmp/explicit-home/idea/").use { container ->
+                container.start()
+                val result = execContainerShell(container, 120, "IDEA_PREPARE_ONLY=true run-intellij")
+                assertEquals(0, result.exitCode, result.stderr + result.stdout)
+                listOf("/.", "/tmp/..", ".").forEach { rootAlias ->
+                    val rejected = execContainerShell(
+                        container,
+                        10,
+                        "IDEA_HOME='$rootAlias' IDEA_PREPARE_ONLY=true run-intellij",
+                    )
+                    val log = rejected.stderr + rejected.stdout
+                    assertTrue(rejected.exitCode != 0, "IDEA_HOME=$rootAlias\n$log")
+                    assertTrue(log.contains("refusing unsafe IDEA_HOME"), "IDEA_HOME=$rootAlias\n$log")
+                }
+            }
+            assertTrue(Files.isRegularFile(trailingHomeRoot.resolve("idea/bin/idea.sh")))
+            assertFalse(Files.exists(trailingHomeRoot.resolve("idea/.lock.d")))
+            assertFalse(Files.exists(trailingHomeRoot.resolve("idea.lock.d")))
+
+            val linkedFixture = root.resolve("linked-fixture")
+            val linkedArchive = createIntellijCacheFixtureArchive(linkedFixture, linkedIdeaScript = true)
+            val linkedCache = root.resolve("linked-cache")
+            Files.createDirectories(linkedCache)
+            val linkedUrl = "file:///fixture/${linkedArchive.fileName}"
+            intellijCacheFixtureContainer(image, linkedCache, linkedFixture, linkedUrl, readOnlyCache = false)
+                .use { container ->
+                    container.start()
+                    val result = execContainerShell(container, 120, "IDEA_PREPARE_ONLY=true run-intellij")
+                    assertTrue(result.exitCode != 0, result.stderr + result.stdout)
+                    assertTrue((result.stderr + result.stdout).contains("not an IntelliJ distribution"))
+                }
+            assertEquals(0L, Files.list(linkedCache.resolve("homes")).use { it.count() })
+            assertEquals(
+                0L,
+                Files.list(linkedCache.resolve("archives")).use { entries ->
+                    entries.filter { it.fileName.toString().contains(".tmp.") }.count()
+                },
+            )
+
+            val unsafeLinkFixture = root.resolve("unsafe-link-fixture")
+            val unsafeLinkArchive = createIntellijCacheFixtureArchive(
+                unsafeLinkFixture,
+                linkedIdeaScript = false,
+                unsafeAuxiliaryLink = true,
+            )
+            val unsafeLinkCache = root.resolve("unsafe-link-cache")
+            Files.createDirectories(unsafeLinkCache)
+            intellijCacheFixtureContainer(
+                image,
+                unsafeLinkCache,
+                unsafeLinkFixture,
+                "file:///fixture/${unsafeLinkArchive.fileName}",
+                readOnlyCache = false,
+            ).use { container ->
+                container.start()
+                val result = execContainerShell(container, 120, "IDEA_PREPARE_ONLY=true run-intellij")
+                assertTrue(result.exitCode != 0, result.stderr + result.stdout)
+                assertTrue((result.stderr + result.stdout).contains("not an IntelliJ distribution"))
+            }
+
+            val explicitCache = root.resolve("explicit-cache")
+            val explicitHomeRoot = root.resolve("explicit-home")
+            Files.createDirectories(explicitCache)
+            Files.createDirectories(explicitHomeRoot)
+            val contentionLock = explicitHomeRoot.resolve("idea.lock.d")
+            Files.createDirectories(contentionLock)
+            Files.writeString(contentionLock.resolve("owner"), "test-blocker\n")
+            intellijCacheFixtureContainer(
+                image,
+                explicitCache,
+                validFixture,
+                validUrl,
+                readOnlyCache = false,
+                explicitHomeRoot = explicitHomeRoot,
+            ).use { first ->
+                intellijCacheFixtureContainer(
+                    image,
+                    explicitCache,
+                    validFixture,
+                    validUrl,
+                    readOnlyCache = false,
+                    explicitHomeRoot = explicitHomeRoot,
+                ).use { second ->
+                    first.start()
+                    second.start()
+                    val exitCodes = intArrayOf(-1, -1)
+                    val logs = arrayOf("", "")
+                    val workers = listOf(first, second).mapIndexed { index, container ->
+                        thread(start = true) {
+                            val result = execContainerShell(
+                                container,
+                                120,
+                                """
+                                set +e
+                                IDEA_PREPARE_ONLY=true run-intellij >/tmp/explicit-prepare.log 2>&1
+                                status=${'$'}?
+                                cat /tmp/explicit-prepare.log
+                                exit "${'$'}status"
+                                """.trimIndent(),
+                            )
+                            exitCodes[index] = result.exitCode
+                            logs[index] = result.stderr + result.stdout
+                        }
+                    }
+                    listOf(first, second).forEach { container ->
+                        var waiting = false
+                        for (attempt in 1..50) {
+                            val current = execContainerShell(
+                                container,
+                                10,
+                                "cat /tmp/explicit-prepare.log 2>/dev/null || true",
+                            ).stdout
+                            if (current.contains("waiting for IDEA_HOME lock")) {
+                                waiting = true
+                                break
+                            }
+                            Thread.sleep(100)
+                        }
+                        assertTrue(waiting, "Concurrent preparation did not reach IDEA_HOME contention")
+                    }
+                    contentionLock.toFile().deleteRecursively()
+                    workers.forEach(Thread::join)
+                    assertEquals(listOf(0, 0), exitCodes.toList(), logs.joinToString("\n---\n"))
+                    assertEquals(1, logs.count { it.contains("IDEA staged extraction complete") }, logs.joinToString("\n"))
+                    assertEquals(1, logs.count { it.contains("using existing IDEA_HOME after cache wait") }, logs.joinToString("\n"))
+                }
+            }
+            assertTrue(Files.isRegularFile(explicitHomeRoot.resolve("idea/bin/idea.sh")))
+            assertEquals(
+                0L,
+                Files.list(explicitHomeRoot).use { entries ->
+                    entries.filter { it.fileName.toString().contains(".tmp.") }.count()
+                },
+            )
+
+            explicitHomeRoot.resolve("idea").toFile().deleteRecursively()
+            val staleLock = explicitHomeRoot.resolve("idea.lock.d")
+            Files.createDirectories(staleLock)
+            val staleOwner = staleLock.resolve("owner-interrupted")
+            Files.createDirectories(staleOwner)
+            Files.setLastModifiedTime(
+                staleOwner,
+                java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() - 180_000),
+            )
+            intellijCacheFixtureContainer(
+                image,
+                explicitCache,
+                validFixture,
+                validUrl,
+                readOnlyCache = false,
+                explicitHomeRoot = explicitHomeRoot,
+            ).use { container ->
+                container.start()
+                val result = execContainerShell(container, 120, "IDEA_PREPARE_ONLY=true run-intellij")
+                val log = result.stderr + result.stdout
+                assertEquals(0, result.exitCode, log)
+                assertTrue(log.contains("removing stale IDEA_HOME lock"), log)
+            }
+            assertFalse(Files.exists(staleLock))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
     }
 
     @Test
@@ -2306,6 +3481,7 @@ class IntellijCommunitySmokeTest {
             intellijContainer(image, url)
                 .use { container ->
                     container.start()
+                    prepareIntellij(container, "smoke")
                     val display = port - 6000
                     val result = execIntellijShell(
                         container,
@@ -2468,6 +3644,7 @@ class IntellijCommunitySmokeTest {
         File(intellijSmokeArtifactsDirectory(), "intellij-parity-pair-attempts.txt").writeText(
             intellijParityPairAttemptInventory(attempts, selectedAttempt = bestPair.attempt),
         )
+        assertIntellijHostCacheReuse(reference.logs, actual.logs)
 
         assertTrue(
             intellijRobotSvgCaptureIsAcceptable(bestPair.robotSvgDistance),
@@ -2572,13 +3749,229 @@ class IntellijCommunitySmokeTest {
         </project>
         """.trimIndent()
 
+    private fun resolveIntellijCacheDir(root: Path, configured: String?): Path =
+        configured
+            ?.takeIf { it.isNotBlank() }
+            ?.let { value ->
+                val path = Path.of(value)
+                (if (path.isAbsolute) path else root.resolve(path)).normalize()
+            }
+            ?: root.resolve(".gradle/intellij-community-cache").normalize()
+
+    private fun migrateLegacyIntellijCache(legacy: Path, cache: Path) {
+        if (!Files.isDirectory(legacy, LinkOption.NOFOLLOW_LINKS)) return
+        val safeCache = safeIntellijCacheDir(cache)
+        Files.createDirectories(safeCache)
+        Files.list(legacy).use { entries ->
+            entries.forEach { entry ->
+                val target = safeCache.resolve(entry.fileName.toString())
+                if (!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                    runCatching { Files.move(entry, target) }
+                        .onFailure {
+                            if (
+                                Files.exists(entry, LinkOption.NOFOLLOW_LINKS) &&
+                                !Files.exists(target, LinkOption.NOFOLLOW_LINKS)
+                            ) {
+                                throw it
+                            }
+                        }
+                }
+            }
+        }
+    }
+
     private fun intellijCacheDir(): Path {
         val root = projectRoot()
-        val cache = root.resolve("build/tmp/intellij-community-smoke/idea-cache").normalize()
-        val buildTmp = root.resolve("build/tmp").normalize()
-        check(cache.startsWith(buildTmp)) { "Refusing to use IntelliJ cache outside build/tmp/: $cache" }
+        val configured = System.getProperty("x.intellijCacheDir") ?: System.getenv("IDEA_CACHE_DIR")
+        val cache = safeIntellijCacheDir(resolveIntellijCacheDir(root, configured))
         Files.createDirectories(cache)
+        if (configured.isNullOrBlank()) {
+            migrateLegacyIntellijCache(
+                root.resolve("build/tmp/intellij-community-smoke/idea-cache").normalize(),
+                cache,
+            )
+        }
         return cache
+    }
+
+    private fun safeIntellijCacheDir(cache: Path): Path {
+        val lexical = cache.toAbsolutePath().normalize()
+        check(lexical.parent != null && lexical != lexical.root) { "Refusing unsafe IntelliJ cache path: $cache" }
+        val effective = lexical.toFile().canonicalFile.toPath()
+        check(effective.parent != null && effective != effective.root) {
+            "Refusing IntelliJ cache path that resolves to filesystem root: $cache"
+        }
+        return effective
+    }
+
+    private fun createIntellijCacheFixtureArchive(
+        root: Path,
+        linkedIdeaScript: Boolean,
+        unsafeAuxiliaryLink: Boolean = false,
+        launcherTag: String = "",
+    ): Path {
+        val distribution = root.resolve("idea-fixture")
+        val bin = distribution.resolve("bin")
+        val jbrBin = distribution.resolve("jbr/bin")
+        Files.createDirectories(bin)
+        Files.createDirectories(jbrBin)
+        val executablePermissions = setOf(
+            PosixFilePermission.OWNER_READ,
+            PosixFilePermission.OWNER_WRITE,
+            PosixFilePermission.OWNER_EXECUTE,
+            PosixFilePermission.GROUP_READ,
+            PosixFilePermission.GROUP_EXECUTE,
+            PosixFilePermission.OTHERS_READ,
+            PosixFilePermission.OTHERS_EXECUTE,
+        )
+        val nativeLauncher = bin.resolve("idea")
+        Files.writeString(nativeLauncher, "#!/bin/sh\nexit 0\n")
+        Files.setPosixFilePermissions(nativeLauncher, executablePermissions)
+        val scriptLauncher = bin.resolve("idea.sh")
+        if (linkedIdeaScript) {
+            Files.createSymbolicLink(scriptLauncher, Path.of("idea"))
+        } else {
+            Files.writeString(scriptLauncher, "#!/bin/sh\n# $launcherTag\nexit 0\n")
+            Files.setPosixFilePermissions(scriptLauncher, executablePermissions)
+        }
+        val java = jbrBin.resolve("java")
+        Files.writeString(java, "#!/bin/sh\nexit 0\n")
+        Files.setPosixFilePermissions(java, executablePermissions)
+        Files.writeString(distribution.resolve("product-info.json"), "{}\n")
+        if (unsafeAuxiliaryLink) {
+            val links = distribution.resolve("links")
+            Files.createDirectories(links)
+            Files.createSymbolicLink(links.resolve("escape"), Path.of("../../outside"))
+        }
+
+        val archiveName = when {
+            linkedIdeaScript -> "linked-idea.tar.gz"
+            unsafeAuxiliaryLink -> "unsafe-link-idea.tar.gz"
+            else -> "valid-idea.tar.gz"
+        }
+        val archive = root.resolve(archiveName)
+        val process = ProcessBuilder(
+            "tar",
+            "-czf",
+            archive.toString(),
+            "-C",
+            root.toString(),
+            distribution.fileName.toString(),
+        ).redirectErrorStream(true).start()
+        val output = process.inputStream.readBytes().decodeToString()
+        assertEquals(0, process.waitFor(), output)
+        return archive
+    }
+
+    private fun appendTarMember(
+        source: Path,
+        target: Path,
+        typeFlag: Char,
+        memberName: String = "idea-fixture/special-${typeFlag.code}",
+        linkName: String? = if (typeFlag == '1') "idea-fixture/bin/idea" else null,
+    ): Path {
+        val tar = GZIPInputStream(Files.newInputStream(source)).use { it.readBytes() }
+        require(tar.size % TarBlockSize == 0) { "Invalid tar fixture size: ${tar.size}" }
+        val endOffset = (0..tar.size - TarBlockSize * 2 step TarBlockSize).firstOrNull { offset ->
+            tar.blockIsZero(offset) && tar.blockIsZero(offset + TarBlockSize)
+        } ?: error("Tar fixture has no end marker: $source")
+        val header = ByteArray(TarBlockSize)
+        header.writeTarText(0, 100, memberName)
+        header.writeTarOctal(100, 8, 420)
+        header.writeTarOctal(108, 8, 0)
+        header.writeTarOctal(116, 8, 0)
+        header.writeTarOctal(124, 12, 0)
+        header.writeTarOctal(136, 12, System.currentTimeMillis() / 1_000)
+        for (index in 148 until 156) header[index] = ' '.code.toByte()
+        header[156] = typeFlag.code.toByte()
+        if (linkName != null) {
+            header.writeTarText(157, 100, linkName)
+        }
+        header.writeTarText(257, 6, "ustar\u0000")
+        header.writeTarText(263, 2, "00")
+        header.writeTarText(265, 32, "root")
+        header.writeTarText(297, 32, "root")
+        header.writeTarOctal(329, 8, 0)
+        header.writeTarOctal(337, 8, 0)
+        val checksum = header.sumOf { it.toUByte().toInt() }
+        header.writeTarText(148, 8, checksum.toString(8).padStart(6, '0') + "\u0000 ")
+
+        val output = ByteArray(endOffset + TarBlockSize * 3)
+        tar.copyInto(output, endIndex = endOffset)
+        header.copyInto(output, destinationOffset = endOffset)
+        Files.newOutputStream(target).use { file ->
+            GZIPOutputStream(file).use { gzip -> gzip.write(output) }
+        }
+        return target
+    }
+
+    private fun ByteArray.blockIsZero(offset: Int): Boolean =
+        (offset until offset + TarBlockSize).all { this[it] == 0.toByte() }
+
+    private fun ByteArray.writeTarText(offset: Int, length: Int, value: String) {
+        val bytes = value.toByteArray(Charsets.US_ASCII)
+        require(bytes.size <= length) { "Tar value is too long: $value" }
+        bytes.copyInto(this, destinationOffset = offset)
+    }
+
+    private fun ByteArray.writeTarOctal(offset: Int, length: Int, value: Long) {
+        writeTarText(offset, length, value.toString(8).padStart(length - 1, '0') + "\u0000")
+    }
+
+    private fun intellijCacheFixtureContainer(
+        image: String,
+        cache: Path,
+        fixture: Path?,
+        url: String,
+        readOnlyCache: Boolean,
+        explicitHomeRoot: Path? = null,
+    ): GenericContainer<*> {
+        val container = GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
+            .withFileSystemBind(
+                projectRoot().resolve("docker/x11-client/run-intellij.sh").toString(),
+                "/usr/local/bin/run-intellij",
+                BindMode.READ_ONLY,
+            )
+            .withFileSystemBind(
+                cache.toString(),
+                "/tmp/idea-cache",
+                if (readOnlyCache) BindMode.READ_ONLY else BindMode.READ_WRITE,
+            )
+            .withEnv("IDEA_CACHE_DIR", "/tmp/idea-cache")
+            .withEnv("IDEA_URL", url)
+            .withCommand("sleep", "300")
+        if (fixture != null) {
+            container.withFileSystemBind(fixture.toString(), "/fixture", BindMode.READ_ONLY)
+        }
+        if (explicitHomeRoot != null) {
+            container.withFileSystemBind(explicitHomeRoot.toString(), "/tmp/explicit-home", BindMode.READ_WRITE)
+            container.withEnv("IDEA_HOME", "/tmp/explicit-home/idea")
+        }
+        return container
+    }
+
+    private fun assertIntellijHostCacheReuse(
+        referenceLogs: List<IntellijLogArtifact>,
+        kotlinLogs: List<IntellijLogArtifact>,
+    ) {
+        fun preparationLog(logs: List<IntellijLogArtifact>, label: String): String =
+            logs.singleOrNull { it.fileName.endsWith("-prepare.log") }?.text
+                ?: throw AssertionError("Missing $label IntelliJ preparation log")
+
+        fun preparedHome(log: String, label: String): String =
+            Regex(
+                """\[run-intellij] (?:using prepared IDEA binaries(?: after cache wait)?|IDEA host-cache extraction complete): (\S+)""",
+            ).findAll(log).lastOrNull()?.groupValues?.get(1)
+                ?: throw AssertionError("Missing prepared IDEA home in $label log:\n$log")
+
+        val referenceLog = preparationLog(referenceLogs, "Xvfb")
+        val kotlinLog = preparationLog(kotlinLogs, "Kotlin")
+        val referenceHome = preparedHome(referenceLog, "Xvfb")
+        val kotlinHome = preparedHome(kotlinLog, "Kotlin")
+        assertEquals(referenceHome, kotlinHome, "Xvfb and Kotlin containers must use the same host IDEA home")
+        assertTrue(kotlinLog.contains("using prepared IDEA binaries"), kotlinLog)
+        assertFalse(kotlinLog.contains("downloading IDEA archive"), kotlinLog)
+        assertFalse(kotlinLog.contains("extracting IDEA archive"), kotlinLog)
     }
 
     private fun cleanIntellijConfigDir(name: String): Path {
@@ -2613,7 +4006,7 @@ class IntellijCommunitySmokeTest {
             )
             .withFileSystemBind(intellijCacheDir().toString(), "/tmp/idea-cache", BindMode.READ_WRITE)
             .withEnv("IDEA_CACHE_DIR", "/tmp/idea-cache")
-            .withCommand("sleep", "900")
+            .withCommand("sleep", IntellijContainerLifetimeSeconds.toString())
         if (!url.isNullOrBlank()) {
             container.withEnv("IDEA_URL", url)
         }
@@ -2628,6 +4021,34 @@ class IntellijCommunitySmokeTest {
 
     private fun execIntellijShell(container: GenericContainer<*>, script: String) =
         execContainerShell(container, IntellijContainerCommandTimeoutSeconds, script)
+
+    private fun prepareIntellij(container: GenericContainer<*>, label: String) {
+        require(label.matches(Regex("[a-z0-9-]+"))) { "Unsafe IntelliJ preparation label: $label" }
+        val result = execContainerShell(
+            container,
+            IntellijPreparationTimeoutSeconds,
+            """
+            set -eu
+            if ! IDEA_PREPARE_ONLY=true run-intellij >/tmp/idea-prepare.log 2>&1; then
+              cat /tmp/idea-prepare.log
+              exit 1
+            fi
+            """.trimIndent(),
+        )
+        val retainedLog = execContainerShell(container, 30, "cat /tmp/idea-prepare.log 2>/dev/null || true").stdout
+        File(intellijSmokeArtifactsDirectory(), "intellij-$label-prepare.log").writeText(retainedLog)
+        if (result.exitCode != 0) {
+            File(intellijSmokeArtifactsDirectory(), "intellij-$label-prepare-failure.log").writeText(
+                buildString {
+                    appendLine("exitCode=${result.exitCode}")
+                    append(result.stderr)
+                    append(result.stdout)
+                    append(retainedLog)
+                },
+            )
+            assertEquals(0, result.exitCode, "IntelliJ preparation failed\n${result.stderr}${result.stdout}$retainedLog")
+        }
+    }
 
     private fun intellijDebugEnabled(): Boolean =
         System.getProperty("x.intellijDebug") == "true" || System.getenv("X_INTELLIJ_DEBUG") == "true"
@@ -2855,6 +4276,7 @@ class IntellijCommunitySmokeTest {
         intellijContainer(image, url, configDir)
             .use { container ->
                 container.start()
+                prepareIntellij(container, "xvfb")
                 compileRobotCapture(container)
                 compileIntellijUiDiagnosticsAgent(container)
                 val traceXvfbPutImage = intellijTraceXvfbPutImageEnabled()
@@ -3033,6 +4455,7 @@ class IntellijCommunitySmokeTest {
             intellijContainer(image, url, configDir)
                 .use { container ->
                     container.start()
+                    prepareIntellij(container, "kotlin")
                     compileRobotCapture(container)
                     compileIntellijUiDiagnosticsAgent(container)
                     val display = port - 6000
@@ -6984,6 +8407,7 @@ class IntellijCommunitySmokeTest {
         extraLogs: List<Pair<String, String>> = emptyList(),
     ): List<IntellijLogArtifact> {
         val fixedPaths = listOf(
+            "/tmp/idea-prepare.log" to "$prefix-prepare.log",
             runLogPath to "$prefix-run.log",
             "/tmp/idea-log/idea.log" to "$prefix-idea.log",
             "/tmp/idea-log/xawt-trace.log" to "$prefix-xawt-trace.log",
@@ -8265,6 +9689,7 @@ class IntellijCommunitySmokeTest {
     }
 
     private companion object {
+        const val TarBlockSize = 512
         const val IntellijCaptureWidth = 1280
         const val IntellijCaptureHeight = 900
         const val IntellijProjectColorIndex = 0
@@ -8272,6 +9697,8 @@ class IntellijCommunitySmokeTest {
         const val IntellijParityReadyWaitSeconds = 240
         const val IntellijParityPostReadySettleMs = 2_000L
         const val IntellijContainerCommandTimeoutSeconds = 900
+        const val IntellijPreparationTimeoutSeconds = 900
+        const val IntellijContainerLifetimeSeconds = 8 * 60 * 60
         const val IntellijRobotSvgCaptureAttempts = 4
         const val IntellijRobotSvgPostCaptureSamples = 12
         const val IntellijRobotSvgPostCaptureSampleDelayMs = 50L
