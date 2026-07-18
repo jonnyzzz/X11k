@@ -557,8 +557,7 @@ internal object TextScreenRenderer {
                     if (picture.alphaXOrigin != 0 || picture.alphaYOrigin != 0) append(" alphaOrigin=").append(picture.alphaXOrigin).append(',').append(picture.alphaYOrigin)
                     if (picture.clipXOrigin != 0 || picture.clipYOrigin != 0) append(" clipOrigin=").append(picture.clipXOrigin).append(',').append(picture.clipYOrigin)
                     if (picture.clipMask != 0) append(" clipMask=").append(picture.clipMaskHex)
-                    append(" clips=")
-                    append(picture.clipRectangles)
+                    appendRenderPictureClipRectangleSummary(picture)
                     if (picture.graphicsExposure) append(" graphicsExposure=true")
                     if (picture.subwindowMode != 0) append(" subwindowMode=").append(picture.subwindowMode)
                     if (picture.polyEdge != XRender.DefaultPolyEdge) append(" polyEdge=").append(picture.polyEdge)
@@ -773,9 +772,23 @@ internal object TextScreenRenderer {
     private fun XRectangleCommand.toRegionString(): String =
         "$x,$y ${width}x$height"
 
-    private fun List<XRectangleCommand>.toRegionSummary(): String =
+    private fun List<XRectangleCommand>.toRegionSummary(totalCount: Int = size): String =
         take(MaxCoreCopyClipRectanglesInTextReport).joinToString(",") { it.toRegionString() } +
-            if (size > MaxCoreCopyClipRectanglesInTextReport) ",...(+${size - MaxCoreCopyClipRectanglesInTextReport})" else ""
+            if (totalCount > MaxCoreCopyClipRectanglesInTextReport) ",...(+${totalCount - MaxCoreCopyClipRectanglesInTextReport})" else ""
+
+    private fun StringBuilder.appendRenderPictureClipRectangleSummary(picture: XRenderPictureSnapshot) {
+        append(" clips=")
+        append(picture.clipRectangles)
+        append(" clipsPresent=")
+        append(picture.clipRectanglesPresent)
+        append(" clipsRetained=")
+        append(picture.clipRectanglesRetained)
+        append(" clipsComplete=")
+        append(picture.clipRectanglesComplete)
+        append(" clipDetails=[")
+        append(picture.clipRectangleDetails.toRegionSummary(picture.clipRectangles))
+        append(']')
+    }
 
     private fun textCss(): String =
         """
@@ -800,6 +813,7 @@ internal object TextScreenRenderer {
                 append(" filter=")
                 append(picture.filterName)
             }
+            appendRenderPictureClipRectangleSummary(picture)
             if (picture.transform != IdentityTransform) {
                 append(" transform=")
                 append(picture.transformHex.joinToString(",", prefix = "[", postfix = "]"))

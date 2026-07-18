@@ -150,17 +150,23 @@ no-op fills remain semantic-only and do not enter paint history; independent
 command and rectangle budgets expose total, retained, and completeness counts
 instead of silently discarding context; operation-link completeness is reported
 separately when self-contained fill records outlive the provenance ring.
+RENDER picture snapshots preserve whether rectangle clipping is absent or
+explicitly empty, the full rectangle count, and up to 64 ordered rectangle
+details with retained/completeness metadata. The same immutable clip context is
+available in historical source, mask, destination, freed-picture, and retained
+drawable-paint provenance without allowing BIG-REQUESTS payloads to grow the
+bounded operation history without limit.
 
 All tracked protocol clients and reduced Xvfb oracles are native Kotlin/JUnit
 tests under `src/test/kotlin`; no tracked Python test sources remain. Gradle
 `check` enforces Kotlin/JUnit as the single JVM test stack with
 `verifyKotlinTestSources`. The latest full check ran
-1,409 tests (1,405 passed and 4 heavyweight opt-in cases skipped) in
-`runs/gradle-bounded/run_20260718-154306-78735`.
+1,411 tests (1,407 passed and 4 heavyweight opt-in cases skipped) in
+`runs/gradle-bounded/run_20260718-162857-28577`.
 
 The latest deterministic IntelliJ parity run
-`runs/gradle-bounded/run_20260718-145840-31243` and VSCode parity run
-`runs/gradle-bounded/run_20260717-164844-31774` are pixel-exact against their
+`runs/gradle-bounded/run_20260718-163549-36620` and VSCode parity run
+`runs/gradle-bounded/run_20260718-164514-45397` are pixel-exact against their
 Xvfb references. The requested Java AWS application is not yet represented by a
 tracked artifact or smoke fixture, so its harness is the next compatibility
 milestone rather than a reason to speculate about additional extensions.

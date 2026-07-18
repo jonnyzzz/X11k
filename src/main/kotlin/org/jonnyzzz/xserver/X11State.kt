@@ -4229,8 +4229,13 @@ internal class X11State(
         }
     }
 
-    private fun renderPictureSnapshot(picture: XPicture): XRenderPictureSnapshot =
-        XRenderPictureSnapshot(
+    private fun renderPictureSnapshot(picture: XPicture): XRenderPictureSnapshot {
+        val clipRectangles = picture.clipRectangles
+        val clipRectangleDetails = clipRectangles
+            ?.take(MaxRetainedRenderPictureClipRectangles)
+            ?.map { it.copy() }
+            .orEmpty()
+        return XRenderPictureSnapshot(
             id = picture.id,
             drawableId = picture.drawableId,
             drawableKind = picture.drawableId?.let { drawableId ->
@@ -4282,7 +4287,11 @@ internal class X11State(
             clipXOrigin = picture.clipXOrigin,
             clipYOrigin = picture.clipYOrigin,
             clipMask = picture.clipMask,
-            clipRectangles = picture.clipRectangles?.size ?: 0,
+            clipRectangles = clipRectangles?.size ?: 0,
+            clipRectanglesPresent = clipRectangles != null,
+            clipRectanglesRetained = clipRectangleDetails.size,
+            clipRectanglesComplete = clipRectangles == null || clipRectangleDetails.size == clipRectangles.size,
+            clipRectangleDetails = clipRectangleDetails,
             graphicsExposure = picture.graphicsExposure,
             subwindowMode = picture.subwindowMode,
             polyEdge = picture.polyEdge,
@@ -4293,6 +4302,7 @@ internal class X11State(
             filterName = picture.filterName,
             filterValues = picture.filterValues,
         )
+    }
 
     @Synchronized
     fun recordRequest(name: String) {
@@ -10529,6 +10539,7 @@ internal class X11State(
         private const val MaxRetainedRenderGlyphPlacements = 100_000
         private const val MaxRetainedRenderFillRectangles = 100_000
         private const val MaxRetainedRenderNoOpCommands = 10_000
+        private const val MaxRetainedRenderPictureClipRectangles = 64
         private const val MaxMotionHistory = 256
         private const val MaxInputOperations = 200
         private const val MaxGlxOperations = 200
@@ -13146,6 +13157,10 @@ internal data class XRenderPictureSnapshot(
     val clipYOrigin: Int,
     val clipMask: Int,
     val clipRectangles: Int,
+    val clipRectanglesPresent: Boolean,
+    val clipRectanglesRetained: Int,
+    val clipRectanglesComplete: Boolean,
+    val clipRectangleDetails: List<XRectangleCommand>,
     val graphicsExposure: Boolean,
     val subwindowMode: Int,
     val polyEdge: Int,

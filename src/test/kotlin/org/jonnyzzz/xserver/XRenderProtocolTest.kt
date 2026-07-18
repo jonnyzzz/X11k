@@ -3641,6 +3641,210 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER clip rectangle state and provenance retain presence details and immutable snapshots`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val pictureIdHex = PictureId.toUInt().toString(16)
+                val maskPixmapIdHex = MaskPixmapId.toUInt().toString(16)
+                fun currentPictures(json: String): String =
+                    json.substringAfter("\"renderPictures\":[").substringBefore("],\"inputOperations\":[")
+
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 4, height = 4))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.flush()
+
+                waitUntil {
+                    currentPictures(httpGet(server.localPort, "/state.json")).contains("\"id\":\"0x$pictureIdHex\"")
+                }
+                val unsetPicture = currentPictures(httpGet(server.localPort, "/state.json"))
+                assertContains(
+                    unsetPicture,
+                    "\"clipMask\":\"none\",\"clipRectangles\":0,\"clipRectanglesPresent\":false," +
+                        "\"clipRectanglesRetained\":0,\"clipRectanglesComplete\":true,\"clipRectangleDetails\":[]",
+                )
+
+                val rectangles = listOf(
+                    XRectangleCommand(x = -5, y = 7, width = 65_535, height = 32_768),
+                    XRectangleCommand(x = 12, y = -13, width = 14, height = 15),
+                )
+                val rectangleDetails =
+                    "[{\"x\":-5,\"y\":7,\"width\":65535,\"height\":32768},{\"x\":12,\"y\":-13,\"width\":14,\"height\":15}]"
+                out.write(renderSetPictureClipRectangles(PictureId, rectangles = rectangles))
+                out.write(
+                    renderFillRectangles(
+                        PictureId,
+                        x = 0,
+                        y = 0,
+                        width = 1,
+                        height = 1,
+                        red = 0xffff,
+                        green = 0,
+                        blue = 0,
+                        alpha = 0xffff,
+                    ),
+                )
+                out.flush()
+
+                waitUntil {
+                    val json = httpGet(server.localPort, "/state.json")
+                    currentPictures(json).contains("\"clipRectangles\":2") &&
+                        json.contains("\"operation\":\"FillRectangles\"")
+                }
+                val clippedPicture = currentPictures(httpGet(server.localPort, "/state.json"))
+                assertContains(
+                    clippedPicture,
+                    "\"clipRectangles\":2,\"clipRectanglesPresent\":true,\"clipRectanglesRetained\":2," +
+                        "\"clipRectanglesComplete\":true,\"clipRectangleDetails\":$rectangleDetails",
+                )
+
+                out.write(renderChangePictureAttributes(PictureId, XRender.CPClipMask to MaskPixmapId))
+                out.flush()
+
+                waitUntil {
+                    currentPictures(httpGet(server.localPort, "/state.json")).contains(
+                        "\"clipMask\":\"0x$maskPixmapIdHex\",\"clipRectangles\":0,\"clipRectanglesPresent\":false",
+                    )
+                }
+                val maskedPicture = currentPictures(httpGet(server.localPort, "/state.json"))
+                assertContains(
+                    maskedPicture,
+                    "\"clipMask\":\"0x$maskPixmapIdHex\",\"clipRectangles\":0,\"clipRectanglesPresent\":false," +
+                        "\"clipRectanglesRetained\":0,\"clipRectanglesComplete\":true,\"clipRectangleDetails\":[]",
+                )
+
+                out.write(renderSetPictureClipRectangles(PictureId, rectangles = emptyList()))
+                out.flush()
+
+                waitUntil {
+                    currentPictures(httpGet(server.localPort, "/state.json")).contains(
+                        "\"clipMask\":\"none\",\"clipRectangles\":0,\"clipRectanglesPresent\":true",
+                    )
+                }
+                val finalJson = httpGet(server.localPort, "/state.json")
+                assertContains(
+                    currentPictures(finalJson),
+                    "\"clipMask\":\"none\",\"clipRectangles\":0,\"clipRectanglesPresent\":true," +
+                        "\"clipRectanglesRetained\":0,\"clipRectanglesComplete\":true,\"clipRectangleDetails\":[]",
+                )
+                val renderOperationDetails =
+                    finalJson.substringAfter("\"renderOperationDetails\":[").substringBefore("],\"propertyOperations\":[")
+                assertContains(renderOperationDetails, "\"operation\":\"FillRectangles\"")
+                assertContains(
+                    renderOperationDetails,
+                    "\"clipRectangles\":2,\"clipRectanglesPresent\":true,\"clipRectanglesRetained\":2," +
+                        "\"clipRectanglesComplete\":true,\"clipRectangleDetails\":$rectangleDetails",
+                )
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "clips=0 clipsPresent=true clipsRetained=0 clipsComplete=true clipDetails=[]")
+                assertContains(
+                    text,
+                    "destination=0x$pictureIdHex/window repeat=none clips=2 clipsPresent=true " +
+                        "clipsRetained=2 clipsComplete=true " +
+                        "clipDetails=[-5,7 65535x32768,12,-13 14x15]",
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER picture clip snapshot retention is bounded and preserves count completeness`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val pictureIdHex = PictureId.toUInt().toString(16)
+                fun currentPictures(json: String): String =
+                    json.substringAfter("\"renderPictures\":[").substringBefore("],\"inputOperations\":[")
+                fun rectangleJson(rectangle: XRectangleCommand): String =
+                    "{\"x\":${rectangle.x},\"y\":${rectangle.y},\"width\":${rectangle.width},\"height\":${rectangle.height}}"
+                fun rectangleText(rectangle: XRectangleCommand): String =
+                    "${rectangle.x},${rectangle.y} ${rectangle.width}x${rectangle.height}"
+
+                val rectangles = (0 until 65).map { index ->
+                    XRectangleCommand(
+                        x = index - 32,
+                        y = 32 - index,
+                        width = 1_000 + index,
+                        height = 2_000 + index,
+                    )
+                }
+                val retainedDetails = rectangles.take(64).joinToString(",", prefix = "[", postfix = "]", transform = ::rectangleJson)
+                val textPreview = rectangles.take(24).joinToString(",", transform = ::rectangleText) + ",...(+41)"
+
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderSetPictureClipRectangles(PictureId, rectangles = rectangles))
+                out.write(
+                    renderFillRectangles(
+                        PictureId,
+                        x = 0,
+                        y = 0,
+                        width = 1,
+                        height = 1,
+                        red = 0xffff,
+                        green = 0,
+                        blue = 0,
+                        alpha = 0xffff,
+                    ),
+                )
+                out.flush()
+
+                waitUntil {
+                    val json = httpGet(server.localPort, "/state.json")
+                    currentPictures(json).contains("\"clipRectangles\":65") &&
+                        json.contains("\"operation\":\"FillRectangles\"")
+                }
+                val clippedPicture = currentPictures(httpGet(server.localPort, "/state.json"))
+                assertContains(
+                    clippedPicture,
+                    "\"clipRectangles\":65,\"clipRectanglesPresent\":true,\"clipRectanglesRetained\":64," +
+                        "\"clipRectanglesComplete\":false,\"clipRectangleDetails\":$retainedDetails",
+                )
+                assertFalse(clippedPicture.contains(rectangleJson(rectangles[64])))
+
+                val replacement = XRectangleCommand(x = -300, y = 301, width = 65_535, height = 32_768)
+                out.write(renderSetPictureClipRectangles(PictureId, rectangles = listOf(replacement)))
+                out.flush()
+
+                waitUntil {
+                    currentPictures(httpGet(server.localPort, "/state.json")).contains(
+                        "\"clipRectangles\":1,\"clipRectanglesPresent\":true,\"clipRectanglesRetained\":1," +
+                            "\"clipRectanglesComplete\":true,\"clipRectangleDetails\":[${rectangleJson(replacement)}]",
+                    )
+                }
+                val finalJson = httpGet(server.localPort, "/state.json")
+                val renderOperationDetails =
+                    finalJson.substringAfter("\"renderOperationDetails\":[").substringBefore("],\"propertyOperations\":[")
+                assertContains(renderOperationDetails, "\"operation\":\"FillRectangles\"")
+                assertContains(
+                    renderOperationDetails,
+                    "\"clipRectangles\":65,\"clipRectanglesPresent\":true,\"clipRectanglesRetained\":64," +
+                        "\"clipRectanglesComplete\":false,\"clipRectangleDetails\":$retainedDetails",
+                )
+                assertFalse(renderOperationDetails.contains(rectangleJson(rectangles[64])))
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(
+                    text,
+                    "destination=0x$pictureIdHex/window repeat=none clips=65 clipsPresent=true " +
+                        "clipsRetained=64 clipsComplete=false clipDetails=[$textPreview]",
+                )
+                assertFalse(text.contains(rectangleText(rectangles[24])))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER FillRectangles honors destination clip mask pixels and origin`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

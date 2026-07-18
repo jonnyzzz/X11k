@@ -75,6 +75,10 @@ order, request validation order, failed renegotiation, and per-client isolation.
 Build `jonnyzzz-x/x11-client:latest` first with `scripts/run-supervised.sh gradle dockerBuildX11Client`, then run the smoke explicitly with `-Dx.intellijSmoke=true`. Build both Docker images with `scripts/run-supervised.sh gradle dockerBuildX11Images`, then run the deterministic bounded full-pixel parity probe explicitly with `-Dx.intellijParity=true`.
 Both IntelliJ paths mount a clean tracked-file project export from `build/tmp/intellij-community-smoke/project` so untracked orchestration files do not affect the visible IDE project tree.
 The parity probe writes PNG/SVG/HTML/text diagnostics, SVG layer and HTML per-window preview inventories, visual diffs/metrics, visual region metrics with full-screen, inside-frame, top-frame, right-frame, and bottom-frame mismatch bounds, and IntelliJ client logs under `build/tmp/intellij-community-smoke/` so visual drift can be inspected without rerunning the heavyweight clients immediately.
+Its retained picture snapshots also expose whether rectangle clipping is absent
+or explicitly empty, the full clip count, an ordered 64-rectangle detail
+preview, and retained/completeness metadata in both current state and historical
+render-operation provenance.
 It also writes `intellij-glx-jcef-diagnostics.txt` from Xvfb/Kotlin `xdpyinfo -ext GLX` preflight logs, decoded client GLX extension strings, and side-by-side Xvfb/Kotlin JCEF/ANGLE signatures such as missing FBConfigs, ES2 supportability, and missing create-context extension messages.
 Add `-Dx.intellijDebug=true` or `X_INTELLIJ_DEBUG=true` to the smoke or parity probe when XAWT/JCEF tracing is needed; optional trace files are copied into the same diagnostics directory.
 Debug mode also captures pid-suffixed JCEF/Chromium log files when JetBrains Runtime writes them and enables Mesa/EGL loader diagnostics in the IntelliJ run log.

@@ -316,7 +316,9 @@ internal object SvgScreenRenderer {
             snapshot.renderPictures.forEachIndexed { index, picture ->
                 if (index > 0) append(',')
                 append('{')
-                append(""""id":"${picture.idHex}","drawable":"${picture.drawableIdHex}","kind":"${escapeJson(picture.drawableKind)}","format":${picture.format},"repeat":"${picture.repeatName}","alphaMap":"${picture.alphaMapHex}","alphaOrigin":[${picture.alphaXOrigin},${picture.alphaYOrigin}],"clipOrigin":[${picture.clipXOrigin},${picture.clipYOrigin}],"clipMask":"${picture.clipMaskHex}","clipRectangles":${picture.clipRectangles},"graphicsExposure":${picture.graphicsExposure},"subwindowMode":${picture.subwindowMode},"polyEdge":${picture.polyEdge},"polyMode":${picture.polyMode},"dither":"${picture.ditherHex}","componentAlpha":${picture.componentAlpha},"transform":[""")
+                append(""""id":"${picture.idHex}","drawable":"${picture.drawableIdHex}","kind":"${escapeJson(picture.drawableKind)}","format":${picture.format},"repeat":"${picture.repeatName}","alphaMap":"${picture.alphaMapHex}","alphaOrigin":[${picture.alphaXOrigin},${picture.alphaYOrigin}],"clipOrigin":[${picture.clipXOrigin},${picture.clipYOrigin}],"clipMask":"${picture.clipMaskHex}","clipRectangles":${picture.clipRectangles}""")
+                appendRenderPictureClipRectangleMetadata(picture)
+                append(""","graphicsExposure":${picture.graphicsExposure},"subwindowMode":${picture.subwindowMode},"polyEdge":${picture.polyEdge},"polyMode":${picture.polyMode},"dither":"${picture.ditherHex}","componentAlpha":${picture.componentAlpha},"transform":[""")
                 picture.transformHex.forEachIndexed { transformIndex, value ->
                     if (transformIndex > 0) append(',')
                     append('"').append(value).append('"')
@@ -2138,9 +2140,20 @@ internal object SvgScreenRenderer {
         append("""]}""")
     }
 
+    private fun StringBuilder.appendRenderPictureClipRectangleMetadata(picture: XRenderPictureSnapshot) {
+        append(""","clipRectanglesPresent":${picture.clipRectanglesPresent},"clipRectanglesRetained":${picture.clipRectanglesRetained},"clipRectanglesComplete":${picture.clipRectanglesComplete},"clipRectangleDetails":[""")
+        picture.clipRectangleDetails.forEachIndexed { index, rectangle ->
+            if (index > 0) append(',')
+            append("""{"x":${rectangle.x},"y":${rectangle.y},"width":${rectangle.width},"height":${rectangle.height}}""")
+        }
+        append(']')
+    }
+
     private fun StringBuilder.appendRenderPictureSnapshot(picture: XRenderPictureSnapshot) {
         append('{')
-        append(""""id":"${picture.idHex}","drawable":"${picture.drawableIdHex}","kind":"${escapeJson(picture.drawableKind)}","format":${picture.format},"repeat":"${picture.repeatName}","alphaMap":"${picture.alphaMapHex}","alphaOrigin":[${picture.alphaXOrigin},${picture.alphaYOrigin}],"clipOrigin":[${picture.clipXOrigin},${picture.clipYOrigin}],"clipMask":"${picture.clipMaskHex}","clipRectangles":${picture.clipRectangles},"graphicsExposure":${picture.graphicsExposure},"subwindowMode":${picture.subwindowMode},"polyEdge":${picture.polyEdge},"polyMode":${picture.polyMode},"dither":"${picture.ditherHex}","componentAlpha":${picture.componentAlpha},"transform":[""")
+        append(""""id":"${picture.idHex}","drawable":"${picture.drawableIdHex}","kind":"${escapeJson(picture.drawableKind)}","format":${picture.format},"repeat":"${picture.repeatName}","alphaMap":"${picture.alphaMapHex}","alphaOrigin":[${picture.alphaXOrigin},${picture.alphaYOrigin}],"clipOrigin":[${picture.clipXOrigin},${picture.clipYOrigin}],"clipMask":"${picture.clipMaskHex}","clipRectangles":${picture.clipRectangles}""")
+        appendRenderPictureClipRectangleMetadata(picture)
+        append(""","graphicsExposure":${picture.graphicsExposure},"subwindowMode":${picture.subwindowMode},"polyEdge":${picture.polyEdge},"polyMode":${picture.polyMode},"dither":"${picture.ditherHex}","componentAlpha":${picture.componentAlpha},"transform":[""")
         picture.transformHex.forEachIndexed { index, value ->
             if (index > 0) append(',')
             append('"').append(value).append('"')

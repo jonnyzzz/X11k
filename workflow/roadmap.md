@@ -9,15 +9,15 @@ Extension work remains governed by `workflow/extension-scope.md`.
 - Production and tracked protocol/oracle tests are pure Kotlin/JVM. All tests
   under `src/test` are Kotlin/JUnit; `check` rejects non-Kotlin JVM and Python
   test sources.
-- The default suite contains 1,409 JUnit tests (4 heavyweight opt-in tests are
+- The default suite contains 1,411 JUnit tests (4 heavyweight opt-in tests are
   skipped by default). Full `check` passed in
-  `runs/gradle-bounded/run_20260718-154306-78735`.
+  `runs/gradle-bounded/run_20260718-162857-28577`.
 - IntelliJ deterministic project-open parity is pixel-exact for the Xvfb Robot,
   Kotlin Robot, and Kotlin SVG-composed captures. The parity run
-  `runs/gradle-bounded/run_20260718-145840-31243` reports all three distances as
+  `runs/gradle-bounded/run_20260718-163549-36620` reports all three distances as
   `0.0`, no mismatch bounds, and no unsupported requests.
 - VSCode deterministic parity is pixel-exact for Robot and SVG-composed output
-  against Xvfb. Run `runs/gradle-bounded/run_20260717-164844-31774` reports both
+  against Xvfb. Run `runs/gradle-bounded/run_20260718-164514-45397` reports both
   distances as `0.0` and no unsupported requests.
 - No Java AWS application artifact, source fixture, launch command, or expected
   visual state is tracked in this repository. Its compatibility is therefore
@@ -49,7 +49,12 @@ Extension work remains governed by `workflow/extension-scope.md`.
   generations, and paint result. Successful byte-identical and semantic no-op
   composites preserve provenance without polluting paint populations or
   displacing regular drawing commands; fill, glyph, and composite no-ops share
-  one bounded 10,000-command semantic budget.
+  one bounded 10,000-command semantic budget. Picture snapshots distinguish no
+  rectangle clip from an explicitly empty clip, preserve the full rectangle
+  count, and retain up to 64 ordered signed-coordinate/unsigned-size rectangle
+  details with retained/completeness metadata in current state and historical
+  render-operation provenance. The current IntelliJ trace has 15,231 picture
+  snapshots, a maximum of four clip rectangles, and no incomplete previews.
 - Same-port HTTP/HTML, SVG, text, JSON, and input endpoints derived from the
   maintained server state rather than a separate visual model.
 - Core pixmap creation rejects requests beyond the bounded framebuffer capacity
